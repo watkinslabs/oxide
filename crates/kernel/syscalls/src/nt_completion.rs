@@ -32,7 +32,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         }
         NtObjectCall::SetIoCompletion { request } => {
             let base = request.as_u64();
-            let (handle, key, overlapped, status, information) = match (read_u32(base), read_u64(base + 8), read_u64(base + 16), read_u32(base + 24), read_u64(base + 32)) {
+            let (handle, key, overlapped, status, information) = match (read_u32(base), read_u64_at(base, 8), read_u64_at(base, 16), read_u32_at(base, 24), read_u64_at(base, 32)) {
                 (Some(h), Some(k), Some(o), Some(s), Some(i)) => (h, k, o, s, i), _ => return Some(STATUS_INVALID_PARAMETER),
             };
             let native = sched::nt_object::NtHandle::from_raw(handle);
@@ -47,7 +47,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
             let native = sched::nt_object::NtHandle::from_raw(handle);
             let Some(object) = table.get(native, SYNCHRONIZE) else { return Some(if table.contains(native) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE }); };
             let Some(port) = object.completion() else { return Some(STATUS_INVALID_HANDLE); };
-            let timeout = match read_i64(base + 40).and_then(|raw| syscall::nt::decode_timeout(raw).ok()) {
+            let timeout = match read_i64_at(base, 40).and_then(|raw| syscall::nt::decode_timeout(raw).ok()) {
                 Some(syscall::nt::NtTimeout::Relative100ns(ticks)) => timekeeper::monotonic_ns().saturating_add(ticks.saturating_mul(100)),
                 Some(syscall::nt::NtTimeout::Absolute100ns(_)) => return Some(STATUS_INVALID_PARAMETER),
                 None => 0,
@@ -61,10 +61,10 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
                 let Some(packet) = port.try_remove() else { return Some(STATUS_TIMEOUT); };
                 packet
             };
-            if uaccess::put_user_u64(read_u64(base + 8)?, packet.key).is_err()
-                || uaccess::put_user_u64(read_u64(base + 16)?, packet.overlapped).is_err()
-                || uaccess::put_user_u32(read_u64(base + 24)?, packet.status).is_err()
-                || uaccess::put_user_u64(read_u64(base + 32)?, packet.information).is_err() { return Some(STATUS_INVALID_PARAMETER); }
+            if uaccess::put_user_u64(read_u64_at(base, 8)?, packet.key).is_err()
+                || uaccess::put_user_u64(read_u64_at(base, 16)?, packet.overlapped).is_err()
+                || uaccess::put_user_u32(read_u64_at(base, 24)?, packet.status).is_err()
+                || uaccess::put_user_u64(read_u64_at(base, 32)?, packet.information).is_err() { return Some(STATUS_INVALID_PARAMETER); }
             Some(STATUS_SUCCESS)
         }
         _ => None,
@@ -96,11 +96,11 @@ fn remove_io_completion_ex(call: NtCall) -> u64 {
         packets.push(packet);
     }
     for (index, packet) in packets.iter().enumerate() {
-        let base = call.args.a1.saturating_add(index as u64 * 32);
+        let Some(base) = call.args.a1.checked_add(index as u64 * 32) else { return STATUS_INVALID_PARAMETER; };
         if uaccess::put_user_u64(base, packet.key).is_err()
-            || uaccess::put_user_u64(base + 8, packet.overlapped).is_err()
-            || uaccess::put_user_u64(base + 16, packet.status as u64).is_err()
-            || uaccess::put_user_u64(base + 24, packet.information).is_err() { return STATUS_INVALID_PARAMETER; }
+            || put_user_u64_at(base, 8, packet.overlapped).is_err()
+            || put_user_u64_at(base, 16, packet.status as u64).is_err()
+            || put_user_u64_at(base, 24, packet.information).is_err() { return STATUS_INVALID_PARAMETER; }
     }
     if uaccess::put_user_u32(call.args.a3, packets.len() as u32).is_err() { return STATUS_INVALID_PARAMETER; }
     STATUS_SUCCESS
@@ -125,3 +125,10 @@ fn set_io_callback(call: NtCall) -> u64 {
 fn read_u32(address: u64) -> Option<u32> { uaccess::get_user_u32(address).ok() }
 fn read_u64(address: u64) -> Option<u64> { uaccess::get_user_u64(address).ok() }
 fn read_i64(address: u64) -> Option<i64> { read_u64(address).map(|value| value as i64) }
+fn read_u32_at(address: u64, offset: u64) -> Option<u32> { read_u32(address.checked_add(offset)?) }
+fn read_u64_at(address: u64, offset: u64) -> Option<u64> { read_u64(address.checked_add(offset)?) }
+fn read_i64_at(address: u64, offset: u64) -> Option<i64> { read_i64(address.checked_add(offset)?) }
+fn put_user_u64_at(address: u64, offset: u64, value: u64) -> Result<(), ()> {
+    let address = address.checked_add(offset).ok_or(())?;
+    uaccess::put_user_u64(address, value).map_err(|_| ())
+}
