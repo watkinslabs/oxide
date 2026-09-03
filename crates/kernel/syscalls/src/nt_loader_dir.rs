@@ -5,6 +5,7 @@
 use alloc::{vec, vec::Vec};
 use core::sync::atomic::Ordering;
 use syscall::nt::{NtCall, NtService};
+use syscall::nt_loader_name::matches_module_name;
 
 const STATUS_SUCCESS: u64 = 0;
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
@@ -348,7 +349,7 @@ fn load(name_descriptor: u64, module_output: u64) -> u64 {
     for _ in 0..MAX_MODULE_SCAN {
         if entry == 0 || entry == head { break; }
         let name = read_module_name(entry.saturating_add(MODULE_BASE_NAME_OFFSET));
-        if same_module_name(&wanted, &name) {
+        if matches_module_name(&wanted, &name) {
             let base = read_u64(entry.saturating_add(MODULE_BASE_OFFSET));
             if uaccess::copy_to_user(module_output, &base.to_le_bytes()).is_err() { return STATUS_INVALID_PARAMETER; }
             return STATUS_SUCCESS;
@@ -366,10 +367,6 @@ fn read_module_name(descriptor: u64) -> Vec<u8> {
     if length == 0 || length > 1024 || length & 1 != 0 || buffer == 0 { return Vec::new(); }
     let mut value = Vec::new(); value.resize(length, 0);
     if uaccess::copy_from_user(&mut value, buffer).is_err() { Vec::new() } else { value }
-}
-
-fn same_module_name(wanted: &[u8], current: &[u8]) -> bool {
-    wanted.eq_ignore_ascii_case(current)
 }
 
 fn full_name(module: u64, descriptor: u64) -> u64 {
