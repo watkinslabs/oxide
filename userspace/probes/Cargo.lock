@@ -227,3 +227,7 @@ dependencies = [
  "syscall",
  "windows-gdi",
 ]
+
+[[package]]
+name = "windows-xinput"
+version = "0.1.0"
