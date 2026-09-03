@@ -1465,10 +1465,14 @@ pub fn dispatch(call: NtCall) -> u64 {
             let size_ptr = size.as_u64();
             let requested_base = match uaccess::get_user_u64(base.as_u64()) {
                 Ok(0) => None,
-                Ok(raw) => match hal::UserVirtAddr::new(raw) { Some(raw) => Some(raw), None => return STATUS_INVALID_PARAMETER },
+                Ok(raw) => Some(raw),
                 Err(_) => return STATUS_INVALID_PARAMETER,
             };
-            let size = match uaccess::get_user_u64(size_ptr) { Ok(size) => size as usize, Err(_) => return STATUS_INVALID_PARAMETER };
+            let requested_size = match uaccess::get_user_u64(size_ptr) { Ok(size) => size, Err(_) => return STATUS_INVALID_PARAMETER };
+            let (requested_base, size) = match elf_load::nt_memory::normalize_allocation_range(requested_base, requested_size) {
+                Ok(range) => range,
+                Err(_) => return STATUS_INVALID_PARAMETER,
+            };
             let protection = match elf_load::nt_memory::windows_protection(protect) { Ok(protection) => protection, Err(_) => return STATUS_INVALID_PARAMETER };
             if allocation_type == MEM_COMMIT && requested_base.is_some() { return STATUS_INVALID_PARAMETER; }
             let allocation = match elf_load::nt_memory::allocate(&mm, requested_base, size, protection) {

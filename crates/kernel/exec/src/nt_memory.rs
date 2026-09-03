@@ -27,6 +27,29 @@ pub fn normalize_protection_range(base: u64, size: u64) -> Result<(UserVirtAddr,
     Ok((start, (rounded_end - start.as_u64()) as usize))
 }
 
+/// Normalize an NT allocation request to its page-covered range.
+/// # C: O(1)
+pub fn normalize_allocation_range(base: Option<u64>, size: u64) -> Result<(Option<UserVirtAddr>, usize), NtStatus> {
+    if size == 0 { return Err(NtStatus::InvalidParameter); }
+    let page = PAGE as u64;
+    let start = match base {
+        Some(raw) => raw & !(page - 1),
+        None => 0,
+    };
+    let end = match base {
+        Some(raw) => raw.checked_add(size),
+        None => Some(size),
+    }.ok_or(NtStatus::InvalidParameter)?;
+    let rounded_end = end.checked_add(page - 1).ok_or(NtStatus::InvalidParameter)? & !(page - 1);
+    if rounded_end <= start || rounded_end - start > usize::MAX as u64 {
+        return Err(NtStatus::InvalidParameter);
+    }
+    let start = if base.is_some() {
+        Some(UserVirtAddr::new(start).ok_or(NtStatus::InvalidParameter)?)
+    } else { None };
+    Ok((start, (rounded_end - start.map_or(0, |v| v.as_u64())) as usize))
+}
+
 /// Translate the Windows page-protection word at the NT boundary. Modifier
 /// bits are rejected until their VMA/PTE semantics exist; the eight base
 /// protections map directly to the common three-bit VMA contract.
@@ -168,6 +191,17 @@ mod tests {
         assert_eq!(base.as_u64(), 0x4000_0000);
         assert_eq!(size, PAGE * 2);
         assert_eq!(normalize_protection_range(u64::MAX - 1, 2), Err(NtStatus::InvalidParameter));
+    }
+
+    #[test]
+    fn allocation_ranges_round_outward_and_preserve_null_hint() {
+        let (base, size) = normalize_allocation_range(Some(0x4000_0001), 1).unwrap();
+        assert_eq!(base.unwrap().as_u64(), 0x4000_0000);
+        assert_eq!(size, PAGE);
+        let (base, size) = normalize_allocation_range(None, 1).unwrap();
+        assert_eq!(base, None);
+        assert_eq!(size, PAGE);
+        assert_eq!(normalize_allocation_range(Some(u64::MAX - 1), 2), Err(NtStatus::InvalidParameter));
     }
 
     #[test]
