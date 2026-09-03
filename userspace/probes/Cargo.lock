@@ -233,5 +233,9 @@ dependencies = [
 ]
 
 [[package]]
+name = "windows-winsock"
+version = "0.1.0"
+
+[[package]]
 name = "windows-xinput"
 version = "0.1.0"
