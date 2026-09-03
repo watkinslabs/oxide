@@ -80,6 +80,7 @@ fn create_process_parameters(call: NtCall) -> u64 {
     } else {
         match read_environment_block(call.args.a5) { Some(values) => values, None => return STATUS_INVALID_PARAMETER }
     };
+    let normalized = crate::nt_dispatch::stack_argument(10).unwrap_or(0) & PROCESS_PARAMS_NORMALIZED as u64 != 0;
     let strings = [current_dir, dll, image, command, title, desktop, shell, runtime];
     let mut size = PROCESS_PARAMS_BYTES;
     for (_, index) in PROCESS_PARAMS_STRING_FIELDS {
@@ -92,7 +93,7 @@ fn create_process_parameters(call: NtCall) -> u64 {
     let allocation = crate::nt_heap::dispatch(NtCall { service: NtService::AllocateHeap,
         args: SyscallArgs { a0: 1, a1: 0, a2: total as u64, a3: 0, a4: 0, a5: 0 } });
     let Some(base) = allocation.filter(|&address| hal::UserVirtAddr::new(address).is_some()) else { return STATUS_NO_MEMORY; };
-    if write_params(base, allocation_size, total - allocation_size, &strings, &environment).is_err()
+    if write_params(base, allocation_size, total - allocation_size, &strings, &environment, normalized).is_err()
         || uaccess::put_user_u64(call.args.a0, base).is_err() {
         free_heap(base);
         return STATUS_INVALID_PARAMETER;
@@ -123,11 +124,11 @@ fn rounded_add(base: usize, bytes: usize) -> Option<usize> {
     base.checked_add(bytes)?.checked_add(7).map(|value| value & !7)
 }
 
-fn write_params(base: u64, allocation_size: usize, environment_size: usize, strings: &[Vec<u16>; 8], environment: &[u16]) -> Result<(), ()> {
+fn write_params(base: u64, allocation_size: usize, environment_size: usize, strings: &[Vec<u16>; 8], environment: &[u16], normalized: bool) -> Result<(), ()> {
     put_user_u32(base, allocation_size as u32)?;
     put_user_u32(base + 4, allocation_size as u32)?;
-    put_user_u32(base + 8, PROCESS_PARAMS_NORMALIZED)?;
-    put_user_u64(base + 0x80, base + allocation_size as u64)?;
+    put_user_u32(base + 8, if normalized { PROCESS_PARAMS_NORMALIZED } else { 0 })?;
+    put_user_u64(base + 0x80, if normalized { base + allocation_size as u64 } else { allocation_size as u64 })?;
     put_user_u64(base + 0x3f0, environment_size as u64)?;
     let mut data = base + PROCESS_PARAMS_BYTES as u64;
     for &(field, index) in &PROCESS_PARAMS_STRING_FIELDS {
@@ -135,7 +136,8 @@ fn write_params(base: u64, allocation_size: usize, environment_size: usize, stri
         let maximum = if values.is_empty() { 0 } else { values.len().saturating_add(1).saturating_mul(2) };
         put_user_u16(data_field(base, field), values.len().saturating_mul(2) as u16)?;
         put_user_u16(data_field(base, field) + 2, maximum as u16)?;
-        put_user_u64(data_field(base, field) + 8, if values.is_empty() { 0 } else { data })?;
+        let pointer = if values.is_empty() { 0 } else if normalized { data } else { data.saturating_sub(base) };
+        put_user_u64(data_field(base, field) + 8, pointer)?;
         if !values.is_empty() { copy_units(data, values)?; put_user_u16(data + values.len() as u64 * 2, 0)?; }
         data = rounded_add(data as usize, maximum).ok_or(())? as u64;
     }
