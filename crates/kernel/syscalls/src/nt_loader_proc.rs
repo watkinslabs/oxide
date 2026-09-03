@@ -23,7 +23,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         return Some(probe_relay_descriptor(call.args.a0));
     }
     if call.service == NtService::RelayCall {
-        let result = resolve_relay_call(call);
+        let result = resolve_relay_call(call).unwrap_or(0);
         klog::write_raw(b"[WINDOWS-PE-RELAY-DISPATCH] descriptor="); klog::write_hex_u64(call.args.a0);
         klog::write_raw(b" index="); klog::write_hex_u64(call.args.a1);
         klog::write_raw(b" result="); klog::write_hex_u64(result); klog::write_raw(b"\n");
@@ -70,34 +70,34 @@ fn probe_relay_descriptor(module: u64) -> u64 {
     STATUS_SUCCESS
 }
 
-fn resolve_relay_call(call: NtCall) -> u64 {
-    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+fn resolve_relay_call(call: NtCall) -> Option<u64> {
+    let cur = sched::live::current()?;
     let descriptor = call.args.a0;
-    if !cur.is_nt_personality() || descriptor == 0 { return STATUS_INVALID_PARAMETER; }
-    let Some((module, size)) = module_containing(&cur, descriptor) else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() || descriptor == 0 { return None; }
+    let (module, size) = module_containing(&cur, descriptor)?;
     // Wine packs the argument-string offset in the high word and the export
     // ordinal index in the low word. The native resolver only indexes PE
     // tables with LOWORD(idx); preserving the packed value here turns a valid
     // relay call into an out-of-range table walk.
     let ordinal_index = call.args.a1 & 0xffff;
-    if read_u64(descriptor) != 0x0000_0000_deb9_0002 { return STATUS_INVALID_PARAMETER; }
-    let Some(nt_rva) = read_u32_at(module, 0x3c) else { return STATUS_INVALID_PARAMETER; };
-    let Some(nt) = module.checked_add(nt_rva as u64) else { return STATUS_INVALID_PARAMETER; };
-    if read_u32(nt) != Some(0x0000_4550) || read_u16_at(nt, 24) != Some(0x020b) { return STATUS_INVALID_PARAMETER; }
-    let Some(optional) = nt.checked_add(24) else { return STATUS_INVALID_PARAMETER; };
-    let Some(directory) = optional.checked_add(112) else { return STATUS_INVALID_PARAMETER; };
-    let Some(export_rva) = read_u32(directory) else { return STATUS_INVALID_PARAMETER; };
-    let Some(export_size) = read_u32_at(directory, 4) else { return STATUS_INVALID_PARAMETER; };
-    let Some(export_end) = export_rva.checked_add(export_size) else { return STATUS_INVALID_PARAMETER; };
-    if export_rva == 0 || export_size < 40 || export_end > size { return STATUS_INVALID_PARAMETER; }
-    let Some(export) = module.checked_add(export_rva as u64) else { return STATUS_INVALID_PARAMETER; };
-    let Some(function_count) = read_u32_at(export, 20) else { return STATUS_INVALID_PARAMETER; };
+    if read_u64(descriptor) != 0x0000_0000_deb9_0002 { return None; }
+    let nt_rva = read_u32_at(module, 0x3c)?;
+    let nt = module.checked_add(nt_rva as u64)?;
+    if read_u32(nt) != Some(0x0000_4550) || read_u16_at(nt, 24) != Some(0x020b) { return None; }
+    let optional = nt.checked_add(24)?;
+    let directory = optional.checked_add(112)?;
+    let export_rva = read_u32(directory)?;
+    let export_size = read_u32_at(directory, 4)?;
+    let export_end = export_rva.checked_add(export_size)?;
+    if export_rva == 0 || export_size < 40 || export_end > size { return None; }
+    let export = module.checked_add(export_rva as u64)?;
+    let function_count = read_u32_at(export, 20)?;
     let index = (call.args.a1 & 0xffff) as u32;
-    if index >= function_count { return STATUS_INVALID_PARAMETER; }
-    let Some(functions) = read_u32_at(export, 28) else { return STATUS_INVALID_PARAMETER; };
-    let Some(function_rva_address) = module.checked_add(functions as u64).and_then(|value| value.checked_add(ordinal_index * 4)) else { return STATUS_INVALID_PARAMETER; };
-    let Some(function_rva) = read_u32(function_rva_address) else { return STATUS_INVALID_PARAMETER; };
-    if function_rva == 0 || function_rva >= size || (function_rva >= export_rva && function_rva < export_end) { return STATUS_INVALID_PARAMETER; }
+    if index >= function_count { return None; }
+    let functions = read_u32_at(export, 28)?;
+    let function_rva_address = module.checked_add(functions as u64).and_then(|value| value.checked_add(ordinal_index * 4))?;
+    let function_rva = read_u32(function_rva_address)?;
+    if function_rva == 0 || function_rva >= size || (function_rva >= export_rva && function_rva < export_end) { return None; }
     let original = module.saturating_add(function_rva as u64);
     let root = unsafe { cur.mm_ref() }.map(|mm| mm.root_pa()).unwrap_or(0);
     // The loader's snapshot is the canonical original EAT. Wine's private
@@ -126,7 +126,7 @@ fn resolve_relay_call(call: NtCall) -> u64 {
         klog::write_hex_u64(target);
         klog::write_raw(b"\n");
     }
-    target
+    Some(target)
 }
 
 fn resolve_relay_original(module: u64, module_size: u32, descriptor: u64, index: u32) -> Option<u64> {
