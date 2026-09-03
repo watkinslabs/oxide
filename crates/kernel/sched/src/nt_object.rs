@@ -31,7 +31,7 @@ mod job;
 pub use job::{NtJob, NtJobLimits};
 #[path = "nt_object/pipe.rs"]
 mod pipe;
-pub use pipe::{NtPipe, NtPipeConfig, NtPipeEndpoint, NtPipeIo, NtPipeListen, NtPipePeek, NtPipeSide};
+pub use pipe::{NtPipe, NtPipeConfig, NtPipeEndpoint, NtPipeIo, NtPipeListen, NtPipePeek, NtPipeSide, NtPipeWait};
 use alloc::{string::String, sync::Arc};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};

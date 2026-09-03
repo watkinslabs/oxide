@@ -49,6 +49,9 @@ owner, so completed synchronous pipe operations use the same packet contract
 as VFS-backed file operations; unrelated NT object types remain rejected.
 Blocking-mode endpoint I/O now parks through the scheduler wait-list contract;
 peer writes, reads, connect, close, and disconnect wake the corresponding
-waiters. True overlapped/APC request retention and completion, plus the
-remaining pipe FSCTLs, stay separate work;
+waiters. `NtCancelIoFile` advances the object cancellation generation and wakes
+blocking endpoint waiters, which complete with `STATUS_CANCELLED`; transport
+state is preserved. `NtCancelIoFileEx` still requires per-request identity and
+retention before it can cancel one overlapped request without affecting others.
+True overlapped/APC request retention and completion, plus the remaining pipe FSCTLs, stay separate work;
 those paths do not fall through to VFS files.
