@@ -31,7 +31,10 @@ const CURRENT_THREAD: u64 = u64::MAX - 1;
 #[cfg(target_os = "oxide-kernel")]
 fn native_section_object(call: NtCall) -> Option<NtObjectCall> {
     match call.service {
-        nt::NtService::CreateSection => {
+        nt::NtService::CreateSection | nt::NtService::NtCreateSectionEx => {
+            if call.service == nt::NtService::NtCreateSectionEx {
+                if stack_argument(7)? != 0 || stack_argument(8)? != 0 { return None; }
+            }
             let file = stack_argument(6)?;
             if file > u32::MAX as u64 { return None; }
             let mut size = if call.args.a3 == 0 { 0 } else { uaccess::get_user_u64(call.args.a3).ok()? };
@@ -770,7 +773,7 @@ pub fn dispatch(call: NtCall) -> u64 {
             || uaccess::copy_to_user(call.args.a1, &(required - 2).to_ne_bytes()).is_err() { return STATUS_INVALID_PARAMETER; }
         return STATUS_SUCCESS;
     }
-    if matches!(call.service, syscall::nt::NtService::NtCreateSectionEx | syscall::nt::NtService::NtCreateSymbolicLinkObject | syscall::nt::NtService::NtEnumerateKey | syscall::nt::NtService::NtEnumerateValueKey | syscall::nt::NtService::NtFilterToken | syscall::nt::NtService::NtFlushKey) { return 0xc000_0002; }
+    if matches!(call.service, syscall::nt::NtService::NtCreateSymbolicLinkObject | syscall::nt::NtService::NtEnumerateKey | syscall::nt::NtService::NtEnumerateValueKey | syscall::nt::NtService::NtFilterToken | syscall::nt::NtService::NtFlushKey) { return 0xc000_0002; }
     if let Some(result) = crate::nt_power::dispatch(call) { return result; }
     if let Some(result) = crate::nt_fls::dispatch(call) { return result; }
     if let Some(result) = crate::nt_format::dispatch(call) { return result; }
@@ -929,7 +932,7 @@ pub fn dispatch(call: NtCall) -> u64 {
         if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
         return crate::s060_exit::sys_exit(&SyscallArgs { a0: call.args.a0, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 }) as u64;
     }
-    let object_call = if matches!(call.service, nt::NtService::CreateSection | nt::NtService::MapViewOfSection) {
+    let object_call = if matches!(call.service, nt::NtService::CreateSection | nt::NtService::NtCreateSectionEx | nt::NtService::MapViewOfSection) {
         native_section_object(call)
     } else { nt::decode_object(call).ok() };
     if let Some(object_call) = object_call {
