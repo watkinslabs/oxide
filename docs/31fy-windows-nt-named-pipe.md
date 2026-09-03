@@ -33,5 +33,9 @@ client endpoint, returning `STATUS_PIPE_BUSY` when it is already connected.
 data, while unsupported control codes return an explicit NT status.
 `FSCTL_PIPE_LISTEN` enters explicit server-listening state and returns
 `STATUS_PENDING` until a client pairs with the instance.
+`FSCTL_PIPE_PEEK` returns the Wine-compatible pipe-state header and a
+non-consuming queue snapshot. `FSCTL_PIPE_TRANSCEIVE` validates both user
+buffers and performs a directional write/read transaction when a response is
+already available.
 Handle-side blocking waits and the remaining pipe FSCTLs stay separate work;
 those paths do not fall through to VFS files.

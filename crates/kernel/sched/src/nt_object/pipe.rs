@@ -14,6 +14,9 @@ pub enum NtPipeIo { Complete(usize), WouldBlock, BrokenPipe }
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum NtPipeListen { Pending, Connected }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NtPipePeek { pub state: u32, pub available: usize, pub messages: usize, pub message_length: usize, pub data: alloc::vec::Vec<u8> }
+
 struct PipeTransport {
     server_to_client: VecDeque<u8>,
     client_to_server: VecDeque<u8>,
@@ -116,6 +119,16 @@ impl NtPipe {
         NtPipeListen::Pending
     }
 
+    pub fn peek(&self, side: NtPipeSide, capacity: usize) -> NtPipePeek {
+        let transport = self.transport.lock();
+        let queue = match side { NtPipeSide::Server => &transport.client_to_server, NtPipeSide::Client => &transport.server_to_client };
+        let state = if transport.connected { 3 } else if transport.listening { 2 } else { 1 };
+        let message_mode = self.config.pipe_type != 0;
+        let message_length = if message_mode && !queue.is_empty() { queue.len() } else { 0 };
+        let count = queue.len().min(capacity).min(if message_mode { message_length } else { usize::MAX });
+        NtPipePeek { state, available: queue.len(), messages: usize::from(message_mode && !queue.is_empty()), message_length, data: queue.iter().take(count).copied().collect() }
+    }
+
     pub fn endpoint(self: &Arc<Self>, side: NtPipeSide) -> NtPipeEndpoint {
         NtPipeEndpoint { pipe: Arc::clone(self), side, reserved: false }
     }
@@ -176,6 +189,7 @@ impl NtPipeEndpoint {
         if self.side != NtPipeSide::Server { return NtPipeListen::Pending; }
         self.pipe.listen()
     }
+    pub fn peek(&self, capacity: usize) -> NtPipePeek { self.pipe.peek(self.side, capacity) }
 }
 
 impl Drop for NtPipeEndpoint {
@@ -273,5 +287,21 @@ mod tests {
         assert!(pipe.connect());
         assert_eq!(server.write(b"fresh"), NtPipeIo::Complete(5));
         assert_eq!(client.read(&mut output), NtPipeIo::Complete(5));
+    }
+
+    #[test]
+    fn peek_snapshots_without_consuming_directional_data() {
+        let pipe = Arc::new(NtPipe::new(config(1)));
+        let server = pipe.endpoint(NtPipeSide::Server);
+        let client = pipe.endpoint(NtPipeSide::Client);
+        assert_eq!(pipe.listen(), NtPipeListen::Pending);
+        assert!(pipe.connect());
+        assert_eq!(server.write(b"peek-me"), NtPipeIo::Complete(7));
+        let snapshot = client.peek(4);
+        assert_eq!(snapshot.state, 3);
+        assert_eq!(snapshot.available, 7);
+        assert_eq!(snapshot.data, b"peek".to_vec());
+        let mut output = [0u8; 8];
+        assert_eq!(client.read(&mut output), NtPipeIo::Complete(7));
     }
 }
