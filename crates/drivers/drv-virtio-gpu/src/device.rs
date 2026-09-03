@@ -212,16 +212,16 @@ impl drm::DrmDriver for VirtioGpuDrm {
         self.edid_for(idx).map(Vec::from)
     }
     fn connector_info(&self, idx: usize) -> Option<drm::ConnectorInfo> {
-        let r = self.enabled_rect(idx)?;
-        // Crude physical size: assume ~96 DPI → mm = px * 25.4 / 96.
-        let mm_w = (r.width  as u64 * 254 / 960) as u32;
-        let mm_h = (r.height as u64 * 254 / 960) as u32;
+        self.enabled_rect(idx)?;
         Some(drm::ConnectorInfo {
             connection:     drm::DRM_MODE_CONNECTED,
             connector_type: drm::DRM_MODE_CONNECTOR_VIRTUAL,
             encoder_id:     drm::encoder_id_for(idx),
-            mm_width:       mm_w,
-            mm_height:      mm_h,
+            // A virtual scanout has no physical panel measurement. Keep the
+            // dimensions unknown; DRM consumers choose their explicit
+            // default density instead of inheriting fabricated geometry.
+            mm_width:       0,
+            mm_height:      0,
         })
     }
     fn crtc_info(&self, idx: usize) -> Option<drm::CrtcInfo> {

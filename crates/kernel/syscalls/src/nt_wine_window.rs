@@ -30,6 +30,7 @@ const WINE_DISPATCH_MESSAGE: u64 = 0x138b;
 // Wine's generated win32u syscall table assigns this ordinal to the raw
 // four-argument client-table publication entry.
 const WINE_NTUSER_INITIALIZE_CLIENT_PFN_ARRAYS: u64 = 0x147a;
+const WINE_NTUSER_GET_SYSTEM_DPI_FOR_PROCESS: u64 = 0x144b;
 const WM_TIMER: u32 = 0x0113;
 
 #[cfg(target_os = "oxide-kernel")]
@@ -136,6 +137,12 @@ pub fn dispatch(call: NtCall) -> u64 {
 /// # C: O(NTUSER_NB_PROCS + NTUSER_NB_WORKERS)
 #[cfg(target_os = "oxide-kernel")]
 pub fn dispatch_raw(ordinal: u64, args: SyscallArgs) -> Option<u64> {
+    if ordinal == WINE_NTUSER_GET_SYSTEM_DPI_FOR_PROCESS {
+        let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
+        if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
+        let _ = args;
+        return Some(drm::primary_system_dpi() as u64);
+    }
     if ordinal != WINE_NTUSER_INITIALIZE_CLIENT_PFN_ARRAYS { return None; }
     let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
     if !cur.is_nt_personality() || args.a0 == 0 || args.a1 == 0 || args.a2 == 0 || args.a3 == 0 {

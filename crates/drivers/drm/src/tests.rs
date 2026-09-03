@@ -473,3 +473,10 @@ fn a_preferred_depth_is_colour_bits_not_pixel_bits() {
     assert_eq!(format_depth(0), 0);
     assert_eq!(format_depth(0x3631_5044), 0); // 'DP16', a format this stack does not scan out
 }
+
+#[test]
+fn display_density_uses_physical_geometry_and_default_for_missing_size() {
+    assert_eq!(dpi_from_geometry(1920, 1080, 508, 285), 96);
+    assert_eq!(dpi_from_geometry(0, 1080, 508, 286), DEFAULT_SCREEN_DPI);
+    assert_eq!(dpi_from_geometry(1920, 1080, 0, 286), DEFAULT_SCREEN_DPI);
+}
