@@ -74,6 +74,7 @@ const WM_NCHITTEST: u64 = 0x0084;
 const WM_NCACTIVATE: u64 = 0x0086;
 
 fn paintstruct_field(base: u64, offset: u64) -> Option<u64> { base.checked_add(offset) }
+fn message_field(base: u64, offset: u64) -> Option<u64> { base.checked_add(offset) }
 
 #[cfg(target_os = "oxide-kernel")]
 fn read_args(pointer: u64) -> Option<[u64; 17]> {
@@ -133,9 +134,12 @@ pub fn dispatch(call: NtCall) -> u64 {
         WINE_DISPATCH_MESSAGE => {
             let msg = args[0];
             let Ok(hwnd) = uaccess::get_user_u64(msg) else { return STATUS_INVALID_PARAMETER; };
-            let Ok(message) = uaccess::get_user_u32(msg.saturating_add(8)) else { return STATUS_INVALID_PARAMETER; };
-            let Ok(wparam) = uaccess::get_user_u64(msg.saturating_add(16)) else { return STATUS_INVALID_PARAMETER; };
-            let Ok(lparam) = uaccess::get_user_u64(msg.saturating_add(24)) else { return STATUS_INVALID_PARAMETER; };
+            let Some(message_address) = message_field(msg, 8) else { return STATUS_INVALID_PARAMETER; };
+            let Some(wparam_address) = message_field(msg, 16) else { return STATUS_INVALID_PARAMETER; };
+            let Some(lparam_address) = message_field(msg, 24) else { return STATUS_INVALID_PARAMETER; };
+            let Ok(message) = uaccess::get_user_u32(message_address) else { return STATUS_INVALID_PARAMETER; };
+            let Ok(wparam) = uaccess::get_user_u64(wparam_address) else { return STATUS_INVALID_PARAMETER; };
+            let Ok(lparam) = uaccess::get_user_u64(lparam_address) else { return STATUS_INVALID_PARAMETER; };
             if message == WM_TIMER && lparam != 0 {
                 let tick_ms = timekeeper::monotonic_ns().saturating_div(1_000_000);
                 return crate::nt_rtl::begin_wndproc_callback(hwnd, message as u64, wparam, tick_ms, lparam);
@@ -516,6 +520,13 @@ mod tests {
     fn paintstruct_offsets_fail_closed_on_pointer_wrap() {
         assert_eq!(paintstruct_field(u64::MAX, 0), Some(u64::MAX));
         assert_eq!(paintstruct_field(u64::MAX, PAINTSTRUCT_RECT_OFFSET), None);
+    }
+
+    #[test]
+    fn message_offsets_fail_closed_on_pointer_wrap() {
+        assert_eq!(message_field(u64::MAX, 0), Some(u64::MAX));
+        assert_eq!(message_field(u64::MAX, 8), None);
+        assert_eq!(message_field(u64::MAX - 24, 24), Some(u64::MAX));
     }
 
     #[test]
