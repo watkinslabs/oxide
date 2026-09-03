@@ -219,6 +219,21 @@ fn encode_resource_create_2d_layout() {
 }
 
 #[test]
+fn encode_resource_create_3d_layout() {
+    let mut buf = [0u8; 72];
+    let n = encode_resource_create_3d(&mut buf, TEST_RESOURCE_ID, 2,
+        VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM, 0x55, TEST_MODE_WIDTH,
+        TEST_MODE_HEIGHT, 1, 1, 0, 1, 0);
+    assert_eq!(n, 72);
+    assert_eq!(read_u32_le(&buf, CTRL_TYPE_OFFSET), VIRTIO_GPU_CMD_RESOURCE_CREATE_3D);
+    assert_eq!(read_u32_le(&buf, 24), TEST_RESOURCE_ID);
+    assert_eq!(read_u32_le(&buf, 28), 2);
+    assert_eq!(read_u32_le(&buf, 36), 0x55);
+    assert_eq!(read_u32_le(&buf, 40), TEST_MODE_WIDTH);
+    assert_eq!(read_u32_le(&buf, 44), TEST_MODE_HEIGHT);
+}
+
+#[test]
 fn encode_resource_lifetime_layouts() {
     let mut detach = [0u8; COMMAND_BUFFER_BYTES];
     let n = encode_resource_detach_backing(&mut detach, LIFETIME_RESOURCE_ID);

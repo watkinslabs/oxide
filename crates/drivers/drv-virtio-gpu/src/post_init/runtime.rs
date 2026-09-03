@@ -43,6 +43,19 @@ pub fn create_resource_for_key(key: virtio::VirtioChildDeviceKey, resource_id: u
     ])
 }
 
+pub fn create_resource_3d_for_key(key: virtio::VirtioChildDeviceKey, resource_id: u32,
+    fmt: u32, w: u32, h: u32, pa: u64, bytes: u64) -> bool {
+    if resource_id == 0 || w == 0 || h == 0 || bytes == 0 || bytes > u32::MAX as u64 { return false; }
+    let ctxs = ctx_lock();
+    let Some(ctx) = ctxs.iter().find(|ctx| ctx.device_key == key) else { return false };
+    if ctx.quiesced { return false; }
+    drop(ctxs);
+    runtime_queue::enqueue_ctrl(key, &[
+        RuntimeCmd::Create3d { res_id: resource_id, fmt, w, h },
+        RuntimeCmd::AttachBacking { res_id: resource_id, dma: pa, bytes: bytes as u32 },
+    ])
+}
+
 pub fn destroy_resource_for_key(key: virtio::VirtioChildDeviceKey, resource_id: u32) -> bool {
     if resource_id == 0 { return false; }
     runtime_queue::enqueue_destroy(key, resource_id)

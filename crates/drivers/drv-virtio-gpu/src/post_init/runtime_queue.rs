@@ -17,6 +17,7 @@ pub(super) enum RuntimeCmd {
     Submit3d { context_id: u32, ring_idx: u32, command_bytes: u32,
         payload: [u8; 3968] },
     Create2d { res_id: u32, fmt: u32, w: u32, h: u32 },
+    Create3d { res_id: u32, fmt: u32, w: u32, h: u32 },
     AttachBacking { res_id: u32, dma: u64, bytes: u32 },
     DetachBacking { res_id: u32 },
     Unref { res_id: u32 },
@@ -48,6 +49,8 @@ impl RuntimeCmd {
                 else { 0 }
             }
             Self::Create2d { res_id, fmt, w, h } => crate::encode_resource_create_2d(buf, res_id, fmt, w, h),
+            Self::Create3d { res_id, fmt, w, h } =>
+                crate::encode_resource_create_3d(buf, res_id, 2, fmt, 0, w, h, 1, 1, 0, 1, 0),
             Self::AttachBacking { res_id, dma, bytes } => crate::encode_resource_attach_backing_one(buf, res_id, dma, bytes),
             Self::DetachBacking { res_id } => crate::encode_resource_detach_backing(buf, res_id),
             Self::Unref { res_id } => crate::encode_resource_unref(buf, res_id),
