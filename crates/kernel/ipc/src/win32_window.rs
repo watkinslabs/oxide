@@ -488,6 +488,21 @@ mod tests {
     }
 
     #[test]
+    fn subtree_reservation_rejects_reentry_for_every_descendant_and_rolls_back() {
+        let mut manager = WindowManager::new();
+        let parent = manager.create(9, None, 0x1).unwrap();
+        let child = manager.create(9, Some(parent), 0x2).unwrap();
+        let sibling = manager.create(9, Some(parent), 0x3).unwrap();
+        assert_eq!(manager.begin_destroy(parent), Ok(true));
+        assert_eq!(manager.begin_destroy(child), Ok(false));
+        assert_eq!(manager.begin_destroy(sibling), Ok(false));
+        manager.cancel_destroy(parent);
+        assert_eq!(manager.begin_destroy(child), Ok(true));
+        manager.cancel_destroy(child);
+        assert_eq!(manager.begin_destroy(parent), Ok(true));
+    }
+
+    #[test]
     fn focus_returns_previous_window_and_routes_key_transitions() {
         let mut manager = WindowManager::new();
         let first = manager.create(9, None, 0).unwrap();
