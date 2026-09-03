@@ -464,10 +464,23 @@ fn win_bool(status: u64) -> u64 { (status == STATUS_SUCCESS) as u64 }
 fn begin_paint<F, G>(args: &[u64; 17], native: F, gdi: G) -> u64
 where F: Fn(NtService, SyscallArgs) -> u64, G: Fn(NtService, SyscallArgs) -> u64 {
     let Some(rect) = args[1].checked_add(PAINTSTRUCT_RECT_OFFSET) else { return STATUS_INVALID_PARAMETER; };
-    let hdc = gdi(NtService::CreateCompatibleDc, SyscallArgs { a0: DEFAULT_WINDOW_SURFACE_WIDTH, a1: DEFAULT_WINDOW_SURFACE_HEIGHT, a2: 0, a3: 0, a4: 0, a5: 0 });
+    let (width, height) = if args[0] == 0 {
+        (DEFAULT_WINDOW_SURFACE_WIDTH, DEFAULT_WINDOW_SURFACE_HEIGHT)
+    } else {
+        let Some(hwnd) = u32::try_from(args[0]).ok() else { return STATUS_INVALID_PARAMETER; };
+        let Some((window, _)) = crate::nt_window::window_rect_for_current(hwnd) else { return STATUS_INVALID_PARAMETER; };
+        let Some(width) = window.right.checked_sub(window.left).filter(|value| *value > 0) else { return STATUS_INVALID_PARAMETER; };
+        let Some(height) = window.bottom.checked_sub(window.top).filter(|value| *value > 0) else { return STATUS_INVALID_PARAMETER; };
+        (width as u64, height as u64)
+    };
+    let hdc = gdi(NtService::CreateCompatibleDc, SyscallArgs { a0: width, a1: height, a2: 0, a3: 0, a4: 0, a5: 0 });
     if hdc == STATUS_INVALID_PARAMETER || hdc == 0 { return hdc; }
     if native(NtService::BeginWindowPaint, SyscallArgs { a0: args[0], a1: rect, a2: 0, a3: 0, a4: 0, a5: 0 }) != STATUS_SUCCESS { let _ = gdi(NtService::DeleteGdiObject, SyscallArgs { a0: hdc, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 }); return STATUS_INVALID_PARAMETER; }
-    if uaccess::copy_to_user(args[1].saturating_add(PAINTSTRUCT_HDC_OFFSET), &hdc.to_le_bytes()).is_err() { return STATUS_INVALID_PARAMETER; }
+    if uaccess::copy_to_user(args[1].saturating_add(PAINTSTRUCT_HDC_OFFSET), &hdc.to_le_bytes()).is_err() {
+        let _ = native(NtService::EndWindowPaint, SyscallArgs { a0: args[0], a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 });
+        let _ = gdi(NtService::DeleteGdiObject, SyscallArgs { a0: hdc, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 });
+        return STATUS_INVALID_PARAMETER;
+    }
     hdc
 }
 
