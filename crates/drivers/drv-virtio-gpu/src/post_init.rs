@@ -205,6 +205,9 @@ pub use window_present::present_window_pixels;
 pub use runtime::{
     boot_scanout_res_id_for_key,
     create_scanout_from_pa_for_key,
+    create_context_for_key,
+    destroy_context_for_key,
+    attach_context_resource_for_key,
     flush_scanout_for_key,
     register_drm_hooks,
     restore_console_scanout_for_key,

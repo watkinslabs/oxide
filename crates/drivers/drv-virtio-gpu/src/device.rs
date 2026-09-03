@@ -94,6 +94,8 @@ impl VirtioGpuDev {
 }
 
 pub(crate) static DEVICES: Spinlock<Vec<VirtioGpuDev>, DriverLockClass> = Spinlock::new(Vec::new());
+#[cfg(target_os = "oxide-kernel")]
+static NEXT_CONTEXT_ID: AtomicU32 = AtomicU32::new(1);
 
 /// Surface for the kernel to install a fully-initialised device
 /// after running modern-transport bring-up + GET_DISPLAY_INFO.
@@ -196,6 +198,34 @@ impl drm::DrmDriver for VirtioGpuDrm {
     fn virtgpu_capset(&self, id: u32, version: u32) -> Option<Vec<u8>> {
         self.capsets.iter().find(|capset| capset.id == id && version <= capset.max_version)
             .map(|capset| capset.blob.clone())
+    }
+
+    fn virtgpu_context_init(&self, capset_id: u32, num_rings: u32) -> Option<u32> {
+        if self.features_negotiated & (1u64 << VIRTIO_GPU_F_VIRGL) == 0
+            || self.features_negotiated & (1u64 << VIRTIO_GPU_F_CONTEXT_INIT) == 0
+            || num_rings == 0 || num_rings > 64
+            || (capset_id != 0 && !self.capsets.iter().any(|c| c.id == capset_id)) {
+            return None;
+        }
+        #[cfg(target_os = "oxide-kernel")]
+        {
+            let key = DEVICES.lock().iter().find(|d| d.bdf == self.bdf).map(|d| d.device_key)?;
+            let id = NEXT_CONTEXT_ID.fetch_add(1, Ordering::AcqRel).max(1);
+            post_init::create_context_for_key(key, id, capset_id).then_some(id)
+        }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        { let _ = (capset_id, num_rings); None }
+    }
+
+    fn virtgpu_context_destroy(&self, context_id: u32) -> bool {
+        if context_id == 0 { return false; }
+        #[cfg(target_os = "oxide-kernel")]
+        {
+            let Some(key) = DEVICES.lock().iter().find(|d| d.bdf == self.bdf).map(|d| d.device_key) else { return false };
+            post_init::destroy_context_for_key(key, context_id)
+        }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        { let _ = context_id; false }
     }
 
     // ---- D5a read-only modeset enumeration over enabled scanouts ----
