@@ -59,7 +59,7 @@ const XSTATE_HEADER_BYTES: u64 = 64;
 const NTUSER_CLIENT_PROCS_BYTES: u64 = 18 * 8;
 const NTUSER_WORKERS_BYTES: u64 = 11 * 8;
 
-fn validate_nt_user_pfn_table(base: u64, bytes: u64) -> bool {
+pub(crate) fn validate_nt_user_pfn_table(base: u64, bytes: u64) -> bool {
     if bytes == 0 { return true; }
     let entries = bytes / 8;
     for index in 0..entries {
@@ -67,6 +67,12 @@ fn validate_nt_user_pfn_table(base: u64, bytes: u64) -> bool {
         if uaccess::get_user_u64(address).is_err() { return false; }
     }
     true
+}
+
+pub(crate) fn validate_nt_user_pfn_tables(a: u64, w: u64, workers: u64) -> bool {
+    validate_nt_user_pfn_table(a, NTUSER_CLIENT_PROCS_BYTES)
+        && validate_nt_user_pfn_table(w, NTUSER_CLIENT_PROCS_BYTES)
+        && validate_nt_user_pfn_table(workers, NTUSER_WORKERS_BYTES)
 }
 
 /// Convert the fixed Windows GUID spelling into its 16-byte little-endian ABI.
