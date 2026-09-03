@@ -1115,7 +1115,8 @@ pub fn load_pe_image(blob: &[u8], as_: &AddressSpace) -> Result<PeLoadedImage, p
 pub fn load_pe_image_with_resolver<R: ImportResolver>(blob: &[u8], as_: &AddressSpace, resolver: &R) -> Result<PeLoadedImage, pe::Error> {
     load_pe_image_with_resolver_at(blob, as_, resolver, None, 0)
 }
-fn load_pe_image_with_resolver_at<R: ImportResolver>(blob: &[u8], as_: &AddressSpace, resolver: &R, exact_base: Option<UserVirtAddr>, relay_call: u64) -> Result<PeLoadedImage, pe::Error> {
+/// Map one validated image using the shared import resolver and optional exact placement. # C: O(SizeOfImage + N_sections)
+pub fn load_pe_image_with_resolver_at<R: ImportResolver>(blob: &[u8], as_: &AddressSpace, resolver: &R, exact_base: Option<UserVirtAddr>, relay_call: u64) -> Result<PeLoadedImage, pe::Error> {
     let parsed = pe::parse(blob)?;
     // Validate callback-array termination and image-relative addresses before
     // binding or reserving anything; malformed TLS must leave no VMA behind.
