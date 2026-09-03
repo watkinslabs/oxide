@@ -3,6 +3,7 @@
 use std::io;
 use std::collections::BTreeMap;
 use syscall::nt::{NtService, NtWindowMessage, NtWindowRect};
+use windows_gdi::{Gdi, GdiError, RasterError, RasterFont, RasterSurface, Rect as GdiRect};
 
 const STATUS_NO_MORE_ENTRIES: u64 = 0x8000_001a;
 const STATUS_FAILURE_MASK: u64 = 0x8000_0000;
@@ -49,6 +50,9 @@ pub struct MenuItemInfoW {
 
 #[derive(Debug)]
 pub enum WindowError { Status(u64), Host(io::Error) }
+
+#[derive(Debug)]
+pub enum MenuRenderError { Window(WindowError), Gdi(GdiError), Raster(RasterError) }
 
 /// User32-shaped client whose state remains owned by the native NT window service.
 pub struct User32;
@@ -134,6 +138,32 @@ impl User32 {
     pub fn get_menu_item_info_w(&self, menu: u64, item: u32, by_position: bool, info: &mut MenuItemInfoW) -> Result<(), WindowError> {
         info.cb_size = MENUITEMINFO_BYTES as u32;
         invoke(NtService::WineSyscall, [WINE_THUNKED_MENU_ITEM_INFO, menu, item as u64, if by_position { MF_BYPOSITION as u64 } else { 0 }, 6, info as *mut MenuItemInfoW as u64]).map(|_| ())
+    }
+
+    /// Render a menu bar through the userspace raster owner and native GDI surface. # C: O(N_items * (N_text + pixels)) plus kernel services
+    pub fn draw_menu_bar_temp(&self, gdi: &Gdi, font: &RasterFont, dc: u64, menu: u64, rect: &mut NtWindowRect, foreground: u32, background: u32) -> Result<i32, MenuRenderError> {
+        let count = self.get_menu_item_count(menu).map_err(MenuRenderError::Window)?;
+        let mut rendered: Vec<(RasterSurface, i32)> = Vec::new();
+        let mut height = 19i32;
+        for position in 0..count {
+            let mut text = vec![0u16; 512];
+            let mut info = MenuItemInfoW { cb_size: MENUITEMINFO_BYTES as u32, f_mask: MIIM_STRING, f_type: 0, f_state: 0, w_id: 0, h_sub_menu: 0, hbmp_checked: 0, hbmp_unchecked: 0, dw_item_data: 0, dw_type_data: text.as_mut_ptr() as u64, cch: text.len() as u32, hbmp_item: 0 };
+            self.get_menu_item_info_w(menu, position as u32, true, &mut info).map_err(MenuRenderError::Window)?;
+            let length = (info.cch as usize).min(text.len());
+            let surface = font.rasterize(&text[..length], foreground, background).map_err(MenuRenderError::Raster)?;
+            height = height.max(surface.height as i32 + 2);
+            rendered.push((surface, 16));
+        }
+        rect.bottom = rect.top.saturating_add(height);
+        gdi.fill_rect(dc, GdiRect { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom }, background).map_err(MenuRenderError::Gdi)?;
+        let mut left = rect.left.saturating_add(1);
+        for (surface, padding) in rendered {
+            let top = rect.top.saturating_add((height.saturating_sub(surface.height as i32)) / 2);
+            gdi.draw_raster(dc, left.saturating_add(padding / 2), top, &surface).map_err(MenuRenderError::Gdi)?;
+            left = left.saturating_add(surface.width as i32).saturating_add(padding);
+        }
+        gdi.fill_rect(dc, GdiRect { left: rect.left, top: rect.bottom.saturating_sub(1), right: rect.right, bottom: rect.bottom }, 0x00c0_c0c0).map_err(MenuRenderError::Gdi)?;
+        Ok(height)
     }
 
     /// Create one window and return its native identifier. # C: O(1) plus kernel service
