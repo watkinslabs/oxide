@@ -127,9 +127,13 @@ pub fn dispatch(call: NtCall) -> u64 {
             crate::nt_window::register_class_for_current(&name, wndproc).unwrap_or(0)
         }
         WINE_CREATE_WINDOW_EX => {
-            let Some(class) = read_unicode_string(args[1]) else { return STATUS_INVALID_PARAMETER; };
             let Some(title) = read_optional_unicode_string(args[3]) else { return STATUS_INVALID_PARAMETER; };
-            let hwnd = crate::nt_window::create_class_window_for_current(&class, args[9]).unwrap_or(STATUS_INVALID_PARAMETER);
+            let hwnd = if args[1] <= u16::MAX as u64 {
+                crate::nt_window::create_class_window_by_atom_for_current(args[1] as u16, args[9])
+            } else {
+                let Some(class) = read_unicode_string(args[1]) else { return STATUS_INVALID_PARAMETER; };
+                crate::nt_window::create_class_window_for_current(&class, args[9])
+            }.unwrap_or(STATUS_INVALID_PARAMETER);
             if hwnd == STATUS_INVALID_PARAMETER || hwnd == 0 { return hwnd; }
             if crate::nt_window::set_window_text_for_current(hwnd, &title).is_err() {
                 let _ = native(NtService::DestroyWindow, SyscallArgs { a0: hwnd, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 });

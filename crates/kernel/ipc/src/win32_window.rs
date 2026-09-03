@@ -106,6 +106,10 @@ impl WindowManager {
     pub fn class_wndproc(&self, name: &[u16]) -> Option<u64> {
         self.classes.iter().find(|class| same_name(&class.name, name)).map(|class| class.wndproc)
     }
+    /// Resolve a registered class atom without leaving the canonical owner. # C: O(N_classes)
+    pub fn class_wndproc_by_atom(&self, atom: u16) -> Option<u64> {
+        self.classes.iter().find(|class| class.atom == atom).map(|class| class.wndproc)
+    }
     pub fn create(&mut self, owner_tid: u64, parent: Option<WindowId>, wndproc: u64) -> Result<WindowId, WindowError> {
         if parent.is_some_and(|parent| self.get(parent).is_none()) { return Err(WindowError::InvalidParent); }
         let id = WindowId(self.next);
@@ -404,6 +408,8 @@ mod tests {
         let atom = manager.register_class(&[b'N' as u16, b'o' as u16, b't' as u16], 0x1400).unwrap();
         assert_eq!(atom, 1);
         assert_eq!(manager.class_wndproc(&[b'n' as u16, b'O' as u16, b'T' as u16]), Some(0x1400));
+        assert_eq!(manager.class_wndproc_by_atom(atom), Some(0x1400));
+        assert_eq!(manager.class_wndproc_by_atom(atom + 1), None);
         assert_eq!(manager.register_class(&[b'n' as u16, b'o' as u16, b't' as u16], 0x1500), Err(WindowError::InvalidParent));
     }
 
