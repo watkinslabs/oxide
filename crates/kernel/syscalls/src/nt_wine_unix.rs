@@ -17,6 +17,7 @@ const STATUS_NO_MEMORY: u64 = 0xc000_0017;
 const STATUS_OBJECT_NAME_COLLISION: u64 = 0xc000_0035;
 const STATUS_OBJECT_NAME_NOT_FOUND: u64 = 0xc000_0034;
 const STATUS_OBJECT_TYPE_MISMATCH: u64 = 0xc000_0024;
+
 const UNW_FLAG_MASK: u32 = 0x7;
 
 const SERVER_REQ_CLOSE_HANDLE: u32 = 21;
@@ -330,13 +331,7 @@ fn validate_builtin_unwind(args: u64) -> u64 {
     if args == 0 { return STATUS_INVALID_PARAMETER; }
     let Ok(unwind_type) = uaccess::get_user_u32(args) else { return STATUS_INVALID_PARAMETER; };
     if !valid_unwind_type(unwind_type) { return STATUS_INVALID_PARAMETER; }
-    let Ok(dispatch) = uaccess::get_user_u64(args + 8) else { return STATUS_INVALID_PARAMETER; };
-    let Ok(context) = uaccess::get_user_u64(args + 16) else { return STATUS_INVALID_PARAMETER; };
-    if dispatch == 0 || context == 0 { return STATUS_INVALID_PARAMETER; }
-    // Oxide has no SO_DLLS_SUPPORTED Unix companion catalog. Match Wine's
-    // no-companion implementation: STATUS_UNSUCCESSFUL tells ntdll's
-    // virtual_unwind caller to continue with the native PE owner.
-    STATUS_UNSUCCESSFUL
+    crate::nt_wine_unwind::dispatch(args)
 }
 
 #[cfg(target_os = "oxide-kernel")]

@@ -72,6 +72,7 @@ mod nt_directory_notify;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_wine_window;
 mod nt_wine_unix;
+mod nt_wine_unwind;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_heap;
 #[cfg(target_os = "oxide-kernel")]
