@@ -188,8 +188,9 @@ impl WindowManager {
     /// Return the canonical focused window. # C: O(1)
     pub fn focused(&self) -> Option<WindowId> { self.focus }
     /// Change visibility and return the previous state. # C: O(N_windows)
-    pub fn show(&mut self, id: WindowId, visible: bool) -> Result<bool, WindowError> {
+    pub fn show(&mut self, tid: u64, id: WindowId, visible: bool) -> Result<bool, WindowError> {
         let Some((_, record)) = self.windows.iter_mut().find(|(window, _)| *window == id) else { return Err(WindowError::NoSuchWindow); };
+        if record.owner_tid != tid { return Err(WindowError::WrongThread); }
         let previous = record.visible; record.visible = visible; Ok(previous)
     }
     /// Read geometry from the canonical HWND record. # C: O(N_windows)
@@ -569,7 +570,8 @@ mod tests {
         manager.set_text(child, &[b'c' as u16, b't' as u16]).unwrap();
         assert_eq!(manager.text(child), Some(&[b'c' as u16, b't' as u16][..]));
         assert_eq!(manager.get(child).unwrap().parent, Some(parent));
-        assert_eq!(manager.show(child, true), Ok(false));
+        assert_eq!(manager.show(9, child, true), Ok(false));
+        assert_eq!(manager.show(8, child, false), Err(WindowError::WrongThread));
         assert!(manager.get(child).unwrap().visible);
         manager.destroy(child).unwrap();
         assert_eq!(manager.text(child), None);
