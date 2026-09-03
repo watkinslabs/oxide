@@ -423,4 +423,12 @@ mod tests {
         assert_eq!(WINE_DEF_WINDOW_PROC, 0x029e);
         assert_eq!(WINE_CALL_WINDOW_PROC, 0x02ab);
     }
+
+    #[test]
+    fn wine_menuiteminfo_masks_match_win32_contract() {
+        assert_eq!(crate::nt_window::MENUITEMINFO_MASK_STATE, 0x0000_0001);
+        assert_eq!(crate::nt_window::MENUITEMINFO_MASK_ID, 0x0000_0002);
+        assert_eq!(crate::nt_window::MENUITEMINFO_MASK_SUBMENU, 0x0000_0004);
+        assert_eq!(crate::nt_window::MENUITEMINFO_MASK_STRING, 0x0000_0040);
+    }
 }
