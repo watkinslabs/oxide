@@ -209,6 +209,7 @@ pub use runtime::{
     create_resource_for_key,
     destroy_context_for_key,
     destroy_resource_for_key,
+    submit_3d_for_key,
     attach_context_resource_for_key,
     flush_scanout_for_key,
     register_drm_hooks,
