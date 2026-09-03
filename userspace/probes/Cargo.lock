@@ -161,6 +161,7 @@ version = "0.1.0"
 dependencies = [
  "hal",
  "klog",
+ "pe",
 ]
 
 [[package]]
@@ -218,6 +219,7 @@ name = "windows-user32"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "support",
  "syscall",
  "windows-gdi",
 ]

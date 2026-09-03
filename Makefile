@@ -906,6 +906,20 @@ smoke-windows-notepad-x86:
 	SMOKE_ALIVE_CMD=/usr/local/bin/windows-notepad-smoke \
 	SMOKE_RX_MARKER= ./tools/boot-smoke.sh x86 $(WINDOWS_NOTEPAD_SMOKE_TIMEOUT)
 
+# Native Win32 window/message/GDI service smoke. The userspace probe is built
+# for the selected guest architecture and injected only into the disposable
+# rootfs used by this target.
+WINDOWS_UI_SMOKE_TIMEOUT ?= 900
+smoke-windows-ui-x86:
+	OXIDE_WINDOWS_UI_SMOKE=1 SMOKE_MARKER='windows-ui-smoke: PASS' SMOKE_ALIVE_MARKER='windows-ui-smoke: PASS' \
+	SMOKE_ALIVE_READY_MARKER='sh-5.2#' SMOKE_ALIVE_CMD=/usr/local/bin/windows-ui-smoke \
+	SMOKE_RX_MARKER= ./tools/boot-smoke.sh x86 $(WINDOWS_UI_SMOKE_TIMEOUT)
+smoke-windows-ui-arm:
+	OXIDE_WINDOWS_UI_SMOKE=1 SMOKE_MARKER='windows-ui-smoke: PASS' SMOKE_ALIVE_MARKER='windows-ui-smoke: PASS' \
+	SMOKE_ALIVE_READY_MARKER='sh-5.2#' SMOKE_ALIVE_CMD=/usr/local/bin/windows-ui-smoke \
+	SMOKE_RX_MARKER= ./tools/boot-smoke.sh arm $(WINDOWS_UI_SMOKE_TIMEOUT)
+smoke-windows-ui: smoke-windows-ui-x86 smoke-windows-ui-arm
+
 KBD_LOGIN_SMOKE_TIMEOUT ?= 600
 smoke-kbd-login-x86: x86
 	./tools/boot-smoke-kbd-login.sh x86 $(KBD_LOGIN_SMOKE_TIMEOUT)
