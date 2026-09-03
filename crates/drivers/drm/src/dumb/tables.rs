@@ -5,6 +5,7 @@ use super::math::DUMB_PAGE_SIZE;
 pub struct DumbBuf {
     pub card_id: u32,
     pub handle: u32,
+    pub resource_id: u32,
     pub owner_token: u64,
     pub pa: u64,
     pub size: u64,
@@ -275,7 +276,7 @@ pub fn bind_fb_scanout_resource(card_id: u32, fb_id: u32, res_id: u32) -> bool {
     true
 }
 
-pub(super) fn free_buf_pages(pa: u64, order: u8) {
+pub(crate) fn free_buf_pages(pa: u64, order: u8) {
     // Reached only from `close_handle` handing back the run after the LAST
     // handle and mmap reference went away.
     // SAFETY: `pa`/`order` name the `alloc_contig_object` run this dumb buffer

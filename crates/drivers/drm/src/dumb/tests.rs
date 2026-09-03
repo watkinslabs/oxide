@@ -82,7 +82,7 @@ fn format_gate() {
 fn fb_plane_bounds_validation() {
     let buf = DumbBuf {
         card_id: 0,
-        handle: 1,
+        handle: 1, resource_id: 0,
         owner_token: 0,
         pa: 0x10_0000,
         size: 4096,
@@ -124,7 +124,7 @@ fn table_insert_lookup_ref_unref() {
     let mut t = DumbTables::new();
     t.insert_buf(DumbBuf {
         card_id: 0,
-        handle: 1,
+        handle: 1, resource_id: 0,
         owner_token: 0,
         pa: 0x10_0000,
         size: 4096,
@@ -219,7 +219,7 @@ fn reset_global_tables() {
 fn insert_global_buf(size: u64) {
     TABLES.lock().insert_buf(DumbBuf {
         card_id: 0,
-        handle: 1,
+        handle: 1, resource_id: 0,
         owner_token: 0,
         pa: 0x10_0000,
         size,
@@ -379,7 +379,7 @@ fn card_state_isolated() {
     let mut t = DumbTables::new();
     t.insert_buf(DumbBuf {
         card_id: 0,
-        handle: 1,
+        handle: 1, resource_id: 0,
         owner_token: 0,
         pa: 0x10_0000,
         size: 4096,
@@ -394,7 +394,7 @@ fn card_state_isolated() {
     });
     t.insert_buf(DumbBuf {
         card_id: 1,
-        handle: 1,
+        handle: 1, resource_id: 0,
         owner_token: 0,
         pa: 0x20_0000,
         size: 4096,
@@ -449,7 +449,7 @@ fn card_remove_returns_scanout_resources() {
     let mut t = DumbTables::new();
     t.insert_buf(DumbBuf {
         card_id: 0,
-        handle: 1,
+        handle: 1, resource_id: 0,
         owner_token: 0,
         pa: 0x10_0000,
         size: 4096,
