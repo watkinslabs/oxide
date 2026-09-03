@@ -79,8 +79,6 @@ pub unsafe fn init(info: &BootInfo) {
     debug_sched_smokes();
     debug_pf_smoke();
 
-    // SAFETY: PMM up; HHDM offset known; single-CPU pre-init.
-    unsafe { pmm::user_as::init(info.hhdm_offset); }
     // SAFETY: PMM, MMU/HHDM and page-table allocation are live; the retained
     // FDT extent remains reserved for kernel life.
     unsafe { firmware_clock::init(info); }
@@ -412,6 +410,17 @@ fn init_pmm_and_arch(info: &BootInfo) {
         // the user-map smoke on the aarch64 walker.
         #[cfg(all(target_arch = "aarch64", feature = "debug-vmm"))]
         unsafe { smoke::user_map::run::<hal_aarch64::mmu_ops::ArmMmu>(); }
+
+        // The global user address space is created only after the selected
+        // architecture has published its HHDM and page-table-frame hooks and
+        // after the shared kernel-stack window has been installed.  Its
+        // constructor clones the live kernel half; running it before those
+        // hooks made the first root allocation return without publishing an
+        // address space, leaving later PE tasks to build roots from a
+        // different mapping state.
+        // SAFETY: PMM, HHDM, page-table allocation, and the shared kstack
+        // mapping are live; this remains single-CPU pre-scheduler init.
+        unsafe { pmm::user_as::init(info.hhdm_offset); }
     }
 }
 
