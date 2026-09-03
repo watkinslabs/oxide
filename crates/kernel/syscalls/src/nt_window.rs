@@ -99,8 +99,11 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
                     let Some(window) = ipc::win32_window::WindowId::from_raw(hwnd as u32) else { return Some(STATUS_INVALID_HANDLE); };
                     if let Some(record) = state.get(window) {
                         if record.wndproc != 0 {
+                            let reserved = match state.begin_destroy(window) { Ok(value) => value, Err(_) => return Some(STATUS_INVALID_HANDLE) };
+                            if !reserved { return Some(STATUS_SUCCESS); }
                             let callback = crate::nt_rtl::begin_wndproc_callback_with_completion(hwnd, WM_DESTROY, 0, 0, record.wndproc, sched::nt_callback::Completion { kind: CALLBACK_DESTROY, argument: hwnd });
                             if callback == STATUS_PENDING { return Some(callback); }
+                            state.cancel_destroy(window);
                             if callback != STATUS_NOT_SUPPORTED { return Some(STATUS_INVALID_HANDLE); }
                         }
                     }
