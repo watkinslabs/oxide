@@ -66,7 +66,7 @@ pub fn service_task_timers(t: &crate::Task, now_ns: u64) -> u64 {
     // (`SCHED_FLAG_DL_OVERRUN`) has one latch per overrun; taking it here posts
     // the SIGXCPU through the same process-directed enqueue as the CPU-time
     // limits, and coalesces repeated overruns into one signal.
-    if t.dl.take_overrun() { due |= Signum::Sigxcpu.bit(); }
+    if t.sched.dl.take_overrun() { due |= Signum::Sigxcpu.bit(); }
     due
 }
 

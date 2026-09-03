@@ -42,8 +42,7 @@ impl Task {
     /// # C: O(1)
     pub fn lift_vruntime(&self, floor: u64) {
         self.debug_check_canary("lift_vruntime");
-        let cur = self.vruntime.load(Ordering::Acquire);
-        if cur < floor { self.vruntime.store(floor, Ordering::Release); }
+        let cur = self.sched.se.vruntime.load(Ordering::Acquire);
+        if cur < floor { self.sched.se.vruntime.store(floor, Ordering::Release); }
     }
 }
-

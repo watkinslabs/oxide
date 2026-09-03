@@ -35,13 +35,13 @@ impl Task {
     /// describes the interval since the previous boundary, not the instant at
     /// which this function is called.
     pub(crate) fn update_util(&self, now_ns: u64, running: bool) -> u32 {
-        let last = self.util_last_update_ns.swap(now_ns, Ordering::AcqRel);
+        let last = self.sched.se.avg_last_update_time.swap(now_ns, Ordering::AcqRel);
         if last == 0 || now_ns <= last {
-            return self.util_avg.load(Ordering::Acquire);
+            return self.sched.se.avg_util.load(Ordering::Acquire).min(u32::MAX as u64) as u32;
         }
-        let next = update_value(self.util_avg.load(Ordering::Acquire) as u64,
+        let next = update_value(self.sched.se.avg_util.load(Ordering::Acquire) as u64,
                                 now_ns - last, running);
-        self.util_avg.store(next, Ordering::Release);
+        self.sched.se.avg_util.store(next as u64, Ordering::Release);
         next
     }
 

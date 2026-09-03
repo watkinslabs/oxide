@@ -15,6 +15,7 @@
 // - pidfd: exact identity acquisition, reap ordering, reuse, and readiness.
 // - prctl: PR_SET_NAME/PR_GET_NAME comm rename + PR_SET_DUMPABLE/GET_DUMPABLE.
 // - queues: RT/CFS/runqueue scheduling invariants and pick/remove behavior.
+// - sched_state_ownership: sole task scheduler-state declaration/access guard.
 // - task: Task construction, state, identity, and proc-facing task helpers.
 // - procfs: argv/cmdline, tid registry, process-group, and pid-visibility helpers.
 // - registry: tid/vpid BTreeMap index correctness, scale, and concurrency (B1429).
@@ -52,6 +53,7 @@ mod ptrace_dumpable;
 mod rt_tick_policy;
 mod procfs;
 mod queues;
+mod sched_state_ownership;
 mod registry;
 mod rlimit_cpu;
 mod rlimit_prio;

@@ -13,7 +13,7 @@ use super::*;
 /// round-trip through `sched_getscheduler` instead of collapsing onto the
 /// class that implements them.
 /// # C: O(1)
-pub fn task_policy(t: &sched::Task) -> u32 { t.policy.load(Ordering::Acquire) }
+pub fn task_policy(t: &sched::Task) -> u32 { t.priority_snapshot().policy.code() }
 
 /// Linux `p->rt_priority`: the RT priority, 0 for every non-RT policy.
 ///
@@ -23,9 +23,7 @@ pub fn task_policy(t: &sched::Task) -> u32 { t.policy.load(Ordering::Acquire) }
 /// for, and feeding it back into `sched_setscheduler` would make the borrowed
 /// priority permanent.
 /// # C: O(1)
-pub fn task_rt_priority(t: &sched::Task) -> u32 {
-    match sched::pi_prio::base_class(t) { sched::SchedClass::Rt { prio, .. } => prio as u32, _ => 0 }
-}
+pub fn task_rt_priority(t: &sched::Task) -> u32 { t.priority_snapshot().rt_priority as u32 }
 
 /// Linux `p->se.slice` — the CFS slice `sched_getattr` reports in
 /// `sched_runtime` and `sched_setattr` sets from it (`__setparam_fair`).
@@ -33,24 +31,23 @@ pub fn task_rt_priority(t: &sched::Task) -> u32 {
 /// as `sysctl_sched_base_slice`.
 /// # C: O(1)
 pub fn task_slice_ns(t: &sched::Task) -> u64 {
-    match t.sched_slice_ns.load(Ordering::Acquire) { 0 => SCHED_BASE_SLICE_NS, v => v }
+    match t.sched_entity_snapshot().slice { 0 => SCHED_BASE_SLICE_NS, v => v }
 }
 
 /// Linux `p->uclamp_req[UCLAMP_MIN]` / `[UCLAMP_MAX]`.
 /// # C: O(1)
 pub fn uclamp_req(t: &sched::Task) -> (UclampSe, UclampSe) {
-    let ud = t.uclamp_user_defined.load(Ordering::Acquire);
-    (UclampSe { value: t.uclamp_min.load(Ordering::Acquire), user_defined: ud & 1 != 0 },
-     UclampSe { value: t.uclamp_max.load(Ordering::Acquire), user_defined: ud & 2 != 0 })
+    let req = t.sched_uclamp_snapshot();
+    (UclampSe { value: req.min(), user_defined: req.user_defined() & 1 != 0 },
+     UclampSe { value: req.max(), user_defined: req.user_defined() & 2 != 0 })
 }
 
 /// Store back a `uclamp_req` pair after `__setscheduler_uclamp`.
 /// # C: O(1)
-pub(super) fn set_uclamp_req(t: &sched::Task, min: UclampSe, max: UclampSe) {
-    t.uclamp_min.store(min.value, Ordering::Release);
-    t.uclamp_max.store(max.value, Ordering::Release);
+pub(super) fn make_uclamp_req(min: UclampSe, max: UclampSe) -> sched::SchedUclamp {
     let ud = (min.user_defined as u8) | ((max.user_defined as u8) << 1);
-    t.uclamp_user_defined.store(ud, Ordering::Release);
+    sched::SchedUclamp::new(min.value, max.value, ud)
+        .expect("validated sched_attr must produce a canonical clamp pair")
 }
 
 /// Linux `is_nice_reduction()`: is `nice` within the target's `RLIMIT_NICE`
@@ -77,7 +74,7 @@ pub fn check_same_owner(caller: &sched::Task, target: &sched::Task) -> bool {
 pub fn user_check(caller: &sched::Task, target: &sched::Task,
                   policy: u32, nice: i32, prio: u32, reset_on_fork: bool) -> i64 {
     let mut req_priv = false;
-    let target_nice = target.nice.load(Ordering::Acquire) as i32;
+    let target_nice = target.nice_value() as i32;
 
     if fair_policy(policy) && nice < target_nice && !is_nice_reduction(target, nice) { req_priv = true; }
 
@@ -101,7 +98,7 @@ pub fn user_check(caller: &sched::Task, target: &sched::Task,
     if !check_same_owner(caller, target) { req_priv = true; }
 
     // Normal users shall not reset the sched_reset_on_fork flag.
-    if target.sched_reset_on_fork.load(Ordering::Acquire) && !reset_on_fork { req_priv = true; }
+    if target.priority_snapshot().reset_on_fork && !reset_on_fork { req_priv = true; }
 
     if req_priv && !caller.has_cap(sched::cap::SYS_NICE) { return err(Errno::Eperm); }
     0
@@ -120,11 +117,11 @@ pub fn user_check(caller: &sched::Task, target: &sched::Task,
 pub fn get_params(t: &sched::Task, attr: &mut SchedAttr, dynamic: bool) {
     let policy = task_policy(t);
     if dl_policy(policy) {
-        let p = t.dl.params();
+        let p = t.sched_deadline_params();
         attr.priority = task_rt_priority(t);
         attr.period = p.period;
         if dynamic {
-            let s = t.dl.sched();
+            let s = t.sched_deadline_state();
             attr.runtime = s.runtime as u64;
             attr.deadline = s.deadline;
         } else {
@@ -138,7 +135,7 @@ pub fn get_params(t: &sched::Task, attr: &mut SchedAttr, dynamic: bool) {
     } else if rt_policy(policy) {
         attr.priority = task_rt_priority(t);
     } else {
-        attr.nice = t.nice.load(Ordering::Acquire) as i32;
+        attr.nice = t.nice_value() as i32;
         attr.runtime = task_slice_ns(t);
     }
 }

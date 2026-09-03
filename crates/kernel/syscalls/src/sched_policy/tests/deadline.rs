@@ -34,11 +34,11 @@ fn a_privileged_deadline_request_is_admitted_and_committed() {
     assert_eq!(task_policy(&t), SCHED_DEADLINE);
     assert!(matches!(t.sched_class(), SchedClass::Deadline));
     // The reservation is live: a full budget against a deadline in the future.
-    let p = t.dl.params();
+    let p = t.sched_deadline_params();
     assert_eq!(p.runtime, 1_000_000);
     assert_eq!(p.deadline, 10_000_000);
     assert_eq!(p.period, 10_000_000);
-    assert_eq!(t.dl.sched().runtime, 1_000_000);
+    assert_eq!(t.sched_deadline_state().runtime, 1_000_000);
     // ... and it is booked against the machine.
     assert_eq!(sched::deadline::bw::DL_BW.total_bw(), p.bw);
 }
@@ -70,9 +70,9 @@ fn the_dynamic_getattr_flag_reports_the_live_instance_not_the_reservation() {
     let t = normal(2, 0);
     assert_eq!(setattr(&caller, &t, &dl(1_000_000, 10_000_000, 10_000_000)), 0);
     // Burn half the instance.
-    let mut s = t.dl.sched();
+    let mut s = t.sched_deadline_state();
     s.runtime = 400_000;
-    t.dl.store_sched(&s);
+    t.test_set_sched_deadline_state(&s);
 
     let mut stat = SchedAttr::default();
     get_params(&t, &mut stat, false);
@@ -129,7 +129,7 @@ fn leaving_the_class_returns_the_bandwidth_to_the_machine() {
     // Back to a fair policy: the booking is released, and the entity is inert.
     assert_eq!(setscheduler(&caller, &a, SCHED_NORMAL as i32, 0, 0), 0);
     assert_eq!(sched::deadline::bw::DL_BW.total_bw(), 0);
-    assert_eq!(a.dl.params().runtime, 0);
+    assert_eq!(a.sched_deadline_params().runtime, 0);
     // ... so the next task of the same size fits.
     let b = normal(3, 0);
     assert_eq!(setattr(&caller, &b, &dl(9_000_000, 10_000_000, 10_000_000)), 0);
@@ -144,7 +144,7 @@ fn re_issuing_the_same_reservation_never_fails_on_capacity() {
     // Fill the machine, then ask for exactly what is already held.
     assert_eq!(setattr(&caller, &a, &dl(10_000_000, 10_000_000, 10_000_000)), 0);
     assert_eq!(setattr(&caller, &a, &dl(10_000_000, 10_000_000, 10_000_000)), 0);
-    assert_eq!(sched::deadline::bw::DL_BW.total_bw(), a.dl.params().bw);
+    assert_eq!(sched::deadline::bw::DL_BW.total_bw(), a.sched_deadline_params().bw);
 }
 
 #[test]
@@ -157,7 +157,7 @@ fn shrinking_a_reservation_is_judged_against_the_bandwidth_already_held() {
     // The machine is full, but this task owns all of it: asking for LESS must
     // succeed. Judged as a fresh reservation it would be refused.
     assert_eq!(setattr(&caller, &a, &dl(5_000_000, 10_000_000, 10_000_000)), 0);
-    assert_eq!(sched::deadline::bw::DL_BW.total_bw(), a.dl.params().bw);
+    assert_eq!(sched::deadline::bw::DL_BW.total_bw(), a.sched_deadline_params().bw);
 }
 
 #[test]
@@ -228,23 +228,24 @@ fn a_deadline_parent_cannot_fork() {
 #[test]
 fn reset_on_fork_is_how_a_deadline_task_forks() {
     let parent = task(1, 0, SchedClass::Deadline, SCHED_DEADLINE);
-    parent.sched_reset_on_fork.store(true, Ordering::Release);
+    parent.set_sched_reset_on_fork(true);
     assert!(!sched::live::sched_fork::dl_fork_refused(&parent));
 }
 
 #[test]
 fn a_deadline_child_is_a_plain_fair_task_carrying_no_reservation() {
     let parent = task(1, 0, SchedClass::Deadline, SCHED_DEADLINE);
-    parent.dl.set_params(&sched::DlParams::from_request(1_000_000, 10_000_000, 10_000_000, 0));
-    parent.sched_reset_on_fork.store(true, Ordering::Release);
-    let child = normal(2, 0);
-    sched::live::sched_fork::inherit_sched_params(&child, &parent);
+    parent.test_set_sched_deadline_params(&sched::DlParams::from_request(
+        1_000_000, 10_000_000, 10_000_000, 0));
+    parent.set_sched_reset_on_fork(true);
+    let mut child = sched::Task::new(2, "sched-policy-test", SchedClass::Normal { weight: 1024 });
+    sched::live::sched_fork::inherit_sched_params(&mut child, &parent);
     assert_eq!(task_policy(&child), SCHED_NORMAL);
     assert!(matches!(child.sched_class(), SchedClass::Normal { .. }));
-    assert_eq!(child.dl.params().runtime, 0, "no reservation is inherited");
-    assert_eq!(child.dl.bw(), 0);
-    assert_eq!(child.nice.load(Ordering::Acquire), 0);
-    assert!(!child.sched_reset_on_fork.load(Ordering::Acquire));
+    assert_eq!(child.sched_deadline_params().runtime, 0, "no reservation is inherited");
+    assert_eq!(child.sched_deadline_bw(), 0);
+    assert_eq!(child.nice_value(), 0);
+    assert!(!child.priority_snapshot().reset_on_fork);
     // The parent keeps its own reservation.
-    assert_eq!(parent.dl.params().runtime, 1_000_000);
+    assert_eq!(parent.sched_deadline_params().runtime, 1_000_000);
 }

@@ -32,8 +32,9 @@ scheduler-owned priority; no ABI/controller stores a competing result.
    policy uses idle weight. Group shares and task load never overwrite each other.
 5. PI leaves configured/base state unchanged and folds one top donor into
    effective priority/class. Fork starts from normal state, never a PI result.
-6. Runtime/entity tuples are runqueue-locked. Several independent atomics are
-   not a coherent replacement.
+6. Configured/normal/effective observer snapshots use one generation-checked
+   publication. Runtime/entity tuples and scheduler decisions are runqueue-locked;
+   several independent atomics are not a coherent replacement for either rule.
 7. Owning links point down; back-links from entities/runqueues to groups are
    weak/non-owning, so the graph has no reference cycle.
 
@@ -71,7 +72,11 @@ pub struct TaskSched {
 
 `OnRq` is Off, Queued, or Migrating. `Task::pi_lock` serializes this state with
 wakeup, PI, affinity, and migration. Task lifecycle may expose documented atomic
-state observations, but scheduling decisions use the locked tuple.
+state observations through a versioned snapshot: readers retry an odd or changed
+generation, and writers publish the whole configured/normal/effective tuple while
+holding `pi_lock`. This observer protocol does not replace the stable runqueue lock
+for scheduling decisions, live reweight, queue placement, PI recomputation, or
+runtime/entity state.
 
 Linux constants and projections are exact:
 
@@ -408,8 +413,9 @@ the configured separation entry and adds separation to eligible Unwait boosts.
 
 ## 9
 
-Every view consumes one scheduler snapshot under `pi_lock` and, for runtime or
-entity fields, the stable runqueue lock. Linux nice is
+Configuration-only views consume one generation-checked scheduler snapshot;
+writers hold `pi_lock` across its publication. Runtime/entity views and scheduler
+decisions additionally use the stable runqueue lock. Linux nice is
 `PRIO_TO_NICE(static_prio)`, `task_prio` is effective Linux priority minus
 `MAX_RT_PRIO`, and RT priority/policy are requested fields. Proc stat fields 18,
 19, 40, and 41, proc sched, coredump, and I/O-priority fallback use these
@@ -431,7 +437,8 @@ affinity queries read their canonical configuration owner.
 
 | State | Lock/read protocol |
 |---|---|
-| task priority/entity/affinity/group cache | TaskPi then stable Runqueue |
+| configured/normal/effective observer view | generation-checked snapshot |
+| task priority mutation/entity/affinity/group cache | TaskPi then stable Runqueue |
 | PI waiter state | RTMutexWait then TaskPi then Runqueue |
 | `cfs_rq`, class queues, entity runtime | owning Runqueue |
 | task-group shares/bandwidth | group lock then one Runqueue at a time |

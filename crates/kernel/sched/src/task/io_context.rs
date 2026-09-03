@@ -5,7 +5,6 @@
 
 extern crate alloc;
 use alloc::sync::Arc;
-use core::sync::atomic::Ordering;
 
 use crate::ioprio::IoContext;
 use crate::Task;
@@ -37,10 +36,10 @@ impl Task {
     /// `ioprio_get` reports for the group and user target sets.
     /// # C: O(1); # Lk: Task
     pub fn effective_ioprio(&self) -> i32 {
-        let policy = self.policy.load(Ordering::Acquire);
+        let policy = self.sched_policy_code();
         crate::ioprio::effective(
             self.raw_ioprio(),
-            self.nice.load(Ordering::Acquire) as i32,
+            self.nice_value() as i32,
             policy == crate::sched_enc::SCHED_IDLE,
             self.is_rt_or_dl_policy(),
         )

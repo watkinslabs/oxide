@@ -353,6 +353,12 @@ pub fn set_class(task: &Arc<Task>, new: crate::SchedClass) {
     super::rq_locate::set_class_with(&|cpu| unsafe { global_for(cpu) }, task, new);
 }
 
+/// Requeue after a configured-state transaction already selected the
+/// effective class. # C: O(N_cpus · log N)
+pub fn requeue_current_class(task: &Arc<Task>) {
+    super::rq_locate::requeue_current_class_with(&|cpu| unsafe { global_for(cpu) }, task);
+}
+
 /// Linux `task_tick_rt`'s peer test, resolved against the runqueue the task is
 /// actually on. Used by the periodic tick to decide whether an exhausted
 /// `SCHED_RR` quantum should yield the CPU.

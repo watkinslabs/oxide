@@ -84,6 +84,9 @@ pub enum SchedClass {
     Idle,
 }
 
+#[derive(Copy, Clone)]
+pub struct SchedUclamp;
+
 impl SchedClass {
     /// Same packing as the production `sched_enc.rs`; the REAL `pi_boost`
     /// round-trips a saved base class through it.
@@ -119,11 +122,12 @@ impl SchedClass {
 #[path = "../../../sched/src/live/pi_boost.rs"] pub mod pi_boost;
 
 /// Stand-in for `sched::live::runqueue`, the only thing `pi_boost` needs:
-/// production dequeues, rewrites `class_enc`, and re-enqueues; the class write
-/// is the observable half and is what the tests assert on.
+/// production dequeues, rewrites effective state, and re-enqueues; the class
+/// write is the observable half and is what the tests assert on.
 pub mod runqueue {
     use super::*;
     pub fn set_class(task: &Arc<Task>, new: SchedClass) { task.set_sched_class(new); }
+    pub fn requeue_current_class(_task: &Arc<Task>) {}
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
@@ -164,20 +168,14 @@ impl RestartBlockMock {
     }
 }
 
-/// `u64::MAX` = not boosted. Production semantics.
-pub struct TaskSecurity {
-    pub pi_base_class: AtomicU64,
-}
-
 pub struct Task {
     pub tid: u32,
     pub futex_uaddr: AtomicU64,
     pub wakeup_deadline_ns: AtomicU64,
     pub restart_block: RestartBlockMock,
-    /// Encoded `SchedClass` — the EFFECTIVE class, exactly as production.
-    pub class_enc: AtomicU64,
-    /// Mirrors the production split of per-task security state.
-    pub security: TaskSecurity,
+    /// Configured class and PI-adjusted class are independent scheduler state.
+    normal_class: std::sync::RwLock<SchedClass>,
+    effective_class: std::sync::RwLock<SchedClass>,
     state: AtomicU8,
     signal_pending: AtomicBool,
     has_mm: AtomicBool,
@@ -193,8 +191,8 @@ impl Task {
             futex_uaddr: AtomicU64::new(0),
             wakeup_deadline_ns: AtomicU64::new(0),
             restart_block: RestartBlockMock::default(),
-            class_enc: AtomicU64::new(class.encode()),
-            security: TaskSecurity { pi_base_class: AtomicU64::new(u64::MAX) },
+            normal_class: std::sync::RwLock::new(class),
+            effective_class: std::sync::RwLock::new(class),
             state: AtomicU8::new(0),
             signal_pending: AtomicBool::new(false),
             has_mm: AtomicBool::new(true),
@@ -202,8 +200,21 @@ impl Task {
             thread: std::sync::OnceLock::new(),
         }
     }
-    pub fn sched_class(&self) -> SchedClass { SchedClass::decode(self.class_enc.load(Ordering::Acquire)) }
-    pub fn set_sched_class(&self, c: SchedClass) { self.class_enc.store(c.encode(), Ordering::Release); }
+    pub fn sched_class(&self) -> SchedClass { *self.effective_class.read().unwrap() }
+    pub fn normal_sched_class(&self) -> SchedClass { *self.normal_class.read().unwrap() }
+    pub fn sched_is_boosted(&self) -> bool { self.sched_class() != self.normal_sched_class() }
+    pub fn set_sched_class(&self, c: SchedClass) { *self.effective_class.write().unwrap() = c; }
+    pub fn restore_normal_sched_class(&self) { self.set_sched_class(self.normal_sched_class()); }
+    pub fn set_normal_sched_class(&self, c: SchedClass) { *self.normal_class.write().unwrap() = c; }
+    pub fn set_normal_sched_class_policy(&self, c: SchedClass, _policy: u32) {
+        let unboosted = self.sched_class() == self.normal_sched_class();
+        self.set_normal_sched_class(c);
+        if unboosted { self.set_sched_class(c); }
+    }
+    pub fn set_sched_policy_controls(&self, c: SchedClass, policy: u32,
+                                     _clamp: SchedUclamp, _reset: bool) {
+        self.set_normal_sched_class_policy(c, policy);
+    }
     pub fn set_state(&self, s: TaskState) {
         self.state.store(match s { TaskState::Runnable => 0, TaskState::Sleeping => 1, TaskState::Zombie => 2 },
                          Ordering::Release);

@@ -71,7 +71,7 @@ pub fn task_slack_ns(task: &Task) -> u64 { task.security.timer_slack_ns.load(Ord
 pub fn select_estimate_accuracy(deadline_ns: u64) -> u64 {
     let Some(cur) = crate::live::current() else { return 0 };
     estimate_accuracy(deadline_ns.saturating_sub(now_ns()), task_slack_ns(cur),
-        cur.nice.load(Ordering::Relaxed) > 0)
+        cur.nice_value() > 0)
 }
 
 /// Arm `task`'s wait expiry at `soft_ns`, allowing it to fire as late as

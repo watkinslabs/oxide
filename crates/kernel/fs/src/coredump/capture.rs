@@ -159,7 +159,7 @@ pub unsafe fn build_image(
             sigpend: sched::live::sigpend::all_pending(&cur),
             sighold: cur.sigmask.load(Ordering::Acquire),
             state: CoreState::Running,
-            nice: cur.nice.load(Ordering::Acquire),
+            nice: cur.nice_value(),
             flag: 0,
             comm: &cx.comm, psargs: &psargs,
             times: CoreTimes {

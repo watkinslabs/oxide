@@ -107,12 +107,12 @@ fn held_rank_is_per_cpu_and_restores_the_outer_lock() {
         let me = crate::test_serial::pinned(0);
         set_cpu(me);
         let outer: Spinlock<u32, crate::TaskList> = Spinlock::new(0);
-        let inner: Spinlock<u32, crate::TaskWake> = Spinlock::new(0);
+        let inner: Spinlock<u32, crate::TaskPi> = Spinlock::new(0);
         let _outer = outer.lock();
         assert_eq!(held_rank(), crate::TaskList::rank());
         {
             let _inner = inner.lock();
-            assert_eq!(held_rank(), crate::TaskWake::rank());
+            assert_eq!(held_rank(), crate::TaskPi::rank());
         }
         assert_eq!(held_rank(), crate::TaskList::rank());
 

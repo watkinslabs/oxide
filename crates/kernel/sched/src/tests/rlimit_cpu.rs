@@ -19,7 +19,7 @@ fn burn_cpu_secs(t: &crate::Task, secs: u64) {
 fn an_unlimited_task_is_never_signalled() {
     let t = normal(1, 0, 1024);
     burn_cpu_secs(&t, 10_000);
-    t.rt_timeout_ns.store(u64::MAX / 2, Ordering::Release);
+    t.sched.rt.timeout.store(u64::MAX / 2, Ordering::Release);
     assert_eq!(check_cpu_rlimits(&t), 0);
 }
 
@@ -74,13 +74,13 @@ fn rlimit_cpu_samples_the_whole_thread_group_not_one_thread() {
 fn rttime_is_per_thread_and_denominated_in_microseconds() {
     let t = normal(6, 0, 1024);
     t.set_rlimit(rlim::RTTIME, (US_PER_SEC, 3 * US_PER_SEC));
-    t.rt_timeout_ns.store(NS_PER_SEC - 1_000, Ordering::Release);
+    t.sched.rt.timeout.store(NS_PER_SEC - 1_000, Ordering::Release);
     assert_eq!(check_cpu_rlimits(&t), 0);
-    t.rt_timeout_ns.store(NS_PER_SEC, Ordering::Release);
+    t.sched.rt.timeout.store(NS_PER_SEC, Ordering::Release);
     assert_eq!(check_cpu_rlimits(&t), Signum::Sigxcpu.bit());
     // The soft limit steps by one second, expressed in microseconds.
     assert_eq!(t.rlimit(rlim::RTTIME), (2 * US_PER_SEC, 3 * US_PER_SEC));
-    t.rt_timeout_ns.store(3 * NS_PER_SEC, Ordering::Release);
+    t.sched.rt.timeout.store(3 * NS_PER_SEC, Ordering::Release);
     assert_eq!(check_cpu_rlimits(&t), Signum::Sigkill.bit());
 }
 
@@ -90,6 +90,6 @@ fn both_limits_can_fire_in_one_pass() {
     t.set_rlimit(rlim::CPU, (1, INFINITY));
     t.set_rlimit(rlim::RTTIME, (US_PER_SEC, US_PER_SEC));
     burn_cpu_secs(&t, 1);
-    t.rt_timeout_ns.store(NS_PER_SEC, Ordering::Release);
+    t.sched.rt.timeout.store(NS_PER_SEC, Ordering::Release);
     assert_eq!(check_cpu_rlimits(&t), Signum::Sigxcpu.bit() | Signum::Sigkill.bit());
 }

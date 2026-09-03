@@ -35,8 +35,8 @@ impl CfsRunqueue {
 
     /// Sum the current entity signals for the CPU utilization hook.
     pub fn util_avg(&self) -> u32 {
-        self.tree.values().map(|task| task.util_avg.load(Ordering::Acquire))
-            .fold(0, u32::saturating_add)
+        self.tree.values().map(|task| task.sched.se.avg_util.load(Ordering::Acquire))
+            .fold(0u64, u64::saturating_add).min(u32::MAX as u64) as u32
     }
 
     /// `min_vruntime` is the leftmost task's vruntime per `13§3`.
@@ -58,7 +58,7 @@ impl CfsRunqueue {
     pub fn enqueue(&mut self, task: Arc<Task>) {
         debug_assert!(matches!(task.sched_class(), SchedClass::Normal { .. }),
             "CfsRunqueue::enqueue: non-Normal task");
-        let v = task.vruntime.load(Ordering::Acquire);
+        let v = task.sched.se.vruntime.load(Ordering::Acquire);
         let key = (v, task.tid);
         let prev = self.tree.insert(key, task);
         debug_assert!(prev.is_none(), "duplicate (vruntime,tid) in CFS tree");

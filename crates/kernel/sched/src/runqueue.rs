@@ -55,7 +55,8 @@ impl RunqueueInner {
     pub fn util_avg(&self, current: &Task) -> u32 {
         self.dl.util_avg().saturating_add(self.rt.util_avg())
             .saturating_add(self.cfs.util_avg())
-            .saturating_add(current.util_avg.load(core::sync::atomic::Ordering::Acquire))
+            .saturating_add(current.sched.se.avg_util.load(core::sync::atomic::Ordering::Acquire)
+                .min(u32::MAX as u64) as u32)
             .min(1024)
     }
 

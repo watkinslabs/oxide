@@ -63,7 +63,7 @@ pub struct Phase(usize, u64, u64);
 /// across the span means the span slept. # C: O(1)
 fn exec_ns() -> u64 {
     match sched::live::current() {
-        Some(t) => t.sum_exec_runtime_ns.load(Ordering::Relaxed),
+        Some(t) => t.sched_entity_snapshot().sum_exec_runtime,
         None => 0,
     }
 }

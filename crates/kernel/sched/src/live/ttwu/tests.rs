@@ -23,7 +23,7 @@
 use super::*;
 use crate::TaskState;
 use crate::task::{SchedClass, SchedPolicy};
-use crate::sched_enc::{SCHED_BATCH, SCHED_FIFO, SCHED_IDLE, SCHED_NORMAL};
+use crate::sched_enc::{SCHED_BATCH, SCHED_IDLE, SCHED_NORMAL};
 use alloc::vec::Vec;
 
 mod current;
@@ -98,14 +98,15 @@ fn make_current(rq: &Runqueue, t: &Arc<Task>, cpu: u32) {
 
 fn fifo_task(tid: u32, prio: u8) -> Arc<Task> {
     let t = Arc::new(Task::new(tid, "rt", SchedClass::Rt { prio, policy: SchedPolicy::Fifo }));
-    t.policy.store(SCHED_FIFO, Ordering::Release);
     t
 }
 
 fn fair_task(tid: u32, policy: u32, vruntime: u64) -> Arc<Task> {
     let t = Arc::new(Task::new(tid, "fair", SchedClass::Normal { weight: 1024 }));
-    t.policy.store(policy, Ordering::Release);
-    t.vruntime.store(vruntime, Ordering::Release);
+    t.set_normal_sched_class_policy(SchedClass::Normal {
+        weight: if policy == SCHED_IDLE { 3 } else { 1024 },
+    }, policy);
+    t.sched.se.vruntime.store(vruntime, Ordering::Release);
     t
 }
 

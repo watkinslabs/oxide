@@ -23,7 +23,6 @@ use super::priority_common::for_each_target;
 /// for a `which` outside PRIO_PROCESS..PRIO_USER.
 /// # C: O(N_tasks)
 pub fn sys_getpriority(args: &SyscallArgs) -> i64 {
-    use core::sync::atomic::Ordering;
     use sched::rlimit::{nice_to_rlimit, prio_which};
     let (which, who) = (args.a0, args.a1 as u32);
     // `which` arrives as a sign-extended int: a negative value (Linux's
@@ -31,7 +30,7 @@ pub fn sys_getpriority(args: &SyscallArgs) -> i64 {
     if which > prio_which::USER { return -(syscall::errno::Errno::Einval.as_i32() as i64); }
     let mut best: Option<i32> = None;
     for_each_target(which, who, |t| {
-        let n = t.nice.load(Ordering::Acquire) as i32;
+        let n = t.nice_value() as i32;
         best = Some(match best { Some(b) => b.min(n), None => n });
     });
     match best {

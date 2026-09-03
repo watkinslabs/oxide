@@ -108,7 +108,10 @@ must use grouped paths from day one.
    and scheduler inheritance. Syscall, cgroup, procfs, IPC, and native-object
    crates submit typed requests or consume coherent snapshots; they cannot write
    scheduler task fields, invoke internal class encoders, or retain a competing
-   scheduling result. `crates/kernel/cgroup` owns cgroup identity and file ABI;
+   scheduling result. Configuration observers use the scheduler's versioned
+   configured/normal/effective snapshot; runtime reads and every scheduling
+   mutation remain under the scheduler's TaskPi plus stable-runqueue protocol.
+   `crates/kernel/cgroup` owns cgroup identity and file ABI;
    scheduler task-group execution state is keyed by that identity and owned by
    `sched` per `13a§7` and `26§4.2`.
 10. `crates/drivers/drv-simplefb` owns firmware-framebuffer validation after

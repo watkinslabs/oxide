@@ -19,7 +19,7 @@ use crate::task::{SchedClass, Task};
 /// # C: O(1)
 pub fn set_next_task_dl(t: &Task, now: u64) {
     if !matches!(t.sched_class(), SchedClass::Deadline) { return; }
-    t.dl.set_exec_start(now);
+    t.sched.dl.set_exec_start(now);
 }
 
 /// Charge the time `t` just ran against its current instance and report
@@ -31,12 +31,12 @@ pub fn set_next_task_dl(t: &Task, now: u64) {
 /// # C: O(1)
 pub fn update_curr_dl(t: &Task, now: u64) -> Charged {
     if !matches!(t.sched_class(), SchedClass::Deadline) { return Charged::Running; }
-    let p = t.dl.params();
-    let mut s = t.dl.sched();
-    let delta = t.dl.take_delta(now);
+    let p = t.sched.dl.params();
+    let mut s = t.sched.dl.sched();
+    let delta = t.sched.dl.take_delta(now);
     if delta != 0 { crate::cputime::charge_exec_runtime(t, delta); }
     let out = cbs::charge(&p, &mut s, delta);
-    t.dl.store_sched(&s);
+    t.sched.dl.store_sched(&s);
     out
 }
 
@@ -58,7 +58,7 @@ pub fn task_tick_dl(t: &Task) {
 /// it is still the earliest.
 /// # C: O(1)
 pub fn yield_dl(t: &Task) {
-    t.dl.set_yielded();
+    t.sched.dl.set_yielded();
     let _ = update_curr_dl(t, now_ns());
 }
 
@@ -71,15 +71,15 @@ pub fn yield_dl(t: &Task) {
 pub fn on_wakeup_enqueue(t: &Arc<Task>) -> bool {
     if !matches!(t.sched_class(), SchedClass::Deadline) { return true; }
     let now = now_ns();
-    let p = t.dl.params();
-    let mut s = t.dl.sched();
+    let p = t.sched.dl.params();
+    let mut s = t.sched.dl.sched();
     if s.throttled {
-        t.dl.store_sched(&s);
+        t.sched.dl.store_sched(&s);
         return arm_replenish(t, &p, &s);
     }
     cbs::update_dl_entity(&p, &mut s, now);
     let constrained = cbs::check_constrained(&p, &mut s, now);
-    t.dl.store_sched(&s);
+    t.sched.dl.store_sched(&s);
     if constrained { return arm_replenish(t, &p, &s); }
     true
 }
@@ -90,9 +90,9 @@ pub fn on_wakeup_enqueue(t: &Arc<Task>) -> bool {
 /// # C: O(log N)
 pub fn on_requeue(t: &Arc<Task>) -> bool {
     if !matches!(t.sched_class(), SchedClass::Deadline) { return true; }
-    if !t.dl.is_throttled() { return true; }
-    let p = t.dl.params();
-    let s = t.dl.sched();
+    if !t.sched.dl.is_throttled() { return true; }
+    let p = t.sched.dl.params();
+    let s = t.sched.dl.sched();
     arm_replenish(t, &p, &s)
 }
 
@@ -109,7 +109,7 @@ fn arm_replenish(t: &Arc<Task>, p: &super::params::DlParams, s: &DlSched) -> boo
     if !cbs::dl_time_before(now, at) {
         let mut s2 = *s;
         cbs::replenish(p, &mut s2, now);
-        t.dl.store_sched(&s2);
+        t.sched.dl.store_sched(&s2);
         replenish::disarm(t);
         return true;
     }
@@ -129,11 +129,11 @@ pub fn expire_throttled(now: u64) {
     let due = replenish::take_due(now);
     if due.is_empty() { return; }
     for t in due {
-        let p = t.dl.params();
-        let mut s = t.dl.sched();
+        let p = t.sched.dl.params();
+        let mut s = t.sched.dl.sched();
         cbs::replenish(&p, &mut s, now);
-        t.dl.store_sched(&s);
-        t.dl.set_replenish_at(0);
+        t.sched.dl.store_sched(&s);
+        t.sched.dl.set_replenish_at(0);
         // A task that was sleeping when its budget ran out is replenished but
         // not queued: it re-enters the ready set through its own wakeup, which
         // then sees an un-throttled entity.
@@ -152,12 +152,12 @@ pub fn expire_throttled_now() { expire_throttled(now_ns()); }
 /// # C: O(1)
 pub fn enter_class(t: &Task, p: &super::params::DlParams) {
     let now = now_ns();
-    t.dl.set_params(p);
+    t.sched.dl.set_params(p);
     let mut s = DlSched::default();
     cbs::replenish_new_period(p, &mut s, now);
-    t.dl.store_sched(&s);
-    t.dl.set_exec_start(now);
-    t.dl.set_replenish_at(0);
+    t.sched.dl.store_sched(&s);
+    t.sched.dl.set_exec_start(now);
+    t.sched.dl.set_replenish_at(0);
 }
 
 /// Re-arm an already-deadline task onto changed parameters. The instance is
@@ -166,12 +166,12 @@ pub fn enter_class(t: &Task, p: &super::params::DlParams) {
 /// # C: O(1)
 pub fn reset_params(t: &Task, p: &super::params::DlParams) {
     let now = now_ns();
-    t.dl.set_params(p);
-    let mut s = t.dl.sched();
+    t.sched.dl.set_params(p);
+    let mut s = t.sched.dl.sched();
     s.throttled = false;
     s.yielded = false;
     cbs::replenish_new_period(p, &mut s, now);
-    t.dl.store_sched(&s);
+    t.sched.dl.store_sched(&s);
 }
 
 /// Drop `t`'s reservation and release its admitted bandwidth. Run when a task
@@ -179,10 +179,10 @@ pub fn reset_params(t: &Task, p: &super::params::DlParams) {
 /// an entity that no longer contends.
 /// # C: O(N throttled)
 pub fn leave_class(t: &Task) {
-    let bw = t.dl.bw();
+    let bw = t.sched.dl.bw();
     if bw != 0 { super::bw::DL_BW.release(bw); }
     replenish::disarm(t);
-    t.dl.clear();
+    t.sched.dl.clear();
 }
 
 /// Would `mask` confine a deadline task to fewer CPUs than the span its

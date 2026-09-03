@@ -62,11 +62,11 @@ pub fn cand_of(t: &Task) -> Cand {
     };
     Cand {
         rank,
-        policy: t.policy.load(Ordering::Acquire),
+        policy: t.sched_policy_code(),
         rt_prio,
-        vruntime: t.vruntime.load(Ordering::Acquire),
-        dl_deadline: t.dl.abs_deadline(),
-        dl_special: t.dl.params().is_special(),
+        vruntime: t.sched.se.vruntime.load(Ordering::Acquire),
+        dl_deadline: t.sched.dl.abs_deadline(),
+        dl_special: t.sched.dl.params().is_special(),
     }
 }
 

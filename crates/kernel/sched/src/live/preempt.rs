@@ -43,14 +43,15 @@ pub fn task_tick() {
         crate::deadline::live::task_tick_dl(cur);
         return;
     }
-    let policy = cur.policy.load(core::sync::atomic::Ordering::Acquire);
-    let left = cur.rt_time_slice.load(core::sync::atomic::Ordering::Acquire);
+    let policy = cur.sched_policy_code();
+    let left = cur.sched.rt.time_slice.load(core::sync::atomic::Ordering::Acquire);
     if policy == crate::sched_enc::SCHED_RR {
         if left > 1 {
-            cur.rt_time_slice.store(left - 1, core::sync::atomic::Ordering::Release);
+            cur.sched.rt.time_slice.store(left - 1, core::sync::atomic::Ordering::Release);
             return;
         }
-        cur.rt_time_slice.store(crate::sched_enc::RR_TIMESLICE_TICKS, core::sync::atomic::Ordering::Release);
+        cur.sched.rt.time_slice.store(crate::sched_enc::RR_TIMESLICE_TICKS,
+                                      core::sync::atomic::Ordering::Release);
     }
     let peer = crate::live::runqueue::has_rt_peer_at_same_level(cur);
     // A spent SCHED_RR quantum is the one tick outcome that ROTATES the task:

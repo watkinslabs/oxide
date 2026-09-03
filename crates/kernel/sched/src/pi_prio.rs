@@ -8,8 +8,6 @@
 // preempt indefinitely — unbounded priority inversion, the whole reason
 // `PTHREAD_PRIO_INHERIT` exists.
 
-use core::sync::atomic::Ordering;
-
 use crate::{SchedClass, SchedPolicy, Task};
 
 /// Total order over scheduling classes, matching what `pick_next_task`
@@ -61,31 +59,24 @@ pub fn boost_class(base: SchedClass, waiters: &[SchedClass]) -> Option<SchedClas
     })
 }
 
-/// Sentinel stored in `Task::pi_base_class` while the task carries no boost.
-/// `SchedClass::Idle` encodes to `0`, so `0` cannot serve as "unset".
-pub const PI_NOT_BOOSTED: u64 = u64::MAX;
-
 /// The class `task` would run at with every PI boost removed — Linux's
 /// `p->normal_prio` / `p->rt_priority` as opposed to the effective `p->prio`.
 ///
 /// Anything reporting or reasoning about the task's OWN priority must read
-/// this, never `sched_class()`: while a PI boost is applied, `class_enc` holds
-/// a priority borrowed from a waiter, and reporting that through
+/// this, never `sched_class()`: while a PI boost is applied, effective state
+/// holds a priority borrowed from a waiter, and reporting that through
 /// `sched_getparam` would tell userspace it had set a priority it never asked
 /// for — and reading it back into `sched_setscheduler` would make the boost
 /// permanent.
 /// # C: O(1)
 pub fn base_class(task: &Task) -> SchedClass {
-    match task.security.pi_base_class.load(Ordering::Acquire) {
-        PI_NOT_BOOSTED => task.sched_class(),
-        enc => SchedClass::decode(enc),
-    }
+    task.normal_sched_class()
 }
 
 /// True iff a PI boost is currently applied to `task`.
 /// # C: O(1)
 pub fn is_boosted(task: &Task) -> bool {
-    task.security.pi_base_class.load(Ordering::Acquire) != PI_NOT_BOOSTED
+    task.sched_is_boosted()
 }
 
 #[cfg(test)]

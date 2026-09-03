@@ -14,6 +14,7 @@ use alloc::sync::Arc;
 /// deboost. A task with no boost takes the plain runqueue path.
 /// # C: O(log n)
 /// # Lk: takes the runqueue lock
-pub fn set_class(t: &Arc<sched::Task>, c: sched::SchedClass) {
-    sched::live::pi_boost::set_base_class(t, c);
+pub fn set_class(t: &Arc<sched::Task>, c: sched::SchedClass, policy: u32,
+                 clamp: sched::SchedUclamp, reset: bool) {
+    sched::live::pi_boost::set_base_class_policy_controls(t, c, policy, clamp, reset);
 }

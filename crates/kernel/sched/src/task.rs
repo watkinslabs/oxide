@@ -2,6 +2,9 @@
 //
 // Module map:
 // - types: signal info, scheduling policy/class, task state.
+// - sched_priority: canonical configured/normal/effective priority order.
+// - sched_entity: canonical fair/RT entity scalar state.
+// - sched_state: sole task scheduler-state owner and coherent snapshots.
 // - creds: POSIX credentials and capability helpers.
 // - audit_identity: per-task login uid/session identity and fork inheritance.
 // - dup: refcounted Task allocation (`dup_task_struct` shape) — construct into
@@ -26,11 +29,11 @@ use alloc::collections::VecDeque;
 use alloc::sync::{Arc, Weak};
 use core::cell::UnsafeCell;
 use core::ops::{Deref, DerefMut};
-use core::sync::atomic::{AtomicBool, AtomicI8, AtomicI32, AtomicPtr, AtomicU16, AtomicU32, AtomicU64, AtomicU8};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU16, AtomicU32, AtomicU64, AtomicU8};
 #[cfg(feature = "debug-task-fpu-provenance")]
 use core::sync::atomic::AtomicUsize;
 
-use sync::{Namespace, Spinlock, TaskList as TaskListClass, TaskWake as TaskWakeClass};
+use sync::{Namespace, Spinlock, TaskList as TaskListClass};
 use vfs::FdTable;
 use vmm::AddressSpace;
 use network_namespace::NetworkNamespaceRef;
@@ -62,6 +65,9 @@ mod net_namespace;
 mod namespaces;
 pub mod restart;
 mod signals;
+mod sched_priority;
+mod sched_entity;
+mod sched_state;
 mod sigwake;
 mod types;
 mod uapi;
@@ -76,6 +82,15 @@ pub use io_context::current_ioprio;
 pub use namespaces::TaskNamespaceSnapshot;
 pub use restart::RestartBlock;
 pub use signals::{SaHandler, SigActions, SignalPending, SA_IMMUTABLE, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK};
+pub use sched_priority::{DEFAULT_PRIO, FairPriority, MAX_DL_PRIO, MAX_NICE, MAX_PRIO,
+    MAX_RT_PRIO, MIN_NICE, NtFixedPriority, PosixRtPriority, SchedPriority,
+    nice_to_prio, normal_prio_to_rt_priority, prio_to_nice, rt_priority_to_normal_prio};
+pub use sched_entity::{LoadWeight, SchedEntity, SchedRtEntity};
+pub(crate) use sched_entity::{SchedEntityState, SchedRtEntityState};
+#[cfg(test)]
+pub(crate) use sched_entity::AtomicLoadWeight;
+pub use sched_state::{PrioritySnapshot, SchedClassId, SchedUclamp, TaskPolicy};
+pub(crate) use sched_state::TaskSched;
 pub use sigwake::{interruptible_work_pending, SleepWake, WaitOutcome, WaitState, signal_pending_state};
 pub use types::{SchedClass, SchedPolicy, SigInfo, TaskState, RT_QUEUE_CAP};
 #[cfg(feature = "debug-watchdog")]
@@ -309,12 +324,6 @@ pub struct Task {
     /// Spinlock-protected — same foreign-pid-read rationale as `cmdline`.
     pub environ: Spinlock<Option<alloc::string::String>, TaskListClass>,
 
-    /// Per-task nice value per POSIX nice(2)/setpriority(2). Range
-    /// nice [-20, 19]; 0 default; inherited on fork. Scheduler
-    /// ignores (CFS weight fixed); stored for getpriority /
-    /// /proc/<pid>/stat field 19.
-    pub nice: AtomicI8,
-
     /// I/O priority context. Holds the RAW `int` `ioprio_set(2)` stored, which
     /// `ioprio_get(IOPRIO_WHO_PROCESS)` reports verbatim so userspace can tell
     /// "never set" from an explicit value; the effective priority derives
@@ -364,16 +373,6 @@ pub struct Task {
     pub itimer_prof_ns: AtomicU64,
     /// ITIMER_PROF period in combined CPU ns. `0` = one-shot.
     pub itimer_prof_interval_ns: AtomicU64,
-    /// Linux `sched_rt_entity::timeout`, the quantity `RLIMIT_RTTIME` bounds:
-    /// CPU time charged to this thread while it ran under a real-time policy.
-    /// Linux counts whole ticks and converts with `USEC_PER_SEC / HZ`; this
-    /// kernel's tick period is not fixed, so the charged nanoseconds are
-    /// accumulated directly and the µs conversion is exact.
-    ///
-    /// Cumulative, exactly as Linux is: it is zeroed at fork and when the task
-    /// leaves a real-time policy, and NOT when the thread blocks.
-    pub rt_timeout_ns: AtomicU64,
-
     /// CLONE_CHILD_CLEARTID address per set_tid_address(2). Linux stores the
     /// user pointer and, on thread exit (`do_exit` → `mm_release`), writes 0
     /// there and FUTEX_WAKE_PRIVATEs one waiter — `060_exit.rs` does both.

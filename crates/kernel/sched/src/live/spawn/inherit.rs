@@ -32,7 +32,7 @@ pub(crate) fn inherit_from_parent(task: &mut Task) {
     task.security.timer_slack_ns.store(parent.security.timer_slack_ns.load(Ordering::Acquire), Ordering::Release);
     // Linux sched_fork(): policy, RT priority, nice and load weight are
     // inherited across fork/clone; SCHED_RESET_ON_FORK demotes the child.
-    crate::live::sched_fork::inherit_sched_params(&task, &parent);
+    crate::live::sched_fork::inherit_sched_params(task, &parent);
     // Linux `copy_process` → `mpol_dup(p->mempolicy)`:
     // the thread's NUMA policy is inherited by fork AND by CLONE_THREAD.
     for i in 0..task.mempolicy.len() {

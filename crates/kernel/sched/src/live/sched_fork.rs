@@ -11,7 +11,7 @@
 use core::sync::atomic::Ordering;
 
 use crate::cputime::NICE_0_WEIGHT;
-use crate::task::{SchedClass, Task};
+use crate::task::{SchedClass, SchedPolicy, SchedPriority, Task, TaskSched};
 
 /// `SCHED_NORMAL` / `SCHED_OTHER`.
 const SCHED_NORMAL: u32 = 0;
@@ -25,8 +25,8 @@ const SCHED_NORMAL: u32 = 0;
 /// drops to `SCHED_NORMAL` and carries no reservation at all.
 /// # C: O(1)
 pub fn dl_fork_refused(parent: &Task) -> bool {
-    matches!(parent.sched_class(), SchedClass::Deadline)
-        && !parent.sched_reset_on_fork.load(Ordering::Acquire)
+    let state = parent.priority_snapshot();
+    state.policy == crate::task::TaskPolicy::Deadline && !state.reset_on_fork
 }
 
 /// Copy the parent's scheduling parameters onto a not-yet-published child and
@@ -35,33 +35,40 @@ pub fn dl_fork_refused(parent: &Task) -> bool {
 /// `child` is local to the clone path and has no other reader yet; `parent` is
 /// the running task on this CPU (single-mutator per `13§5`).
 /// # C: O(1)
-pub fn inherit_sched_params(child: &Task, parent: &Task) {
-    let reset = parent.sched_reset_on_fork.load(Ordering::Acquire);
-    let mut policy = parent.policy.load(Ordering::Acquire);
-    let mut nice = parent.nice.load(Ordering::Acquire);
+pub fn inherit_sched_params(child: &mut Task, parent: &Task) {
+    let (state, parent_uclamp, parent_se) = parent.sched_fork_snapshot();
+    let reset = state.reset_on_fork;
+    let mut policy = state.policy.code();
+    let nice = state.static_prio.nice().unwrap_or(0);
     // The per-CPU idle class is never inherited by a user clone.
-    let mut class = match parent.sched_class() {
-        SchedClass::Idle => SchedClass::Normal { weight: NICE_0_WEIGHT },
-        c => c,
+    let mut class = match state.normal_prio {
+        SchedPriority::Deadline => SchedClass::Deadline,
+        SchedPriority::PosixRt(_) => SchedClass::Rt {
+            prio: state.rt_priority,
+            policy: if state.policy == crate::task::TaskPolicy::Rr { SchedPolicy::Rr }
+                    else { SchedPolicy::Fifo },
+        },
+        SchedPriority::Fair(_) => SchedClass::Normal {
+            weight: crate::cputime::nice_to_weight(nice as i8),
+        },
+        SchedPriority::NtFixed(_) | SchedPriority::Idle => {
+            SchedClass::Normal { weight: NICE_0_WEIGHT }
+        }
     };
 
     // A deadline child never carries the parent's reservation: it is either
     // refused outright (`dl_fork_refused`) or reset to the fair class here, and
     // its entity starts empty either way.
-    child.dl.clear();
     if matches!(class, SchedClass::Deadline) {
         policy = SCHED_NORMAL;
-        nice = 0;
         class = SchedClass::Normal { weight: NICE_0_WEIGHT };
     }
 
     if reset {
         if matches!(class, SchedClass::Rt { .. }) {
             policy = SCHED_NORMAL;
-            nice = 0;
             class = SchedClass::Normal { weight: NICE_0_WEIGHT };
         } else if nice < 0 {
-            nice = 0;
             class = SchedClass::Normal { weight: NICE_0_WEIGHT };
         }
     }
@@ -83,20 +90,22 @@ pub fn inherit_sched_params(child: &Task, parent: &Task) {
     let (uc_min, uc_max, uc_ud) = if reset {
         (0, crate::sched_enc::UCLAMP_CAPACITY_SCALE, 0)
     } else {
-        (parent.uclamp_min.load(Ordering::Acquire), parent.uclamp_max.load(Ordering::Acquire),
-         parent.uclamp_user_defined.load(Ordering::Acquire))
+        (parent_uclamp.min(), parent_uclamp.max(), parent_uclamp.user_defined())
     };
     let uc_min = if matches!(class, SchedClass::Rt { .. }) && uc_ud & 1 == 0 {
         crate::sched_enc::UCLAMP_CAPACITY_SCALE
     } else { uc_min };
-    child.uclamp_min.store(uc_min, Ordering::Release);
-    child.uclamp_max.store(uc_max, Ordering::Release);
-    child.uclamp_user_defined.store(uc_ud, Ordering::Release);
-    child.sched_slice_ns.store(
-        if reset { 0 } else { parent.sched_slice_ns.load(Ordering::Acquire) }, Ordering::Release);
+    child.sched = TaskSched::new(class, crate::sched_enc::RR_TIMESLICE_TICKS,
+                                 crate::sched_enc::UCLAMP_CAPACITY_SCALE);
+    child.sched.store_nice(state.static_prio.nice().unwrap_or(0) as i8);
+    child.sched.store_normal_class(class, policy);
+    child.sched.store_uclamp(crate::task::SchedUclamp::new(uc_min, uc_max, uc_ud)
+        .expect("fork-derived utilization clamps remain canonical"));
+    child.sched.se.slice.store(
+        if reset { 0 } else { parent_se.slice }, Ordering::Release);
+    child.sched.se.custom_slice.store(
+        !reset && parent_se.custom_slice, Ordering::Release);
 
-    child.nice.store(nice, Ordering::Release);
-    child.policy.store(policy, Ordering::Release);
     // `__setscheduler_params` runs for the child too (
     // via `sched_fork`), so a child that inherits — or is reset to — an RT
     // policy carries zero timer slack, and one reset to a fair policy gets its
@@ -108,10 +117,5 @@ pub fn inherit_sched_params(child: &Task, parent: &Task) {
             child.security.default_timer_slack_ns.load(Ordering::Acquire), Ordering::Release);
     }
     // `sched_reset_on_fork` is one-shot: the child starts clean.
-    child.sched_reset_on_fork.store(false, Ordering::Release);
-    child.load_weight.store(match class {
-        SchedClass::Normal { weight } => weight,
-        _ => NICE_0_WEIGHT,
-    }, Ordering::Release);
-    child.set_sched_class(class);
+    child.sched.store_reset_on_fork(false);
 }

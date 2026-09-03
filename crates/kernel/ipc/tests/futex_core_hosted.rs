@@ -141,6 +141,9 @@ pub enum SchedPolicy { Normal, Fifo, Rr, Idle }
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum SchedClass { Deadline, Rt { prio: u8, policy: SchedPolicy }, Normal { weight: u32 }, Idle }
 
+#[derive(Copy, Clone)]
+pub struct SchedUclamp;
+
 impl SchedClass {
     pub fn encode(self) -> u64 {
         match self {
@@ -174,6 +177,7 @@ impl SchedClass {
 pub mod runqueue {
     use super::*;
     pub fn set_class(task: &Arc<Task>, new: SchedClass) { task.set_sched_class(new); }
+    pub fn requeue_current_class(_task: &Arc<Task>) {}
 }
 
 #[derive(Copy, Clone, Eq, PartialEq)]
@@ -235,18 +239,13 @@ impl RestartBlockMock {
     pub fn args(&self) -> [u64; task::restart::RESTART_ARGS] { *self.args.lock().unwrap() }
 }
 
-/// `u64::MAX` = not boosted. Production semantics.
-pub struct TaskSecurity {
-    pub pi_base_class: AtomicU64,
-}
-
 pub struct Task {
     pub tid: u32,
     pub futex_uaddr: AtomicU64,
     pub wakeup_deadline_ns: AtomicU64,
     pub restart_block: RestartBlockMock,
-    pub class_enc: AtomicU64,
-    pub security: TaskSecurity,
+    normal_class: std::sync::RwLock<SchedClass>,
+    effective_class: std::sync::RwLock<SchedClass>,
     state: AtomicU8,
     signal_pending: AtomicBool,
     mm_root: u64,
@@ -260,8 +259,8 @@ impl Task {
             futex_uaddr: AtomicU64::new(0),
             wakeup_deadline_ns: AtomicU64::new(0),
             restart_block: RestartBlockMock::default(),
-            class_enc: AtomicU64::new(SchedClass::Normal { weight: 1024 }.encode()),
-            security: TaskSecurity { pi_base_class: AtomicU64::new(u64::MAX) },
+            normal_class: std::sync::RwLock::new(SchedClass::Normal { weight: 1024 }),
+            effective_class: std::sync::RwLock::new(SchedClass::Normal { weight: 1024 }),
             state: AtomicU8::new(0),
             signal_pending: AtomicBool::new(false),
             mm_root,
@@ -278,8 +277,21 @@ impl Task {
     pub fn state(&self) -> TaskState {
         match self.state.load(Ordering::Acquire) { 1 => TaskState::Sleeping, 2 => TaskState::Zombie, _ => TaskState::Runnable }
     }
-    pub fn sched_class(&self) -> SchedClass { SchedClass::decode(self.class_enc.load(Ordering::Acquire)) }
-    pub fn set_sched_class(&self, c: SchedClass) { self.class_enc.store(c.encode(), Ordering::Release); }
+    pub fn sched_class(&self) -> SchedClass { *self.effective_class.read().unwrap() }
+    pub fn normal_sched_class(&self) -> SchedClass { *self.normal_class.read().unwrap() }
+    pub fn sched_is_boosted(&self) -> bool { self.sched_class() != self.normal_sched_class() }
+    pub fn set_sched_class(&self, c: SchedClass) { *self.effective_class.write().unwrap() = c; }
+    pub fn restore_normal_sched_class(&self) { self.set_sched_class(self.normal_sched_class()); }
+    pub fn set_normal_sched_class(&self, c: SchedClass) { *self.normal_class.write().unwrap() = c; }
+    pub fn set_normal_sched_class_policy(&self, c: SchedClass, _policy: u32) {
+        let unboosted = self.sched_class() == self.normal_sched_class();
+        self.set_normal_sched_class(c);
+        if unboosted { self.set_sched_class(c); }
+    }
+    pub fn set_sched_policy_controls(&self, c: SchedClass, policy: u32,
+                                     _clamp: SchedUclamp, _reset: bool) {
+        self.set_normal_sched_class_policy(c, policy);
+    }
     fn is_sleeping(&self) -> bool { self.state.load(Ordering::Acquire) == 1 }
     /// SAFETY: test-only mock; no real address space, single fixed `mm_root`.
     pub unsafe fn mm_ref(&self) -> Option<MmRef> { Some(MmRef { root_pa: self.mm_root }) }

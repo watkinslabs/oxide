@@ -25,9 +25,9 @@ fn task(tid: u32) -> Task { Task::new(tid, "affinity-test", SchedClass::Normal {
 fn a_clone_inherits_the_parents_affinity_mask() {
     let parent = task(1);
     parent.cpus_allowed.store(m(0b0010), Ordering::Release);
-    let child = task(2);
+    let mut child = task(2);
     assert_eq!(child.cpus_allowed.load(Ordering::Acquire), cpu::CpuMask::all(), "fresh task starts unpinned");
-    inherit_sched_params(&child, &parent);
+    inherit_sched_params(&mut child, &parent);
     assert_eq!(child.cpus_allowed.load(Ordering::Acquire), m(0b0010));
 }
 
@@ -39,8 +39,8 @@ fn a_clone_inherits_the_user_request_and_the_cpuset() {
     parent.user_cpus_allowed.store(m(0b1010), Ordering::Release);
     parent.cpuset_cpus_allowed.store(m(0b0011), Ordering::Release);
     parent.cpus_allowed.store(compose(m(0b0011), m(0b1010), CpusetUpdate), Ordering::Release);
-    let child = task(2);
-    inherit_sched_params(&child, &parent);
+    let mut child = task(2);
+    inherit_sched_params(&mut child, &parent);
     assert_eq!(child.user_cpus_allowed.load(Ordering::Acquire), m(0b1010));
     assert_eq!(child.cpuset_cpus_allowed.load(Ordering::Acquire), m(0b0011));
     assert_eq!(child.cpus_allowed.load(Ordering::Acquire), m(0b0010));
@@ -50,13 +50,14 @@ fn a_clone_inherits_the_user_request_and_the_cpuset() {
 /// demotes the scheduling class.
 #[test]
 fn reset_on_fork_does_not_clear_affinity() {
-    let parent = task(1);
-    parent.sched_reset_on_fork.store(true, Ordering::Release);
-    parent.nice.store(-5, Ordering::Release);
+    let parent = Task::new(1, "affinity-test",
+                           SchedClass::Normal { weight: crate::cputime::nice_to_weight(-5) });
+    parent.set_sched_reset_on_fork(true);
     parent.cpus_allowed.store(m(0b0100), Ordering::Release);
-    let child = task(2);
-    inherit_sched_params(&child, &parent);
-    assert_eq!(child.nice.load(Ordering::Acquire), 0, "reset_on_fork lifts a negative nice");
+    let mut child = task(2);
+    inherit_sched_params(&mut child, &parent);
+    assert_eq!(child.priority_snapshot().static_prio.nice(), Some(0),
+               "reset_on_fork produces the default fair priority");
     assert_eq!(child.cpus_allowed.load(Ordering::Acquire), m(0b0100), "affinity survives");
 }
 

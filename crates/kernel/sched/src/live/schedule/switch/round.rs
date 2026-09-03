@@ -225,7 +225,7 @@ pub unsafe fn schedule_once(keep_irqs_disabled: bool) {
         unsafe { crate::debugreg::arm::switch_to(prev_ref, rq.current_ref()); }
     }
     // SAFETY: rq.current was just set to the new Arc by swap_current.
-    unsafe { rq.current_ref() }.exec_start_ns.store(now, Ordering::Release);
+    unsafe { rq.current_ref() }.sched.se.exec_start.store(now, Ordering::Release);
     #[cfg(target_os = "oxide-kernel")]
     {
         let current = unsafe { rq.current_ref() };
@@ -247,7 +247,7 @@ pub unsafe fn schedule_once(keep_irqs_disabled: bool) {
     let prev_cpu = unsafe { rq.current_ref() }.cpu.swap(me as u16, Ordering::AcqRel);
     if prev_cpu != u16::MAX && prev_cpu != me as u16 {
         // SAFETY: rq.current is the incoming task just published by swap_current; relaxed counter bump only.
-        unsafe { rq.current_ref() }.nr_migrations.fetch_add(1, Ordering::Relaxed);
+        unsafe { rq.current_ref() }.sched.se.nr_migrations.fetch_add(1, Ordering::Relaxed);
         // `perf_event_task_migrate(p)` charges the MIGRATING task, which is the
         // incoming one — not whoever this CPU is running when the deferred
         // opportunity is drained.

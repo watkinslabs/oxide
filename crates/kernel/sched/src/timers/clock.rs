@@ -91,7 +91,7 @@ fn task_cpu_sample(task: &Task, measure: CpuMeasure) -> u64 {
         CpuMeasure::Prof => task.utime_ns.load(Ordering::Acquire)
             .saturating_add(task.stime_ns.load(Ordering::Acquire)),
         CpuMeasure::Virt => task.utime_ns.load(Ordering::Acquire),
-        CpuMeasure::Sched => task.sum_exec_runtime_ns.load(Ordering::Acquire),
+        CpuMeasure::Sched => task.sched.se.sum_exec_runtime.load(Ordering::Acquire),
         CpuMeasure::Invalid => 0,
     }
 }

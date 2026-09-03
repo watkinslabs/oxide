@@ -7,7 +7,7 @@ use alloc::sync::Arc;
 use syscall::errno::Errno;
 use crate::sched_attr::{self as sa, SchedAttr};
 use super::*;
-use super::task::set_uclamp_req;
+use super::task::make_uclamp_req;
 
 /// Linux `__sched_setscheduler(p, attr, user = true, pi = true)`.
 ///
@@ -20,7 +20,7 @@ pub fn setattr(caller: &sched::Task, t: &Arc<sched::Task>, attr: &SchedAttr) -> 
     // `int policy = attr->sched_policy`: negative means "keep the task's own",
     // reachable via sched_setparam(2) and SCHED_FLAG_KEEP_POLICY.
     let (policy, reset_on_fork) = if (attr.policy as i32) < 0 {
-        (task_policy(t), t.sched_reset_on_fork.load(Ordering::Acquire))
+        (task_policy(t), t.priority_snapshot().reset_on_fork)
     } else {
         if !valid_policy(attr.policy) { return err(Errno::Einval); }
         (attr.policy, attr.flags & sa::FLAG_RESET_ON_FORK != 0)
@@ -41,10 +41,10 @@ pub fn setattr(caller: &sched::Task, t: &Arc<sched::Task>, attr: &SchedAttr) -> 
     }
 
     // "If not changing anything there's no need to proceed further, but store a
-    // possible modification of reset_on_fork". Skipping the commit also skips
-    // the util-clamp update, so an auto clamp survives a no-op.
+    // possible modification of reset_on_fork". A util-clamp request always
+    // forces the change path, matching Linux's `SCHED_FLAG_UTIL_CLAMP` check.
     if policy == task_policy(t) && !params_changed(t, attr, policy) {
-        t.sched_reset_on_fork.store(reset_on_fork, Ordering::Release);
+        t.set_sched_reset_on_fork(reset_on_fork);
         return 0;
     }
 
@@ -52,7 +52,7 @@ pub fn setattr(caller: &sched::Task, t: &Arc<sched::Task>, attr: &SchedAttr) -> 
     // `EBUSY` means "the machine is full", and reporting it ahead of a bad
     // argument or a denied caller would misattribute the refusal.
     let was_dl = dl_policy(task_policy(t));
-    let cur_dl = t.dl.params();
+    let cur_dl = t.sched_deadline_params();
     let want_dl = crate::sched_policy::dl::attr_params(attr);
     if dl_policy(policy) || was_dl {
         // Applies to EVERY syscall caller, privileged or not: `CAP_SYS_NICE`
@@ -74,9 +74,12 @@ pub fn setattr(caller: &sched::Task, t: &Arc<sched::Task>, attr: &SchedAttr) -> 
     let new_is_rt = rt_policy(policy);
     uc_min = sa::uclamp_apply(attr, true, uc_min, new_is_rt);
     uc_max = sa::uclamp_apply(attr, false, uc_max, new_is_rt);
-    if attr.flags & sa::FLAG_KEEP_PARAMS == 0 { apply(t, attr, policy); }
-    set_uclamp_req(t, uc_min, uc_max);
-    t.sched_reset_on_fork.store(reset_on_fork, Ordering::Release);
+    let clamp = make_uclamp_req(uc_min, uc_max);
+    if attr.flags & sa::FLAG_KEEP_PARAMS == 0 {
+        apply(t, attr, policy, clamp, reset_on_fork);
+    } else {
+        t.set_sched_controls(clamp, reset_on_fork);
+    }
     0
 }
 
@@ -92,11 +95,11 @@ fn dl_task_mask(t: &sched::Task) -> cpu::CpuMask { t.cpus_allowed.load(Ordering:
 /// already has?
 /// # C: O(1)
 fn params_changed(t: &sched::Task, attr: &SchedAttr, policy: u32) -> bool {
-    if dl_policy(policy) && crate::sched_policy::dl::dl_param_changed(&t.dl.params(), attr) {
+    if dl_policy(policy) && crate::sched_policy::dl::dl_param_changed(&t.sched_deadline_params(), attr) {
         return true;
     }
     if fair_policy(policy)
-        && (attr.nice != t.nice.load(Ordering::Acquire) as i32 || attr.runtime != task_slice_ns(t)) {
+        && (attr.nice != t.nice_value() as i32 || attr.runtime != task_slice_ns(t)) {
         return true;
     }
     if rt_policy(policy) && attr.priority != task_rt_priority(t) { return true; }
@@ -119,7 +122,7 @@ pub fn setscheduler(caller: &sched::Task, t: &Arc<sched::Task>,
         ..Default::default()
     };
     // Linux carries a custom CFS slice across a sched_setparam/setscheduler.
-    let slice = t.sched_slice_ns.load(Ordering::Acquire);
+    let slice = t.sched_entity_snapshot().slice;
     if slice != 0 { attr.runtime = slice; }
     setattr(caller, t, &attr)
 }
@@ -128,7 +131,8 @@ pub fn setscheduler(caller: &sched::Task, t: &Arc<sched::Task>,
 /// and CFS trees under the runqueue lock (Linux `__setscheduler_params` +
 /// `__setparam_fair` + the dequeue/enqueue around the class change).
 /// # C: O(log N)
-fn apply(t: &Arc<sched::Task>, attr: &SchedAttr, policy: u32) {
+fn apply(t: &Arc<sched::Task>, attr: &SchedAttr, policy: u32,
+         clamp: sched::SchedUclamp, reset_on_fork: bool) {
     use sched::{SchedClass, SchedPolicy};
     // Leaving the deadline class releases the reservation and cancels any
     // pending replenishment; the ledger must not keep a booking for an entity
@@ -146,21 +150,19 @@ fn apply(t: &Arc<sched::Task>, attr: &SchedAttr, policy: u32) {
             SchedClass::Rt { prio: attr.priority as u8, policy: p }
         }
         SCHED_IDLE => {
-            t.load_weight.store(SCHED_IDLE_WEIGHT, Ordering::Release);
             SchedClass::Normal { weight: SCHED_IDLE_WEIGHT }
         }
         // SCHED_NORMAL / SCHED_BATCH
         _ => {
             let n = sched::rlimit::clamp_nice(attr.nice);
             let w = sched::cputime::nice_to_weight(n);
-            t.nice.store(n, Ordering::Release);
-            t.load_weight.store(w, Ordering::Release);
+            t.set_nice_value(n);
             SchedClass::Normal { weight: w }
         }
     };
     // `__setscheduler_params` calls `__setparam_fair` for NORMAL/BATCH only —
     // SCHED_IDLE and the RT policies leave `se.slice` alone.
-    if fair_policy(policy) { t.sched_slice_ns.store(fair_slice(attr), Ordering::Release); }
+    if fair_policy(policy) { t.set_sched_slice_ns(fair_slice(attr)); }
     // The RT timeslice is a full quantum whenever a task holds an RT policy —
     // upstream seeds it at fork and only ever reloads it with the whole
     // quantum, so it is never observed part-spent by a task that was not just
@@ -169,16 +171,16 @@ fn apply(t: &Arc<sched::Task>, attr: &SchedAttr, policy: u32) {
     // different units) left behind, and gets an arbitrary fraction of its
     // first slice.
     if rt_policy(policy) {
-        t.rt_time_slice.store(sched::sched_enc::RR_TIMESLICE_TICKS, Ordering::Release);
+        t.reload_sched_rt_timeslice();
     }
     // `__sched_setscheduler`: `if (rt_prio(oldprio)) p->rt.timeout = 0` — a
     // task LEAVING the real-time class starts its RLIMIT_RTTIME accounting over,
     // so a later promotion back to SCHED_FIFO/RR is not killed by run time it
     // accrued in a previous RT stint.
     if !sched::sched_enc::is_rt_class_policy(policy) {
-        t.rt_timeout_ns.store(0, Ordering::Release);
+        t.clear_sched_rt_timeout();
     }
-    t.policy.store(policy, Ordering::Release);
+    crate::sched_policy::commit::set_class(t, new_class, policy, clamp, reset_on_fork);
     // `__setscheduler_params`: an RT or
     // deadline task's timer slack is ZERO for as long as it holds that policy,
     // and returning to a fair policy restores its inherited default. Every
@@ -189,7 +191,6 @@ fn apply(t: &Arc<sched::Task>, attr: &SchedAttr, policy: u32) {
     } else if t.security.timer_slack_ns.load(Ordering::Acquire) == 0 {
         t.security.timer_slack_ns.store(t.security.default_timer_slack_ns.load(Ordering::Acquire), Ordering::Release);
     }
-    crate::sched_policy::commit::set_class(t, new_class);
 }
 
 /// Linux `__setparam_fair()`: a non-zero
