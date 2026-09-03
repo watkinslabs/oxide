@@ -180,7 +180,9 @@ fn directory_entry(call: NtCall) -> u64 {
         if rva >= virtual_address && rva.checked_sub(virtual_address).and_then(|offset| offset.checked_add(size)).is_some_and(|end| end <= raw_size) {
             return module.checked_add(raw_address as u64).and_then(|value| value.checked_add((rva - virtual_address) as u64)).unwrap_or(0);
         }
-        if rva >= virtual_address && rva < virtual_address.saturating_add(span) { return 0; }
+        if let Some(section_end) = virtual_address.checked_add(span) {
+            if rva >= virtual_address && rva < section_end { return 0; }
+        }
     }
     0
 }
