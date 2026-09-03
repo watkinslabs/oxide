@@ -47,6 +47,8 @@ const WINE_CHECK_MENU_ITEM: u64 = 0x1347;
 const WINE_CREATE_MENU: u64 = 0x1366;
 const WINE_CREATE_POPUP_MENU: u64 = 0x1368;
 const WINE_DELETE_MENU: u64 = 0x1378;
+const WINE_GET_MENU_BAR_INFO: u64 = 0x1418;
+const WINE_GET_MENU_ITEM_RECT: u64 = 0x141a;
 const WINE_DESTROY_MENU: u64 = 0x1382;
 const WINE_ENABLE_MENU_ITEM: u64 = 0x13a7;
 const WINE_SET_MENU: u64 = 0x1569;
@@ -306,6 +308,25 @@ fn get_class_info_ex(args: &[u64; 17]) -> u64 {
 /// # C: O(NTUSER_NB_PROCS + NTUSER_NB_WORKERS)
 #[cfg(target_os = "oxide-kernel")]
 pub fn dispatch_raw(ordinal: u64, args: SyscallArgs) -> Option<u64> {
+    if ordinal == WINE_GET_MENU_ITEM_RECT {
+        let Some(rect) = crate::nt_window::menu_item_rect_for_current(args.a0, args.a1, args.a2) else { return Some(0); };
+        let bytes = [rect.left.to_le_bytes(), rect.top.to_le_bytes(), rect.right.to_le_bytes(), rect.bottom.to_le_bytes()];
+        let mut raw = [0u8; 16];
+        for (index, field) in bytes.iter().enumerate() { raw[index * 4..index * 4 + 4].copy_from_slice(field); }
+        return Some(if uaccess::copy_to_user(args.a3, &raw).is_ok() { 1 } else { 0 });
+    }
+    if ordinal == WINE_GET_MENU_BAR_INFO {
+        const OBJID_MENU: u64 = 0xffff_ffff_ffff_fffd;
+        const MENUBARINFO_BYTES: u32 = 48;
+        if args.a1 != OBJID_MENU || args.a3 == 0 || uaccess::get_user_u32(args.a3).ok() != Some(MENUBARINFO_BYTES) { return Some(0); }
+        let Some(menu) = crate::nt_window::window_menu_for_current(args.a0) else { return Some(0); };
+        let Some(rect) = (if args.a2 == 0 { crate::nt_window::menu_bar_rect_for_current(args.a0) } else { crate::nt_window::menu_item_rect_for_current(args.a0, menu, args.a2 - 1) }) else { return Some(0); };
+        let mut raw = [0u8; MENUBARINFO_BYTES as usize];
+        raw[0..4].copy_from_slice(&MENUBARINFO_BYTES.to_le_bytes());
+        raw[8..12].copy_from_slice(&rect.left.to_le_bytes()); raw[12..16].copy_from_slice(&rect.top.to_le_bytes()); raw[16..20].copy_from_slice(&rect.right.to_le_bytes()); raw[20..24].copy_from_slice(&rect.bottom.to_le_bytes());
+        raw[24..32].copy_from_slice(&menu.to_le_bytes());
+        return Some(if uaccess::copy_to_user(args.a3, &raw).is_ok() { 1 } else { 0 });
+    }
     if ordinal == WINE_CREATE_MENU { return Some(crate::nt_window::create_menu_for_current(false)); }
     if ordinal == WINE_CREATE_POPUP_MENU { return Some(crate::nt_window::create_menu_for_current(true)); }
     if ordinal == WINE_DESTROY_MENU { return Some(win_bool(crate::nt_window::destroy_menu_for_current(args.a0))); }
