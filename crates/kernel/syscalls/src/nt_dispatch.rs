@@ -557,11 +557,7 @@ pub fn dispatch(call: NtCall) -> u64 {
         return STATUS_NOT_IMPLEMENTED;
     }
     if call.service == syscall::nt::NtService::NtNotifyChangeDirectoryFile {
-        let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
-        if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
-        // Directory change delivery needs an NT async/event registration
-        // owner over the VFS notification stream; do not fake completion.
-        return STATUS_NOT_IMPLEMENTED;
+        return crate::nt_directory_notify::dispatch(call);
     }
     if call.service == syscall::nt::NtService::NtNotifyChangeKey {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
