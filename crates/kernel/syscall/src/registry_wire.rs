@@ -14,6 +14,7 @@ pub const CREATE_RELATIVE: u8 = 9;
 pub const RENAME: u8 = 10;
 pub const FLUSH: u8 = 11;
 pub const QUERY_KEY: u8 = 12;
+pub const DELETE_VALUE: u8 = 13;
 
 pub const RESPONSE_SUCCESS: u8 = 0;
 pub const RESPONSE_HANDLE: u8 = 1;

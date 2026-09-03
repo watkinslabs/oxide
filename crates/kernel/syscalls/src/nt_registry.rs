@@ -48,6 +48,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::NtEnumerateKey { return Some(enumerate_key_native(call)); }
     if call.service == NtService::SetValueKey { return Some(set_value(call)); }
     if call.service == NtService::NtSetValueKey { return Some(set_value_native(call)); }
+    if call.service == NtService::NtDeleteValueKey { return Some(delete_value_native(call)); }
     if call.service == NtService::NtQueryKey { return Some(query_key_native(call)); }
     if call.service == NtService::NtFlushKey { return Some(flush_key_native(call)); }
     if call.service == NtService::NtNotifyChangeKey { return Some(notify_change_key(call)); }
@@ -167,6 +168,10 @@ fn frame_query(key: u64, name: &str) -> Vec<u8> {
 
 fn frame_set(key: u64, name: &str, kind: u32, data: &[u8]) -> Vec<u8> {
     let mut frame = Vec::new(); frame.push(registry_wire::SET); frame.extend_from_slice(&key.to_le_bytes()); put_text(&mut frame, name); frame.extend_from_slice(&kind.to_le_bytes()); put_bytes(&mut frame, data); frame
+}
+
+fn frame_delete_value(key: u64, name: &str) -> Vec<u8> {
+    let mut frame = Vec::new(); frame.push(registry_wire::DELETE_VALUE); frame.extend_from_slice(&key.to_le_bytes()); put_text(&mut frame, name); frame
 }
 
 fn frame_key(operation: u8, key: u64) -> Vec<u8> { let mut frame = Vec::new(); frame.push(operation); frame.extend_from_slice(&key.to_le_bytes()); frame }
@@ -330,6 +335,18 @@ fn set_value(call: NtCall) -> u64 {
 
 fn set_value_native(call: NtCall) -> u64 {
     set_value_parts(call.args.a0 as u32, call.args.a1, call.args.a2, call.args.a3, call.args.a4, call.args.a5)
+}
+
+fn delete_value_native(call: NtCall) -> u64 {
+    let Some(current) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !current.is_nt_personality() || call.args.a1 == 0 { return STATUS_INVALID_PARAMETER; }
+    let Some(remote) = remote_key(&current, call.args.a0 as u32) else { return STATUS_INVALID_PARAMETER; };
+    let Some(name) = read_unicode(call.args.a1) else { return STATUS_INVALID_PARAMETER; };
+    match transact(&frame_delete_value(remote, &name)) {
+        Some(Reply::Success) => { notify_registry_key(remote); STATUS_SUCCESS }
+        Some(reply) => reply_status(reply),
+        None => STATUS_UNSUCCESSFUL,
+    }
 }
 
 fn set_value_parts(key: u32, name_ptr: u64, title: u64, kind: u64, data: u64, size: u64) -> u64 {
