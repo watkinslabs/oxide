@@ -81,7 +81,8 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if desired_access & !(if thread { THREAD_ALL_ACCESS } else { PROCESS_ALL_ACCESS }) != 0
         || !valid_object_attributes(attributes) { return Some(STATUS_INVALID_PARAMETER); }
     let process_id = match uaccess::get_user_u64(client_id.as_u64()) { Ok(value) => value, Err(_) => return Some(STATUS_INVALID_PARAMETER) };
-    let thread_id = match uaccess::get_user_u64(client_id.as_u64() + 8) { Ok(value) => value, Err(_) => return Some(STATUS_INVALID_PARAMETER) };
+    let Some(thread_id_address) = client_id.as_u64().checked_add(8) else { return Some(STATUS_INVALID_PARAMETER); };
+    let thread_id = match uaccess::get_user_u64(thread_id_address) { Ok(value) => value, Err(_) => return Some(STATUS_INVALID_PARAMETER) };
     if thread {
         if !crate::nt_process_policy::valid_thread_client_id(process_id, thread_id) {
             return Some(STATUS_INVALID_CID);
