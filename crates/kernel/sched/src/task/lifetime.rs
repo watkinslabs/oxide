@@ -6,6 +6,8 @@ use super::Task;
 
 impl Drop for Task {
     fn drop(&mut self) {
+        let activation_frames = self.nt_activation_stack.lock().clear();
+        crate::nt_activation::release_frames(self, activation_frames);
         if let Some(stack) = self.stack.lock().as_ref() {
             crate::kstack::record_task_usage(stack);
         }
