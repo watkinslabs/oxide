@@ -50,6 +50,8 @@ const WINE_DELETE_MENU: u64 = 0x1378;
 const WINE_REMOVE_MENU: u64 = 0x151d;
 const WINE_GET_MENU_BAR_INFO: u64 = 0x1418;
 const WINE_GET_MENU_ITEM_RECT: u64 = 0x141a;
+const WINE_DRAW_MENU_BAR: u64 = 0x139b;
+const WINE_DRAW_MENU_BAR_TEMP: u64 = 0x139c;
 const WINE_DESTROY_MENU: u64 = 0x1382;
 const WINE_ENABLE_MENU_ITEM: u64 = 0x13a7;
 const WINE_SET_MENU: u64 = 0x1569;
@@ -329,6 +331,21 @@ pub fn dispatch_raw(ordinal: u64, args: SyscallArgs) -> Option<u64> {
         raw[24..32].copy_from_slice(&menu.to_le_bytes());
         return Some(if uaccess::copy_to_user(args.a3, &raw).is_ok() { 1 } else { 0 });
     }
+    if ordinal == WINE_DRAW_MENU_BAR {
+        return Some(crate::nt_window::draw_menu_bar_for_current(args.a0));
+    }
+    if ordinal == WINE_DRAW_MENU_BAR_TEMP {
+        if args.a2 == 0 { return Some(0); }
+        let menu = if args.a3 != 0 { args.a3 } else { crate::nt_window::window_menu_for_current(args.a0).unwrap_or(0) };
+        let Some(rect) = crate::nt_window::menu_bar_rect_for_current_menu(args.a0, menu) else { return Some(0); };
+        let mut raw = [0u8; 16];
+        for (index, value) in [rect.left, rect.top, rect.right, rect.bottom].iter().enumerate() {
+            raw[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        return Some(if uaccess::copy_to_user(args.a2, &raw).is_ok() {
+            rect.bottom.saturating_sub(rect.top) as u64
+        } else { 0 });
+    }
     if ordinal == WINE_CREATE_MENU { return Some(crate::nt_window::create_menu_for_current(false)); }
     if ordinal == WINE_CREATE_POPUP_MENU { return Some(crate::nt_window::create_menu_for_current(true)); }
     if ordinal == WINE_DESTROY_MENU { return Some(win_bool(crate::nt_window::destroy_menu_for_current(args.a0))); }
@@ -419,7 +436,7 @@ mod tests {
 
     #[test]
     fn wine_user32_ordinals_match_the_generated_table() {
-        assert_eq![(WINE_CREATE_WINDOW_EX, 0x136b), (WINE_DESTROY_WINDOW, 0x1384), (WINE_GET_MESSAGE, 0x141b), (WINE_PEEK_MESSAGE, 0x14ca), (WINE_POST_MESSAGE, 0x14d0), (WINE_SHOW_WINDOW, 0x15bd), (WINE_BEGIN_PAINT, 0x1327), (WINE_END_PAINT, 0x13bc), (WINE_GET_DC, 0x13eb), (WINE_GET_DC_EX, 0x13ec), (WINE_INVALIDATE_RECT, 0x148c), (WINE_RELEASE_DC, 0x1509), (WINE_SET_WINDOW_POS, 0x15a7), (WINE_GET_TEXT_METRICS, 0x1229), (WINE_GET_TEXT_EXTENT_EX, 0x1227), (WINE_REGISTER_CLASS_EX, 0x14eb), (WINE_DISPATCH_MESSAGE, 0x138b), (WINE_MESSAGE_CALL, 0x14b5), (WINE_GET_CLASS_NAME, 0x13d9), (WINE_GET_CLASS_INFO_EX, 0x13d8), (WINE_UNREGISTER_CLASS, 0x15df), (WINE_NTUSER_INITIALIZE_CLIENT_PFN_ARRAYS, 0x147a), (WINE_NTUSER_GET_SYSTEM_DPI_FOR_PROCESS, 0x144b), (WINE_GET_WINDOW_PLACEMENT, 0x1463), (WINE_CALL_NO_PARAM, 0x133c), (WINE_CALL_ONE_PARAM, 0x133d), (WINE_CREATE_MENU, 0x1366), (WINE_CREATE_POPUP_MENU, 0x1368), (WINE_DELETE_MENU, 0x1378), (WINE_REMOVE_MENU, 0x151d), (WINE_THUNKED_MENU_ITEM_INFO, 0x15d0)] .iter().for_each(|(actual, expected)| assert_eq!(*actual, *expected));
+        assert_eq![(WINE_CREATE_WINDOW_EX, 0x136b), (WINE_DESTROY_WINDOW, 0x1384), (WINE_GET_MESSAGE, 0x141b), (WINE_PEEK_MESSAGE, 0x14ca), (WINE_POST_MESSAGE, 0x14d0), (WINE_SHOW_WINDOW, 0x15bd), (WINE_BEGIN_PAINT, 0x1327), (WINE_END_PAINT, 0x13bc), (WINE_GET_DC, 0x13eb), (WINE_GET_DC_EX, 0x13ec), (WINE_INVALIDATE_RECT, 0x148c), (WINE_RELEASE_DC, 0x1509), (WINE_SET_WINDOW_POS, 0x15a7), (WINE_GET_TEXT_METRICS, 0x1229), (WINE_GET_TEXT_EXTENT_EX, 0x1227), (WINE_REGISTER_CLASS_EX, 0x14eb), (WINE_DISPATCH_MESSAGE, 0x138b), (WINE_MESSAGE_CALL, 0x14b5), (WINE_GET_CLASS_NAME, 0x13d9), (WINE_GET_CLASS_INFO_EX, 0x13d8), (WINE_UNREGISTER_CLASS, 0x15df), (WINE_NTUSER_INITIALIZE_CLIENT_PFN_ARRAYS, 0x147a), (WINE_NTUSER_GET_SYSTEM_DPI_FOR_PROCESS, 0x144b), (WINE_GET_WINDOW_PLACEMENT, 0x1463), (WINE_CALL_NO_PARAM, 0x133c), (WINE_CALL_ONE_PARAM, 0x133d), (WINE_CREATE_MENU, 0x1366), (WINE_CREATE_POPUP_MENU, 0x1368), (WINE_DELETE_MENU, 0x1378), (WINE_REMOVE_MENU, 0x151d), (WINE_DRAW_MENU_BAR, 0x139b), (WINE_DRAW_MENU_BAR_TEMP, 0x139c), (WINE_THUNKED_MENU_ITEM_INFO, 0x15d0)] .iter().for_each(|(actual, expected)| assert_eq!(*actual, *expected));
         assert_eq!(WINE_DEF_WINDOW_PROC, 0x029e);
         assert_eq!(WINE_CALL_WINDOW_PROC, 0x02ab);
     }

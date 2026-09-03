@@ -548,10 +548,45 @@ pub(crate) fn menu_bar_rect_for_current(hwnd: u64) -> Option<ipc::win32_menu::Me
     let mut entries = GUI.lock();
     entries.retain(|entry| entry.group.upgrade().is_some());
     let index = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group)))?;
-    let menu = ipc::win32_menu::MenuId::from_raw(entries[index].state.menu(hwnd_id)?)?;
+    let menu = entries[index].state.menu(hwnd_id)?;
+    let menu = ipc::win32_menu::MenuId::from_raw(menu)?;
     let rect = entries[index].state.rect(hwnd_id)?;
     let origin = ipc::win32_menu::MenuRect { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
     entries[index].menus.bar_rect(menu, origin, ipc::win32_gdi::MENU_CHAR_WIDTH, ipc::win32_gdi::MENU_CHAR_HEIGHT, ipc::win32_gdi::MENU_BAR_HEIGHT).ok()
+}
+
+/// Resolve menu geometry for Wine's explicit `NtUserDrawMenuBarTemp` handle.
+/// The HWND rectangle and menu item layout remain owned by their native
+/// managers; this helper only joins those canonical records.
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) fn menu_bar_rect_for_current_menu(hwnd: u64, raw_menu: u64) -> Option<ipc::win32_menu::MenuRect> {
+    let hwnd = ipc::win32_window::WindowId::from_raw(u32::try_from(hwnd).ok()?)?;
+    let menu = ipc::win32_menu::MenuId::from_raw(u32::try_from(raw_menu).ok()?)?;
+    let cur = sched::live::current()?;
+    if !cur.is_nt_personality() { return None; }
+    let group = Arc::clone(&cur.thread_group);
+    let mut entries = GUI.lock();
+    entries.retain(|entry| entry.group.upgrade().is_some());
+    let index = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group)))?;
+    if !entries[index].menus.contains(menu) { return None; }
+    let rect = entries[index].state.rect(hwnd)?;
+    let origin = ipc::win32_menu::MenuRect { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
+    entries[index].menus.bar_rect(menu, origin, ipc::win32_gdi::MENU_CHAR_WIDTH, ipc::win32_gdi::MENU_CHAR_HEIGHT, ipc::win32_gdi::MENU_BAR_HEIGHT).ok()
+}
+
+/// Match Wine's `NtUserDrawMenuBar` frame-change invalidation.
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) fn draw_menu_bar_for_current(hwnd: u64) -> u64 {
+    let Some(hwnd) = ipc::win32_window::WindowId::from_raw(u32::try_from(hwnd).ok().unwrap_or(u32::MAX)) else { return STATUS_INVALID_PARAMETER; };
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    let group = Arc::clone(&cur.thread_group);
+    let mut entries = GUI.lock();
+    entries.retain(|entry| entry.group.upgrade().is_some());
+    let Some(index) = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group))) else { return STATUS_INVALID_HANDLE; };
+    if entries[index].state.menu(hwnd).is_none() { return STATUS_SUCCESS; }
+    if entries[index].state.invalidate(hwnd, None).is_err() { return STATUS_INVALID_HANDLE; }
+    STATUS_SUCCESS
 }
 
 /// Apply or query Wine's x86-64 MENUITEMINFO transaction against the one

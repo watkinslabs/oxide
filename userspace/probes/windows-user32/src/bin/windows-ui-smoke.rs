@@ -36,6 +36,7 @@ fn run() -> Result<(), String> {
         .map_err(|error| format!("append menu item: {error:?}"))?;
     if user32.set_menu(hwnd, Some(u64::MAX)).is_ok() { return Err("invalid menu handle was accepted".into()); }
     user32.set_menu(hwnd, Some(menu)).map_err(|error| format!("attach menu: {error:?}"))?;
+    user32.draw_menu_bar(hwnd).map_err(|error| format!("draw menu bar: {error:?}"))?;
     if user32.get_menu_item_count(menu).map_err(|error| format!("count menu items: {error:?}"))? != 1 { return Err("menu item count mismatch".into()); }
     let mut menu_text = vec![0u16; 16];
     let mut menu_info = MenuItemInfoW { cb_size: 80, f_mask: MIIM_ID | MIIM_SUBMENU | MIIM_STRING, f_type: 0, f_state: 0, w_id: 0, h_sub_menu: 0, hbmp_checked: 0, hbmp_unchecked: 0, dw_item_data: 0, dw_type_data: menu_text.as_mut_ptr() as u64, cch: menu_text.len() as u32, hbmp_item: 0 };

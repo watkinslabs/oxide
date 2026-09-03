@@ -19,6 +19,7 @@ const WINE_CREATE_MENU: u64 = 0x1366;
 const WINE_CREATE_POPUP_MENU: u64 = 0x1368;
 const WINE_SET_MENU: u64 = 0x1569;
 const WINE_DESTROY_MENU: u64 = 0x1382;
+const WINE_DRAW_MENU_BAR: u64 = 0x139b;
 const WINE_CALL_ONE_PARAM: u64 = 0x133d;
 const WINE_THUNKED_MENU_ITEM_INFO: u64 = 0x15d0;
 const CALL_ONE_PARAM_GET_MENU_ITEM_COUNT: u64 = 4;
@@ -114,6 +115,9 @@ impl User32 {
 
     /// Release a process-owned menu and its attached submenu tree. # C: O(N_menus + N_items) plus kernel service
     pub fn destroy_menu(&self, menu: u64) -> Result<(), WindowError> { invoke(NtService::WineSyscall, [WINE_DESTROY_MENU, menu, 0, 0, 0, 0]).map(|_| ()) }
+
+    /// Invalidate the native frame after changing a window menu. # C: O(1) plus kernel service
+    pub fn draw_menu_bar(&self, hwnd: u64) -> Result<(), WindowError> { invoke(NtService::WineSyscall, [WINE_DRAW_MENU_BAR, hwnd, 0, 0, 0, 0]).map(|_| ()) }
 
     /// Append one UTF-16 menu item using Wine's native MENUITEMINFO transaction. # C: O(N_items) plus usercopy
     pub fn append_menu_w(&self, menu: u64, flags: u32, id: u32, text: &[u16], submenu: Option<u64>) -> Result<(), WindowError> {
