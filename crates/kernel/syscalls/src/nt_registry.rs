@@ -29,6 +29,10 @@ const STATUS_PENDING: u64 = 0x0000_0103;
 const STATUS_ACCESS_DENIED: u64 = 0xc000_0022;
 const KEY_NOTIFY: u32 = 0x0010;
 const SYNCHRONIZE_ACCESS: u32 = 0x0010_0000;
+const KEY_QUERY_VALUE: u32 = 0x0001;
+const KEY_SET_VALUE: u32 = 0x0002;
+const KEY_ENUMERATE_SUB_KEYS: u32 = 0x0008;
+const DELETE_ACCESS: u32 = 0x0001_0000;
 
 struct RegistryWatch { key: u64, filter: u64, event: Arc<sched::nt_object::NtEvent>, io_status: u64 }
 static REGISTRY_WATCHES: Spinlock<Vec<RegistryWatch>, RegistryWatchLock> = Spinlock::new(Vec::new());
@@ -220,7 +224,7 @@ fn decode_reply(frame: &[u8]) -> Option<Reply> {
 fn flush_key_native(call: NtCall) -> u64 {
     let Some(current) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !current.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
-    let Some(remote) = remote_key(&current, call.args.a0 as u32) else { return STATUS_INVALID_PARAMETER; };
+    let Some(remote) = remote_key(&current, call.args.a0 as u32, 0) else { return STATUS_INVALID_PARAMETER; };
     match transact(&frame_key(registry_wire::FLUSH, remote)) { Some(Reply::Success) => STATUS_SUCCESS, Some(reply) => reply_status(reply), None => STATUS_UNSUCCESSFUL }
 }
 
@@ -228,7 +232,7 @@ fn query_key_native(call: NtCall) -> u64 {
     let Some(current) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     let key = call.args.a0 as u32; let class = call.args.a1; let info = call.args.a2; let length = call.args.a3; let result = call.args.a4;
     if !current.is_nt_personality() || info == 0 || length > u32::MAX as u64 || result > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
-    let Some(remote) = remote_key(&current, key) else { return STATUS_INVALID_PARAMETER; };
+    let Some(remote) = remote_key(&current, key, 0) else { return STATUS_INVALID_PARAMETER; };
     let Some(Reply::KeyInfo { name, subkeys, max_subkey, values, max_value_name, max_value_data }) = transact(&frame_key(registry_wire::QUERY_KEY, remote)) else { return STATUS_UNSUCCESSFUL; };
     let name: Vec<u16> = name.encode_utf16().collect(); let name_bytes = name.len().checked_mul(2).unwrap_or(usize::MAX);
     let (fixed, record) = match class {
@@ -254,7 +258,7 @@ fn enumerate_value_native(call: NtCall) -> u64 {
     let key = call.args.a0 as u32; let index = call.args.a1; let class = call.args.a2;
     let info = call.args.a3; let length = call.args.a4; let result = call.args.a5;
     if !current.is_nt_personality() || info == 0 || index > u32::MAX as u64 || length > u32::MAX as u64 || result > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
-    let Some(remote) = remote_key(&current, key) else { return STATUS_INVALID_PARAMETER; };
+    let Some(remote) = remote_key(&current, key, KEY_QUERY_VALUE) else { return STATUS_INVALID_PARAMETER; };
     let mut frame = Vec::new(); frame.push(registry_wire::ENUM_VALUES); frame.extend_from_slice(&remote.to_le_bytes());
     let Some(Reply::Values(values)) = transact(&frame) else { return STATUS_UNSUCCESSFUL; };
     let Some((name, kind, data)) = values.get(index as usize) else { return STATUS_NO_MORE_ENTRIES; };
@@ -277,7 +281,7 @@ fn enumerate_key_native(call: NtCall) -> u64 {
     let key = call.args.a0 as u32; let index = call.args.a1; let class = call.args.a2; let info = call.args.a3; let length = call.args.a4; let result = call.args.a5;
     if !current.is_nt_personality() || info == 0 || index > u32::MAX as u64 || length > u32::MAX as u64 || result > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
     if index == u32::MAX as u64 { return STATUS_NO_MORE_ENTRIES; }
-    let Some(remote) = remote_key(&current, key) else { return STATUS_INVALID_PARAMETER; };
+    let Some(remote) = remote_key(&current, key, KEY_ENUMERATE_SUB_KEYS) else { return STATUS_INVALID_PARAMETER; };
     let mut frame = Vec::new(); frame.push(registry_wire::ENUM_KEYS); frame.extend_from_slice(&remote.to_le_bytes());
     let Some(Reply::Keys(keys)) = transact(&frame) else { return STATUS_UNSUCCESSFUL; };
     let Some(child_name) = keys.get(index as usize) else { return STATUS_NO_MORE_ENTRIES; };
@@ -317,7 +321,7 @@ fn query_value_native(call: NtCall) -> u64 {
 fn query_value_parts(key: u32, name_ptr: u64, class: u64, info: u64, length: u64, result: u64) -> u64 {
     let Some(current) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !current.is_nt_personality() || name_ptr == 0 || info == 0 || length > u32::MAX as u64 || result > u32::MAX as u64 || class != KEY_VALUE_PARTIAL_INFORMATION { return STATUS_INVALID_PARAMETER; }
-    let Some(remote) = remote_key(&current, key) else { return STATUS_INVALID_PARAMETER; };
+    let Some(remote) = remote_key(&current, key, KEY_QUERY_VALUE) else { return STATUS_INVALID_PARAMETER; };
     let Some(name) = read_unicode(name_ptr) else { return STATUS_INVALID_PARAMETER; };
     let Some(reply) = transact(&frame_query(remote, &name)) else { return STATUS_UNSUCCESSFUL; };
     let Reply::Value { kind, data } = reply else { return reply_status(reply); };
@@ -341,7 +345,7 @@ fn set_value_native(call: NtCall) -> u64 {
 fn delete_value_native(call: NtCall) -> u64 {
     let Some(current) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !current.is_nt_personality() || call.args.a1 == 0 { return STATUS_INVALID_PARAMETER; }
-    let Some(remote) = remote_key(&current, call.args.a0 as u32) else { return STATUS_INVALID_PARAMETER; };
+    let Some(remote) = remote_key(&current, call.args.a0 as u32, KEY_SET_VALUE) else { return STATUS_INVALID_PARAMETER; };
     let Some(name) = read_unicode(call.args.a1) else { return STATUS_INVALID_PARAMETER; };
     match transact(&frame_delete_value(remote, &name)) {
         Some(Reply::Success) => { notify_registry_key(remote); STATUS_SUCCESS }
@@ -353,14 +357,14 @@ fn delete_value_native(call: NtCall) -> u64 {
 fn delete_key_native(call: NtCall) -> u64 {
     let Some(current) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !current.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
-    let Some(remote) = remote_key(&current, call.args.a0 as u32) else { return STATUS_INVALID_PARAMETER; };
+    let Some(remote) = remote_key(&current, call.args.a0 as u32, DELETE_ACCESS) else { return STATUS_INVALID_PARAMETER; };
     match transact(&frame_delete_key(remote)) { Some(Reply::Success) => { notify_registry_key(remote); STATUS_SUCCESS }, Some(reply) => reply_status(reply), None => STATUS_UNSUCCESSFUL }
 }
 
 fn set_value_parts(key: u32, name_ptr: u64, title: u64, kind: u64, data: u64, size: u64) -> u64 {
     let Some(current) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !current.is_nt_personality() || name_ptr == 0 || title != 0 || kind > u32::MAX as u64 || size > MAX_REGISTRY_VALUE as u64 || size != 0 && data == 0 { return STATUS_INVALID_PARAMETER; }
-    let Some(remote) = remote_key(&current, key) else { return STATUS_INVALID_PARAMETER; };
+    let Some(remote) = remote_key(&current, key, KEY_SET_VALUE) else { return STATUS_INVALID_PARAMETER; };
     let Some(name) = read_unicode(name_ptr) else { return STATUS_INVALID_PARAMETER; };
     let mut bytes = Vec::new(); if bytes.try_reserve_exact(size as usize).is_err() { return STATUS_NO_MEMORY; } bytes.resize(size as usize, 0);
     if size != 0 && uaccess::copy_from_user(&mut bytes, data).is_err() { return STATUS_ACCESS_VIOLATION; }
@@ -377,8 +381,8 @@ fn reply_status(reply: Reply) -> u64 {
     }
 }
 
-fn remote_key(current: &sched::Task, raw: u32) -> Option<u64> {
-    let object = current.thread_group.nt_handles().get(sched::nt_object::NtHandle::from_raw(raw), 0)?;
+fn remote_key(current: &sched::Task, raw: u32, access: u32) -> Option<u64> {
+    let object = current.thread_group.nt_handles().get(sched::nt_object::NtHandle::from_raw(raw), access)?;
     (object.kind() == sched::nt_object::NtObjectType::Key).then_some(object.id())
 }
 
@@ -388,7 +392,7 @@ fn key_name(attributes: u64, current: &sched::Task) -> Option<(u8, Option<u64>, 
     let root = u64::from_le_bytes(bytes[8..16].try_into().ok()?);
     let object_name = u64::from_le_bytes(bytes[16..24].try_into().ok()?);
     let name = read_unicode(object_name)?;
-    if let Some(remote) = (root != 0).then(|| remote_key(current, root as u32)).flatten() { return Some((0, Some(remote), name)); }
+    if let Some(remote) = (root != 0).then(|| remote_key(current, root as u32, 0)).flatten() { return Some((0, Some(remote), name)); }
     if root != 0 { return None; }
     let folded = name.to_ascii_lowercase();
     for (prefix, code) in [("\\registry\\machine\\software\\classes", 2u8), ("\\registry\\user\\current", 1u8), ("\\registry\\machine", 0u8), ("\\registry\\user", 1u8)] {
