@@ -45,6 +45,7 @@ const WM_GETTEXT: u64 = 0x000d;
 const WM_GETTEXTLENGTH: u64 = 0x000e;
 const WM_NCCREATE: u64 = 0x0081;
 const WM_NCDESTROY: u64 = 0x0082;
+const WM_NCHITTEST: u64 = 0x0084;
 
 #[cfg(target_os = "oxide-kernel")]
 fn read_args(pointer: u64) -> Option<[u64; 17]> {
@@ -125,6 +126,14 @@ pub fn dispatch(call: NtCall) -> u64 {
             if args[5] == WINE_DEF_WINDOW_PROC {
                 if message == WM_NCCREATE { return (lparam != 0) as u64; }
                 if message == WM_NCDESTROY { return STATUS_SUCCESS; }
+                if message == WM_NCHITTEST {
+                    if hwnd > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
+                    let Some((rect, _)) = crate::nt_window::window_rect_for_current(hwnd as u32) else { return STATUS_INVALID_PARAMETER; };
+                    return match ipc::win32_window::default_window_proc_for_rect(WM_NCHITTEST as u32, rect, lparam as i64) {
+                        ipc::win32_window::DefaultWindowResult::Return(value) => value as u64,
+                        ipc::win32_window::DefaultWindowResult::RequestDestroy => STATUS_SUCCESS,
+                    };
+                }
                 if message == WM_SETTEXT {
                     return win_bool(native(NtService::SetWindowText, SyscallArgs { a0: hwnd, a1: lparam, a2: 0, a3: 0, a4: 0, a5: 0 }));
                 }
