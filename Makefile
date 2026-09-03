@@ -118,6 +118,7 @@ test: windows-compat-test
 # crates: it prevents a workspace-selection change from silently removing the
 # compatibility gate.
 windows-compat-test:
+	./tools/test-windows-notepad-harness.sh
 	$(WARNING_RUN) $(CARGO) test -p pe -p elf-load -p syscall -p syscalls -p sched -p ipc --lib --quiet -- --test-threads=1
 	$(WARNING_RUN) $(CARGO) test --manifest-path userspace/probes/Cargo.toml -p windows-runtime --quiet
 	$(WARNING_RUN) $(CARGO) test --manifest-path userspace/probes/Cargo.toml -p windows-registry --quiet
@@ -901,7 +902,7 @@ WINDOWS_NOTEPAD_SMOKE_TIMEOUT ?= 900
 smoke-windows-notepad-x86:
 	OXIDE_WINDOWS_NOTEPAD_SMOKE=1 OXIDE_QEMU_9P_SHARE=/usr/lib64/wine OXIDE_QEMU_9P_TAG=windowswine \
 	OXIDE_QEMU_9P_SHARE_2=/usr/share/wine/nls OXIDE_QEMU_9P_TAG_2=winenls \
-	SMOKE_MARKER='[WINDOWS-PE-COMMIT] success' SMOKE_ALIVE_MARKER='[WINDOWS-PE-COMMIT] success' \
+	SMOKE_MARKER='[WINDOWS-PE-START] entry=' SMOKE_ALIVE_MARKER='[WINDOWS-PE-START] entry=' \
 	SMOKE_ALIVE_READY_MARKER='sh-5.2#' SMOKE_KEEP_LOG_DIR=target/windows-smoke-logs \
 	SMOKE_ALIVE_CMD=/usr/local/bin/windows-notepad-smoke \
 	SMOKE_RX_MARKER= ./tools/boot-smoke.sh x86 $(WINDOWS_NOTEPAD_SMOKE_TIMEOUT)

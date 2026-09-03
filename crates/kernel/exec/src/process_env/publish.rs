@@ -1,6 +1,8 @@
 //! Transactional publication of one dynamically mapped PE in the PEB lists.
 
-use alloc::{vec, vec::Vec};
+use alloc::vec::Vec;
+#[cfg(any(target_os = "oxide-kernel", test))]
+use alloc::vec;
 use super::{Error, NtModuleInput, API_SET_OFF, BLOCK_BYTES, LDR_OFF, MAX_MODULES, MOD_OFF, MOD_STRIDE, STR_OFF};
 
 const LISTS: [(usize, usize); 3] = [(0x10, 0), (0x20, 0x10), (0x30, 0x20)];
