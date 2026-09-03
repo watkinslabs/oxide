@@ -84,7 +84,11 @@ fn getparam(driver: Option<Arc<dyn DrmDriver>>, arg: u64) -> i64 {
     let Some(value) = driver.as_ref().and_then(|d| d.virtgpu_getparam(param)) else {
         return -(Errno::Enotty.as_i32() as i64);
     };
-    let Ok(value) = value else { return -(Errno::Einval.as_i32() as i64); };
+    let value = match value {
+        Ok(value) => value,
+        Err(crate::Error::NoEnt) => return -(Errno::Enoent.as_i32() as i64),
+        Err(_) => return -(Errno::Einval.as_i32() as i64),
+    };
     if crate::uarg::write_arg(value_ptr, value).is_err() {
         return -(Errno::Efault.as_i32() as i64);
     }
