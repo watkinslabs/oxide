@@ -649,8 +649,9 @@ fn io(cur: &sched::Task, addr: u64, write: bool) -> u64 {
 }
 
 fn write_io_status(addr: u64, status: u64, information: u64) {
+    let Some(information_addr) = addr.checked_add(8) else { return; };
     let _ = uaccess::put_user_u64(addr, status);
-    let _ = uaccess::put_user_u64(addr + 8, information);
+    let _ = uaccess::put_user_u64(information_addr, information);
 }
 
 fn post_completion(object: &sched::nt_object::NtObject, overlapped: u64, status: u64, information: u64) {
@@ -659,9 +660,13 @@ fn post_completion(object: &sched::nt_object::NtObject, overlapped: u64, status:
 }
 
 fn query_information(cur: &sched::Task, addr: u64) -> u64 {
+    let Some(io_address) = addr.checked_add(8) else { return STATUS_INVALID_PARAMETER; };
+    let Some(information_address) = addr.checked_add(16) else { return STATUS_INVALID_PARAMETER; };
+    let Some(length_address) = addr.checked_add(24) else { return STATUS_INVALID_PARAMETER; };
+    let Some(class_address) = addr.checked_add(28) else { return STATUS_INVALID_PARAMETER; };
     let (handle, io_status, information, length, class) = match (
-        read_u32(addr), read_u64(addr + 8), read_u64(addr + 16),
-        read_u32(addr + 24), read_u32(addr + 28)) {
+        read_u32(addr), read_u64(io_address), read_u64(information_address),
+        read_u32(length_address), read_u32(class_address)) {
         (Ok(handle), Ok(io_status), Ok(information), Ok(length), Ok(class)) =>
             (handle, io_status, information, length, class),
         _ => return STATUS_INVALID_PARAMETER,
