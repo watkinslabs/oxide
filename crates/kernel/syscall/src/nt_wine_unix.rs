@@ -10,6 +10,18 @@ pub struct WineLoadSoDllParams {
     pub module: UserPtr<u64>,
 }
 
+/// x86-64 layout of Wine's builtin-unwind request. The pointed-to dispatcher
+/// and context retain their native Wine layouts and are validated by the
+/// owner that implements the unwind operation.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct WineUnwindBuiltinDllParams {
+    pub unwind_type: u32,
+    pub padding: u32,
+    pub dispatch: UserPtr<u8>,
+    pub context: UserPtr<u8>,
+}
+
 /// Windows `UNICODE_STRING` embedded in a Wine Unix-call request.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -53,7 +65,7 @@ impl WineUnixFunction {
 
 #[cfg(test)]
 mod tests {
-    use super::{WineLoadSoDllParams, WineUnicodeString, WineUnixFunction};
+    use super::{WineLoadSoDllParams, WineUnicodeString, WineUnixFunction, WineUnwindBuiltinDllParams};
 
     #[test]
     fn decodes_the_complete_ordered_table() {
@@ -84,5 +96,13 @@ mod tests {
         assert_eq!(core::mem::size_of::<WineLoadSoDllParams>(), 24);
         assert_eq!(core::mem::offset_of!(WineLoadSoDllParams, nt_name), 0);
         assert_eq!(core::mem::offset_of!(WineLoadSoDllParams, module), 16);
+    }
+
+    #[test]
+    fn builtin_unwind_request_preserves_x64_pointer_alignment() {
+        assert_eq!(core::mem::size_of::<WineUnwindBuiltinDllParams>(), 24);
+        assert_eq!(core::mem::offset_of!(WineUnwindBuiltinDllParams, unwind_type), 0);
+        assert_eq!(core::mem::offset_of!(WineUnwindBuiltinDllParams, dispatch), 8);
+        assert_eq!(core::mem::offset_of!(WineUnwindBuiltinDllParams, context), 16);
     }
 }
