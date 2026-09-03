@@ -48,6 +48,7 @@ const WINE_CREATE_MENU: u64 = 0x1366;
 const WINE_DESTROY_MENU: u64 = 0x1382;
 const WINE_ENABLE_MENU_ITEM: u64 = 0x13a7;
 const WINE_SET_MENU: u64 = 0x1569;
+const WINE_THUNKED_MENU_ITEM_INFO: u64 = 0x15d0;
 const DCX_WINDOW: u64 = 0x0000_0001;
 const WINDOWPLACEMENT_BYTES: u64 = 44;
 const CALL_NO_PARAM_GET_DIALOG_BASE_UNITS: u64 = 1;
@@ -174,6 +175,7 @@ pub fn dispatch(call: NtCall) -> u64 {
         WINE_CHECK_MENU_ITEM => crate::nt_window::check_menu_item_for_current(args[0], args[1], args[2]),
         WINE_ENABLE_MENU_ITEM => crate::nt_window::enable_menu_item_for_current(args[0], args[1], args[2]),
         WINE_SET_MENU => win_bool(crate::nt_window::set_window_menu_for_current(args[0], (args[1] != 0).then_some(args[1] as u32)).map(|_| STATUS_SUCCESS).unwrap_or(STATUS_INVALID_PARAMETER)),
+        WINE_THUNKED_MENU_ITEM_INFO => crate::nt_window::thunked_menu_item_info(args[0], args[1], args[2], args[3], args[4]),
         WINE_UNREGISTER_CLASS => {
             let Some(name) = read_unicode_string(args[0]) else { return 0; };
             win_bool(crate::nt_window::unregister_class_for_current(&name).then_some(STATUS_SUCCESS).unwrap_or(STATUS_INVALID_PARAMETER))

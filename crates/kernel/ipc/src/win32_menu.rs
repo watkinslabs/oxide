@@ -17,8 +17,8 @@ impl MenuId {
     pub fn from_raw(raw: u32) -> Option<Self> { (raw != 0).then_some(Self(raw)) }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct MenuItem { pub id: u32, pub state: u32 }
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MenuItem { pub id: u32, pub state: u32, pub text: Vec<u16>, pub submenu: Option<u32> }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum MenuError { NoSuchMenu, NoSuchItem, InvalidPosition }
@@ -60,6 +60,27 @@ impl MenuManager {
         Ok(())
     }
 
+    pub fn count(&self, menu: MenuId) -> Result<usize, MenuError> { Ok(self.menus[self.index(menu).ok_or(MenuError::NoSuchMenu)?].1.items.len()) }
+    pub fn item(&self, menu: MenuId, id: u32, flags: u32) -> Result<&MenuItem, MenuError> {
+        let record = self.menus.get(self.index(menu).ok_or(MenuError::NoSuchMenu)?).ok_or(MenuError::NoSuchMenu)?;
+        if flags & MF_BYPOSITION != 0 { record.1.items.get(id as usize).ok_or(MenuError::NoSuchItem) } else { record.1.items.iter().find(|item| item.id == id).ok_or(MenuError::NoSuchItem) }
+    }
+    pub fn position(&self, menu: MenuId, id: u32, flags: u32) -> Result<usize, MenuError> {
+        let record = self.menus.get(self.index(menu).ok_or(MenuError::NoSuchMenu)?).ok_or(MenuError::NoSuchMenu)?;
+        if flags & MF_BYPOSITION != 0 { ((id as usize) < record.1.items.len()).then_some(id as usize).ok_or(MenuError::NoSuchItem) } else { record.1.items.iter().position(|item| item.id == id).ok_or(MenuError::NoSuchItem) }
+    }
+    pub fn item_mut_by_position(&mut self, menu: MenuId, position: usize) -> Result<&mut MenuItem, MenuError> {
+        self.record_mut(menu).ok_or(MenuError::NoSuchMenu)?.items.get_mut(position).ok_or(MenuError::NoSuchItem)
+    }
+    pub fn set_item(&mut self, menu: MenuId, position: usize, id: Option<u32>, state: Option<u32>, text: Option<Vec<u16>>, submenu: Option<Option<u32>>) -> Result<(), MenuError> {
+        let item = self.item_mut_by_position(menu, position)?;
+        if let Some(id) = id { item.id = id; }
+        if let Some(state) = state { item.state = state & MF_STATE_MASK; }
+        if let Some(text) = text { item.text = text; }
+        if let Some(submenu) = submenu { item.submenu = submenu; }
+        Ok(())
+    }
+
     /// Return the prior checked bit and apply the requested checked bit.
     /// # C: O(N_menus + N_items)
     pub fn check(&mut self, menu: MenuId, id: u32, flags: u32) -> Result<u32, MenuError> {
@@ -95,7 +116,7 @@ mod tests {
     fn menu_state_returns_previous_bits_and_preserves_other_state() {
         let mut menus = MenuManager::new();
         let menu = menus.create().unwrap();
-        menus.insert(menu, 0, MenuItem { id: 7, state: MF_DISABLED }).unwrap();
+        menus.insert(menu, 0, MenuItem { id: 7, state: MF_DISABLED, text: Vec::new(), submenu: None }).unwrap();
         assert_eq!(menus.check(menu, 7, MF_CHECKED), Ok(0));
         assert_eq!(menus.check(menu, 7, 0), Ok(MF_CHECKED));
         assert_eq!(menus.enable(menu, 7, 0), Ok(MF_DISABLED));
@@ -106,8 +127,8 @@ mod tests {
     fn position_and_command_lookup_are_distinct() {
         let mut menus = MenuManager::new();
         let menu = menus.create().unwrap();
-        menus.insert(menu, 0, MenuItem { id: 11, state: 0 }).unwrap();
-        menus.insert(menu, 1, MenuItem { id: 22, state: 0 }).unwrap();
+        menus.insert(menu, 0, MenuItem { id: 11, state: 0, text: Vec::new(), submenu: None }).unwrap();
+        menus.insert(menu, 1, MenuItem { id: 22, state: 0, text: Vec::new(), submenu: None }).unwrap();
         assert_eq!(menus.check(menu, 1, MF_BYPOSITION | MF_CHECKED), Ok(0));
         assert_eq!(menus.check(menu, 11, MF_CHECKED), Ok(0));
         assert_eq!(menus.check(menu, 1, MF_CHECKED), Err(MenuError::NoSuchItem));
@@ -118,6 +139,18 @@ mod tests {
         let mut menus = MenuManager::new();
         let menu = menus.create().unwrap();
         menus.destroy(menu).unwrap();
-        assert_eq!(menus.insert(menu, 0, MenuItem { id: 1, state: 0 }), Err(MenuError::NoSuchMenu));
+        assert_eq!(menus.insert(menu, 0, MenuItem { id: 1, state: 0, text: Vec::new(), submenu: None }), Err(MenuError::NoSuchMenu));
+    }
+
+    #[test]
+    fn item_publication_preserves_order_and_updates_selected_fields() {
+        let mut menus = MenuManager::new();
+        let menu = menus.create().unwrap();
+        menus.insert(menu, 0, MenuItem { id: 3, state: 0, text: Vec::new(), submenu: None }).unwrap();
+        assert_eq!(menus.count(menu), Ok(1));
+        menus.set_item(menu, 0, Some(9), Some(MF_CHECKED), Some(alloc::vec![65, 0]), Some(Some(2))).unwrap();
+        assert_eq!(menus.item(menu, 0, MF_BYPOSITION).unwrap().id, 9);
+        assert_eq!(menus.item(menu, 9, 0).unwrap().submenu, Some(2));
+        assert_eq!(menus.set_item(menu, 4, Some(1), None, None, None), Err(MenuError::NoSuchItem));
     }
 }
