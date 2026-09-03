@@ -63,7 +63,7 @@ pub fn discover_modules<'a, S: ModuleSource<'a>>(root_name: &'a [u8], root_blob:
         let dependencies = modules[index].image.dependencies()?;
         for dependency in dependencies {
             let resolved = crate::apiset::target(dependency).unwrap_or(dependency);
-            if modules.iter().any(|module| ascii_eq_ignore_case(module.name, resolved)) { continue; }
+            if modules.iter().any(|module| crate::loader_name::matches_ascii(module.name, resolved)) { continue; }
             let blob = source.load(resolved).ok_or(Error::Unsupported)?;
             modules.push(Module { name: resolved, image: parse(blob)? });
         }
@@ -93,7 +93,7 @@ pub fn discover_owned_modules_with_builtins<'a, S: ModuleSource<'a>, F: Fn(&[u8]
         for dependency in dependencies {
             let resolved = crate::apiset::target(&dependency).unwrap_or(&dependency);
             if is_builtin(resolved) { continue; }
-            if modules.iter().any(|module| ascii_eq_ignore_case(&module.name, resolved)) { continue; }
+            if modules.iter().any(|module| crate::loader_name::matches_ascii(&module.name, resolved)) { continue; }
             let blob = source.load(resolved).ok_or(Error::Unsupported)?;
             modules.push(OwnedModule { name: resolved.to_vec(), blob: blob.to_vec() });
         }

@@ -25,7 +25,7 @@ pub(crate) fn imports_image(dependency: &[u8]) -> Vec<u8> {
 
 struct OneModule<'a> { name: &'a [u8], blob: &'a [u8] }
 impl<'a> ModuleSource<'a> for OneModule<'a> {
-    fn load(&self, name: &[u8]) -> Option<&'a [u8]> { if name.eq_ignore_ascii_case(self.name) { Some(self.blob) } else { None } }
+    fn load(&self, name: &[u8]) -> Option<&'a [u8]> { if crate::loader_name::matches_ascii(name, self.name) { Some(self.blob) } else { None } }
 }
 
 #[test] fn parses_pe32_plus_and_materializes_sections() {
@@ -68,6 +68,16 @@ fn discovers_transitive_modules_once_and_accepts_cycles() {
     assert_eq!(modules.len(), 2);
     assert_eq!(modules[0].name, b"root.exe");
     assert_eq!(modules[1].name, b"dep.dll");
+}
+
+#[test]
+fn graph_identity_treats_omitted_dll_suffix_as_the_same_module() {
+    let root = imports_image(b"dep");
+    let dep = imports_image(b"dep.dll");
+    let source = OneModule { name: b"dep.dll", blob: &dep };
+    let modules = discover_owned_modules(b"root.exe", &root, &source).unwrap();
+    assert_eq!(modules.len(), 2);
+    assert_eq!(modules[1].name, b"dep");
 }
 
 #[test]
