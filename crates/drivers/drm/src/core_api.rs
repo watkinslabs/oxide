@@ -52,7 +52,7 @@ pub struct PlaneInfo {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum VirtgpuCaps { NoCapsets }
+pub enum VirtgpuCaps { NoCapsets, Available }
 
 pub trait DrmDriver: Send + Sync {
     fn name(&self) -> &'static str;
@@ -79,6 +79,11 @@ pub trait DrmDriver: Send + Sync {
     /// caller returns ENOTTY just as DRM core does for an unregistered ioctl.
     /// # C: O(1)
     fn virtgpu_get_caps(&self, _arg: u64) -> Option<VirtgpuCaps> { None }
+
+    /// Return one validated, driver-owned capset payload for the DRM node to
+    /// copy to userspace. The node owns pointer validation and truncation.
+    /// # C: O(capset bytes)
+    fn virtgpu_capset(&self, _id: u32, _version: u32) -> Option<Vec<u8>> { None }
 
     fn crtc_ids(&self) -> Vec<u32> { Vec::new() }
     fn connector_ids(&self) -> Vec<u32> { Vec::new() }

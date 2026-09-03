@@ -1,4 +1,5 @@
 use super::super::*;
+use alloc::vec;
 
 const CTRL_HEADER_BYTES: usize = 24;
 const RECT_BYTES: usize = 16;
@@ -105,6 +106,16 @@ fn capset_info_response_is_validated_before_use() {
     assert_eq!(parse_capset_info(&resp[..39]), Err(Error::Inval));
     write_u32_le(&mut resp, 0, VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER);
     assert_eq!(parse_capset_info(&resp), Err(Error::BadResp(VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER)));
+}
+
+#[test]
+fn capset_payload_requires_success_header_and_copies_only_payload() {
+    let mut resp = vec![0u8; 28];
+    write_u32_le(&mut resp, 0, VIRTIO_GPU_RESP_OK_CAPSET);
+    resp[24..].copy_from_slice(&[1, 2, 3, 4]);
+    assert_eq!(parse_capset(&resp, 1, 1).unwrap(), vec![1, 2, 3, 4]);
+    write_u32_le(&mut resp, 0, VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER);
+    assert_eq!(parse_capset(&resp, 1, 1), Err(Error::BadResp(VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER)));
 }
 
 #[test]

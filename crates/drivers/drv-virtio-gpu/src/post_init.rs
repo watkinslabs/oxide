@@ -11,15 +11,22 @@ struct ProbeCommandBuffer {
     dma: u64,
     bdf: pci::Bdf,
     va: *mut u8,
+    map_bytes: usize,
+    order: pmm::Order,
     owned: bool,
 }
 
 impl ProbeCommandBuffer {
     fn alloc(hhdm: u64, bdf: pci::Bdf) -> Option<Self> {
-        let pa = pmm::setup::alloc_raw_frame()?;
-        let Some(dma) = iommu::map_dma(bdf, pa, hal::PAGE_SIZE_BYTES as usize) else {
+        Self::alloc_order(hhdm, bdf, pmm::Order(0))
+    }
+
+    fn alloc_order(hhdm: u64, bdf: pci::Bdf, order: pmm::Order) -> Option<Self> {
+        let map_bytes = (hal::PAGE_SIZE_BYTES as usize).checked_shl(order.0 as u32)?;
+        let pa = pmm::setup::alloc_contig(order)?;
+        let Some(dma) = iommu::map_dma(bdf, pa, map_bytes) else {
             // SAFETY: no device mapping exists for this failed allocation.
-            unsafe { pmm::setup::free_one_frame(pa); }
+            unsafe { pmm::setup::free_contig(pa, order); }
             return None;
         };
         Some(Self {
@@ -27,6 +34,8 @@ impl ProbeCommandBuffer {
             dma,
             bdf,
             va: hhdm.wrapping_add(pa) as *mut u8,
+            map_bytes,
+            order,
             owned: true,
         })
     }
@@ -39,14 +48,14 @@ impl ProbeCommandBuffer {
 impl Drop for ProbeCommandBuffer {
     fn drop(&mut self) {
         if self.owned {
-            if !iommu::unmap_dma(self.bdf, self.dma, hal::PAGE_SIZE_BYTES as usize) {
+            if !iommu::unmap_dma(self.bdf, self.dma, self.map_bytes) {
                 return;
             }
             // SAFETY: `owned` still set means this probe never handed the frame
             // to the device — every path that publishes a descriptor naming it,
             // or that times out with one outstanding, calls `disarm` first — so
             // the frame is this struct's alone and is freed exactly once.
-            unsafe { pmm::setup::free_one_frame(self.pa); }
+            unsafe { pmm::setup::free_contig(self.pa, self.order); }
         }
     }
 }

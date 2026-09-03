@@ -55,6 +55,13 @@ pub fn write_str(dst: u64, len: u64, bytes: &[u8]) -> Result<(), Errno> {
     uaccess::copy_to_user(dst, &bytes[..n])
 }
 
+/// Copy an arbitrary driver-owned byte payload to a user buffer through the
+/// fault-recoverable uaccess path. # C: O(bytes)
+pub fn write_bytes(dst: u64, bytes: &[u8]) -> Result<(), Errno> {
+    if bytes.is_empty() { return Ok(()); }
+    uaccess::copy_to_user(dst, bytes)
+}
+
 /// Largest DRM ioctl argument struct handled through [`read_arg`]/[`write_arg`].
 /// `DrmModeFbCmd2` (4 handles + 4 pitches + 4 offsets + 4 modifiers) is the
 /// biggest at 88 bytes; the buffer is sized with headroom and every call checks.

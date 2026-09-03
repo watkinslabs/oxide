@@ -95,7 +95,7 @@ pub fn get_display_info(
         return false;
     }
     let capsets = if drv_features & (1u64 << crate::VIRTIO_GPU_F_VIRGL) != 0 {
-        match fetch_capsets(resources.device_cfg_va, cmd_buf.va, cmd_buf.dma, ctrlq.as_mut().unwrap(), waits) {
+        match fetch_capsets(resources.device_cfg_va, hhdm, bdf, cmd_buf.va, cmd_buf.dma, ctrlq.as_mut().unwrap(), waits) {
             Some(value) => value,
             None => {
                 cmd_buf.disarm();
@@ -425,7 +425,7 @@ pub(super) unsafe fn submit_raw_wait(
 /// a malformed VIRGL advertisement fails probe rather than exposing a partial
 /// graphics capability set to userspace.
 fn fetch_capsets(
-    device_cfg_va: u64, cmd_buf_va: *mut u8, cmd_buf_dma: u64,
+    device_cfg_va: u64, hhdm: u64, bdf: pci::Bdf, cmd_buf_va: *mut u8, cmd_buf_dma: u64,
     ctrlq: &mut virtio::VirtioSplitQueue, waits: &CompletionWaits<'_>,
 ) -> Option<Vec<crate::VirtioGpuCapsetInfo>> {
     const NUM_CAPSETS_OFF: usize = 12;
@@ -457,7 +457,29 @@ fn fetch_capsets(
         if info.capset_id == 0 || info.capset_id > MAX_CAPSET_ID || info.capset_max_version == 0 || info.capset_max_size == 0 {
             return None;
         }
-        capsets.push(info.into());
+        let mut capset: crate::VirtioGpuCapsetInfo = info.into();
+        let response_bytes = 24usize.checked_add(capset.max_size as usize)?;
+        if response_bytes > (1usize << 20) { return None; }
+        let total_bytes = (RESP_OFF as usize).checked_add(response_bytes)?;
+        let pages = total_bytes.checked_add(hal::PAGE_SIZE_BYTES as usize - 1)? / hal::PAGE_SIZE_BYTES as usize;
+        let mut order = 0u8;
+        let mut capacity = 1usize;
+        while capacity < pages { capacity = capacity.checked_mul(2)?; order = order.checked_add(1)?; }
+        let mut blob_buf = super::ProbeCommandBuffer::alloc_order(hhdm, bdf, pmm::Order(order))?;
+        unsafe {
+            for k in 0..32usize { core::ptr::write_volatile(blob_buf.va.add(k), 0); }
+            for k in 0..response_bytes { core::ptr::write_volatile(blob_buf.va.add(RESP_OFF as usize + k), 0); }
+            let request = core::slice::from_raw_parts_mut(blob_buf.va, 32);
+            if crate::encode_get_capset(request, capset.id, capset.max_version) != 32 { return None; }
+        }
+        if unsafe { !submit_raw_wait(blob_buf.dma, 32, response_bytes, ctrlq, waits) } {
+            blob_buf.disarm();
+            return None;
+        }
+        core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
+        let response = unsafe { core::slice::from_raw_parts(blob_buf.va.add(RESP_OFF as usize), response_bytes) };
+        capset.blob = crate::parse_capset(response, capset.id, capset.max_version).ok()?;
+        capsets.push(capset);
     }
     Some(capsets)
 }
