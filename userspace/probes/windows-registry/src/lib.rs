@@ -1,6 +1,6 @@
 //! One userspace owner for the Windows registry namespace.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -56,14 +56,14 @@ impl KeyHandle {
 pub struct Key { pub path: String, values: BTreeMap<String, (String, Value)> }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum Error { InvalidPath, MissingKey, MissingValue, InvalidFile, Io(String) }
+pub enum Error { InvalidPath, MissingKey, MissingValue, InvalidFile, Io(String), Deleted }
 
 impl From<io::Error> for Error { fn from(error: io::Error) -> Self { Self::Io(error.to_string()) } }
 
 /// Canonical userspace registry database. Key identity is case-insensitive;
 /// display spelling is retained for enumeration and persistence.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Registry { keys: BTreeMap<String, Key>, handles: BTreeMap<KeyHandle, String>, next_handle: u64 }
+pub struct Registry { keys: BTreeMap<String, Key>, handles: BTreeMap<KeyHandle, String>, deleted: BTreeSet<KeyHandle>, next_handle: u64 }
 
 /// One runtime/user registry session backed by one Linux file.
 pub struct RegistryStore { registry: Registry, path: PathBuf, dirty: bool }
@@ -199,7 +199,7 @@ fn take_u8(bytes: &[u8], at: &mut usize) -> Option<u8> { let value = *bytes.get(
 fn take_u32(bytes: &[u8], at: &mut usize) -> Option<u32> { let end = at.checked_add(4)?; let value = u32::from_le_bytes(bytes.get(*at..end)?.try_into().ok()?); *at = end; Some(value) }
 fn take_u64(bytes: &[u8], at: &mut usize) -> Option<u64> { let end = at.checked_add(8)?; let value = u64::from_le_bytes(bytes.get(*at..end)?.try_into().ok()?); *at = end; Some(value) }
 fn put_u64(out: &mut Vec<u8>, value: u64) { out.extend_from_slice(&value.to_le_bytes()); }
-fn error_code(error: &Error) -> u8 { match error { Error::InvalidPath => 1, Error::MissingKey => 2, Error::MissingValue => 3, Error::InvalidFile => 4, Error::Io(_) => 5 } }
+fn error_code(error: &Error) -> u8 { match error { Error::InvalidPath => 1, Error::MissingKey => 2, Error::MissingValue => 3, Error::InvalidFile => 4, Error::Io(_) => 5, Error::Deleted => registry_wire::ERROR_DELETED } }
 
 impl Registry {
     /// Construct the three predefined roots. # C: O(1)
@@ -210,7 +210,7 @@ impl Registry {
             let identity = canonical(&path); keys.insert(identity.clone(), Key { path, values: BTreeMap::new() });
             handles.insert(KeyHandle(root_handle(root)), identity);
         }
-        Self { keys, handles, next_handle: 0x1000 }
+        Self { keys, handles, deleted: BTreeSet::new(), next_handle: 0x1000 }
     }
 
     /// Open an existing key relative to a predefined root. # C: O(log N)
@@ -245,20 +245,20 @@ impl Registry {
 
     /// Open a key relative to an existing opaque handle. # C: O(depth log N)
     pub fn open_relative_handle(&mut self, parent: KeyHandle, subkey: &str) -> Result<KeyHandle, Error> {
-        let path = self.handles.get(&parent).cloned().ok_or(Error::MissingKey)?;
+        let path = self.live_handle_path(parent)?;
         let child = join_path(&path, subkey)?; if self.keys.contains_key(&canonical(&child)) { self.allocate_handle(canonical(&child)) } else { Err(Error::MissingKey) }
     }
 
     /// Create a key relative to an existing opaque handle. # C: O(depth log N)
     pub fn create_relative_handle(&mut self, parent: KeyHandle, subkey: &str) -> Result<KeyHandle, Error> {
-        let path = self.handles.get(&parent).cloned().ok_or(Error::MissingKey)?;
+        let path = self.live_handle_path(parent)?;
         let child = self.create_relative_path(&path, subkey)?; self.allocate_handle(child)
     }
 
     /// Rename one key and every descendant while preserving open-handle identity. # C: O(N_subtree log N)
     pub fn rename_key_handle(&mut self, key: KeyHandle, name: &str) -> Result<(), Error> {
         if name.is_empty() || name.contains('\\') || name.contains('\0') { return Err(Error::InvalidPath); }
-        let old = self.handles.get(&key).cloned().ok_or(Error::MissingKey)?;
+        let old = self.live_handle_path(key)?;
         if is_root(&old) { return Err(Error::InvalidPath); }
         let (parent, _) = old.rsplit_once('\\').ok_or(Error::InvalidPath)?;
         let new_path = format!("{}\\{}", parent, name); let new_identity = canonical(&new_path);
@@ -281,12 +281,12 @@ impl Registry {
 
     /// Set a value through an opaque key handle. # C: O(log N)
     pub fn set_value_handle(&mut self, key: KeyHandle, name: &str, value: Value) -> Result<(), Error> {
-        let path = self.handles.get(&key).cloned().ok_or(Error::MissingKey)?; self.set_value(&path, name, value)
+        let path = self.live_handle_path(key)?; self.set_value(&path, name, value)
     }
 
     /// Delete one value through an opaque key handle. # C: O(log N)
     pub fn delete_value_handle(&mut self, key: KeyHandle, name: &str) -> Result<(), Error> {
-        let path = self.handles.get(&key).cloned().ok_or(Error::MissingKey)?; self.delete_value(&path, name)
+        let path = self.live_handle_path(key)?; self.delete_value(&path, name)
     }
 
     /// Delete one leaf key through an opaque handle. # C: O(N_subkeys)
@@ -294,18 +294,18 @@ impl Registry {
         let path = self.handles.get(&key).cloned().ok_or(Error::MissingKey)?;
         if is_root(&path) || !self.subkeys(&path)?.is_empty() { return Err(Error::InvalidPath); }
         self.keys.remove(&path).ok_or(Error::MissingKey)?;
-        self.handles.retain(|_, handle_path| handle_path != &path);
+        self.deleted.insert(key);
         Ok(())
     }
 
     /// Query a value through an opaque key handle. # C: O(log N)
     pub fn query_value_handle(&self, key: KeyHandle, name: &str) -> Result<Value, Error> {
-        let path = self.handles.get(&key).ok_or(Error::MissingKey)?; self.query_value(path, name)
+        let path = self.live_handle_path(key)?; self.query_value(&path, name)
     }
 
     /// Enumerate child keys through an opaque key handle. # C: O(N_keys)
     pub fn subkeys_handle(&self, key: KeyHandle) -> Result<Vec<String>, Error> {
-        let path = self.handles.get(&key).ok_or(Error::MissingKey)?; self.subkeys(path)
+        let path = self.live_handle_path(key)?; self.subkeys(&path)
     }
 
     /// Enumerate values through an opaque key handle in stable display order. # C: O(N_values)
@@ -318,8 +318,8 @@ impl Registry {
 
     /// Return key metadata from the canonical registry tree. # C: O(N_values)
     pub fn query_key_handle(&self, key: KeyHandle) -> Result<KeyInfo, Error> {
-        let path = self.handles.get(&key).ok_or(Error::MissingKey)?;
-        let subkeys = self.subkeys(path)?; let values = self.values_handle(key)?;
+        let path = self.live_handle_path(key)?;
+        let subkeys = self.subkeys(&path)?; let values = self.values_handle(key)?;
         let max_subkey = subkeys.iter().map(|name| name.encode_utf16().count() * 2).max().unwrap_or(0);
         let max_value_name = values.iter().map(|(name, _)| name.encode_utf16().count() * 2).max().unwrap_or(0);
         let max_value_data = values.iter().map(|(_, value)| value.data.len()).max().unwrap_or(0);
@@ -329,7 +329,13 @@ impl Registry {
     /// Close one allocated handle; predefined roots remain valid. # C: O(log N)
     pub fn close_handle(&mut self, key: KeyHandle) -> Result<(), Error> {
         if matches!(key.0, HKEY_LOCAL_MACHINE | HKEY_CURRENT_USER | HKEY_CLASSES_ROOT) { return Err(Error::InvalidPath); }
+        if self.deleted.remove(&key) { return Ok(()); }
         if self.handles.remove(&key).is_some() { Ok(()) } else { Err(Error::MissingKey) }
+    }
+
+    fn live_handle_path(&self, key: KeyHandle) -> Result<String, Error> {
+        if self.deleted.contains(&key) { return Err(Error::Deleted); }
+        self.handles.get(&key).cloned().ok_or(Error::MissingKey)
     }
 
     fn allocate_handle(&mut self, path: String) -> Result<KeyHandle, Error> {
@@ -529,6 +535,8 @@ mod tests {
         assert_eq!(store.execute(Request::EnumKeys { key: handle }), Response::Keys(vec!["Child".into()]));
         assert_eq!(store.execute(Request::DeleteKey { key: handle }), Response::Failure(Error::InvalidPath));
         assert_eq!(store.execute(Request::DeleteKey { key: child }), Response::Success);
+        assert_eq!(store.execute(Request::Query { key: child, name: "mode".into() }), Response::Failure(Error::Deleted));
+        assert_eq!(store.execute(Request::Close { key: child }), Response::Success);
         assert_eq!(store.execute(Request::OpenRelative { key: handle, subkey: "Child".into() }), Response::Failure(Error::MissingKey));
         assert_eq!(store.execute(Request::DeleteValue { key: handle, name: "MODE".into() }), Response::Success);
         assert_eq!(store.execute(Request::Query { key: handle, name: "mode".into() }), Response::Failure(Error::MissingValue));

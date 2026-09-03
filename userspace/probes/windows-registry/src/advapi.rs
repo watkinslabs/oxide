@@ -9,6 +9,7 @@ pub const ERROR_INVALID_PARAMETER: u32 = 87;
 pub const ERROR_MORE_DATA: u32 = 234;
 pub const ERROR_GEN_FAILURE: u32 = 31;
 pub const ERROR_NO_MORE_ITEMS: u32 = 259;
+pub const ERROR_KEY_DELETED: u32 = 1018;
 
 /// One Win32 `advapi32` registry view over a native Linux service session.
 pub struct Advapi { client: Client }
@@ -114,7 +115,7 @@ impl Advapi {
 }
 
 fn root(raw: u64) -> Option<Root> { match raw { HKEY_LOCAL_MACHINE => Some(Root::LocalMachine), HKEY_CURRENT_USER => Some(Root::CurrentUser), HKEY_CLASSES_ROOT => Some(Root::Classes), _ => None } }
-fn status(error: Error) -> u32 { match error { Error::MissingKey | Error::MissingValue => ERROR_FILE_NOT_FOUND, Error::InvalidPath => ERROR_INVALID_PARAMETER, Error::Io(_) | Error::InvalidFile => ERROR_GEN_FAILURE } }
+fn status(error: Error) -> u32 { match error { Error::MissingKey | Error::MissingValue => ERROR_FILE_NOT_FOUND, Error::Deleted => ERROR_KEY_DELETED, Error::InvalidPath => ERROR_INVALID_PARAMETER, Error::Io(_) | Error::InvalidFile => ERROR_GEN_FAILURE } }
 fn status_handle(error: Error) -> u32 { match error { Error::MissingKey => ERROR_INVALID_HANDLE, other => status(other) } }
 fn copy_name(value: &str, buffer: &mut [u16], length: &mut u32) -> u32 {
     let encoded: Vec<u16> = value.encode_utf16().collect();
