@@ -521,7 +521,8 @@ fn open_existing(cur: &sched::Task, addr: u64, _create: bool) -> u64 {
 
 fn open_path(cur: &sched::Task, output: u64, desired: u32, attrs: u64, options: u32, sharing: u32, disposition: CreateDisposition) -> u64 {
     if sharing & !0x7 != 0 { return STATUS_INVALID_PARAMETER; }
-    let Some(path) = object_path(attrs) else { return STATUS_INVALID_PARAMETER; };
+    let table = cur.thread_group.nt_handles();
+    let Some(path) = object_path_with_root(attrs, &table) else { return STATUS_INVALID_PARAMETER; };
     if let Some(pipe) = sched::nt_object::lookup_object(&path, sched::nt_object::NtObjectType::NamedPipe) {
         return open_named_pipe(cur, output, desired, sharing, disposition, pipe);
     }
@@ -567,7 +568,6 @@ fn open_path(cur: &sched::Task, output: u64, desired: u32, attrs: u64, options: 
         if sched::nt_object::NtDeleteOnClose::new(file.as_ref(), false).is_none() { return STATUS_INVALID_PARAMETER; }
         true
     } else { false };
-    let table = cur.thread_group.nt_handles();
     let Some(share) = sched::nt_object::NtFileShare::claim(&file, desired, sharing) else {
         return STATUS_SHARING_VIOLATION;
     };
@@ -926,6 +926,24 @@ fn filetime(time: vfs::Timespec64) -> i64 {
 
 fn object_path(attrs: u64) -> Option<String> {
     if read_u32(attrs).ok()? < 48 || read_u64(attrs + 8).ok()? != 0 { return None; }
+    let (_, path) = object_name(attrs)?;
+    crate::nt_path::normalize_path(&path)
+}
+
+fn object_path_with_root(attrs: u64, table: &sched::nt_object::NtHandleTable) -> Option<String> {
+    if read_u32(attrs).ok()? < 48 { return None; }
+    let root = read_u64(attrs + 8).ok()?;
+    let (_, raw) = object_name(attrs)?;
+    let path = crate::nt_path::normalize_path(&raw)?;
+    if path.starts_with('/') || root == 0 { return Some(path); }
+    let object = table.get(sched::nt_object::NtHandle::from_raw(root as u32), 0)?;
+    let file = object.file()?;
+    if file.inode().file_type() != vfs::FileType::Directory { return None; }
+    let base = String::from_utf8(file.dentry().absolute_path()).ok()?;
+    crate::nt_path::join_root_path(&base, &path)
+}
+
+fn object_name(attrs: u64) -> Option<(u64, String)> {
     let name = read_u64(attrs + 16).ok()?;
     if name == 0 { return None; }
     let len = read_u32(name).ok()? as usize;
@@ -934,7 +952,7 @@ fn object_path(attrs: u64) -> Option<String> {
     let mut bytes = vec![0u8; len];
     uaccess::copy_from_user(&mut bytes, buffer).ok()?;
     let path = utf16_string(&bytes)?;
-    crate::nt_path::normalize_path(&path)
+    Some((read_u64(attrs + 8).ok()?, path))
 }
 
 fn utf16_string(bytes: &[u8]) -> Option<String> {
