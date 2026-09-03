@@ -31,7 +31,7 @@ fn read_lock(addr: u64) -> Option<NtLockFileRequest> {
     Some(NtLockFileRequest {
         handle: uaccess::get_user_u32(addr).ok()?,
         flags: uaccess::get_user_u32(addr + 4).ok()?,
-        io_status: uaccess::get_user_u64(addr + 8).ok()?,
+        io_status: uaccess::get_user_u64(addr.checked_add(8)?).ok()?,
         offset: uaccess::get_user_u64(addr + 16).ok()?,
         length: uaccess::get_user_u64(addr + 24).ok()?,
     })
@@ -41,7 +41,7 @@ fn read_unlock(addr: u64) -> Option<NtUnlockFileRequest> {
     Some(NtUnlockFileRequest {
         handle: uaccess::get_user_u32(addr).ok()?,
         padding: uaccess::get_user_u32(addr + 4).ok()?,
-        io_status: uaccess::get_user_u64(addr + 8).ok()?,
+        io_status: uaccess::get_user_u64(addr.checked_add(8)?).ok()?,
         offset: uaccess::get_user_u64(addr + 16).ok()?,
         length: uaccess::get_user_u64(addr + 24).ok()?,
     })
@@ -112,5 +112,6 @@ fn status_from_lock_result(result: i64) -> u64 {
 
 fn write_io_status(addr: u64, status: u64, information: u64) {
     let _ = uaccess::put_user_u64(addr, status);
-    let _ = uaccess::put_user_u64(addr + 8, information);
+    let Some(information_address) = addr.checked_add(8) else { return; };
+    let _ = uaccess::put_user_u64(information_address, information);
 }

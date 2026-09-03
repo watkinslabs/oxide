@@ -50,7 +50,7 @@ pub fn query(cur: &sched::Task, handle: u32, io_status: u64, information: u64, l
 
 fn finish(io_status: u64, status: u64, information: u64) -> u64 {
     if uaccess::put_user_u64(io_status, status).is_err()
-        || uaccess::put_user_u64(io_status + 8, information).is_err() {
+        || io_status.checked_add(8).and_then(|address| uaccess::put_user_u64(address, information).ok()).is_none() {
         STATUS_ACCESS_VIOLATION
     } else { status }
 }
