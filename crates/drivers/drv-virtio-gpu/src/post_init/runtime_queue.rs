@@ -11,6 +11,9 @@ const COMMAND_CAPACITY: usize = 64;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum RuntimeCmd {
+    ContextCreate { context_id: u32, context_init: u32, nlen: u32, name: [u8; 64] },
+    ContextDestroy { context_id: u32 },
+    ContextAttach { context_id: u32, resource_id: u32 },
     Create2d { res_id: u32, fmt: u32, w: u32, h: u32 },
     AttachBacking { res_id: u32, dma: u64, bytes: u32 },
     DetachBacking { res_id: u32 },
@@ -30,6 +33,12 @@ impl RuntimeCmd {
 
     fn encode_ctrl(self, buf: &mut [u8]) -> usize {
         match self {
+            Self::ContextCreate { context_id, context_init, nlen, name } =>
+                crate::encode_ctx_create(buf, context_id, context_init, &name[..(nlen as usize).min(64)]),
+            Self::ContextDestroy { context_id } =>
+                crate::encode_ctx_destroy(buf, context_id),
+            Self::ContextAttach { context_id, resource_id } =>
+                crate::encode_ctx_resource(buf, context_id, resource_id),
             Self::Create2d { res_id, fmt, w, h } => crate::encode_resource_create_2d(buf, res_id, fmt, w, h),
             Self::AttachBacking { res_id, dma, bytes } => crate::encode_resource_attach_backing_one(buf, res_id, dma, bytes),
             Self::DetachBacking { res_id } => crate::encode_resource_detach_backing(buf, res_id),
@@ -431,6 +440,25 @@ mod tests {
     use super::*;
 
     fn flush(id: u32) -> RuntimeCmd { RuntimeCmd::Flush { res_id: id, x: 0, y: 0, w: 1, h: 1 } }
+
+    #[test]
+    fn context_commands_use_control_queue_and_exact_wire_sizes() {
+        let mut name = [0u8; 64];
+        name[..4].copy_from_slice(b"test");
+        let cmds = [
+            RuntimeCmd::ContextCreate { context_id: 3, context_init: 1, nlen: 4, name },
+            RuntimeCmd::ContextDestroy { context_id: 3 },
+            RuntimeCmd::ContextAttach { context_id: 3, resource_id: 7 },
+        ];
+        let mut buf = [0u8; 128];
+        assert!(cmds.iter().all(|cmd| cmd.ctrl()));
+        assert_eq!(cmds[0].encode_ctrl(&mut buf), 96);
+        assert_eq!(crate::read_u32_le(&buf, 0), crate::VIRTIO_GPU_CMD_CTX_CREATE);
+        assert_eq!(cmds[1].encode_ctrl(&mut buf), 24);
+        assert_eq!(crate::read_u32_le(&buf, 0), crate::VIRTIO_GPU_CMD_CTX_DESTROY);
+        assert_eq!(cmds[2].encode_ctrl(&mut buf), 32);
+        assert_eq!(crate::read_u32_le(&buf, 0), crate::VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE);
+    }
 
     #[test]
     fn command_ring_keeps_fifo_order_without_allocation_on_retirement() {

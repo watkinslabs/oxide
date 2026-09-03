@@ -334,6 +334,11 @@ pub fn encode_ctx_resource(buf: &mut [u8], context_id: u32, resource_id: u32) ->
     32
 }
 
+/// Encode a context-destroy command. # C: O(1)
+pub fn encode_ctx_destroy(buf: &mut [u8], context_id: u32) -> usize {
+    encode_hdr_only(buf, VIRTIO_GPU_CMD_CTX_DESTROY, 0, context_id)
+}
+
 /// Encode a `SUBMIT_3D` command header; the command stream is a second segment.
 /// # C: O(1)
 pub fn encode_submit_3d(buf: &mut [u8], context_id: u32, command_bytes: u32) -> usize {
