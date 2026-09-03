@@ -241,19 +241,18 @@ impl drm::DrmDriver for VirtioGpuDrm {
 
     fn virtgpu_resource_create(&self, pa: u64, size: u64, format: u32,
         width: u32, height: u32) -> Option<u32> {
-        if self.features_negotiated & (1u64 << VIRTIO_GPU_F_VIRGL) != 0 {
-            // The current runtime queue has a real 2D resource command path;
-            // VIRGL resources require the 3D parameter contract and are not
-            // silently downgraded into a different host object.
-            return None;
-        }
         let fmt = crate::drm_fourcc_to_virtio(format)?;
         if width == 0 || height == 0 || VirtioGpuDev::bytes_per_pixel(fmt) == 0 { return None; }
         #[cfg(target_os = "oxide-kernel")]
         {
             let key = DEVICES.lock().iter().find(|d| d.bdf == self.bdf).map(|d| d.device_key)?;
             let id = DEVICES.lock().iter().find(|d| d.bdf == self.bdf)?.next_resource_id();
-            post_init::create_resource_for_key(key, id, fmt, width, height, pa, size).then_some(id)
+            let ok = if self.features_negotiated & (1u64 << VIRTIO_GPU_F_VIRGL) != 0 {
+                post_init::create_resource_3d_for_key(key, id, fmt, width, height, pa, size)
+            } else {
+                post_init::create_resource_for_key(key, id, fmt, width, height, pa, size)
+            };
+            ok.then_some(id)
         }
         #[cfg(not(target_os = "oxide-kernel"))]
         { let _ = (pa, size, fmt, width, height); None }

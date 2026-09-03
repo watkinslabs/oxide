@@ -392,6 +392,20 @@ pub fn encode_resource_create_2d(buf: &mut [u8], res_id: u32, fmt: u32, w: u32, 
     40
 }
 
+/// Encode `CMD_RESOURCE_CREATE_3D` for one 2D texture resource.
+/// # C: O(1)
+pub fn encode_resource_create_3d(buf: &mut [u8], res_id: u32, target: u32,
+    fmt: u32, bind: u32, w: u32, h: u32, depth: u32, array_size: u32,
+    last_level: u32, nr_samples: u32, flags: u32) -> usize {
+    encode_hdr_only(buf, VIRTIO_GPU_CMD_RESOURCE_CREATE_3D, 0, 0);
+    for (offset, value) in [(24, res_id), (28, target), (32, fmt), (36, bind),
+        (40, w), (44, h), (48, depth), (52, array_size), (56, last_level),
+        (60, nr_samples), (64, flags), (68, 0)] {
+        write_u32_le(buf, offset, value);
+    }
+    72
+}
+
 /// Encode `CMD_RESOURCE_ATTACH_BACKING` with a single mem entry.
 /// Writes 48 bytes (32 hdr+payload + 16 mem-entry).
 /// # C: O(1)
