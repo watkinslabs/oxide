@@ -15,6 +15,10 @@ const STATUS_PENDING: u64 = 0x0000_0103;
 const STATUS_NOT_SUPPORTED: u64 = 0xc000_00bb;
 const WM_DESTROY: u64 = 0x0002;
 const WM_NCDESTROY: u64 = 0x0082;
+const MENUITEMINFO_MASK_STATE: u32 = 0x0000_0001;
+const MENUITEMINFO_MASK_ID: u32 = 0x0000_0002;
+const MENUITEMINFO_MASK_SUBMENU: u32 = 0x0000_0004;
+const MENUITEMINFO_MASK_STRING: u32 = 0x0000_0040;
 
 pub(crate) const CALLBACK_DESTROY: u64 = 1;
 pub(crate) const CALLBACK_NCDESTROY: u64 = 2;
@@ -560,10 +564,6 @@ pub(crate) fn thunked_menu_item_info(raw: u64, position: u64, flags: u64, method
     const GET_ID: u64 = 5;
     const GET_STATE: u64 = 7;
     const BY_POSITION: u32 = ipc::win32_menu::MF_BYPOSITION;
-    const MASK_STATE: u32 = 0x0000_0002;
-    const MASK_ID: u32 = 0x0000_0004;
-    const MASK_SUBMENU: u32 = 0x0000_0008;
-    const MASK_STRING: u32 = 0x0000_0040;
     let (Some(menu), Some(position), Some(flags), Some(method)) = (u32::try_from(raw).ok().and_then(ipc::win32_menu::MenuId::from_raw), u32::try_from(position).ok(), u32::try_from(flags).ok(), u64::try_from(method).ok()) else { return ipc::win32_menu::MENU_NOT_FOUND as u64; };
     let Some(cur) = sched::live::current() else { return ipc::win32_menu::MENU_NOT_FOUND as u64; };
     if !cur.is_nt_personality() { return ipc::win32_menu::MENU_NOT_FOUND as u64; }
@@ -582,7 +582,7 @@ pub(crate) fn thunked_menu_item_info(raw: u64, position: u64, flags: u64, method
     let submenu = uaccess::get_user_u64(info + 24).ok().and_then(|value| (value != 0).then_some(value as u32));
     let text_pointer = uaccess::get_user_u64(info + 56).ok().unwrap_or(0);
     let text_count = uaccess::get_user_u32(info + 64).ok().unwrap_or(0).min(4096);
-    let text = if mask & MASK_STRING != 0 {
+    let text = if mask & MENUITEMINFO_MASK_STRING != 0 {
         if text_pointer == 0 { return 0; }
         let mut value = Vec::new();
         for offset in 0..text_count { let Some(address) = text_pointer.checked_add(offset as u64 * 2) else { return 0; }; let mut bytes = [0u8; 2]; if uaccess::copy_from_user(&mut bytes, address).is_err() { return 0; } let unit = u16::from_le_bytes(bytes); if unit == 0 { break; } value.push(unit); }
@@ -596,9 +596,9 @@ pub(crate) fn thunked_menu_item_info(raw: u64, position: u64, flags: u64, method
     }
     if method != SET { return 0; }
     let Ok(item_position) = entries[index].menus.position(menu, position, flags) else { return 0; };
-    let id_value = (mask & MASK_ID != 0).then_some(id);
-    let state_value = (mask & MASK_STATE != 0).then_some(state);
-    let submenu_value = (mask & MASK_SUBMENU != 0).then_some(submenu);
+    let id_value = (mask & MENUITEMINFO_MASK_ID != 0).then_some(id);
+    let state_value = (mask & MENUITEMINFO_MASK_STATE != 0).then_some(state);
+    let submenu_value = (mask & MENUITEMINFO_MASK_SUBMENU != 0).then_some(submenu);
     if entries[index].menus.set_item(menu, item_position, id_value, state_value, text, submenu_value).is_err() { return 0; }
     1
 }
