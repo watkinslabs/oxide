@@ -93,6 +93,15 @@ impl MenuManager {
         if let Some(submenu) = submenu { item.submenu = submenu; }
         Ok(())
     }
+    pub fn remove(&mut self, menu: MenuId, id: u32, flags: u32) -> Result<MenuItem, MenuError> {
+        let position = self.position(menu, id, flags)?;
+        Ok(self.record_mut(menu).ok_or(MenuError::NoSuchMenu)?.items.remove(position))
+    }
+    pub fn delete(&mut self, menu: MenuId, id: u32, flags: u32) -> Result<(), MenuError> {
+        let item = self.remove(menu, id, flags)?;
+        if let Some(submenu) = item.submenu.and_then(MenuId::from_raw) { let _ = self.destroy(submenu); }
+        Ok(())
+    }
 
     /// Return the prior checked bit and apply the requested checked bit.
     /// # C: O(N_menus + N_items)
@@ -187,5 +196,17 @@ mod tests {
         let popup = menus.create_popup().unwrap();
         assert_eq!(menus.is_popup(menu), Ok(false));
         assert_eq!(menus.is_popup(popup), Ok(true));
+    }
+
+    #[test]
+    fn delete_item_removes_it_and_recursively_retires_its_submenu() {
+        let mut menus = MenuManager::new();
+        let menu = menus.create().unwrap();
+        let submenu = menus.create_popup().unwrap();
+        menus.insert(menu, 0, MenuItem { id: 5, state: 0, text: Vec::new(), submenu: Some(submenu.raw()) }).unwrap();
+        assert_eq!(menus.delete(menu, 5, 0), Ok(()));
+        assert_eq!(menus.count(menu), Ok(0));
+        assert!(!menus.contains(submenu));
+        assert_eq!(menus.remove(menu, 5, 0), Err(MenuError::NoSuchItem));
     }
 }
