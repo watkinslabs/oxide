@@ -14,10 +14,18 @@ const MODULE_SIZE_OFF: usize = 0x40;
 /// # C: O(BLOCK_BYTES + MAX_MODULES)
 #[cfg(target_os = "oxide-kernel")]
 pub fn publish_module(peb: u64, module: &NtModuleInput<'_>) -> Result<(), Error> {
-    if peb == 0 || module.base == 0 || module.full_name.is_empty() || module.base_name.is_empty() { return Err(Error::Einval); }
+    publish_modules(peb, core::slice::from_ref(module))
+}
+
+/// Append a mapped dependency graph to every PEB loader ordering atomically.
+/// # C: O(BLOCK_BYTES + N_modules * MAX_MODULES)
+#[cfg(target_os = "oxide-kernel")]
+pub fn publish_modules(peb: u64, modules: &[NtModuleInput<'_>]) -> Result<(), Error> {
+    if peb == 0 || modules.is_empty() { return Err(Error::Einval); }
+    if modules.iter().any(|module| module.base == 0 || module.full_name.is_empty() || module.base_name.is_empty()) { return Err(Error::Einval); }
     let mut block = vec![0u8; BLOCK_BYTES];
     uaccess::copy_from_user(&mut block, peb).map_err(|_| Error::Einval)?;
-    plan(&mut block, peb, module)?;
+    for module in modules { plan(&mut block, peb, module)?; }
     uaccess::copy_to_user(peb, &block).map_err(|_| Error::Einval)
 }
 
