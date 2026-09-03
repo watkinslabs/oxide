@@ -62,6 +62,7 @@ pub enum NtObjectType {
     Key,
     Job,
     NamedPipe,
+    ActivationContext,
 }
 /// Stable identity and type of one native object.
 pub struct NtObject {

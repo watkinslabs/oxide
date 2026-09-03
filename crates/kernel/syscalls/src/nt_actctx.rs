@@ -8,6 +8,8 @@ use syscall::nt::{NtCall, NtService};
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 const STATUS_BUFFER_TOO_SMALL: u64 = 0xc000_0023;
 const STATUS_NOT_IMPLEMENTED: u64 = 0xc000_0002;
+const STATUS_INVALID_HANDLE: u64 = 0xc000_0008;
+const STATUS_NO_MEMORY: u64 = 0xc000_0017;
 const ACTCTX_FLAGS_ALL: u32 = 0xff;
 const ACTCTX_MIN_BYTES: u32 = 16;
 const STATUS_SXS_KEY_NOT_FOUND: u64 = 0xc015_0008;
@@ -106,7 +108,19 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     }
     if call.service == NtService::RtlReleaseActivationContext {
         if call.args.a0 == 0 { return Some(STATUS_INVALID_PARAMETER); }
-        return Some(STATUS_NOT_IMPLEMENTED);
+        let Some(task) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
+        let handle = sched::nt_object::NtHandle::from_raw(call.args.a0 as u32);
+        let table = task.thread_group.nt_handles();
+        let Some(object) = table.get(handle, 0) else { return Some(STATUS_INVALID_PARAMETER); };
+        if object.kind() != sched::nt_object::NtObjectType::ActivationContext { return Some(STATUS_INVALID_PARAMETER); }
+        return Some(table.close(handle).then_some(0).unwrap_or(STATUS_INVALID_HANDLE));
+    }
+    if call.service == NtService::RtlAddRefActivationContext {
+        if call.args.a0 == 0 { return Some(STATUS_INVALID_PARAMETER); }
+        let Some(task) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
+        let handle = sched::nt_object::NtHandle::from_raw(call.args.a0 as u32);
+        let Some(object) = task.thread_group.nt_handles().get(handle, 0) else { return Some(STATUS_INVALID_PARAMETER); };
+        return Some((object.kind() == sched::nt_object::NtObjectType::ActivationContext).then_some(0).unwrap_or(STATUS_INVALID_PARAMETER));
     }
     if call.service == NtService::RtlCreateActivationContext {
         if call.args.a0 == 0 || call.args.a1 == 0 { return Some(STATUS_INVALID_PARAMETER); }
@@ -115,9 +129,14 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         let size = u32::from_le_bytes(header[0..4].try_into().unwrap());
         let flags = u32::from_le_bytes(header[4..8].try_into().unwrap());
         if size < ACTCTX_MIN_BYTES || flags & !ACTCTX_FLAGS_ALL != 0 { return Some(STATUS_INVALID_PARAMETER); }
-        // Manifest parsing, module-resource lookup, and activation-context
-        // object lifetime are not owned by the kernel yet.
-        return Some(STATUS_NOT_IMPLEMENTED);
+        let Some(task) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
+        let object = task.thread_group.nt_handles().new_object(sched::nt_object::NtObjectType::ActivationContext);
+        let Some(handle) = task.thread_group.nt_handles().insert(object, 0) else { return Some(STATUS_NO_MEMORY); };
+        if uaccess::put_user_u64(call.args.a0, handle.raw() as u64).is_err() {
+            let _ = task.thread_group.nt_handles().close(handle);
+            return Some(STATUS_INVALID_PARAMETER);
+        }
+        return Some(0);
     }
     if call.service == NtService::RtlActivateActivationContextEx {
         // Native ABI: ULONG flags, TEB*, activation context, ULONG_PTR *cookie.
