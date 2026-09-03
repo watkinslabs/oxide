@@ -26,7 +26,8 @@ pub const fn supported_request(
         && length == 0
         && asynchronous != 0
         && subtree <= 1
-        && matches!(filter, REG_NOTIFY_CHANGE_NAME | REG_NOTIFY_CHANGE_LAST_SET)
+        && filter != 0
+        && filter & !(REG_NOTIFY_CHANGE_NAME | REG_NOTIFY_CHANGE_LAST_SET) == 0
 }
 
 #[cfg(test)]
@@ -58,5 +59,13 @@ mod tests {
     #[test]
     fn accepts_name_notifications_owned_by_key_mutations() {
         assert!(supported_request(0, 0, 0x1000, 0, 0, 1, 0, REG_NOTIFY_CHANGE_NAME));
+    }
+
+    #[test]
+    fn accepts_combined_name_and_last_set_notifications() {
+        assert!(supported_request(
+            0, 0, 0x1000, 0, 0, 1, 0,
+            REG_NOTIFY_CHANGE_NAME | REG_NOTIFY_CHANGE_LAST_SET,
+        ));
     }
 }
