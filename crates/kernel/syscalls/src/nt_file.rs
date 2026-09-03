@@ -773,9 +773,13 @@ fn query_information_values(cur: &sched::Task, handle: u32, io_status: u64, info
 }
 
 fn set_information(cur: &sched::Task, addr: u64) -> u64 {
+    let Some(io_address) = addr.checked_add(8) else { return STATUS_INVALID_PARAMETER; };
+    let Some(information_address) = addr.checked_add(16) else { return STATUS_INVALID_PARAMETER; };
+    let Some(length_address) = addr.checked_add(24) else { return STATUS_INVALID_PARAMETER; };
+    let Some(class_address) = addr.checked_add(28) else { return STATUS_INVALID_PARAMETER; };
     let (handle, io_status, information, length, class) = match (
-        read_u32(addr), read_u64(addr + 8), read_u64(addr + 16),
-        read_u32(addr + 24), read_u32(addr + 28)) {
+        read_u32(addr), read_u64(io_address), read_u64(information_address),
+        read_u32(length_address), read_u32(class_address)) {
         (Ok(handle), Ok(io_status), Ok(information), Ok(length), Ok(class)) =>
             (handle, io_status, information, length, class),
         _ => return STATUS_INVALID_PARAMETER,
