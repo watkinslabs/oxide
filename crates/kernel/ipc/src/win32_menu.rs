@@ -44,8 +44,13 @@ impl MenuManager {
 
     /// Destroy a menu and all of its owned items. # C: O(N_menus)
     pub fn destroy(&mut self, id: MenuId) -> Result<(), MenuError> {
-        let index = self.index(id).ok_or(MenuError::NoSuchMenu)?;
-        self.menus.remove(index);
+        if !self.contains(id) { return Err(MenuError::NoSuchMenu); }
+        let mut pending = alloc::vec![id];
+        while let Some(current) = pending.pop() {
+            let Some(index) = self.index(current) else { continue; };
+            let (_, record) = self.menus.remove(index);
+            for item in record.items { if let Some(submenu) = item.submenu.and_then(MenuId::from_raw) { pending.push(submenu); } }
+        }
         Ok(())
     }
 
@@ -140,6 +145,19 @@ mod tests {
         let menu = menus.create().unwrap();
         menus.destroy(menu).unwrap();
         assert_eq!(menus.insert(menu, 0, MenuItem { id: 1, state: 0, text: Vec::new(), submenu: None }), Err(MenuError::NoSuchMenu));
+    }
+
+    #[test]
+    fn destroying_a_menu_recursively_retires_submenus_and_handles_cycles() {
+        let mut menus = MenuManager::new();
+        let parent = menus.create().unwrap();
+        let child = menus.create().unwrap();
+        menus.insert(parent, 0, MenuItem { id: 1, state: 0, text: Vec::new(), submenu: Some(child.raw()) }).unwrap();
+        menus.insert(child, 0, MenuItem { id: 2, state: 0, text: Vec::new(), submenu: Some(parent.raw()) }).unwrap();
+        assert_eq!(menus.destroy(parent), Ok(()));
+        assert!(!menus.contains(parent));
+        assert!(!menus.contains(child));
+        assert_eq!(menus.destroy(child), Err(MenuError::NoSuchMenu));
     }
 
     #[test]
