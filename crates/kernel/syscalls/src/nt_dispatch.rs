@@ -76,6 +76,8 @@ pub(crate) const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 #[cfg(target_os = "oxide-kernel")]
 const STATUS_NO_MEMORY: u64 = 0xc000_0017;
 #[cfg(target_os = "oxide-kernel")]
+const STATUS_CONFLICTING_ADDRESSES: u64 = 0xc000_0018;
+#[cfg(target_os = "oxide-kernel")]
 const STATUS_MEMORY_NOT_ALLOCATED: u64 = 0xc000_00a0;
 #[cfg(target_os = "oxide-kernel")]
 const STATUS_INVALID_HANDLE: u64 = 0xc000_0008;
@@ -1449,6 +1451,7 @@ pub fn dispatch(call: NtCall) -> u64 {
             let allocation = match elf_load::nt_memory::allocate(&mm, requested_base, size, protection) {
                 Ok(allocation) => allocation,
                 Err(elf_load::nt_memory::NtStatus::NoMemory) => return STATUS_NO_MEMORY,
+                Err(elf_load::nt_memory::NtStatus::ConflictingAddresses) => return STATUS_CONFLICTING_ADDRESSES,
                 Err(_) => return STATUS_INVALID_PARAMETER,
             };
             if uaccess::put_user_u64(base.as_u64(), allocation.base.as_u64()).is_err()
