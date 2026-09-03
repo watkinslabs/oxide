@@ -997,14 +997,14 @@ fn filetime(time: vfs::Timespec64) -> i64 {
 }
 
 fn object_path(attrs: u64) -> Option<String> {
-    if read_u32(attrs).ok()? < 48 || read_u64(attrs + 8).ok()? != 0 { return None; }
+    if read_u32(attrs).ok()? < 48 || read_u64_at(attrs, 8).ok()? != 0 { return None; }
     let (_, path) = object_name(attrs)?;
     crate::nt_path::normalize_path(&path)
 }
 
 fn object_path_with_root(attrs: u64, table: &sched::nt_object::NtHandleTable) -> Option<String> {
     if read_u32(attrs).ok()? < 48 { return None; }
-    let root = read_u64(attrs + 8).ok()?;
+    let root = read_u64_at(attrs, 8).ok()?;
     let (_, raw) = object_name(attrs)?;
     let path = crate::nt_path::normalize_path(&raw)?;
     if path.starts_with('/') || root == 0 { return Some(path); }
@@ -1016,15 +1016,15 @@ fn object_path_with_root(attrs: u64, table: &sched::nt_object::NtHandleTable) ->
 }
 
 fn object_name(attrs: u64) -> Option<(u64, String)> {
-    let name = read_u64(attrs + 16).ok()?;
+    let name = read_u64_at(attrs, 16).ok()?;
     if name == 0 { return None; }
     let len = read_u32(name).ok()? as usize;
     if len == 0 || len > 32766 || len & 1 != 0 { return None; }
-    let buffer = read_u64(name + 8).ok()?;
+    let buffer = read_u64_at(name, 8).ok()?;
     let mut bytes = vec![0u8; len];
     uaccess::copy_from_user(&mut bytes, buffer).ok()?;
     let path = utf16_string(&bytes)?;
-    Some((read_u64(attrs + 8).ok()?, path))
+    Some((read_u64_at(attrs, 8).ok()?, path))
 }
 
 fn utf16_string(bytes: &[u8]) -> Option<String> {
