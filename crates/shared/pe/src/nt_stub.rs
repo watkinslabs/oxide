@@ -1,5 +1,6 @@
 /// Length of the x86-64 NTDLL thunk for a one-request-pointer service.
 pub const X64_UNARY_STUB_BYTES: usize = 18;
+pub const X64_ZERO_ARG_STUB_BYTES: usize = 13;
 pub const X64_SIX_ARG_STUB_BYTES: usize = 39;
 pub const X64_BREAKPOINT_STUB_BYTES: usize = 2;
 pub const X64_RELAY_STUB_BYTES: usize = 233;
@@ -220,6 +221,16 @@ pub fn encode_x64_unary_stub(selector: u64) -> [u8; X64_UNARY_STUB_BYTES] {
     code
 }
 
+/// Encode a Windows x64 ABI NTDLL entry with no user arguments.
+pub fn encode_x64_zero_arg_stub(selector: u64) -> [u8; X64_ZERO_ARG_STUB_BYTES] {
+    let mut code = [0u8; X64_ZERO_ARG_STUB_BYTES];
+    code[0..2].copy_from_slice(&[0x48, 0xb8]);
+    code[2..10].copy_from_slice(&selector.to_le_bytes());
+    code[10..12].copy_from_slice(&[0x0f, 0x05]);
+    code[12] = 0xc3;
+    code
+}
+
 /// Encode a Windows x64 six-argument NTDLL stub. Windows passes arguments as
 /// RCX,RDX,R8,R9,[RSP+28],[RSP+30] at function entry; the native entry wants
 /// RDI,RSI,RDX,R10,R8,R9. The two stack loads happen after two pushes, hence
@@ -251,6 +262,14 @@ mod tests {
         assert_eq!(&bytes[..4], &[0x57, 0x48, 0x89, 0xcf]);
         assert_eq!(&bytes[4..14], &[0x48, 0xb8, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x54, 0x4e]);
         assert_eq!(&bytes[14..], &[0x0f, 0x05, 0x5f, 0xc3]);
+    }
+
+    #[test]
+    fn zero_arg_stub_uses_native_selector_without_consuming_registers() {
+        let bytes = encode_x64_zero_arg_stub(0x4e54_0000_0000_021d);
+        assert_eq!(&bytes[0..2], &[0x48, 0xb8]);
+        assert_eq!(&bytes[2..10], &0x4e54_0000_0000_021du64.to_le_bytes());
+        assert_eq!(&bytes[10..], &[0x0f, 0x05, 0xc3]);
     }
 
     #[test]
