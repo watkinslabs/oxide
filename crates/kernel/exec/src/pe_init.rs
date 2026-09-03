@@ -169,7 +169,15 @@ pub fn map_dynamic_return(as_: &AddressSpace, return_entry: UserVirtAddr,
         code.extend_from_slice(&[0xba, 1, 0, 0, 0, 0x45, 0x31, 0xc0, 0x48, 0xb8]);
         code.extend_from_slice(&initializer.entry.as_u64().to_le_bytes());
         code.extend_from_slice(&[0xff, 0xd0, 0x48, 0x83, 0xc4, 0x28, 0x5b]);
+        if initializer.kind == super::pe_loader::PeInitializerKind::DllEntry {
+            // Dynamic attach returns an NTSTATUS to its suspended caller.
+            // A FALSE DLL_PROCESS_ATTACH result is the loader failure status;
+            // TLS callbacks do not contribute a result to this decision.
+            code.extend_from_slice(&[0x85, 0xc0, 0x75, 0x06, 0xb8, 0x42, 0x01, 0x00, 0xc0, 0xc3]);
+        }
     }
+    // Returning the last DllMain BOOL would incorrectly return 1 on success.
+    code.extend_from_slice(&[0x31, 0xc0]);
     code.push(0xc3);
     let page = hal::PAGE_SIZE_BYTES as usize;
     let bytes = (code.len() + page - 1) / page * page;
@@ -231,7 +239,35 @@ mod tests {
         assert_eq!(&data[..10], &[0x48, 0xb8, 0x10, 0x10, 0x00, 0x60, 0, 0, 0, 0]);
         assert_eq!(data[10], 0x50);
         assert!(data.windows(5).any(|bytes| bytes == [0xba, 1, 0, 0, 0]));
-        assert_eq!(data[51], 0xc3);
+        assert!(data.windows(3).any(|bytes| bytes == [0x31, 0xc0, 0xc3]));
+        assert!(data.windows(5).any(|bytes| bytes == [0xb8, 0x42, 0x01, 0x00, 0xc0]));
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn dynamic_return_trampoline_ignores_tls_result_but_maps_dll_result_to_status() {
+        let as_ = AddressSpace::new(0x20_000).unwrap();
+        let dll = [super::super::pe_loader::PeModuleInitializer {
+            base: 0x5000_0000, entry: UserVirtAddr::new(0x5000_1010).unwrap(),
+            kind: super::super::pe_loader::PeInitializerKind::DllEntry,
+        }];
+        let tls = [super::super::pe_loader::PeModuleInitializer {
+            base: 0x5100_0000, entry: UserVirtAddr::new(0x5100_1010).unwrap(),
+            kind: super::super::pe_loader::PeInitializerKind::TlsCallback,
+        }];
+        let bytes = |initializers: &[super::super::pe_loader::PeModuleInitializer]| {
+            let trampoline = map_dynamic_return(&as_, UserVirtAddr::new(0x6000_1010).unwrap(), initializers).unwrap().unwrap();
+            match as_.find_vma(trampoline.base).unwrap().backing {
+                VmaBacking::KernelBytes { data, .. } => data,
+                _ => panic!("dynamic continuation must be kernel-backed"),
+            }
+        };
+        let dll_code = bytes(&dll);
+        assert!(dll_code.windows(6).any(|op| op == [0x85, 0xc0, 0x75, 0x06, 0xb8, 0x42]));
+        assert!(dll_code.windows(3).any(|op| op == [0x31, 0xc0, 0xc3]));
+        let tls_code = bytes(&tls);
+        assert!(!tls_code.windows(2).any(|op| op == [0x85, 0xc0]));
+        assert!(tls_code.windows(3).any(|op| op == [0x31, 0xc0, 0xc3]));
     }
 
     #[test]
