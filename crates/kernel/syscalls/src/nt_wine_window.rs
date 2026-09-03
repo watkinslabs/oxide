@@ -33,6 +33,8 @@ const WINE_GET_CLASS_INFO_EX: u64 = 0x13d8;
 const WINE_UNREGISTER_CLASS: u64 = 0x15df;
 // Wine's NtUserCallWindowProc selector, passed as the NtUserMessageCall type.
 const WINE_CALL_WINDOW_PROC: u64 = 0x02ab;
+// Wine's builtin DefWindowProc selector, passed through the same syscall.
+const WINE_DEF_WINDOW_PROC: u64 = 0x029e;
 // Wine's generated win32u syscall table assigns this ordinal to the raw
 // four-argument client-table publication entry.
 const WINE_NTUSER_INITIALIZE_CLIENT_PFN_ARRAYS: u64 = 0x147a;
@@ -115,6 +117,9 @@ pub fn dispatch(call: NtCall) -> u64 {
             // Wine uses NtUserMessageCall for CallWindowProcW/A.  The
             // result-info record begins with the requested WNDPROC; when it
             // is absent, the canonical window record supplies the procedure.
+            if args[5] == WINE_DEF_WINDOW_PROC {
+                return native(NtService::DefaultWindowProc, SyscallArgs { a0: hwnd, a1: message, a2: wparam, a3: lparam, a4: 0, a5: 0 });
+            }
             if args[5] != WINE_CALL_WINDOW_PROC { return STATUS_NOT_IMPLEMENTED; }
             let wndproc = if args[4] != 0 {
                 uaccess::get_user_u64(args[4]).ok().filter(|value| *value != 0)
