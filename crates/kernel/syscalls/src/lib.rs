@@ -148,6 +148,8 @@ mod nt_sync;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_mutant;
 mod nt_semaphore;
+#[cfg(target_os = "oxide-kernel")]
+mod nt_job;
 pub mod arch_prctl_abi;
 // `modify_ldt(2)` decision core: descriptor packing, `user_desc` decode, the
 // sub-function table and the write ladder. Ungated because the slot file is
