@@ -28,6 +28,11 @@ stream containing CIE initialization followed by FDE instructions. This is
 the input contract for the runtime CFA owner; it does not load an ELF module,
 touch user memory, or manufacture an unwind result.
 
+The ELF execution loader publishes the resulting `.eh_frame` image metadata
+through `exec::elf_modules` at the same point it publishes the selected load
+bias for the main image and interpreter. Consumers query that owner by
+address space and instruction pointer; no consumer reconstructs a module list.
+
 ## Verification
 
 Hosted tests cover LEB decoding, malformed input, PC-relative addresses, and
