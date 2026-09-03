@@ -93,6 +93,20 @@ fn completion_port_retains_packets_until_removed() {
 }
 
 #[test]
+fn named_pipe_handles_accept_completion_port_association() {
+    let table = NtHandleTable::new();
+    let pipe = alloc::sync::Arc::new(NtPipe::new(NtPipeConfig { pipe_type: 0, read_mode: 0,
+        completion_mode: 0, max_instances: 1, inbound_quota: 4096, outbound_quota: 4096,
+        timeout_100ns: 0, sharing: 3 }));
+    assert!(pipe.reserve_instance());
+    let object = table.new_named_pipe_endpoint(pipe, NtPipeSide::Server);
+    let port = table.new_completion_port(0).completion().unwrap();
+    assert!(object.set_file_completion(port.clone(), 0x55));
+    assert_eq!(object.file_completion().map(|(_, key)| key), Some(0x55));
+    assert!(!table.new_object(NtObjectType::Event).set_file_completion(port, 0));
+}
+
+#[test]
 fn section_backing_is_zeroed_and_retains_exact_extent() {
     let section = NtSection::new(8192).unwrap();
     assert_eq!(section.size(), 8192); assert_eq!(section.bytes().len(), 8192);

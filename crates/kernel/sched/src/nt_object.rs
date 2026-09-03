@@ -240,7 +240,10 @@ impl NtObject {
 
     /// Return the canonical VFS open description carried by a file object. # C: O(1)
     pub fn file(&self) -> Option<Arc<vfs::File>> { self.file.clone() }
-    pub fn set_file_completion(&self, port: Arc<NtCompletionPort>, key: u64) -> bool { if self.kind != NtObjectType::File { return false; } *self.file_completion.lock() = Some((port, key)); true }
+    pub fn set_file_completion(&self, port: Arc<NtCompletionPort>, key: u64) -> bool {
+        if self.kind != NtObjectType::File && self.kind != NtObjectType::NamedPipe { return false; }
+        *self.file_completion.lock() = Some((port, key)); true
+    }
     pub fn file_completion(&self) -> Option<(Arc<NtCompletionPort>, u64)> { self.file_completion.lock().clone() }
 
     /// Return shared pending-delete state for a file object. # C: O(1)
