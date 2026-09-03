@@ -128,10 +128,20 @@ fn unicode_field(base: u64, offset: u64) -> Option<String> {
 fn read_environment(pointer: u64) -> Option<Vec<(String, String)>> {
     if pointer == 0 { return Some(Vec::new()); }
     const MAX_ENVIRONMENT_BYTES: usize = 1024 * 1024;
-    let mut bytes = vec![0u8; MAX_ENVIRONMENT_BYTES];
-    uaccess::copy_from_user(&mut bytes, pointer).ok()?;
-    let units: Vec<u16> = bytes.chunks_exact(2).map(|p| u16::from_le_bytes([p[0], p[1]])).collect();
-    crate::nt_process_parameters::parse_environment(&units)
+    let mut units = Vec::new();
+    let mut previous_zero = false;
+    for index in 0..(MAX_ENVIRONMENT_BYTES / 2) {
+        let address = pointer.checked_add((index * 2) as u64)?;
+        let mut bytes = [0u8; 2];
+        uaccess::copy_from_user(&mut bytes, address).ok()?;
+        let unit = u16::from_le_bytes(bytes);
+        units.push(unit);
+        if unit == 0 {
+            if previous_zero { return crate::nt_process_parameters::parse_environment(&units); }
+            previous_zero = true;
+        } else { previous_zero = false; }
+    }
+    None
 }
 
 fn image_path(list: syscall::UserPtr<u8>) -> Option<Vec<u8>> {
