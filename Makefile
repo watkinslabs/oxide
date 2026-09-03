@@ -126,6 +126,7 @@ windows-compat-test:
 	$(WARNING_RUN) $(CARGO) test --manifest-path userspace/probes/Cargo.toml -p windows-gdi --quiet
 	$(WARNING_RUN) $(CARGO) test --manifest-path userspace/probes/Cargo.toml -p windows-audio --quiet
 	$(WARNING_RUN) $(CARGO) test --manifest-path userspace/probes/Cargo.toml -p windows-path --quiet
+	$(WARNING_RUN) $(CARGO) test --manifest-path userspace/probes/Cargo.toml -p windows-xinput --quiet
 
 lint:
 	$(XTASK) spec-lint
