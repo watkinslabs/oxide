@@ -29,6 +29,7 @@ const WINE_REGISTER_CLASS_EX: u64 = 0x14eb;
 const WINE_DISPATCH_MESSAGE: u64 = 0x138b;
 const WINE_MESSAGE_CALL: u64 = 0x14b5;
 const WINE_GET_CLASS_NAME: u64 = 0x13d9;
+const WINE_UNREGISTER_CLASS: u64 = 0x15df;
 // Wine's NtUserCallWindowProc selector, passed as the NtUserMessageCall type.
 const WINE_CALL_WINDOW_PROC: u64 = 0x02ab;
 // Wine's generated win32u syscall table assigns this ordinal to the raw
@@ -122,6 +123,10 @@ pub fn dispatch(call: NtCall) -> u64 {
             crate::nt_rtl::begin_wndproc_callback(hwnd, message, wparam, lparam, wndproc)
         }
         WINE_GET_CLASS_NAME => get_class_name(&args),
+        WINE_UNREGISTER_CLASS => {
+            let Some(name) = read_unicode_string(args[0]) else { return 0; };
+            win_bool(crate::nt_window::unregister_class_for_current(&name).then_some(STATUS_SUCCESS).unwrap_or(STATUS_INVALID_PARAMETER))
+        }
         WINE_REGISTER_CLASS_EX => {
             if args[0] == 0 || uaccess::get_user_u32(args[0]).ok() != Some(80) { return 0; }
             let Some(name) = read_unicode_string(args[1]) else { return 0; };
