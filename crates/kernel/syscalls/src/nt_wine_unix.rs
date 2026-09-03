@@ -164,15 +164,17 @@ fn server_select(args: u64) -> u64 {
     let Ok(op) = uaccess::get_user_u32(data_ptr) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
     let Some(wait_type) = select_opcode_kind(op) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
     let count = (data_size - 4) / 4;
-    let Ok(flags) = uaccess::get_user_u32(args + 12) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
-    let Ok(timeout) = uaccess::get_user_u64(args + SERVER_SELECT_TIMEOUT) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
-    let timeout_ptr = if timeout == SERVER_TIMEOUT_INFINITE { 0 } else { args + SERVER_SELECT_TIMEOUT };
+    let (Some(flags_address), Some(timeout_address)) = (wine_arg(args, 12), wine_arg(args, SERVER_SELECT_TIMEOUT)) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+    let Ok(flags) = uaccess::get_user_u32(flags_address) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+    let Ok(timeout) = uaccess::get_user_u64(timeout_address) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+    let timeout_ptr = if timeout == SERVER_TIMEOUT_INFINITE { 0 } else { timeout_address };
     let result = crate::nt_dispatch::dispatch(NtCall {
         service: NtService::WaitForMultipleObjects,
-        args: syscall::SyscallArgs { a0: count as u64, a1: data_ptr + 4, a2: wait_type as u64,
+        args: syscall::SyscallArgs { a0: count as u64, a1: wine_arg(data_ptr, 4).unwrap_or(0), a2: wait_type as u64,
             a3: (flags & SERVER_SELECT_ALERTABLE) as u64, a4: timeout_ptr, a5: 0 },
     });
-    if uaccess::put_user_u32(args + SERVER_SELECT_REPLY_SIGNALED, (result < SERVER_SELECT_MAX_HANDLES as u64) as u32).is_err() { STATUS_INVALID_PARAMETER } else { result }
+    let Some(signaled_address) = wine_arg(args, SERVER_SELECT_REPLY_SIGNALED) else { return STATUS_INVALID_PARAMETER; };
+    if uaccess::put_user_u32(signaled_address, (result < SERVER_SELECT_MAX_HANDLES as u64) as u32).is_err() { STATUS_INVALID_PARAMETER } else { result }
 }
 
 #[cfg(not(target_os = "oxide-kernel"))]
@@ -181,9 +183,9 @@ fn server_select(_args: u64) -> u64 { STATUS_INVALID_PARAMETER }
 #[cfg(target_os = "oxide-kernel")]
 fn wine_object_path(args: u64, request_size: u32, table: &sched::nt_object::NtHandleTable) -> Result<Option<alloc::string::String>, u64> {
     if request_size == 0 { return Ok(None); }
-    let data_count = uaccess::get_user_u32(args + SERVER_DATA_COUNT).map_err(|_| STATUS_INVALID_PARAMETER)?;
-    let data = uaccess::get_user_u64(args + SERVER_DATA_ZERO_PTR).map_err(|_| STATUS_INVALID_PARAMETER)?;
-    let size = uaccess::get_user_u32(args + SERVER_DATA_ZERO_SIZE).map_err(|_| STATUS_INVALID_PARAMETER)?;
+    let data_count = uaccess::get_user_u32(wine_arg(args, SERVER_DATA_COUNT).ok_or(STATUS_INVALID_PARAMETER)?).map_err(|_| STATUS_INVALID_PARAMETER)?;
+    let data = uaccess::get_user_u64(wine_arg(args, SERVER_DATA_ZERO_PTR).ok_or(STATUS_INVALID_PARAMETER)?).map_err(|_| STATUS_INVALID_PARAMETER)?;
+    let size = uaccess::get_user_u32(wine_arg(args, SERVER_DATA_ZERO_SIZE).ok_or(STATUS_INVALID_PARAMETER)?).map_err(|_| STATUS_INVALID_PARAMETER)?;
     if data_count != 1 || data == 0 || size != request_size { return Err(STATUS_INVALID_PARAMETER); }
     crate::nt_directory::resolve_wine_object_path(data, size, table).ok_or(STATUS_INVALID_PARAMETER).map(Some)
 }
@@ -198,7 +200,8 @@ fn server_reply(args: u64, status: u64) -> u64 {
 fn server_call(args: u64) -> u64 {
     if args == 0 { return STATUS_INVALID_PARAMETER; }
     let Ok(request) = uaccess::get_user_u32(args) else { return STATUS_INVALID_PARAMETER; };
-    let Ok(request_size) = uaccess::get_user_u32(args + SERVER_REQUEST_SIZE) else { return STATUS_INVALID_PARAMETER; };
+    let Some(request_size_address) = wine_arg(args, SERVER_REQUEST_SIZE) else { return STATUS_INVALID_PARAMETER; };
+    let Ok(request_size) = uaccess::get_user_u32(request_size_address) else { return STATUS_INVALID_PARAMETER; };
     let Some(request) = server_request_kind(request) else { return server_reply(args, STATUS_NOT_IMPLEMENTED); };
     if request_size != 0 && !matches!(request, ServerRequest::Select | ServerRequest::CreateEvent | ServerRequest::CreateMutex | ServerRequest::CreateSemaphore) { return server_reply(args, STATUS_INVALID_PARAMETER); }
     if matches!(request, ServerRequest::Select) { return server_select(args); }
