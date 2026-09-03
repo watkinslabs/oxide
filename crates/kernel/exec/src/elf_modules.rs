@@ -17,7 +17,16 @@ pub struct ElfRuntimeModule {
     pub eh_frame: Vec<u8>,
 }
 
+/// One process-visible ELF symbol exported by a loaded native object.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ElfRuntimeSymbol {
+    pub name: Vec<u8>,
+    pub address: u64,
+}
+
 static MODULES: Spinlock<BTreeMap<u64, Vec<ElfRuntimeModule>>, Modules> =
+    Spinlock::new(BTreeMap::new());
+static SYMBOLS: Spinlock<BTreeMap<u64, Vec<ElfRuntimeSymbol>>, Modules> =
     Spinlock::new(BTreeMap::new());
 
 pub fn register(as_: &AddressSpace, modules: &[ElfRuntimeModule]) {
@@ -33,7 +42,26 @@ pub fn find(root: u64, pc: u64) -> Option<ElfRuntimeModule> {
         .find(|module| pc >= module.base && pc - module.base < module.size).cloned())
 }
 
-pub fn clear(root: u64) { MODULES.lock().remove(&root); }
+/// Publish the ELF export scope for one address space after all images are
+/// mapped. Duplicate names are replaced in registration order.
+/// # C: O(N_symbols²) worst case, O(N_symbols) expected for normal catalogs
+pub fn register_symbols(as_: &AddressSpace, symbols: &[ElfRuntimeSymbol]) {
+    let mut scope = Vec::with_capacity(symbols.len());
+    for symbol in symbols {
+        if let Some(old) = scope.iter_mut().find(|old: &&mut ElfRuntimeSymbol| old.name == symbol.name) {
+            *old = symbol.clone();
+        } else { scope.push(symbol.clone()); }
+    }
+    SYMBOLS.lock().insert(as_.root_pa(), scope);
+}
+
+/// Resolve one exact ELF symbol name in the current process scope.
+/// # C: O(N_symbols)
+pub fn resolve_symbol(root: u64, name: &[u8]) -> Option<u64> {
+    SYMBOLS.lock().get(&root)?.iter().find(|symbol| symbol.name == name).map(|symbol| symbol.address)
+}
+
+pub fn clear(root: u64) { MODULES.lock().remove(&root); SYMBOLS.lock().remove(&root); }
 
 #[cfg(test)]
 mod tests {
@@ -49,5 +77,19 @@ mod tests {
         assert_eq!(find(as_.root_pa(), 0x6000), None);
         clear(as_.root_pa());
         assert_eq!(find(as_.root_pa(), 0x4fff), None);
+    }
+
+    #[test]
+    fn symbol_scope_replaces_exact_name_without_case_folding() {
+        let as_ = AddressSpace::new(0x7_1000).unwrap();
+        register_symbols(&as_, &[
+            ElfRuntimeSymbol { name: b"wine_symbol".to_vec(), address: 0x4100 },
+            ElfRuntimeSymbol { name: b"Wine_symbol".to_vec(), address: 0x4200 },
+            ElfRuntimeSymbol { name: b"wine_symbol".to_vec(), address: 0x4300 },
+        ]);
+        assert_eq!(resolve_symbol(as_.root_pa(), b"wine_symbol"), Some(0x4300));
+        assert_eq!(resolve_symbol(as_.root_pa(), b"Wine_symbol"), Some(0x4200));
+        assert_eq!(resolve_symbol(as_.root_pa(), b"WINE_SYMBOL"), None);
+        clear(as_.root_pa());
     }
 }
