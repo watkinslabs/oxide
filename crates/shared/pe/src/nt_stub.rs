@@ -158,6 +158,45 @@ pub fn encode_x64_wndproc_continuation(selector: u64) -> Vec<u8> {
     code
 }
 
+/// Return leg for a native x86-64 user APC.  The APC routine returns through
+/// this code with `rsp` pointing immediately after its return address; the
+/// saved volatile register image and original control state follow the
+/// Windows shadow space.  The original `r11` is intentionally not restored:
+/// it is caller-clobbered by the Windows x64 ABI, while all nonvolatile
+/// registers are restored before jumping to the interrupted instruction.
+pub fn encode_x64_apc_continuation() -> Vec<u8> {
+    let mut code = Vec::new();
+    // Saved image offsets after RET: rax..rbp at 0x20..0x98, rip 0x98,
+    // rsp 0xa0.  Each load is a 64-bit RIP-independent stack-relative move.
+    for (reg, offset) in [
+        (0, 0x20u8), // rax
+        (3, 0x28),    // rbx
+        (1, 0x30),    // rcx
+        (2, 0x38),    // rdx
+        (6, 0x40),    // rsi
+        (7, 0x48),    // rdi
+        (8, 0x50),    // r8
+        (9, 0x58),    // r9
+        (10, 0x60),   // r10
+        (12, 0x78),   // r12
+        (13, 0x80),   // r13
+        (14, 0x88),   // r14
+        (15, 0x90),   // r15
+        (5, 0x98),    // rbp
+    ] {
+        if reg < 8 {
+            code.extend_from_slice(&[0x48, 0x8b, 0x44 + (reg << 3), 0x24, offset]);
+        } else {
+            code.extend_from_slice(&[0x4c, 0x8b, 0x44 + ((reg - 8) << 3), 0x24, offset]);
+        }
+    }
+    // mov r11, [rsp+0xa0] (original RIP), then mov rsp, [rsp+0xa8].
+    code.extend_from_slice(&[0x4c, 0x8b, 0x5c, 0x24, 0xa0]);
+    code.extend_from_slice(&[0x48, 0x8b, 0x64, 0x24, 0xa8]);
+    code.extend_from_slice(&[0x41, 0xff, 0xe3]); // jmp r11
+    code
+}
+
 /// Encode Wine's x86-64 debugger breakpoint entry. The trap is intentional:
 /// Windows exception dispatch, rather than the NT syscall adapter, owns the
 /// observable result when a process executes this export.
@@ -281,6 +320,15 @@ mod tests {
         assert_eq!(&bytes[..11], &[0x57, 0x56, 0x48, 0x89, 0xcf, 0x48, 0x89, 0xd6, 0x4c, 0x89, 0xc2]);
         assert!(bytes.windows(2).any(|window| window == [0x0f, 0x05]));
         assert_eq!(&bytes[bytes.len() - 5..], &[0x0f, 0x05, 0x5e, 0x5f, 0xc3]);
+    }
+
+    #[test]
+    fn apc_continuation_restores_saved_context_and_jumps_to_rip() {
+        let bytes = encode_x64_apc_continuation();
+        assert_eq!(bytes.len(), 14 * 5 + 10 + 3);
+        assert_eq!(&bytes[0..4], &[0x48, 0x8b, 0x44, 0x24]);
+        assert!(bytes.windows(5).any(|window| window == [0x4c, 0x8b, 0x5c, 0x24, 0xa0]));
+        assert!(bytes.ends_with(&[0x41, 0xff, 0xe3]));
     }
 }
 use alloc::vec::Vec;

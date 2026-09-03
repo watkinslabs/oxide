@@ -121,6 +121,51 @@ fn work_flags() -> u32 {
                                     notify_signal, false, rseq, freeze)
 }
 
+/// Build the native x86-64 user APC trampoline on the target's user stack.
+/// The callback is dequeued only after every user write and the saved frame
+/// rewrite succeeds, so an invalid stack cannot consume queued work.
+#[cfg(target_arch = "x86_64")]
+unsafe fn deliver_nt_apc(regs: *mut UserRegs) -> bool {
+    const FRAME_BYTES: u64 = 0xc0;
+    const SHADOW_BYTES: u64 = 0x20;
+    let Some(task) = sched::live::current() else { return false; };
+    if !task.is_nt_personality() { return false; }
+    let Some(apc) = task.nt_apc_queue.peek() else { return false; };
+    let frame = unsafe { &mut *regs };
+    if apc.routine == 0 || !uaccess::access_ok(apc.routine, 1) { return false; }
+    let Some(callback_rsp) = frame.rsp.checked_sub(FRAME_BYTES)
+        .map(|value| (value & !0xf) | 8) else { return false; };
+    if !uaccess::access_ok(callback_rsp, FRAME_BYTES as usize) { return false; }
+    let ntdll = crate::nt_loader_proc::module_base_by_name(&task, b"ntdll.dll").unwrap_or(0);
+    let Some(continuation) = elf_load::pe_loader::resolve_nt_runtime_apc_continuation(ntdll) else { return false; };
+    let put = |offset: u64, value: u64| -> bool {
+        uaccess::put_user_u64(callback_rsp.checked_add(offset).unwrap_or(0), value).is_ok()
+    };
+    if !put(0, continuation) { return false; }
+    for offset in (8..SHADOW_BYTES).step_by(8) { if !put(offset, 0) { return false; } }
+    // Absolute offsets from callback_rsp; the continuation executes after RET
+    // and therefore addresses these as +0x20..+0xa8 from its RSP.
+    let saved = [
+        (0x28, frame.rax), (0x30, frame.rbx), (0x38, frame.rcx),
+        (0x40, frame.rdx), (0x48, frame.rsi), (0x50, frame.rdi),
+        (0x58, frame.r8), (0x60, frame.r9), (0x68, frame.r10),
+        (0x70, frame.r11), (0x80, frame.r12), (0x88, frame.r13),
+        (0x90, frame.r14), (0x98, frame.r15), (0xa0, frame.rbp),
+        (0xa8, frame.rip), (0xb0, frame.rsp),
+    ];
+    for (offset, value) in saved { if !put(offset, value) { return false; } }
+    frame.rip = apc.routine;
+    frame.rsp = callback_rsp;
+    frame.rcx = apc.argument1;
+    frame.rdx = apc.argument2;
+    frame.r8 = apc.argument3;
+    let _ = task.nt_apc_queue.pop();
+    true
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn deliver_nt_apc(_regs: *mut UserRegs) -> bool { false }
+
 /// Linux `exit_to_user_mode_loop(regs, ti_work)`.
 ///
 /// `syscall_rv` is `Some` only on the syscall return path — Linux's
@@ -174,11 +219,14 @@ pub unsafe fn exit_to_user_mode_loop(regs: *mut UserRegs, syscall_rv: Option<i64
     let mut passes: u32 = 0;
     loop {
         let w = work_flags();
+        let apc_pending = sched::live::current().map(|task| task.is_nt_personality()
+            && !task.nt_apc_queue.is_empty()).unwrap_or(false);
         let want_notify = (w & work::NOTIFY_SIGNAL) != 0;
         let want_freeze = (w & work::FREEZE) != 0;
         let want_signal = (w & work::SIGPENDING) != 0 || owe_signal_arm || want_notify;
         let bounded = passes < sched::exit_to_user::MAX_PASSES;
-        if !(sched::exit_to_user::should_continue(w, passes) || (want_signal && bounded)) { break; }
+        if !(sched::exit_to_user::should_continue(w, passes) || (want_signal && bounded)
+            || (apc_pending && bounded)) { break; }
         passes += 1;
         // Linux `local_irq_enable()` at the top of the pass: delivery writes
         // user memory and can fault, and `schedule()` must be able to take a
@@ -205,6 +253,11 @@ pub unsafe fn exit_to_user_mode_loop(regs: *mut UserRegs, syscall_rv: Option<i64
             // SAFETY: this is the return-to-user safe point, after the entry
             // path released its locks and enabled interrupts.
             unsafe { sched::live::freezer::freeze_current_if_requested(); }
+        }
+        if apc_pending {
+            // SAFETY: the loop owns the live user frame and runs with the
+            // current task's user address space active.
+            let _ = unsafe { deliver_nt_apc(regs) };
         }
         if want_signal {
             owe_signal_arm = false;

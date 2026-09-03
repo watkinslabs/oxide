@@ -43,6 +43,10 @@ impl Queue {
         self.0.lock().pop_front()
     }
 
+    pub fn peek(&self) -> Option<Apc> {
+        self.0.lock().front().copied()
+    }
+
     pub fn len(&self) -> usize {
         self.0.lock().len()
     }
