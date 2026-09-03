@@ -53,11 +53,28 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         return Some(STATUS_NOT_IMPLEMENTED);
     }
     if call.service != NtService::RtlCreateEnvironment { return None; }
-    if call.args.a1 == 0 { return Some(STATUS_INVALID_PARAMETER); }
-    // Wine copies the process environment for inherit != FALSE and otherwise
-    // allocates an empty double-NUL-terminated block. Oxide's PEB owner does
-    // not yet expose a mutable NT environment allocation/lifetime interface.
-    Some(STATUS_NOT_IMPLEMENTED)
+    Some(create_environment(call.args.a0 != 0, call.args.a1))
+}
+
+fn create_environment(inherit: bool, output: u64) -> u64 {
+    if output == 0 { return STATUS_INVALID_PARAMETER; }
+    let Some(current) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !current.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    let values = if inherit {
+        let Some(environment) = environment_address(0) else { return STATUS_INVALID_PARAMETER; };
+        let Some(values) = read_environment_block(environment) else { return STATUS_INVALID_PARAMETER; };
+        values
+    } else { vec![0, 0] };
+    let Some(bytes) = values.len().checked_mul(2) else { return STATUS_NO_MEMORY; };
+    let allocation = crate::nt_heap::dispatch(NtCall { service: NtService::AllocateHeap,
+        args: SyscallArgs { a0: 1, a1: 0, a2: bytes as u64, a3: 0, a4: 0, a5: 0 } });
+    let Some(environment) = allocation.filter(|&address| address != 0) else { return STATUS_NO_MEMORY; };
+    if copy_units(environment, &values).is_err() || uaccess::put_user_u64(output, environment).is_err() {
+        let _ = crate::nt_heap::dispatch(NtCall { service: NtService::FreeHeap,
+            args: SyscallArgs { a0: 1, a1: 0, a2: environment, a3: 0, a4: 0, a5: 0 } });
+        return STATUS_INVALID_PARAMETER;
+    }
+    STATUS_SUCCESS
 }
 
 fn set_current_environment(new_environment: u64, old_environment: u64) -> u64 {
