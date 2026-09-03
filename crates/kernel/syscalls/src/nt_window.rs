@@ -328,6 +328,20 @@ pub(crate) fn create_class_window_for_current(name: &[u16], parent: u64) -> Opti
     entries[index].state.create(cur.tid as u64, parent, wndproc).ok().map(|window| window.raw() as u64)
 }
 
+/// Replace text while keeping the mutation inside the canonical window owner.
+/// # C: O(N_process_gui_states + N_windows + N_text)
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) fn set_window_text_for_current(hwnd: u64, text: &[u16]) -> Result<(), ()> {
+    let cur = sched::live::current().ok_or(())?;
+    if !cur.is_nt_personality() || hwnd > u32::MAX as u64 { return Err(()); }
+    let window = ipc::win32_window::WindowId::from_raw(hwnd as u32).ok_or(())?;
+    let group = Arc::clone(&cur.thread_group);
+    let mut entries = GUI.lock();
+    entries.retain(|entry| entry.group.upgrade().is_some());
+    let index = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group))).ok_or(())?;
+    entries[index].state.set_text(window, text).map_err(|_| ())
+}
+
 /// Resolve the WndProc stored in the current process's canonical HWND state.
 /// # C: O(N_process_gui_states + N_windows)
 #[cfg(target_os = "oxide-kernel")]
