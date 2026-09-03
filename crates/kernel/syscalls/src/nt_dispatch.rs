@@ -243,6 +243,7 @@ pub fn dispatch(call: NtCall) -> u64 {
     // Registry operations use the native userspace owner before the legacy
     // fail-closed guards below. This keeps the kernel free of registry state.
     if let Some(result) = crate::nt_registry::dispatch(call) { return result; }
+    if let Some(result) = crate::nt_job::dispatch(call) { return result; }
     if let Some(result) = crate::nt_file::dispatch_native(call) { return result; }
     if call.service == syscall::nt::NtService::RelayCall {
         klog::write_raw(b"[WINDOWS-PE-NT-DISPATCH] relay descriptor="); klog::write_hex_u64(call.args.a0);
@@ -773,7 +774,7 @@ pub fn dispatch(call: NtCall) -> u64 {
         }
         return STATUS_SUCCESS;
     }
-    if matches!(call.service, nt::NtService::DeviceIoControlFile | nt::NtService::FsControlFile | nt::NtService::OpenJobObject | nt::NtService::QueryInformationJobObject | nt::NtService::SetInformationDebugObject | nt::NtService::SetInformationJobObject | nt::NtService::SetInformationProcess | nt::NtService::SetInformationThread) {
+    if matches!(call.service, nt::NtService::DeviceIoControlFile | nt::NtService::FsControlFile | nt::NtService::OpenJobObject | nt::NtService::SetInformationDebugObject | nt::NtService::SetInformationProcess | nt::NtService::SetInformationThread) {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
         if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
         return 0xc000_0002;
@@ -894,7 +895,7 @@ pub fn dispatch(call: NtCall) -> u64 {
             NtObjectCall::CompareObjects { first, second } => compare_objects(&cur, first, second),
             NtObjectCall::CreateJob { handle, desired_access, attributes: _ } => {
                 if desired_access & !JOB_OBJECT_ALL_ACCESS != 0 { return STATUS_INVALID_PARAMETER; }
-                let object = table.new_object(sched::nt_object::NtObjectType::Job);
+                let object = table.new_job();
                 let Some(native) = table.insert(object, desired_access) else { return STATUS_NO_MEMORY; };
                 if uaccess::put_user_u32(handle.as_u64(), native.raw()).is_err() {
                     let _ = table.close(native);

@@ -12,8 +12,8 @@ for the native job-object path used by Win32 startup code. Oxide exposes the
 type is `Job`. The handle table enforces the requested access mask and output
 pointer validation.
 
-This first implementation provides object identity and validation. Job
-limits, notifications, and complete membership accounting are separate
-semantics still required before general job-management compatibility. The
-implementation does not reuse Linux process groups or alter Linux scheduling
-behavior.
+The job object now also owns mutable basic/extended limit state. The supported
+64-bit information classes are validated at their Wine-defined sizes and
+preserve flags, active-process limit, and process/job memory-limit fields
+across duplicate handles. The implementation does not reuse Linux process
+groups or alter Linux scheduling behavior.

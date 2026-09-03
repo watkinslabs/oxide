@@ -7,10 +7,11 @@ Date: 2026-08-31
 ## Contract
 
 The native 64-bit `NtSetInformationJobObject` export is selector 118. Wine
-uses it for job limits and completion-port association. Oxide currently
-tracks job handles and assignment validation but does not yet store those
-limits or completion associations, so this service returns explicit
-`STATUS_NOT_IMPLEMENTED`.
+uses it for job limits and completion-port association. Oxide stores the
+basic and extended limit classes in the scheduler-owned job object, validates
+the exact 64-bit structure sizes and class-specific valid flags, and keeps
+completion-port association explicit until its existing completion-port
+owner is extended for job notifications.
 
 Linux cgroups and scheduler groups are not substituted for Windows job
 objects.
