@@ -43,6 +43,7 @@ mod brk;
 pub mod format;
 mod layout;
 mod load;
+pub mod unixlib;
 pub mod persona;
 pub mod shebang;
 mod place;
