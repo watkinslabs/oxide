@@ -4,7 +4,7 @@ use vmm::{AddressSpace, MmapPlacement, VmaBacking, VmaFlags, VmaProt};
 const PAGE: usize = hal::PAGE_SIZE_BYTES as usize;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum NtStatus { Success, InvalidParameter, NoMemory, NotMapped }
+pub enum NtStatus { Success, InvalidParameter, NoMemory, ConflictingAddresses, NotMapped }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct NtAllocation { pub base: UserVirtAddr, pub size: usize, pub protection: VmaProt }
@@ -32,7 +32,15 @@ pub fn windows_protection(raw: u32) -> Result<VmaProt, NtStatus> {
 /// # C: O(log N_vmas)
 pub fn allocate(as_: &AddressSpace, base: Option<UserVirtAddr>, size: usize, protection: VmaProt) -> Result<NtAllocation, NtStatus> {
     if size == 0 || size % PAGE != 0 { return Err(NtStatus::InvalidParameter); }
-    let base = as_.mmap_with_may_at(match base { Some(base) => MmapPlacement::Advisory(Some(base)), None => MmapPlacement::Advisory(None) }, size, protection, protection, VmaFlags::PRIVATE, VmaBacking::Anonymous).map_err(|_| NtStatus::NoMemory)?;
+    let placement = match base {
+        Some(base) => MmapPlacement::FixedNoReplace(base),
+        None => MmapPlacement::Advisory(None),
+    };
+    let base = as_.mmap_with_may_at(placement, size, protection, protection, VmaFlags::PRIVATE, VmaBacking::Anonymous)
+        .map_err(|error| match error {
+            vmm::MmapError::Exists => NtStatus::ConflictingAddresses,
+            vmm::MmapError::Vmm(_) => NtStatus::NoMemory,
+        })?;
     Ok(NtAllocation { base, size, protection })
 }
 
@@ -79,6 +87,14 @@ mod tests {
         assert_eq!(q.base, a.base); assert_eq!(q.size, a.size); assert_eq!(q.may_protection, VmaProt::READ | VmaProt::WRITE);
         assert_eq!(protect(&as_, a.base, a.size, VmaProt::READ).unwrap(), VmaProt::READ | VmaProt::WRITE);
         assert_eq!(free(&as_, a), NtStatus::Success); assert_eq!(query(&as_, a.base), Err(NtStatus::NotMapped));
+    }
+
+    #[test]
+    fn requested_address_is_fixed_and_conflicts_are_not_relocated() {
+        let as_ = AddressSpace::new(0x20_000).unwrap();
+        let first = allocate(&as_, Some(UserVirtAddr::new(0x4000_0000).unwrap()), PAGE, VmaProt::READ).unwrap();
+        assert_eq!(allocate(&as_, Some(first.base), PAGE, VmaProt::READ), Err(NtStatus::ConflictingAddresses));
+        assert_eq!(query(&as_, first.base).unwrap().base, first.base);
     }
 
     #[test]
