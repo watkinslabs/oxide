@@ -64,6 +64,8 @@ const MEM_RESERVE: u32 = 0x2000;
 #[cfg(target_os = "oxide-kernel")]
 const MEM_COMMIT: u32 = 0x1000;
 #[cfg(target_os = "oxide-kernel")]
+const MEM_FREE: u32 = 0x10000;
+#[cfg(target_os = "oxide-kernel")]
 const MEM_RELEASE: u32 = 0x8000;
 #[cfg(target_os = "oxide-kernel")]
 const MEMORY_BASIC_INFORMATION_CLASS: u32 = 0;
@@ -1517,16 +1519,25 @@ pub fn dispatch(call: NtCall) -> u64 {
         NtMemoryCall::Query { address, info_class, info, info_size, return_length, .. } => {
             if info_class != MEMORY_BASIC_INFORMATION_CLASS || info_size < MEMORY_BASIC_INFORMATION_BYTES as u64 { return STATUS_INVALID_PARAMETER; }
             let address = match hal::UserVirtAddr::new(address) { Some(address) => address, None => return STATUS_INVALID_PARAMETER };
-            let memory = match elf_load::nt_memory::query(&mm, address) { Ok(memory) => memory, Err(_) => return STATUS_MEMORY_NOT_ALLOCATED };
+            let memory = match elf_load::nt_memory::query(&mm, address) {
+                Ok(memory) => memory,
+                Err(elf_load::nt_memory::NtStatus::NotMapped) => match elf_load::nt_memory::query_free(&mm, address) {
+                    Ok(memory) => memory,
+                    Err(_) => return STATUS_INVALID_PARAMETER,
+                },
+                Err(_) => return STATUS_INVALID_PARAMETER,
+            };
             let mut bytes = [0u8; MEMORY_BASIC_INFORMATION_BYTES];
             bytes[0..8].copy_from_slice(&memory.base.as_u64().to_ne_bytes());
             bytes[8..16].copy_from_slice(&memory.allocation_base.as_u64().to_ne_bytes());
             bytes[16..20].copy_from_slice(&windows_protection_word(memory.protection).to_ne_bytes());
             bytes[20..24].copy_from_slice(&windows_protection_word(memory.may_protection).to_ne_bytes());
             bytes[24..32].copy_from_slice(&(memory.size as u64).to_ne_bytes());
-            bytes[32..36].copy_from_slice(&MEM_COMMIT.to_ne_bytes());
+            let state = if memory.allocation_base.as_u64() == 0 { MEM_FREE } else { MEM_COMMIT };
+            bytes[32..36].copy_from_slice(&state.to_ne_bytes());
             bytes[36..40].copy_from_slice(&windows_protection_word(memory.protection).to_ne_bytes());
-            bytes[40..44].copy_from_slice(&0x20000u32.to_ne_bytes());
+            let kind: u32 = if memory.allocation_base.as_u64() == 0 { 0 } else { 0x20000 };
+            bytes[40..44].copy_from_slice(&kind.to_ne_bytes());
             if uaccess::copy_to_user(info.as_u64(), &bytes).is_err() || uaccess::put_user_u64(return_length.as_u64(), MEMORY_BASIC_INFORMATION_BYTES as u64).is_err() { return STATUS_INVALID_PARAMETER; }
             STATUS_SUCCESS
         }
