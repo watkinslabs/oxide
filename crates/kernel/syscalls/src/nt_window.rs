@@ -562,7 +562,9 @@ pub(crate) fn thunked_menu_item_info(raw: u64, position: u64, flags: u64, method
     const SET: u64 = 0;
     const INSERT: u64 = 1;
     const GET_ID: u64 = 5;
+    const GET_INFO_W: u64 = 6;
     const GET_STATE: u64 = 7;
+    const GET_SUBMENU: u64 = 8;
     const BY_POSITION: u32 = ipc::win32_menu::MF_BYPOSITION;
     let (Some(menu), Some(position), Some(flags), Some(method)) = (u32::try_from(raw).ok().and_then(ipc::win32_menu::MenuId::from_raw), u32::try_from(position).ok(), u32::try_from(flags).ok(), u64::try_from(method).ok()) else { return ipc::win32_menu::MENU_NOT_FOUND as u64; };
     let Some(cur) = sched::live::current() else { return ipc::win32_menu::MENU_NOT_FOUND as u64; };
@@ -571,9 +573,9 @@ pub(crate) fn thunked_menu_item_info(raw: u64, position: u64, flags: u64, method
     let mut entries = GUI.lock();
     entries.retain(|entry| entry.group.upgrade().is_some());
     let Some(index) = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group))) else { return ipc::win32_menu::MENU_NOT_FOUND as u64; };
-    if method == GET_ID || method == GET_STATE {
+    if method == GET_ID || method == GET_STATE || method == GET_SUBMENU {
         let Ok(item) = entries[index].menus.item(menu, position, flags) else { return ipc::win32_menu::MENU_NOT_FOUND as u64; };
-        return if method == GET_ID { item.id as u64 } else { item.state as u64 };
+        return if method == GET_ID { if item.submenu.is_some() { u32::MAX as u64 } else { item.id as u64 } } else if method == GET_STATE { item.state as u64 } else { item.submenu.unwrap_or(0) as u64 };
     }
     if info == 0 || uaccess::get_user_u32(info).ok() != Some(MENUITEMINFO_BYTES) { return 0; }
     let mask = uaccess::get_user_u32(info + 4).ok().unwrap_or(0);
@@ -582,6 +584,24 @@ pub(crate) fn thunked_menu_item_info(raw: u64, position: u64, flags: u64, method
     let submenu = uaccess::get_user_u64(info + 24).ok().and_then(|value| (value != 0).then_some(value as u32));
     let text_pointer = uaccess::get_user_u64(info + 56).ok().unwrap_or(0);
     let text_count = uaccess::get_user_u32(info + 64).ok().unwrap_or(0).min(4096);
+    if method == GET_INFO_W {
+        let Ok(item) = entries[index].menus.item(menu, position, flags) else { return 0; };
+        if mask & MENUITEMINFO_MASK_STATE != 0 && uaccess::copy_to_user(info + 12, &item.state.to_le_bytes()).is_err() { return 0; }
+        if mask & MENUITEMINFO_MASK_ID != 0 && uaccess::copy_to_user(info + 16, &item.id.to_le_bytes()).is_err() { return 0; }
+        if mask & MENUITEMINFO_MASK_SUBMENU != 0 && uaccess::copy_to_user(info + 24, &item.submenu.unwrap_or(0).to_le_bytes()).is_err() { return 0; }
+        if mask & MENUITEMINFO_MASK_STRING != 0 {
+            let length = item.text.len();
+            if text_pointer != 0 && text_count != 0 {
+                let copied = length.min(text_count as usize - 1);
+                for (offset, unit) in item.text.iter().take(copied).enumerate() {
+                    if uaccess::copy_to_user(text_pointer + offset as u64 * 2, &unit.to_le_bytes()).is_err() { return 0; }
+                }
+                if uaccess::copy_to_user(text_pointer + copied as u64 * 2, &[0, 0]).is_err() { return 0; }
+                if uaccess::copy_to_user(info + 64, &(copied as u32).to_le_bytes()).is_err() { return 0; }
+            } else if uaccess::copy_to_user(info + 64, &(length as u32).to_le_bytes()).is_err() { return 0; }
+        }
+        return 1;
+    }
     let text = if mask & MENUITEMINFO_MASK_STRING != 0 {
         if text_pointer == 0 { return 0; }
         let mut value = Vec::new();
