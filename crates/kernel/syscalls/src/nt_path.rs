@@ -31,6 +31,26 @@ pub fn normalize_path(raw: &str) -> Option<String> {
     lexical_normalize(&path)
 }
 
+/// Render a canonical VFS path in the DOS spelling exposed by NT file
+/// information replies.  The `/windows/<drive>/` mount is the single drive
+/// mapping owned by this layer; other absolute paths retain their root while
+/// adopting Windows separators.
+pub fn render_windows_path(path: &str) -> Option<String> {
+    if path.as_bytes().contains(&0) { return None; }
+    if let Some(rest) = path.strip_prefix("/windows/") {
+        let mut parts = rest.splitn(2, '/');
+        let drive = parts.next()?;
+        if drive.len() != 1 || !drive.as_bytes()[0].is_ascii_alphabetic() { return None; }
+        let mut output = String::new();
+        output.push(drive.as_bytes()[0].to_ascii_uppercase() as char);
+        output.push(':');
+        output.push('\\');
+        if let Some(rest) = parts.next() { output.push_str(&rest.replace('/', "\\")); }
+        return Some(output);
+    }
+    Some(path.replace('/', "\\"))
+}
+
 /// Join a normalized relative NT name to a VFS directory path. Absolute names
 /// remain rooted and therefore do not inherit the supplied directory. # C: O(path)
 pub fn join_root_path(root: &str, relative: &str) -> Option<String> {
@@ -68,7 +88,7 @@ fn lexical_normalize(path: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use alloc::string::String;
-    use super::{join_root_path, normalize_path};
+    use super::{join_root_path, normalize_path, render_windows_path};
 
     #[test]
     fn maps_absolute_drive_paths_to_windows_root() {
@@ -113,5 +133,16 @@ mod tests {
         assert_eq!(join_root_path("/windows/c/Games", "..\\data.pak"),
             Some(String::from("/windows/c/data.pak")));
         assert_eq!(join_root_path("/windows/c/Games", "/absolute"), None);
+    }
+
+    #[test]
+    fn renders_canonical_drive_paths_for_nt_replies() {
+        assert_eq!(render_windows_path("/windows/c/Games/data.pak"), Some(String::from(r"C:\Games\data.pak")));
+        assert_eq!(render_windows_path("/windows/d"), Some(String::from(r"D:\")));
+    }
+
+    #[test]
+    fn renders_non_drive_paths_without_changing_root() {
+        assert_eq!(render_windows_path("/Device/Null"), Some(String::from(r"\Device\Null")));
     }
 }
