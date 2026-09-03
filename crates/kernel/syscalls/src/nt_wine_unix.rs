@@ -209,7 +209,8 @@ fn server_call(args: u64) -> u64 {
     let table = cur.thread_group.nt_handles();
     let status = match request {
         ServerRequest::CloseHandle => {
-            let Ok(raw) = uaccess::get_user_u32(args + SERVER_HANDLE) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            let Some(handle_address) = wine_arg(args, SERVER_HANDLE) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            let Ok(raw) = uaccess::get_user_u32(handle_address) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
             let handle = sched::nt_object::NtHandle::from_raw(raw);
             let object = table.get(handle, 0);
             if object.is_none() { STATUS_INVALID_HANDLE } else {
@@ -224,40 +225,47 @@ fn server_call(args: u64) -> u64 {
             }
         }
         ServerRequest::CreateEvent => {
-            let Ok(access) = uaccess::get_user_u32(args + SERVER_HANDLE) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
-            let Ok(manual) = uaccess::get_user_u32(args + SERVER_EVENT_MANUAL_RESET) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
-            let Ok(initial) = uaccess::get_user_u32(args + SERVER_EVENT_INITIAL_STATE) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            let (Some(access_address), Some(manual_address), Some(initial_address)) = (wine_arg(args, SERVER_HANDLE), wine_arg(args, SERVER_EVENT_MANUAL_RESET), wine_arg(args, SERVER_EVENT_INITIAL_STATE)) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            let Ok(access) = uaccess::get_user_u32(access_address) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            let Ok(manual) = uaccess::get_user_u32(manual_address) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            let Ok(initial) = uaccess::get_user_u32(initial_address) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
             if manual > 1 || initial > 1 { STATUS_INVALID_PARAMETER } else {
                 let path = match wine_object_path(args, request_size, &table) { Ok(path) => path, Err(status) => return server_reply(args, status) };
                 let (object, state) = match path { Some(path) => sched::nt_object::create_event(&path, manual != 0, initial != 0), None => (table.new_event(manual != 0, initial != 0), sched::nt_object::NamedObjectState::Created) };
                 if state == sched::nt_object::NamedObjectState::TypeMismatch { return server_reply(args, STATUS_OBJECT_TYPE_MISMATCH); }
                 if state == sched::nt_object::NamedObjectState::ParentMissing { return server_reply(args, STATUS_OBJECT_NAME_NOT_FOUND); }
                 let Some(handle) = table.insert(object, access) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
-                if uaccess::put_user_u32(args + SERVER_REPLY_HANDLE, handle.raw()).is_err() { let _ = table.close(handle); STATUS_INVALID_PARAMETER } else if state == sched::nt_object::NamedObjectState::Existing { STATUS_OBJECT_NAME_COLLISION } else { STATUS_SUCCESS }
+                let Some(reply_address) = wine_arg(args, SERVER_REPLY_HANDLE) else { let _ = table.close(handle); return server_reply(args, STATUS_INVALID_PARAMETER); };
+                if uaccess::put_user_u32(reply_address, handle.raw()).is_err() { let _ = table.close(handle); STATUS_INVALID_PARAMETER } else if state == sched::nt_object::NamedObjectState::Existing { STATUS_OBJECT_NAME_COLLISION } else { STATUS_SUCCESS }
             }
         }
         ServerRequest::EventOp => {
-            let Ok(raw) = uaccess::get_user_u32(args + SERVER_HANDLE) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
-            let Ok(op) = uaccess::get_user_u32(args + SERVER_EVENT_OP) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            let (Some(handle_address), Some(op_address)) = (wine_arg(args, SERVER_HANDLE), wine_arg(args, SERVER_EVENT_OP)) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            let Ok(raw) = uaccess::get_user_u32(handle_address) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            let Ok(op) = uaccess::get_user_u32(op_address) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
             let handle = sched::nt_object::NtHandle::from_raw(raw);
             let Some(object) = table.get(handle, EVENT_MODIFY_STATE) else { return server_reply(args, if table.contains(handle) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE }); };
             if object.kind() != sched::nt_object::NtObjectType::Event { STATUS_INVALID_HANDLE } else if let Some(event) = object.event() {
                 let old = event.is_signaled();
                 match op { 0 => { event.pulse(); }, 1 => { event.set(); }, 2 => { event.reset(); }, _ => return server_reply(args, STATUS_INVALID_PARAMETER) }
                 table.wake_waiters();
-                if uaccess::put_user_u32(args + SERVER_REPLY_STATE, old as u32).is_err() { STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
+                let Some(reply_address) = wine_arg(args, SERVER_REPLY_STATE) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+                if uaccess::put_user_u32(reply_address, old as u32).is_err() { STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
             } else { STATUS_INVALID_HANDLE }
         }
         ServerRequest::QueryEvent => {
-            let Ok(raw) = uaccess::get_user_u32(args + SERVER_HANDLE) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            let Some(handle_address) = wine_arg(args, SERVER_HANDLE) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            let Ok(raw) = uaccess::get_user_u32(handle_address) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
             let handle = sched::nt_object::NtHandle::from_raw(raw);
             let Some(object) = table.get(handle, EVENT_QUERY_STATE) else { return server_reply(args, if table.contains(handle) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE }); };
             let Some(event) = object.event() else { return server_reply(args, STATUS_INVALID_HANDLE); };
-            if uaccess::put_user_u32(args + SERVER_REPLY_MANUAL_RESET, event.is_manual_reset() as u32).is_err() || uaccess::put_user_u32(args + SERVER_REPLY_EVENT_STATE, event.is_signaled() as u32).is_err() { STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
+            let (Some(manual_address), Some(state_address)) = (wine_arg(args, SERVER_REPLY_MANUAL_RESET), wine_arg(args, SERVER_REPLY_EVENT_STATE)) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            if uaccess::put_user_u32(manual_address, event.is_manual_reset() as u32).is_err() || uaccess::put_user_u32(state_address, event.is_signaled() as u32).is_err() { STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
         }
         ServerRequest::CreateMutex => {
-            let Ok(access) = uaccess::get_user_u32(args + SERVER_SYNC_ACCESS) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
-            let Ok(owned) = uaccess::get_user_u32(args + SERVER_SYNC_VALUE) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            let (Some(access_address), Some(owned_address)) = (wine_arg(args, SERVER_SYNC_ACCESS), wine_arg(args, SERVER_SYNC_VALUE)) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            let Ok(access) = uaccess::get_user_u32(access_address) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            let Ok(owned) = uaccess::get_user_u32(owned_address) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
             if owned > 1 { STATUS_INVALID_PARAMETER } else {
                 let path = match wine_object_path(args, request_size, &table) { Ok(path) => path, Err(status) => return server_reply(args, status) };
                 let fresh = table.new_mutant((owned != 0).then_some(cur.tid as u64));
@@ -265,29 +273,35 @@ fn server_call(args: u64) -> u64 {
                 if state == sched::nt_object::NamedObjectState::TypeMismatch { return server_reply(args, STATUS_OBJECT_TYPE_MISMATCH); }
                 if state == sched::nt_object::NamedObjectState::ParentMissing { return server_reply(args, STATUS_OBJECT_NAME_NOT_FOUND); }
                 let Some(handle) = table.insert(object, access) else { return server_reply(args, STATUS_NO_MEMORY); };
-                if uaccess::put_user_u32(args + SERVER_REPLY_VALUE, handle.raw()).is_err() { let _ = table.close(handle); STATUS_INVALID_PARAMETER } else if state == sched::nt_object::NamedObjectState::Existing { STATUS_OBJECT_NAME_COLLISION } else { STATUS_SUCCESS }
+                let Some(reply_address) = wine_arg(args, SERVER_REPLY_VALUE) else { let _ = table.close(handle); return server_reply(args, STATUS_INVALID_PARAMETER); };
+                if uaccess::put_user_u32(reply_address, handle.raw()).is_err() { let _ = table.close(handle); STATUS_INVALID_PARAMETER } else if state == sched::nt_object::NamedObjectState::Existing { STATUS_OBJECT_NAME_COLLISION } else { STATUS_SUCCESS }
             }
         }
         ServerRequest::ReleaseMutex => {
-            let Ok(raw) = uaccess::get_user_u32(args + SERVER_HANDLE) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            let Some(handle_address) = wine_arg(args, SERVER_HANDLE) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            let Ok(raw) = uaccess::get_user_u32(handle_address) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
             let handle = sched::nt_object::NtHandle::from_raw(raw);
             let Some(object) = table.get(handle, MUTANT_MODIFY_STATE) else { return server_reply(args, if table.contains(handle) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE }); };
             let Some(mutant) = object.mutant() else { return server_reply(args, STATUS_INVALID_HANDLE); };
             let Ok(previous) = mutant.release(cur.tid as u64) else { return server_reply(args, STATUS_ACCESS_DENIED); };
-            if uaccess::put_user_u32(args + SERVER_REPLY_VALUE, previous as u32).is_err() { STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
+            let Some(reply_address) = wine_arg(args, SERVER_REPLY_VALUE) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            if uaccess::put_user_u32(reply_address, previous as u32).is_err() { STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
         }
         ServerRequest::QueryMutex => {
-            let Ok(raw) = uaccess::get_user_u32(args + SERVER_HANDLE) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            let Some(handle_address) = wine_arg(args, SERVER_HANDLE) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            let Ok(raw) = uaccess::get_user_u32(handle_address) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
             let handle = sched::nt_object::NtHandle::from_raw(raw);
             let Some(object) = table.get(handle, MUTANT_QUERY_STATE) else { return server_reply(args, if table.contains(handle) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE }); };
             let Some(mutant) = object.mutant() else { return server_reply(args, STATUS_INVALID_HANDLE); };
             let (count, owned, abandoned) = mutant.basic_info(cur.tid as u64);
-            if uaccess::put_user_u32(args + SERVER_REPLY_VALUE, count as u32).is_err() || uaccess::put_user_u32(args + SERVER_REPLY_VALUE_TWO, owned as u32).is_err() || uaccess::put_user_u32(args + SERVER_REPLY_VALUE_THREE, abandoned as u32).is_err() { STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
+            let (Some(count_address), Some(owned_address), Some(abandoned_address)) = (wine_arg(args, SERVER_REPLY_VALUE), wine_arg(args, SERVER_REPLY_VALUE_TWO), wine_arg(args, SERVER_REPLY_VALUE_THREE)) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            if uaccess::put_user_u32(count_address, count as u32).is_err() || uaccess::put_user_u32(owned_address, owned as u32).is_err() || uaccess::put_user_u32(abandoned_address, abandoned as u32).is_err() { STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
         }
         ServerRequest::CreateSemaphore => {
-            let Ok(access) = uaccess::get_user_u32(args + SERVER_SYNC_ACCESS) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
-            let Ok(initial) = uaccess::get_user_u32(args + SERVER_SYNC_VALUE) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
-            let Ok(maximum) = uaccess::get_user_u32(args + SERVER_SYNC_VALUE_TWO) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            let (Some(access_address), Some(initial_address), Some(maximum_address)) = (wine_arg(args, SERVER_SYNC_ACCESS), wine_arg(args, SERVER_SYNC_VALUE), wine_arg(args, SERVER_SYNC_VALUE_TWO)) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            let Ok(access) = uaccess::get_user_u32(access_address) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            let Ok(initial) = uaccess::get_user_u32(initial_address) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            let Ok(maximum) = uaccess::get_user_u32(maximum_address) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
             if maximum == 0 || initial > maximum { STATUS_INVALID_PARAMETER } else {
                 let path = match wine_object_path(args, request_size, &table) { Ok(path) => path, Err(status) => return server_reply(args, status) };
                 let fresh = table.new_semaphore(initial as i64, maximum as i64);
@@ -295,26 +309,31 @@ fn server_call(args: u64) -> u64 {
                 if state == sched::nt_object::NamedObjectState::TypeMismatch { return server_reply(args, STATUS_OBJECT_TYPE_MISMATCH); }
                 if state == sched::nt_object::NamedObjectState::ParentMissing { return server_reply(args, STATUS_OBJECT_NAME_NOT_FOUND); }
                 let Some(handle) = table.insert(object, access) else { return server_reply(args, STATUS_NO_MEMORY); };
-                if uaccess::put_user_u32(args + SERVER_REPLY_VALUE, handle.raw()).is_err() { let _ = table.close(handle); STATUS_INVALID_PARAMETER } else if state == sched::nt_object::NamedObjectState::Existing { STATUS_OBJECT_NAME_COLLISION } else { STATUS_SUCCESS }
+                let Some(reply_address) = wine_arg(args, SERVER_REPLY_VALUE) else { let _ = table.close(handle); return server_reply(args, STATUS_INVALID_PARAMETER); };
+                if uaccess::put_user_u32(reply_address, handle.raw()).is_err() { let _ = table.close(handle); STATUS_INVALID_PARAMETER } else if state == sched::nt_object::NamedObjectState::Existing { STATUS_OBJECT_NAME_COLLISION } else { STATUS_SUCCESS }
             }
         }
         ServerRequest::ReleaseSemaphore => {
-            let Ok(raw) = uaccess::get_user_u32(args + SERVER_HANDLE) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
-            let Ok(count) = uaccess::get_user_u32(args + SERVER_SYNC_VALUE) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            let (Some(handle_address), Some(count_address)) = (wine_arg(args, SERVER_HANDLE), wine_arg(args, SERVER_SYNC_VALUE)) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            let Ok(raw) = uaccess::get_user_u32(handle_address) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            let Ok(count) = uaccess::get_user_u32(count_address) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
             let handle = sched::nt_object::NtHandle::from_raw(raw);
             let Some(object) = table.get(handle, SEMAPHORE_MODIFY_STATE) else { return server_reply(args, if table.contains(handle) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE }); };
             let Some(semaphore) = object.semaphore() else { return server_reply(args, STATUS_INVALID_HANDLE); };
             let Some(previous) = semaphore.release(count) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
             table.wake_waiters();
-            if uaccess::put_user_u32(args + SERVER_REPLY_VALUE, previous).is_err() { STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
+            let Some(reply_address) = wine_arg(args, SERVER_REPLY_VALUE) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            if uaccess::put_user_u32(reply_address, previous).is_err() { STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
         }
         ServerRequest::QuerySemaphore => {
-            let Ok(raw) = uaccess::get_user_u32(args + SERVER_HANDLE) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            let Some(handle_address) = wine_arg(args, SERVER_HANDLE) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            let Ok(raw) = uaccess::get_user_u32(handle_address) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
             let handle = sched::nt_object::NtHandle::from_raw(raw);
             let Some(object) = table.get(handle, SEMAPHORE_QUERY_STATE) else { return server_reply(args, if table.contains(handle) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE }); };
             let Some(semaphore) = object.semaphore() else { return server_reply(args, STATUS_INVALID_HANDLE); };
             let (current, maximum) = semaphore.counts();
-            if uaccess::put_user_u32(args + SERVER_REPLY_VALUE, current).is_err() || uaccess::put_user_u32(args + SERVER_REPLY_VALUE_TWO, maximum).is_err() { STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
+            let (Some(current_address), Some(maximum_address)) = (wine_arg(args, SERVER_REPLY_VALUE), wine_arg(args, SERVER_REPLY_VALUE_TWO)) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+            if uaccess::put_user_u32(current_address, current).is_err() || uaccess::put_user_u32(maximum_address, maximum).is_err() { STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
         }
         ServerRequest::Select => STATUS_INVALID_PARAMETER,
     };
