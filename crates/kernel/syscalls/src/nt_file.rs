@@ -721,6 +721,15 @@ fn set_information_values(cur: &sched::Task, handle: u32, io_status: u64, inform
     let Some(object) = table.get(native, required) else {
         return if table.contains(native) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE };
     };
+    if class == FILE_PIPE_INFORMATION {
+        if length < 8 { return STATUS_INVALID_PARAMETER; }
+        let Some(endpoint) = object.pipe_endpoint() else { return STATUS_INVALID_HANDLE; };
+        let Ok(read_mode) = read_u32(information) else { return STATUS_INVALID_PARAMETER; };
+        let Ok(completion_mode) = read_u32(information + 4) else { return STATUS_INVALID_PARAMETER; };
+        if !endpoint.set_modes(read_mode, completion_mode) { return STATUS_INVALID_PARAMETER; }
+        write_io_status(io_status, STATUS_SUCCESS, 0);
+        return STATUS_SUCCESS;
+    }
     let Some(file) = object.file() else { return STATUS_INVALID_HANDLE; };
     if class == FILE_RENAME_INFORMATION { return set_rename_information(file.as_ref(), information, length, io_status); }
     if class == FILE_DISPOSITION_INFORMATION {
