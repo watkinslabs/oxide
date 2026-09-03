@@ -108,6 +108,10 @@ pub struct Task {
     /// Per-thread native NT APC records, retained until user APC delivery.
     pub nt_apc_queue: crate::nt_apc::Queue,
 
+    /// Per-thread native NT exception state, retained until the Windows user
+    /// dispatcher resolves or terminates the exception.
+    pub nt_exception: crate::nt_exception::State,
+
     /// Top of kernel stack (one-past-end). AtomicPtr; read-only on hot.
     pub kernel_stack: AtomicPtr<u8>,
 
