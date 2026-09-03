@@ -60,6 +60,8 @@ const STATUS_PIPE_EMPTY: u64 = 0xc000_00d9;
 const STATUS_NOT_SUPPORTED: u64 = 0xc000_00bb;
 const FSCTL_PIPE_DISCONNECT: u32 = 0x0011_0004;
 const FSCTL_PIPE_LISTEN: u32 = 0x0011_0008;
+const FSCTL_PIPE_PEEK: u32 = 0x0011_000c;
+const FSCTL_PIPE_TRANSCEIVE: u32 = 0x0011_0014;
 const STATUS_PENDING: u64 = 0x0000_0103;
 const STATUS_PIPE_CONNECTED: u64 = 0xc000_00b2;
 
@@ -119,7 +121,37 @@ fn native_fs_control(call: NtCall) -> u64 {
     let table = cur.thread_group.nt_handles();
     let Some(object) = table.get(handle, 0) else { return STATUS_INVALID_HANDLE; };
     let Some(endpoint) = object.pipe_endpoint() else { return STATUS_INVALID_HANDLE; };
-    if call.args.a5 as u32 != FSCTL_PIPE_DISCONNECT && call.args.a5 as u32 != FSCTL_PIPE_LISTEN {
+    let code = call.args.a5 as u32;
+    if code == FSCTL_PIPE_PEEK {
+        if input != 0 || input_length != 0 || output == 0 || output_length < 16 || output_length as usize > MAX_NT_IO { return STATUS_INVALID_PARAMETER; }
+        let peek = endpoint.peek(output_length as usize - 16);
+        let mut bytes = vec![0u8; 16usize.saturating_add(peek.data.len())];
+        bytes[0..4].copy_from_slice(&(peek.state as u32).to_le_bytes());
+        bytes[4..8].copy_from_slice(&(peek.available.min(u32::MAX as usize) as u32).to_le_bytes());
+        bytes[8..12].copy_from_slice(&(peek.messages.min(u32::MAX as usize) as u32).to_le_bytes());
+        bytes[12..16].copy_from_slice(&(peek.message_length.min(u32::MAX as usize) as u32).to_le_bytes());
+        bytes[16..].copy_from_slice(&peek.data);
+        if uaccess::copy_to_user(output, &bytes).is_err() { return STATUS_ACCESS_VIOLATION; }
+        if uaccess::put_user_u64(call.args.a4, STATUS_SUCCESS).is_err()
+            || uaccess::put_user_u64(call.args.a4 + 8, bytes.len() as u64).is_err() { return STATUS_ACCESS_VIOLATION; }
+        return STATUS_SUCCESS;
+    }
+    if code == FSCTL_PIPE_TRANSCEIVE {
+        if input == 0 || input_length == 0 || output == 0 || output_length == 0
+            || input_length as usize > MAX_NT_IO || output_length as usize > MAX_NT_IO { return STATUS_INVALID_PARAMETER; }
+        let Some(object) = table.get(handle, FILE_READ_DATA | FILE_WRITE_DATA) else { return STATUS_ACCESS_DENIED; };
+        let Some(endpoint) = object.pipe_endpoint() else { return STATUS_INVALID_HANDLE; };
+        let mut request = vec![0u8; input_length as usize];
+        if uaccess::copy_from_user(&mut request, input).is_err() { return STATUS_ACCESS_VIOLATION; }
+        if !matches!(endpoint.write(&request), sched::nt_object::NtPipeIo::Complete(_)) { return STATUS_PIPE_EMPTY; }
+        let mut response = vec![0u8; output_length as usize];
+        let sched::nt_object::NtPipeIo::Complete(bytes) = endpoint.read(&mut response) else { return STATUS_PIPE_EMPTY; };
+        if uaccess::copy_to_user(output, &response[..bytes]).is_err() { return STATUS_ACCESS_VIOLATION; }
+        if uaccess::put_user_u64(call.args.a4, STATUS_SUCCESS).is_err()
+            || uaccess::put_user_u64(call.args.a4 + 8, bytes as u64).is_err() { return STATUS_ACCESS_VIOLATION; }
+        return STATUS_SUCCESS;
+    }
+    if code != FSCTL_PIPE_DISCONNECT && code != FSCTL_PIPE_LISTEN {
         let _ = (input, input_length, output, output_length);
         return STATUS_NOT_SUPPORTED;
     }
