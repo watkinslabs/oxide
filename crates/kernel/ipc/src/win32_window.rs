@@ -242,12 +242,27 @@ impl WindowManager {
     }
     /// Reserve one live window for a synchronous destruction transaction. # C: O(N_windows)
     pub fn begin_destroy(&mut self, id: WindowId) -> Result<bool, WindowError> {
-        if self.get(id).is_none() { return Err(WindowError::NoSuchWindow); }
-        if self.destroying.contains(&id) { return Ok(false); }
-        self.destroying.push(id); Ok(true)
+        let order = self.destruction_order(id).ok_or(WindowError::NoSuchWindow)?;
+        if order.iter().any(|window| self.destroying.contains(window)) { return Ok(false); }
+        self.destroying.extend(order); Ok(true)
     }
     /// Cancel a destruction reservation after callback setup fails. # C: O(N_windows)
-    pub fn cancel_destroy(&mut self, id: WindowId) { self.destroying.retain(|window| *window != id); }
+    pub fn cancel_destroy(&mut self, id: WindowId) {
+        let order = self.destruction_order(id).unwrap_or_default();
+        self.destroying.retain(|window| !order.contains(window));
+    }
+    /// Return a stable preorder of a live window subtree for callback phases. # C: O(N_windows²)
+    pub fn destruction_order(&self, id: WindowId) -> Option<Vec<WindowId>> {
+        if self.get(id).is_none() { return None; }
+        let mut order = Vec::new();
+        self.append_destruction_order(id, &mut order);
+        Some(order)
+    }
+    fn append_destruction_order(&self, id: WindowId, order: &mut Vec<WindowId>) {
+        order.push(id);
+        let children: Vec<WindowId> = self.windows.iter().filter_map(|(window, record)| (record.parent == Some(id)).then_some(*window)).collect();
+        for child in children { self.append_destruction_order(child, order); }
+    }
     pub fn post_to_window(&mut self, id: WindowId, message: WinMessage) -> Result<(), WindowError> {
         let owner = self.get(id).ok_or(WindowError::NoSuchWindow)?.owner_tid;
         let queue = self.queues.iter_mut().find(|(tid, _)| *tid == owner).map(|(_, queue)| queue)
@@ -340,6 +355,7 @@ pub fn default_window_proc_for_rect(message: u32, rect: WindowRect, lparam: i64)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
 
     fn message(hwnd: Option<WindowId>, message: u32) -> WinMessage { WinMessage { hwnd, message, wparam: 1, lparam: 2 } }
 
@@ -459,6 +475,16 @@ mod tests {
         assert_eq!(manager.begin_destroy(window), Ok(true));
         manager.destroy(window).unwrap();
         assert_eq!(manager.begin_destroy(window), Err(WindowError::NoSuchWindow));
+    }
+
+    #[test]
+    fn destruction_order_is_parent_first_and_children_before_parent_cleanup() {
+        let mut manager = WindowManager::new();
+        let parent = manager.create(9, None, 0x1).unwrap();
+        let first = manager.create(9, Some(parent), 0x2).unwrap();
+        let second = manager.create(9, Some(parent), 0x3).unwrap();
+        let grandchild = manager.create(9, Some(first), 0x4).unwrap();
+        assert_eq!(manager.destruction_order(parent), Some(vec![parent, first, grandchild, second]));
     }
 
     #[test]

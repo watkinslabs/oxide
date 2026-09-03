@@ -19,6 +19,10 @@ const WM_NCDESTROY: u64 = 0x0082;
 pub(crate) const CALLBACK_DESTROY: u64 = 1;
 pub(crate) const CALLBACK_NCDESTROY: u64 = 2;
 
+fn callback_argument(root: u64, index: usize) -> u64 { (root << 32) | index as u64 }
+fn callback_root(argument: u64) -> u64 { argument >> 32 }
+fn callback_index(argument: u64) -> usize { argument as u32 as usize }
+
 struct GuiEntry { group: Weak<sched::thread_group::ThreadGroup>, state: ipc::win32_window::WindowManager, wait: Arc<sched::live::WaitList>, foreground: bool }
 static GUI: Spinlock<Vec<GuiEntry>, GuiLockClass> = Spinlock::new(Vec::new());
 
@@ -101,7 +105,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
                         if record.wndproc != 0 {
                             let reserved = match state.begin_destroy(window) { Ok(value) => value, Err(_) => return Some(STATUS_INVALID_HANDLE) };
                             if !reserved { return Some(STATUS_SUCCESS); }
-                            let callback = crate::nt_rtl::begin_wndproc_callback_with_completion(hwnd, WM_DESTROY, 0, 0, record.wndproc, sched::nt_callback::Completion { kind: CALLBACK_DESTROY, argument: hwnd });
+                            let callback = crate::nt_rtl::begin_wndproc_callback_with_completion(hwnd, WM_DESTROY, 0, 0, record.wndproc, sched::nt_callback::Completion { kind: CALLBACK_DESTROY, argument: callback_argument(hwnd, 0) });
                             if callback == STATUS_PENDING { return Some(callback); }
                             state.cancel_destroy(window);
                             if callback != STATUS_NOT_SUPPORTED { return Some(STATUS_INVALID_HANDLE); }
@@ -288,11 +292,28 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
 pub(crate) fn complete_callback(completion: sched::nt_callback::Completion) -> u64 {
     match completion.kind {
         CALLBACK_DESTROY => {
-            let Some(wndproc) = window_wndproc_for_current(completion.argument) else { return STATUS_SUCCESS; };
-            let result = crate::nt_rtl::begin_wndproc_callback_with_completion(completion.argument, WM_NCDESTROY, 0, 0, wndproc, sched::nt_callback::Completion { kind: CALLBACK_NCDESTROY, argument: completion.argument });
-            if result == STATUS_PENDING { result } else { destroy_window_for_current(completion.argument); STATUS_SUCCESS }
+            let root = callback_root(completion.argument);
+            let index = callback_index(completion.argument);
+            let Some(order) = destruction_order_for_current(root) else { return STATUS_SUCCESS; };
+            let next = index + 1;
+            let (message, target_index, kind) = if next < order.len() { (WM_DESTROY, next, CALLBACK_DESTROY) } else { (WM_NCDESTROY, order.len() - 1, CALLBACK_NCDESTROY) };
+            let target = order[target_index];
+            let Some(wndproc) = window_wndproc_for_current(target) else { destroy_window_for_current(root); return STATUS_SUCCESS; };
+            let result = crate::nt_rtl::begin_wndproc_callback_with_completion(target, message, 0, 0, wndproc, sched::nt_callback::Completion { kind, argument: callback_argument(root, target_index) });
+            if result == STATUS_PENDING { result } else { destroy_window_for_current(root); STATUS_SUCCESS }
         }
-        CALLBACK_NCDESTROY => { destroy_window_for_current(completion.argument); STATUS_SUCCESS }
+        CALLBACK_NCDESTROY => {
+            let root = callback_root(completion.argument);
+            let index = callback_index(completion.argument);
+            if index > 0 {
+                let Some(order) = destruction_order_for_current(root) else { return STATUS_SUCCESS; };
+                let target = order[index - 1];
+                let Some(wndproc) = window_wndproc_for_current(target) else { destroy_window_for_current(root); return STATUS_SUCCESS; };
+                let result = crate::nt_rtl::begin_wndproc_callback_with_completion(target, WM_NCDESTROY, 0, 0, wndproc, sched::nt_callback::Completion { kind: CALLBACK_NCDESTROY, argument: callback_argument(root, index - 1) });
+                if result == STATUS_PENDING { return result; }
+            }
+            destroy_window_for_current(root); STATUS_SUCCESS
+        }
         _ => STATUS_INVALID_PARAMETER,
     }
 }
@@ -308,6 +329,20 @@ fn destroy_window_for_current(hwnd: u64) {
         let _ = entries[index].state.destroy(ipc::win32_window::WindowId::from_raw(hwnd as u32).unwrap());
     }
 }
+
+#[cfg(target_os = "oxide-kernel")]
+fn destruction_order_for_current(hwnd: u64) -> Option<alloc::vec::Vec<u64>> {
+    let cur = sched::live::current()?;
+    if !cur.is_nt_personality() || hwnd > u32::MAX as u64 { return None; }
+    let group = Arc::clone(&cur.thread_group);
+    let mut entries = GUI.lock();
+    entries.retain(|entry| entry.group.upgrade().is_some());
+    let index = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group)))?;
+    Some(entries[index].state.destruction_order(ipc::win32_window::WindowId::from_raw(hwnd as u32)?)?.into_iter().map(|window| window.raw() as u64).collect())
+}
+
+#[cfg(not(target_os = "oxide-kernel"))]
+fn destruction_order_for_current(_: u64) -> Option<alloc::vec::Vec<u64>> { None }
 
 #[cfg(not(target_os = "oxide-kernel"))]
 fn destroy_window_for_current(_: u64) {}
