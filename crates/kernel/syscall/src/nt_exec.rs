@@ -2,6 +2,10 @@
 
 use crate::UserPtr;
 
+/// Maximum number of runtime-supplied DLL records accepted by the native
+/// execution handoff. Shared by the builder and kernel validator.
+pub const MAX_EXEC_MODULES: usize = 64;
+
 /// One copied module supplied by the NT userspace runtime.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]

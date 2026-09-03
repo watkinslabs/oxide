@@ -10,7 +10,7 @@ const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 const STATUS_NO_MEMORY: u64 = 0xc000_0017;
 const STATUS_INVALID_IMAGE_FORMAT: u64 = 0xc000_007b;
 const MAX_IMAGE_BYTES: u64 = 1 << 31;
-const MAX_MODULES: u32 = 64;
+const MAX_MODULES: u32 = syscall::nt_exec::MAX_EXEC_MODULES as u32;
 
 /// Accept one runtime-owned catalog execution request. The caller may be a
 /// Linux personality launcher; successful commit changes it to NT.

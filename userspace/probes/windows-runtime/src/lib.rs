@@ -23,6 +23,7 @@ pub enum BuildError {
     UnresolvedImport { module: Vec<u8>, dll: Vec<u8>, symbol: Vec<u8> },
     InvalidUtf8Path,
     TooLarge,
+    CatalogTooLarge,
     InvalidAddress,
 }
 
@@ -89,6 +90,7 @@ impl RuntimeRequest {
             let module_name = path.file_name().ok_or(BuildError::InvalidUtf8Path)?.as_bytes();
             catalog.add(module_name, &blob).map_err(|error| BuildError::InvalidModule { path: path.clone(), error })?;
             modules.push(ModuleBuffer { name: module_name.to_vec().into_boxed_slice(), image: blob.into_boxed_slice() });
+            if modules.len() > syscall::nt_exec::MAX_EXEC_MODULES { return Err(BuildError::CatalogTooLarge); }
         }
         let image = image.into_boxed_slice();
         validate_import_closure(&image, &modules)?;
