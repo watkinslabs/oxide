@@ -79,13 +79,14 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         };
         let table = cur.thread_group.nt_handles();
         let outcome = match crate::nt_dispatch::wait_deadline(timeout) {
+            Ok(_) if call.args.a0 != 0 && cur.nt_apc_queue.request_delivery() => return Some(STATUS_USER_APC),
             Ok(0) => unsafe { sched::live::wait_event_interruptible(table.waiters(), || false) },
             Ok(deadline) => unsafe { sched::live::wait_event_interruptible_until(table.waiters(), deadline, timekeeper::monotonic_ns, || false) },
             Err(status) => return Some(status),
         };
         return Some(match outcome {
             sched::WaitOutcome::Ready | sched::WaitOutcome::TimedOut => STATUS_SUCCESS,
-            sched::WaitOutcome::Interrupted => if call.args.a0 != 0 { STATUS_USER_APC } else { STATUS_ALERTED },
+            sched::WaitOutcome::Interrupted => if call.args.a0 != 0 && cur.nt_apc_queue.request_delivery() { STATUS_USER_APC } else { STATUS_ALERTED },
         });
     }
     if call.service == NtService::NtConvertBetweenAuxiliaryCounterAndPerformanceCounter {

@@ -88,10 +88,12 @@ fn remove_io_completion_ex(call: NtCall) -> u64 {
     while packets.len() < call.args.a2 as usize {
         if let Some(packet) = port.try_remove() { packets.push(packet); continue; }
         if !packets.is_empty() { break; }
+        if call.args.a5 != 0 && cur.nt_apc_queue.request_delivery() { return STATUS_USER_APC; }
         // SAFETY: the completion port remains alive through the wait and owns the scheduler wait list used by this predicate.
         let outcome = unsafe { port.wait(deadline, timekeeper::monotonic_ns) };
         if matches!(outcome, sched::WaitOutcome::TimedOut) { return STATUS_TIMEOUT; }
-        if matches!(outcome, sched::WaitOutcome::Interrupted) && call.args.a5 != 0 { return STATUS_USER_APC; }
+        if matches!(outcome, sched::WaitOutcome::Interrupted) && call.args.a5 != 0
+            && cur.nt_apc_queue.request_delivery() { return STATUS_USER_APC; }
         let Some(packet) = port.try_remove() else { return STATUS_TIMEOUT; };
         packets.push(packet);
     }

@@ -7,6 +7,8 @@ use elf_load::pe_modules;
 
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 #[cfg(target_arch = "x86_64")]
+const STATUS_NOT_SUPPORTED: u64 = 0xc000_00bb;
+#[cfg(target_arch = "x86_64")]
 const CONTEXT_BYTES: usize = 0x4d0;
 #[cfg(target_arch = "x86_64")]
 const CONTEXT_FLAGS_FULL: u32 = 0x0010_000f;
@@ -14,8 +16,14 @@ const CONTEXT_FLAGS_FULL: u32 = 0x0010_000f;
 /// Apply the non-local return described by the x64 `RtlUnwind` ABI.
 /// # C: O(1) plus one user read
 pub fn dispatch(call: NtCall) -> Option<u64> {
-    if call.service == NtService::RtlCaptureContext { return Some(capture_context(call.args.a0)); }
-    if call.service == NtService::RtlRestoreContext { return Some(restore_context(call.args.a0)); }
+    if matches!(call.service, NtService::RtlCaptureContext | NtService::RtlRestoreContext | NtService::NtContinue) {
+        let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
+        if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
+        if call.service == NtService::RtlCaptureContext { return Some(capture_context(&cur, call.args.a0)); }
+        if call.service == NtService::NtContinue && call.args.a1 > 1 { return Some(STATUS_INVALID_PARAMETER); }
+        return Some(restore_context(&cur, call.args.a0,
+            call.service == NtService::NtContinue && call.args.a1 != 0));
+    }
     if call.service == NtService::RtlLookupFunctionEntry { return Some(lookup_function_entry(call.args.a0, call.args.a1)); }
     if call.service == NtService::RtlPcToFileHeader { return Some(pc_to_file_header(call.args.a0, call.args.a1)); }
     if call.service == NtService::Setjmp || call.service == NtService::Setjmpex { return Some(setjmp(call.args.a0, call.args.a1)); }
@@ -133,30 +141,67 @@ fn longjmp(buffer: u64, value: u32) -> u64 {
     { let _ = value; STATUS_INVALID_PARAMETER }
 }
 
-fn restore_context(target: u64) -> u64 {
+fn restore_context(current: &sched::Task, target: u64, test_alert: bool) -> u64 {
     if target == 0 || hal::UserVirtAddr::new(target).is_none() { return STATUS_INVALID_PARAMETER; }
     #[cfg(target_arch = "x86_64")]
     {
-        const RIP: u64 = 0xf8; const RSP: u64 = 0x98; const RFLAGS: u64 = 0x44;
-        let read = |offset: u64| target.checked_add(offset).and_then(|address| uaccess::get_user_u64(address).ok());
-        let Some(rip) = read(RIP) else { return STATUS_INVALID_PARAMETER; };
-        let Some(rsp) = read(RSP) else { return STATUS_INVALID_PARAMETER; };
+        let mut bytes = [0u8; CONTEXT_BYTES];
+        if uaccess::copy_from_user(&mut bytes, target).is_err() { return STATUS_INVALID_PARAMETER; }
+        let image = match crate::nt_context_image::decode(&bytes) {
+            Ok(image) => image,
+            Err(crate::nt_context_image::Error::Invalid) => return STATUS_INVALID_PARAMETER,
+            Err(crate::nt_context_image::Error::Unsupported) => return STATUS_NOT_SUPPORTED,
+        };
+        let rip = image.registers[crate::nt_context_image::RestoreImage::RIP];
+        let rsp = image.registers[crate::nt_context_image::RestoreImage::RSP];
         if hal::UserVirtAddr::new(rip).is_none() || hal::UserVirtAddr::new(rsp).is_none() { return STATUS_INVALID_PARAMETER; }
+        if let Some(floating) = &image.floating {
+            let mxcsr = u32::from_le_bytes(floating[24..28].try_into().unwrap());
+            if mxcsr & !hal_x86_64::mxcsr_feature_mask() != 0 { return STATUS_INVALID_PARAMETER; }
+        }
         let frame = hal_x86_64::current_pt_regs();
         if frame.is_null() { return STATUS_INVALID_PARAMETER; }
-        // SAFETY: the active syscall frame belongs exclusively to this task during native dispatch.
+        // SAFETY: the active syscall frame and current task FPU image are
+        // single-owner state while this task executes the native syscall.
         let regs = unsafe { &mut *frame };
-        let pairs = [(0x80, &mut regs.rcx), (0x88, &mut regs.rdx), (0x90, &mut regs.rbx), (0xa0, &mut regs.rbp), (0xa8, &mut regs.rsi), (0xb0, &mut regs.rdi), (0xb8, &mut regs.r8), (0xc0, &mut regs.r9), (0xc8, &mut regs.r10), (0xd0, &mut regs.r11), (0xd8, &mut regs.r12), (0xe0, &mut regs.r13), (0xe8, &mut regs.r14), (0xf0, &mut regs.r15), (0x78, &mut regs.rax)];
-        for (offset, slot) in pairs { let Some(value) = read(offset) else { return STATUS_INVALID_PARAMETER; }; *slot = value; }
-        let Some(flags) = target.checked_add(RFLAGS).and_then(|address| uaccess::get_user_u32(address).ok()) else { return STATUS_INVALID_PARAMETER; };
-        regs.rip = rip; regs.rsp = rsp; regs.rflags = hal::uregs::x86_64::sigreturn_eflags(regs.rflags, flags as u64);
+        if image.has_integer() {
+            regs.rax = image.registers[crate::nt_context_image::RestoreImage::RAX];
+            regs.rcx = image.registers[crate::nt_context_image::RestoreImage::RCX];
+            regs.rdx = image.registers[crate::nt_context_image::RestoreImage::RDX];
+            regs.rbx = image.registers[crate::nt_context_image::RestoreImage::RBX];
+            regs.rbp = image.registers[crate::nt_context_image::RestoreImage::RBP];
+            regs.rsi = image.registers[crate::nt_context_image::RestoreImage::RSI];
+            regs.rdi = image.registers[crate::nt_context_image::RestoreImage::RDI];
+            regs.r8 = image.registers[crate::nt_context_image::RestoreImage::R8];
+            regs.r9 = image.registers[crate::nt_context_image::RestoreImage::R9];
+            regs.r10 = image.registers[crate::nt_context_image::RestoreImage::R10];
+            regs.r11 = image.registers[crate::nt_context_image::RestoreImage::R11];
+            regs.r12 = image.registers[crate::nt_context_image::RestoreImage::R12];
+            regs.r13 = image.registers[crate::nt_context_image::RestoreImage::R13];
+            regs.r14 = image.registers[crate::nt_context_image::RestoreImage::R14];
+            regs.r15 = image.registers[crate::nt_context_image::RestoreImage::R15];
+        }
+        if let Some(floating) = image.floating {
+            current.debug_check_fpu_state("nt-continue");
+            // SAFETY: current owns this aligned FPU buffer on this CPU; save
+            // establishes the XSAVE header before the legacy image is replaced.
+            unsafe {
+                let state = (*current.security.fpu_state.get()).as_mut_ptr();
+                hal_x86_64::fpu_save(state.cast::<hal_x86_64::FpuStateX86_64>());
+                core::ptr::copy_nonoverlapping(floating.as_ptr(), state, floating.len());
+                hal_x86_64::fpu_restore(state.cast::<hal_x86_64::FpuStateX86_64>());
+            }
+        }
+        regs.rip = rip; regs.rsp = rsp;
+        regs.rflags = hal::uregs::x86_64::sigreturn_eflags(regs.rflags, image.rflags as u64);
+        if test_alert { current.nt_apc_queue.request_delivery(); }
         regs.rax
     }
     #[cfg(target_arch = "aarch64")]
-    { STATUS_INVALID_PARAMETER }
+    { let _ = (current, test_alert); STATUS_INVALID_PARAMETER }
 }
 
-fn capture_context(target: u64) -> u64 {
+fn capture_context(current: &sched::Task, target: u64) -> u64 {
     if target == 0 || hal::UserVirtAddr::new(target).is_none() { return STATUS_INVALID_PARAMETER; }
     #[cfg(target_arch = "x86_64")]
     {
@@ -175,9 +220,19 @@ fn capture_context(target: u64) -> u64 {
         for (offset, value) in [(0x80, regs.rcx), (0x88, regs.rdx), (0x90, regs.rbx), (0x98, regs.rsp), (0xa0, regs.rbp), (0xa8, regs.rsi), (0xb0, regs.rdi), (0xb8, regs.r8), (0xc0, regs.r9), (0xc8, regs.r10), (0xd0, regs.r11), (0xd8, regs.r12), (0xe0, regs.r13), (0xe8, regs.r14), (0xf0, regs.r15), (0xf8, regs.rip)] {
             context[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
         }
+        current.debug_check_fpu_state("nt-capture-context");
+        // SAFETY: current owns this aligned FPU buffer while executing on this
+        // CPU; the saved legacy region is copied before user memory is touched.
+        unsafe {
+            let state = (*current.security.fpu_state.get()).as_mut_ptr();
+            hal_x86_64::fpu_save(state.cast::<hal_x86_64::FpuStateX86_64>());
+            core::ptr::copy_nonoverlapping(state, context[0x100..0x300].as_mut_ptr(), 512);
+        }
+        let mxcsr: [u8; 4] = context[0x118..0x11c].try_into().unwrap();
+        context[0x34..0x38].copy_from_slice(&mxcsr);
         if uaccess::copy_to_user(target, &context).is_err() { return STATUS_INVALID_PARAMETER; }
         return 0;
     }
     #[cfg(target_arch = "aarch64")]
-    { STATUS_INVALID_PARAMETER }
+    { let _ = current; STATUS_INVALID_PARAMETER }
 }
