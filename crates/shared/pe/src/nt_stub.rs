@@ -2,7 +2,8 @@
 pub const X64_UNARY_STUB_BYTES: usize = 18;
 pub const X64_SIX_ARG_STUB_BYTES: usize = 39;
 pub const X64_BREAKPOINT_STUB_BYTES: usize = 2;
-pub const X64_RELAY_STUB_BYTES: usize = 206;
+pub const X64_RELAY_STUB_BYTES: usize = 233;
+const STATUS_PROCEDURE_NOT_FOUND: u32 = 0xc000_007a;
 
 /// Encode Wine's Unix-call dispatcher ABI: `(unixlib_handle, code, args)` in
 /// the Windows x64 registers becomes `(rdi, rsi, rdx)` for the NT entry.
@@ -69,6 +70,9 @@ pub fn encode_x64_relay_stub(selector: u64) -> [u8; X64_RELAY_STUB_BYTES] {
     code[at..at + 2].copy_from_slice(&[0x48, 0xb8]); at += 2;
     code[at..at + 8].copy_from_slice(&selector.to_le_bytes()); at += 8;
     code[at..at + 2].copy_from_slice(&[0x0f, 0x05]); at += 2;
+    code[at..at + 3].copy_from_slice(&[0x48, 0x85, 0xc0]); at += 3; // unresolved target is the only non-call result
+    code[at..at + 2].copy_from_slice(&[0x0f, 0x84]); at += 2;
+    let unresolved_branch = at; at += 4;
     code[at..at + 5].copy_from_slice(&[0x4c, 0x8d, 0x64, 0x24, 72]); at += 5; // re-derive args after syscall restores registers
     code[at..at + 4].copy_from_slice(&[0x48, 0x83, 0xec, 0x60]); at += 4; // target home + eight stack arguments, 16-byte aligned
     code[at..at + 5].copy_from_slice(&[0x4d, 0x8b, 0x54, 0x24, 0]); at += 5;
@@ -97,7 +101,22 @@ pub fn encode_x64_relay_stub(selector: u64) -> [u8; X64_RELAY_STUB_BYTES] {
     code[at..at + 2].copy_from_slice(&[0x41, 0x5c]); at += 2; // restore r12
     code[at] = 0x5d; at += 1; // restore rbp
     code[at] = 0x5b; at += 1; // restore rbx
-    code[at] = 0xc3;
+    code[at] = 0xc3; at += 1;
+    let unresolved = at;
+    code[at] = 0xb8; at += 1;
+    code[at..at + 4].copy_from_slice(&STATUS_PROCEDURE_NOT_FOUND.to_le_bytes()); at += 4;
+    code[at] = 0x5f; at += 1;
+    code[at] = 0x5e; at += 1;
+    code[at..at + 2].copy_from_slice(&[0x41, 0x5f]); at += 2;
+    code[at..at + 2].copy_from_slice(&[0x41, 0x5e]); at += 2;
+    code[at..at + 2].copy_from_slice(&[0x41, 0x5d]); at += 2;
+    code[at..at + 2].copy_from_slice(&[0x41, 0x5c]); at += 2;
+    code[at] = 0x5d; at += 1;
+    code[at] = 0x5b; at += 1;
+    code[at] = 0xc3; at += 1;
+    let displacement = (unresolved as i64 - (unresolved_branch as i64 + 4)) as i32;
+    code[unresolved_branch..unresolved_branch + 4].copy_from_slice(&displacement.to_le_bytes());
+    debug_assert_eq!(at, X64_RELAY_STUB_BYTES);
     code
 }
 
@@ -228,11 +247,19 @@ mod tests {
         assert_eq!(bytes.windows(5).filter(|window| *window == [0x4c, 0x8d, 0x64, 0x24, 72]).count(), 2);
         assert!(bytes.windows(5).any(|window| window == [0x49, 0x8d, 0x54, 0x24, 0]));
         assert_eq!(&bytes[38..40], &[0x0f, 0x05]);
-        assert_eq!(&bytes[40..45], &[0x4c, 0x8d, 0x64, 0x24, 72]);
-        assert_eq!(&bytes[45..49], &[0x48, 0x83, 0xec, 0x60]);
+        assert_eq!(&bytes[43..45], &[0x0f, 0x84]);
+        let displacement = i32::from_le_bytes(bytes[45..49].try_into().unwrap()) as isize;
+        let unresolved = (49isize + displacement) as usize;
+        assert_eq!(&bytes[unresolved..unresolved + 5], &[0xb8, 0x7a, 0x00, 0x00, 0xc0]);
+        assert_eq!(&bytes[49..54], &[0x4c, 0x8d, 0x64, 0x24, 72]);
+        assert_eq!(&bytes[54..58], &[0x48, 0x83, 0xec, 0x60]);
         assert!(bytes.windows(5).any(|window| window == [0x4d, 0x8b, 0x54, 0x24, 0]));
-        let epilogue = [0xff, 0xd0, 0x48, 0x83, 0xc4, 0x60, 0x5f, 0x5e, 0x41, 0x5f, 0x41, 0x5e, 0x41, 0x5d, 0x41, 0x5c, 0x5d, 0x5b, 0xc3];
-        assert!(bytes.windows(epilogue.len()).any(|window| window == epilogue));
+        assert!(bytes.windows(3).any(|window| window == [0x48, 0x85, 0xc0]));
+        assert!(bytes.windows(5).any(|window| window == [0xb8, 0x7a, 0x00, 0x00, 0xc0]));
+        assert!(bytes.windows(2).any(|window| window == [0xff, 0xd0]));
+        assert!(bytes.windows(4).any(|window| window == [0x48, 0x83, 0xc4, 0x60]));
+        assert!(bytes.windows(3).any(|window| window == [0x41, 0x5f, 0x41]));
+        assert!(bytes.windows(4).any(|window| window == [0x5d, 0x5b, 0xc3, 0xb8]));
     }
 
     #[test]
