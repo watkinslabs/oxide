@@ -263,6 +263,7 @@ pub fn dispatch(call: NtCall) -> u64 {
         if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
         // The return-to-user path observes the owned queue immediately after
         // this success, builds the APC frame, and transfers control to it.
+        cur.nt_apc_queue.request_delivery();
         return STATUS_SUCCESS;
     }
     // Process/thread opens must precede the legacy unsupported-service guards
@@ -1036,7 +1037,7 @@ pub fn dispatch(call: NtCall) -> u64 {
             }
             NtObjectCall::WaitEvent { handle, alertable, timeout } => {
                 if alertable > 1 { return STATUS_INVALID_PARAMETER; }
-                if alertable != 0 && !cur.nt_apc_queue.is_empty() { return STATUS_USER_APC; }
+                if alertable != 0 && cur.nt_apc_queue.request_delivery() { return STATUS_USER_APC; }
                 let native = sched::nt_object::NtHandle::from_raw(handle);
                 let Some(object) = table.get(native, SYNCHRONIZE_ACCESS) else { return if table.contains(native) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE }; };
                 let deadline = match wait_deadline(timeout) { Ok(deadline) => deadline, Err(status) => return status };
@@ -1057,12 +1058,12 @@ pub fn dispatch(call: NtCall) -> u64 {
                 match outcome {
                     sched::WaitOutcome::Ready => STATUS_SUCCESS,
                     sched::WaitOutcome::TimedOut => STATUS_TIMEOUT,
-                    sched::WaitOutcome::Interrupted => if alertable != 0 { STATUS_USER_APC } else { STATUS_ALERTED },
+                    sched::WaitOutcome::Interrupted => if alertable != 0 && cur.nt_apc_queue.request_delivery() { STATUS_USER_APC } else { STATUS_ALERTED },
                 }
             }
             NtObjectCall::WaitMultiple { count, handles, wait_type, alertable, timeout } => {
                 if count == 0 || count > WAIT_MULTIPLE_LIMIT || wait_type > 1 || alertable > 1 { return STATUS_INVALID_PARAMETER; }
-                if alertable != 0 && !cur.nt_apc_queue.is_empty() { return STATUS_USER_APC; }
+                if alertable != 0 && cur.nt_apc_queue.request_delivery() { return STATUS_USER_APC; }
                 let mut waitables = alloc::vec::Vec::with_capacity(count as usize);
                 let mut pulse_epochs = alloc::vec::Vec::with_capacity(count as usize);
                 for index in 0..count as usize {
@@ -1117,7 +1118,7 @@ pub fn dispatch(call: NtCall) -> u64 {
                         }
                     }
                     sched::WaitOutcome::TimedOut => STATUS_TIMEOUT,
-                    sched::WaitOutcome::Interrupted => if alertable != 0 { STATUS_USER_APC } else { STATUS_ALERTED },
+                    sched::WaitOutcome::Interrupted => if alertable != 0 && cur.nt_apc_queue.request_delivery() { STATUS_USER_APC } else { STATUS_ALERTED },
                 }
             }
             NtObjectCall::CreateSection { handle, desired_access, size, protect, attributes, file }

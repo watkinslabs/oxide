@@ -127,6 +127,8 @@ mod nt_rtl_xstate;
 mod nt_bitmap;
 mod nt_unicode;
 mod nt_context;
+#[cfg(any(not(target_os = "oxide-kernel"), target_arch = "x86_64"))]
+mod nt_context_image;
 mod nt_sid;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_rtl_ansi;

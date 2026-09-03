@@ -66,7 +66,7 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `31s-windows-pe-initialization.md` | FROZEN | 2026-08-31 | `31a`,`31e`,`31p`,`31q`,`52`,`53` |
 | `31t-windows-window-messages.md` | FROZEN | 2026-08-31 | `31g`,`31s`,`46`,`52`,`53` |
 | `31u-windows-nt-window-abi.md` | FROZEN | 2026-08-31 | `31d`,`31t`,`46`,`52`,`53` |
-| `31v-windows-nt-unwind.md` | FROZEN | 2026-08-31 | `01`,`02`,`06`,`13`,`31d`,`31h`,`52`,`53` |
+| `31v-windows-nt-unwind.md` | FROZEN | 2026-09-03 | `01`,`02`,`06`,`13`,`31d`,`31h`,`52`,`53` |
 | `31w-windows-nt-semaphores.md` | FROZEN | 2026-08-31 | `01`,`02`,`06`,`13`,`31d`,`31f`,`31g`,`52`,`53` |
 | `31x-windows-nt-paths.md` | FROZEN | 2026-08-31 | `01`,`02`,`16`,`31d`,`31h`,`52`,`53` |
 | `31y-windows-runtime-exec-handoff.md` | FROZEN | 2026-08-31 | `01`,`02`,`31a`,`31e`,`31h`,`31p`,`52`,`53` |

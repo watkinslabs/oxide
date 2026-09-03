@@ -130,7 +130,7 @@ unsafe fn deliver_nt_apc(regs: *mut UserRegs) -> bool {
     const SHADOW_BYTES: u64 = 0x20;
     let Some(task) = sched::live::current() else { return false; };
     if !task.is_nt_personality() { return false; }
-    let Some(apc) = task.nt_apc_queue.peek() else { return false; };
+    let Some(apc) = task.nt_apc_queue.peek_deliverable() else { return false; };
     let frame = unsafe { &mut *regs };
     if apc.routine == 0 || !uaccess::access_ok(apc.routine, 1) { return false; }
     let Some(callback_rsp) = frame.rsp.checked_sub(FRAME_BYTES)
@@ -251,7 +251,7 @@ pub unsafe fn exit_to_user_mode_loop(regs: *mut UserRegs, syscall_rv: Option<i64
     loop {
         let w = work_flags();
         let apc_pending = sched::live::current().map(|task| task.is_nt_personality()
-            && !task.nt_apc_queue.is_empty()).unwrap_or(false);
+            && task.nt_apc_queue.delivery_pending()).unwrap_or(false);
         let exception_pending = sched::live::current().map(|task| task.is_nt_personality()
             && task.nt_exception.is_pending()).unwrap_or(false);
         let want_notify = (w & work::NOTIFY_SIGNAL) != 0;
