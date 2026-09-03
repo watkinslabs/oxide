@@ -118,7 +118,7 @@ impl vfs::FileOps for DrmCardFileOps {
             crate::crtc::clear_owner(card_id);
             crate::crtc::set_current_fb(card_id, 0);
         }
-        crate::dumb::release_file(card_id, token);
+        crate::dumb::release_file(card_id, token, crate::card(card_id));
         crate::node::virtgpu::release_file(card_id, token, crate::card(card_id));
     }
 }
@@ -159,7 +159,7 @@ impl vfs::FileOps for DrmSinkFileOps {
         release_file_magic(token);
         if let Some((_, card_id)) = drm_inode_parts(file.inode()) {
             release_unique_ready(card_id, token);
-            crate::dumb::release_file(card_id, token);
+            crate::dumb::release_file(card_id, token, crate::card(card_id));
             crate::node::virtgpu::release_file(card_id, token, crate::card(card_id));
         }
     }

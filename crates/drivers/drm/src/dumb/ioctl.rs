@@ -207,7 +207,7 @@ pub fn gem_close(card_id: u32, token: u64, arg: u64) -> i64 {
     0
 }
 
-pub fn release_file(card_id: u32, token: u64) {
+pub fn release_file(card_id: u32, token: u64, driver: Option<alloc::sync::Arc<dyn crate::DrmDriver>>) {
     let (retired, handles) = {
         let mut t = TABLES.lock();
         let ids = t.owned_fb_ids(card_id, token);
@@ -215,12 +215,17 @@ pub fn release_file(card_id: u32, token: u64) {
         for id in ids {
             if let Ok(Some(fb)) = t.close_fb(card_id, token, id) { retired.push(fb); }
         }
-        let handles = t.owned_handles(card_id, token);
+        let handles = t.owned_handles(card_id, token).into_iter().filter_map(|handle| {
+            t.find_buf_owned(card_id, token, handle).map(|buf| (handle, buf.resource_id))
+        }).collect::<Vec<_>>();
         (retired, handles)
     };
     for fb in retired { super::tables::release_fb(card_id, fb); }
-    for handle in handles {
+    for (handle, resource_id) in handles {
         let freed = TABLES.lock().close_handle(card_id, token, handle).ok().flatten();
         if let Some((pa, order)) = freed { free_buf_pages(pa, order); }
+        if resource_id != 0 && TABLES.lock().find_buf_object(card_id, handle).is_none() {
+            if let Some(driver) = driver.as_ref() { let _ = driver.virtgpu_resource_destroy(resource_id); }
+        }
     }
 }
