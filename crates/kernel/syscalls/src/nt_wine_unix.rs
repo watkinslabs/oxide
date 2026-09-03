@@ -190,7 +190,8 @@ fn wine_object_path(args: u64, request_size: u32, table: &sched::nt_object::NtHa
 
 #[cfg(target_os = "oxide-kernel")]
 fn server_reply(args: u64, status: u64) -> u64 {
-    if uaccess::put_user_u32(args, status as u32).is_err() || uaccess::put_user_u32(args + SERVER_REPLY_SIZE, 0).is_err() { STATUS_INVALID_PARAMETER } else { status }
+    let Some(reply_size_address) = wine_arg(args, SERVER_REPLY_SIZE) else { return STATUS_INVALID_PARAMETER; };
+    if uaccess::put_user_u32(args, status as u32).is_err() || uaccess::put_user_u32(reply_size_address, 0).is_err() { STATUS_INVALID_PARAMETER } else { status }
 }
 
 #[cfg(target_os = "oxide-kernel")]
@@ -334,7 +335,8 @@ fn write_unix_debug(args: u64) -> u64 {
     let mut buffer = [0u8; CHUNK];
     while copied < length as u64 {
         let count = (length as u64 - copied).min(CHUNK as u64) as usize;
-        if uaccess::copy_from_user(&mut buffer[..count], pointer.saturating_add(copied)).is_err() { return STATUS_INVALID_PARAMETER; }
+        let Some(source) = pointer.checked_add(copied) else { return STATUS_INVALID_PARAMETER; };
+        if uaccess::copy_from_user(&mut buffer[..count], source).is_err() { return STATUS_INVALID_PARAMETER; }
         klog::write_raw(&buffer[..count]);
         copied += count as u64;
     }
@@ -357,7 +359,8 @@ fn load_so_dll(args: u64) -> u64 {
     if args == 0 || args.checked_add(16).is_none() { return STATUS_INVALID_PARAMETER; }
     // The process catalog is the canonical Wine builtin source in Oxide. Its
     // PE image loader owns mapping, imports, PEB publication, and attach order.
-    crate::nt_loader_dir::load(args, args + 16)
+    let Some(module_output) = wine_arg(args, 16) else { return STATUS_INVALID_PARAMETER; };
+    crate::nt_loader_dir::load(args, module_output)
 }
 
 #[cfg(not(target_os = "oxide-kernel"))]
