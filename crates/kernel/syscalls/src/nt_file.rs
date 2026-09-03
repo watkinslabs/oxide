@@ -300,7 +300,9 @@ fn native_io_values(cur: &sched::Task, handle: u32, io_status: u64, buffer: u64,
             } else { 0 };
             // SAFETY: this native NT syscall is executing in process context;
             // the endpoint wait releases all transport locks before parking.
-            let outcome = unsafe { endpoint.wait_for_io(write, deadline, timekeeper::monotonic_ns) };
+            endpoint.pipe().begin_io(cur.tid, io_status);
+            let outcome = unsafe { endpoint.wait_for_io(write, deadline, cur.tid, io_status, timekeeper::monotonic_ns) };
+            endpoint.pipe().end_io(cur.tid, io_status);
             if matches!(outcome, sched::nt_object::NtPipeWait::Cancelled) {
                 write_io_status(io_status, STATUS_CANCELLED, 0);
                 post_completion(&object, io_status, STATUS_CANCELLED, 0);
@@ -434,8 +436,8 @@ fn cancel(cur: &sched::Task, handle: u32, io: Option<u64>, io_status: u64) -> u6
     let Some(object) = table.get(native, 0) else { return STATUS_INVALID_HANDLE; };
     let pipe = object.pipe_endpoint();
     if object.file().is_none() && pipe.is_none() { return STATUS_INVALID_HANDLE; }
-    if let Some(endpoint) = pipe { endpoint.pipe().cancel_io(); }
-    let status = if io.is_some() { STATUS_NOT_FOUND } else { STATUS_SUCCESS };
+    let cancelled = pipe.as_ref().is_some_and(|endpoint| endpoint.pipe().cancel_io(cur.tid, io));
+    let status = if io.is_some() && !cancelled { STATUS_NOT_FOUND } else { STATUS_SUCCESS };
     if uaccess::put_user_u64(io_status, status).is_err() || uaccess::put_user_u64(io_status + 8, 0).is_err() { return STATUS_ACCESS_VIOLATION; }
     status
 }
