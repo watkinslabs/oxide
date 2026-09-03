@@ -6,7 +6,7 @@
 extern crate alloc;
 #[path = "nt_object/namespace.rs"]
 mod namespace;
-pub use namespace::{create_event, create_semaphore, directory_entries, directory_path, lookup_directory, lookup_object, make_temporary, object_name, publish_mutant, publish_section, publish_symbolic_link, publish_timer, release_temporary, NamedObjectState};
+pub use namespace::{create_event, create_semaphore, directory_entries, directory_path, lookup_directory, lookup_object, make_temporary, object_name, publish_mutant, publish_named_pipe, publish_section, publish_symbolic_link, publish_timer, release_temporary, NamedObjectState};
 #[path = "nt_object/mutant.rs"]
 mod mutant;
 pub use mutant::NtMutant;
@@ -61,6 +61,7 @@ pub enum NtObjectType {
     Token,
     Key,
     Job,
+    NamedPipe,
 }
 /// Stable identity and type of one native object.
 pub struct NtObject {
@@ -73,6 +74,7 @@ pub struct NtObject {
     completion: Option<Arc<NtCompletionPort>>,
     token: Option<Arc<NtToken>>,
     job: Option<Arc<NtJob>>,
+    pipe: Option<Arc<NtPipe>>,
     file: Option<Arc<vfs::File>>,
     section: Option<Arc<NtSection>>,
     symbolic_link: Option<Arc<NtSymbolicLink>>,
@@ -120,28 +122,28 @@ impl NtSection {
 impl NtObject {
     /// Create one immutable native object identity. # C: O(1)
     pub fn new(kind: NtObjectType, id: u64) -> Arc<Self> {
-        Arc::new(Self { kind, id, event: None, semaphore: None, mutant: None, timer: None, completion: None, token: None, job: None, file: None, section: None, symbolic_link: None, task: None, file_share: None, delete_on_close: None, file_completion: Spinlock::new(None) })
+        Arc::new(Self { kind, id, event: None, semaphore: None, mutant: None, timer: None, completion: None, token: None, job: None, pipe: None, file: None, section: None, symbolic_link: None, task: None, file_share: None, delete_on_close: None, file_completion: Spinlock::new(None) })
     }
     /// Create an event-backed native object. # C: O(1)
     pub fn new_event(id: u64, manual_reset: bool, initial_state: bool) -> Arc<Self> {
         Arc::new(Self { kind: NtObjectType::Event, id,
-            event: Some(Arc::new(NtEvent::new(manual_reset, initial_state))), semaphore: None, mutant: None, timer: None, completion: None, token: None, job: None, file: None, section: None, symbolic_link: None, task: None, file_share: None, delete_on_close: None, file_completion: Spinlock::new(None) })
+            event: Some(Arc::new(NtEvent::new(manual_reset, initial_state))), semaphore: None, mutant: None, timer: None, completion: None, token: None, job: None, pipe: None, file: None, section: None, symbolic_link: None, task: None, file_share: None, delete_on_close: None, file_completion: Spinlock::new(None) })
     }
     /// Create a counting semaphore object. # C: O(1)
     pub fn new_semaphore(id: u64, initial: i64, maximum: i64) -> Arc<Self> {
         Arc::new(Self { kind: NtObjectType::Semaphore, id, event: None,
-            semaphore: Some(Arc::new(NtSemaphore::new(initial as u32, maximum as u32))), mutant: None, timer: None, completion: None, token: None, job: None, file: None, section: None, symbolic_link: None, task: None, file_share: None, delete_on_close: None, file_completion: Spinlock::new(None) })
+            semaphore: Some(Arc::new(NtSemaphore::new(initial as u32, maximum as u32))), mutant: None, timer: None, completion: None, token: None, job: None, pipe: None, file: None, section: None, symbolic_link: None, task: None, file_share: None, delete_on_close: None, file_completion: Spinlock::new(None) })
     }
     /// Create a thread-owned NT mutant. # C: O(1)
     pub fn new_mutant(id: u64, owner: Option<u64>) -> Arc<Self> {
         Arc::new(Self { kind: NtObjectType::Mutant, id, event: None, semaphore: None,
-            mutant: Some(Arc::new(NtMutant::new(owner))), timer: None, completion: None, token: None, job: None, file: None, section: None, symbolic_link: None, task: None, file_share: None, delete_on_close: None, file_completion: Spinlock::new(None) })
+            mutant: Some(Arc::new(NtMutant::new(owner))), timer: None, completion: None, token: None, job: None, pipe: None, file: None, section: None, symbolic_link: None, task: None, file_share: None, delete_on_close: None, file_completion: Spinlock::new(None) })
     }
     /// Create a waitable NT timer object. # C: O(1)
     pub fn new_timer(id: u64, manual_reset: bool) -> Arc<Self> {
         Arc::new(Self { kind: NtObjectType::Timer, id, event: None, semaphore: None,
             mutant: None, timer: Some(Arc::new(NtTimer::new(manual_reset))), completion: None, token: None, file: None,
-            section: None, symbolic_link: None, task: None, job: None, file_share: None, delete_on_close: None, file_completion: Spinlock::new(None) })
+            section: None, symbolic_link: None, task: None, job: None, pipe: None, file_share: None, delete_on_close: None, file_completion: Spinlock::new(None) })
     }
     /// Create a file object retaining the canonical VFS open description. # C: O(1)
     pub fn new_file(id: u64, file: Arc<vfs::File>) -> Arc<Self> {
@@ -150,25 +152,25 @@ impl NtObject {
     }
     /// Create a file object retaining its Windows sharing claim. # C: O(1)
     pub fn new_file_with_share(id: u64, file: Arc<vfs::File>, file_share: Option<Arc<NtFileShare>>, delete_on_close: Option<Arc<NtDeleteOnClose>>) -> Arc<Self> {
-        Arc::new(Self { kind: NtObjectType::File, id, event: None, semaphore: None, mutant: None, timer: None, completion: None, token: None, job: None, file: Some(file), section: None, symbolic_link: None, task: None, file_share, delete_on_close, file_completion: Spinlock::new(None) })
+        Arc::new(Self { kind: NtObjectType::File, id, event: None, semaphore: None, mutant: None, timer: None, completion: None, token: None, job: None, pipe: None, file: Some(file), section: None, symbolic_link: None, task: None, file_share, delete_on_close, file_completion: Spinlock::new(None) })
     }
     /// Create an anonymous section object. # C: O(1)
     pub fn new_section(id: u64, section: Arc<NtSection>) -> Arc<Self> {
-        Arc::new(Self { kind: NtObjectType::Section, id, event: None, semaphore: None, mutant: None, timer: None, completion: None, token: None, job: None, file: None, section: Some(section), symbolic_link: None, task: None, file_share: None, delete_on_close: None, file_completion: Spinlock::new(None) })
+        Arc::new(Self { kind: NtObjectType::Section, id, event: None, semaphore: None, mutant: None, timer: None, completion: None, token: None, job: None, pipe: None, file: None, section: Some(section), symbolic_link: None, task: None, file_share: None, delete_on_close: None, file_completion: Spinlock::new(None) })
     }
     /// Create one symbolic-link object identity. # C: O(1)
     pub fn new_symbolic_link(id: u64, target: String) -> Arc<Self> {
         Arc::new(Self { kind: NtObjectType::SymbolicLink, id, event: None, semaphore: None, mutant: None, timer: None,
-            completion: None, token: None, file: None, section: None, symbolic_link: Some(NtSymbolicLink::new(target)),
-            task: None, job: None, file_share: None, delete_on_close: None, file_completion: Spinlock::new(None) })
+            completion: None, token: None, job: None, pipe: None, file: None, section: None, symbolic_link: Some(NtSymbolicLink::new(target)),
+            task: None, file_share: None, delete_on_close: None, file_completion: Spinlock::new(None) })
     }
     /// Create a process object backed by the canonical scheduler task. # C: O(1)
     pub fn new_process(id: u64, task: Arc<Task>) -> Arc<Self> {
-        Arc::new(Self { kind: NtObjectType::Process, id, event: None, semaphore: None, mutant: None, timer: None, completion: None, token: None, job: None, file: None, section: None, symbolic_link: None, task: Some(task), file_share: None, delete_on_close: None, file_completion: Spinlock::new(None) })
+        Arc::new(Self { kind: NtObjectType::Process, id, event: None, semaphore: None, mutant: None, timer: None, completion: None, token: None, job: None, pipe: None, file: None, section: None, symbolic_link: None, task: Some(task), file_share: None, delete_on_close: None, file_completion: Spinlock::new(None) })
     }
     /// Create a thread object backed by the canonical scheduler task. # C: O(1)
     pub fn new_thread(id: u64, task: Arc<Task>) -> Arc<Self> {
-        Arc::new(Self { kind: NtObjectType::Thread, id, event: None, semaphore: None, mutant: None, timer: None, completion: None, token: None, job: None, file: None, section: None, symbolic_link: None, task: Some(task), file_share: None, delete_on_close: None, file_completion: Spinlock::new(None) })
+        Arc::new(Self { kind: NtObjectType::Thread, id, event: None, semaphore: None, mutant: None, timer: None, completion: None, token: None, job: None, pipe: None, file: None, section: None, symbolic_link: None, task: Some(task), file_share: None, delete_on_close: None, file_completion: Spinlock::new(None) })
     }
     /// Return the object's NT type. # C: O(1)
     pub fn kind(&self) -> NtObjectType { self.kind }
@@ -185,17 +187,18 @@ impl NtObject {
     /// Return the timer primitive carried by a timer object. # C: O(1)
     pub fn timer(&self) -> Option<Arc<NtTimer>> { self.timer.clone() }
     pub fn job(&self) -> Option<Arc<NtJob>> { self.job.clone() }
+    pub fn pipe(&self) -> Option<Arc<NtPipe>> { self.pipe.clone() }
 
     pub fn completion(&self) -> Option<Arc<NtCompletionPort>> { self.completion.clone() }
     pub fn new_token(id: u64, uid: u32, gid: u32) -> Arc<Self> {
         Arc::new(Self { kind: NtObjectType::Token, id, event: None, semaphore: None, mutant: None,
-            timer: None, completion: None, token: Some(Arc::new(NtToken::new(uid, gid))), job: None, file: None,
+            timer: None, completion: None, token: Some(Arc::new(NtToken::new(uid, gid))), job: None, pipe: None, file: None,
             section: None, symbolic_link: None, task: None, file_share: None, delete_on_close: None, file_completion: Spinlock::new(None) })
     }
     pub fn token(&self) -> Option<Arc<NtToken>> { self.token.clone() }
     pub fn duplicate_token(id: u64, token: Arc<NtToken>) -> Arc<Self> {
         Arc::new(Self { kind: NtObjectType::Token, id, event: None, semaphore: None, mutant: None,
-            timer: None, completion: None, token: Some(token), job: None, file: None, section: None, symbolic_link: None,
+            timer: None, completion: None, token: Some(token), job: None, pipe: None, file: None, section: None, symbolic_link: None,
             task: None, file_share: None, delete_on_close: None, file_completion: Spinlock::new(None) })
     }
 
@@ -465,8 +468,18 @@ impl NtHandleTable {
     pub fn new_job(&self) -> Arc<NtObject> {
         let id = self.next_object_id.fetch_add(1, Ordering::Relaxed);
         Arc::new(NtObject { kind: NtObjectType::Job, id, event: None, semaphore: None, mutant: None,
-            timer: None, completion: None, token: None, job: Some(Arc::new(NtJob::new())), file: None,
+            timer: None, completion: None, token: None, job: Some(Arc::new(NtJob::new())), pipe: None, file: None,
             section: None, symbolic_link: None, task: None, file_share: None, delete_on_close: None,
+            file_completion: Spinlock::new(None) })
+    }
+
+    /// Allocate one named-pipe object with scheduler-owned configuration. # C: O(1)
+    pub fn new_named_pipe(&self, config: NtPipeConfig) -> Arc<NtObject> {
+        let id = self.next_object_id.fetch_add(1, Ordering::Relaxed);
+        Arc::new(NtObject { kind: NtObjectType::NamedPipe, id, event: None, semaphore: None,
+            mutant: None, timer: None, completion: None, token: None, job: None,
+            pipe: Some(Arc::new(NtPipe::new(config))), file: None, section: None,
+            symbolic_link: None, task: None, file_share: None, delete_on_close: None,
             file_completion: Spinlock::new(None) })
     }
 
@@ -480,7 +493,7 @@ impl NtHandleTable {
         let id = self.next_object_id.fetch_add(1, Ordering::Relaxed);
         Arc::new(NtObject { kind: NtObjectType::CompletionPort, id, event: None, semaphore: None,
             mutant: None, timer: None, completion: Some(Arc::new(NtCompletionPort::new(concurrency))), token: None, job: None,
-            file: None, section: None, symbolic_link: None, task: None, file_share: None, delete_on_close: None, file_completion: Spinlock::new(None) })
+            file: None, section: None, symbolic_link: None, task: None, pipe: None, file_share: None, delete_on_close: None, file_completion: Spinlock::new(None) })
     }
 
     pub fn new_token(&self, uid: u32, gid: u32) -> Arc<NtObject> {
