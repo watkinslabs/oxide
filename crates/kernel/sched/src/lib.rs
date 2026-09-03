@@ -83,6 +83,7 @@ pub mod personality;
 pub mod nt_object;
 pub mod nt_callback;
 pub mod nt_apc;
+pub mod nt_exception;
 pub mod rlimit;
 pub mod ioport;
 pub mod ioprio;
