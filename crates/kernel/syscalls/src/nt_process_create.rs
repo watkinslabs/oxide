@@ -66,6 +66,16 @@ pub fn dispatch(call: NtCall, stack: [u64; 5]) -> u64 {
     }
     unsafe { sched::live::arm_user_entry(&child, prepared.process.entry.rip.as_u64(),
         prepared.process.entry.rsp.as_u64()); }
+    // The NT TEB is addressed through GS on x86-64.  `arm_user_entry` builds
+    // a generic user context, so the native process transaction must publish
+    // the image-specific GS base before the task becomes visible to the
+    // scheduler; otherwise the first instruction in ntdll/user32 observes a
+    // zero TEB even though the task metadata points at the right one.
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        let ctx = child.arch_ctx_ptr::<hal_x86_64::ContextX86_64>();
+        (*ctx).gs_base = prepared.process.entry.gs_base.as_u64();
+    }
 
     let table = cur.thread_group.nt_handles();
     let process = table.insert(table.new_process(Arc::clone(&child)),
