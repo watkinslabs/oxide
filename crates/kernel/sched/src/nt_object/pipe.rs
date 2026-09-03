@@ -49,7 +49,10 @@ pub struct NtPipe {
 }
 
 /// A directional handle view over one shared named-pipe transport.
-pub struct NtPipeEndpoint { pipe: Arc<NtPipe>, side: NtPipeSide, reserved: bool }
+pub struct NtPipeEndpoint {
+    pipe: Arc<NtPipe>, side: NtPipeSide, reserved: bool,
+    modes: Spinlock<(u32, u32), TaskListClass>,
+}
 
 impl NtPipe {
     /// Validate the immutable portion of `NtCreateNamedPipeFile` before an
@@ -145,11 +148,13 @@ impl NtPipe {
     }
 
     pub fn endpoint(self: &Arc<Self>, side: NtPipeSide) -> NtPipeEndpoint {
-        NtPipeEndpoint { pipe: Arc::clone(self), side, reserved: false }
+        NtPipeEndpoint { pipe: Arc::clone(self), side, reserved: false,
+            modes: Spinlock::new((u32::from(self.config.read_mode != 0), u32::from(self.config.completion_mode != 0))) }
     }
 
     pub fn endpoint_with_instance(self: &Arc<Self>, side: NtPipeSide) -> NtPipeEndpoint {
-        NtPipeEndpoint { pipe: Arc::clone(self), side, reserved: true }
+        NtPipeEndpoint { pipe: Arc::clone(self), side, reserved: true,
+            modes: Spinlock::new((u32::from(self.config.read_mode != 0), u32::from(self.config.completion_mode != 0))) }
     }
 
     fn write(&self, side: NtPipeSide, data: &[u8]) -> NtPipeIo {
@@ -205,7 +210,16 @@ impl NtPipeEndpoint {
         self.pipe.listen()
     }
     pub fn peek(&self, capacity: usize) -> NtPipePeek { self.pipe.peek(self.side, capacity) }
-    pub fn information(&self) -> ([u32; 2], [u32; 10]) { self.pipe.information(self.side) }
+    pub fn information(&self) -> ([u32; 2], [u32; 10]) {
+        let modes = *self.modes.lock();
+        let (_, local) = self.pipe.information(self.side);
+        ([modes.0, modes.1], local)
+    }
+    pub fn set_modes(&self, read_mode: u32, completion_mode: u32) -> bool {
+        if read_mode > 1 || completion_mode > 1 { return false; }
+        *self.modes.lock() = (read_mode, completion_mode);
+        true
+    }
 }
 
 impl Drop for NtPipeEndpoint {
@@ -333,5 +347,17 @@ mod tests {
         assert!(pipe.connect());
         assert_eq!(client.information().1[8], 3);
         assert_eq!(client.information().1[9], 0);
+    }
+
+    #[test]
+    fn endpoint_modes_are_mutable_per_handle_and_reject_unknown_values() {
+        let pipe = Arc::new(NtPipe::new(config(1)));
+        let server = pipe.endpoint(NtPipeSide::Server);
+        let client = pipe.endpoint(NtPipeSide::Client);
+        assert!(server.set_modes(1, 1));
+        assert_eq!(server.information().0, [1, 1]);
+        assert_eq!(client.information().0, [0, 0]);
+        assert!(!server.set_modes(2, 0));
+        assert!(!server.set_modes(0, 2));
     }
 }

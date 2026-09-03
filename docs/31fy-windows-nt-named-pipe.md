@@ -40,5 +40,7 @@ already available.
 `FilePipeInformation` and `FilePipeLocalInformation` queries expose the
 owner’s mode, endpoint, state, instance, quota, and queued-data fields with
 strict 8-byte and 40-byte output contracts.
+`FilePipeInformation` setters update read and completion mode on the specific
+endpoint handle and reject values outside Wine’s one-bit contract.
 Handle-side blocking waits and the remaining pipe FSCTLs stay separate work;
 those paths do not fall through to VFS files.
