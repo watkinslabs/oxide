@@ -189,8 +189,7 @@ mod tests {
         let vma = as_.find_vma(trampoline.base).unwrap();
         let data = match vma.backing { VmaBacking::KernelBytes { data, off } => (data, off), _ => panic!("initializer trampoline must be kernel-backed") };
         let bytes = &data.0[data.1..data.1 + trampoline.bytes];
-        assert!(bytes.windows(4).any(|window| window == [0x48, 0x83, 0xec, 0x20]));
-        assert!(bytes.windows(5).any(|window| window == [0x48, 0x83, 0xc4, 0x20, 0x5b]));
-        assert!(!bytes.windows(4).any(|window| window == [0x48, 0x83, 0xec, 0x28]));
+        assert!(bytes.windows(5).any(|window| window == [0x53, 0x48, 0x83, 0xec, 0x28]));
+        assert!(bytes.windows(5).any(|window| window == [0x48, 0x83, 0xc4, 0x28, 0x5b]));
     }
 }

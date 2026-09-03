@@ -36,6 +36,10 @@ const STR_OFF: usize = 0x2200;
 const CURRENT_DIR: &str = "C:\\Windows";
 const CURRENT_DIR_STORAGE: usize = 0x400;
 const API_SET_OFF: usize = 0x5000;
+const PEB_PROCESS_HEAP_OFF: usize = 0x30;
+const PEB_NUMBER_OF_PROCESSORS_OFF: usize = 0xb8;
+const PROCESS_HEAP_HANDLE: u64 = 1;
+const INITIAL_PROCESSOR_COUNT: u32 = 1;
 // Storage for the RTL_BITMAP descriptors. The bit buffers themselves live at
 // the PEB offsets prescribed by winternl.h, while these descriptors are kept
 // in otherwise-unused environment space below the API-set map.
@@ -174,7 +178,8 @@ pub fn build_with_modules_and_params(input: &EnvironmentInput<'_>, modules: &[Nt
     put_u64(&mut block, PEB_OFF + 0x10, input.image_base);
     put_u64(&mut block, PEB_OFF + 0x18, base + LDR_OFF as u64);
     put_u64(&mut block, PEB_OFF + 0x20, base + PARAM_OFF as u64);
-    put_u64(&mut block, PEB_OFF + 0x30, 0);
+    put_u64(&mut block, PEB_OFF + PEB_PROCESS_HEAP_OFF, PROCESS_HEAP_HANDLE);
+    put_u32(&mut block, PEB_OFF + PEB_NUMBER_OF_PROCESSORS_OFF, INITIAL_PROCESSOR_COUNT);
     put_u64(&mut block, PEB_OFF + 0x68, base + API_SET_OFF as u64);
     put_u64(&mut block, PEB_OFF + 0x78, 0);
     // PEB.TlsBitmap/TlsExpansionBitmap are RTL_BITMAP pointers at these
@@ -419,6 +424,8 @@ mod tests {
         assert_eq!(read16(PARAM_OFF + 0x70), ("notepad.exe a.txt".encode_utf16().count() * 2) as u16);
         assert_eq!(read64(PARAM_OFF + 0x80), base as u64 + ENV_OFF as u64);
         assert_eq!(read64(PEB_OFF + 0x68), base as u64 + API_SET_OFF as u64);
+        assert_eq!(read64(PEB_OFF + PEB_PROCESS_HEAP_OFF), PROCESS_HEAP_HANDLE);
+        assert_eq!(u32::from_le_bytes(bytes[PEB_OFF + PEB_NUMBER_OF_PROCESSORS_OFF..PEB_OFF + PEB_NUMBER_OF_PROCESSORS_OFF + 4].try_into().unwrap()), INITIAL_PROCESSOR_COUNT);
         assert_eq!(u32::from_le_bytes(bytes[API_SET_OFF..API_SET_OFF + 4].try_into().unwrap()), 6);
         assert_eq!(u32::from_le_bytes(bytes[API_SET_OFF + 12..API_SET_OFF + 16].try_into().unwrap()), pe::apiset::entries().len() as u32);
         assert_eq!(off, 0);
