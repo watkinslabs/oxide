@@ -502,11 +502,13 @@ fn cancel_synchronous(cur: &sched::Task, handle: u64, _io: Option<u64>, io_statu
 
 fn read_u32(addr: u64) -> Result<u32, u64> { uaccess::get_user_u32(addr).map_err(|_| STATUS_INVALID_PARAMETER) }
 fn read_u64(addr: u64) -> Result<u64, u64> { uaccess::get_user_u64(addr).map_err(|_| STATUS_INVALID_PARAMETER) }
+fn read_u32_at(addr: u64, offset: u64) -> Result<u32, u64> { read_u32(addr.checked_add(offset).ok_or(STATUS_INVALID_PARAMETER)?) }
+fn read_u64_at(addr: u64, offset: u64) -> Result<u64, u64> { read_u64(addr.checked_add(offset).ok_or(STATUS_INVALID_PARAMETER)?) }
 
 fn open_create(cur: &sched::Task, addr: u64) -> u64 {
-    let request = match (read_u64(addr), read_u32(addr + 8), read_u64(addr + 16),
-        read_u64(addr + 24), read_u32(addr + 32), read_u32(addr + 36),
-        read_u32(addr + 40), read_u32(addr + 44)) {
+    let request = match (read_u64(addr), read_u32_at(addr, 8), read_u64_at(addr, 16),
+        read_u64_at(addr, 24), read_u32_at(addr, 32), read_u32_at(addr, 36),
+        read_u32_at(addr, 40), read_u32_at(addr, 44)) {
         (Ok(handle), Ok(desired_access), Ok(object_attributes), Ok(allocation_size),
          Ok(file_attributes), Ok(share_access), Ok(disposition), Ok(options)) =>
             NtCreateFileRequest { handle, desired_access, object_attributes, allocation_size,
@@ -520,8 +522,8 @@ fn open_create(cur: &sched::Task, addr: u64) -> u64 {
 }
 
 fn open_existing(cur: &sched::Task, addr: u64, _create: bool) -> u64 {
-    let request = match (read_u64(addr), read_u32(addr + 8), read_u64(addr + 16),
-        read_u32(addr + 24), read_u32(addr + 28)) {
+    let request = match (read_u64(addr), read_u32_at(addr, 8), read_u64_at(addr, 16),
+        read_u32_at(addr, 24), read_u32_at(addr, 28)) {
         (Ok(handle), Ok(desired_access), Ok(object_attributes), Ok(share_access), Ok(options)) =>
             NtOpenFileRequest { handle, desired_access, object_attributes, share_access, options },
         _ => return STATUS_INVALID_PARAMETER,
@@ -608,8 +610,8 @@ fn open_named_pipe(cur: &sched::Task, output: u64, desired: u32, sharing: u32,
 }
 
 fn io(cur: &sched::Task, addr: u64, write: bool) -> u64 {
-    let request = match (read_u32(addr), read_u32(addr + 4), read_u64(addr + 8),
-        read_u64(addr + 16), read_u32(addr + 24), read_u64(addr + 32)) {
+    let request = match (read_u32(addr), read_u32_at(addr, 4), read_u64_at(addr, 8),
+        read_u64_at(addr, 16), read_u32_at(addr, 24), read_u64_at(addr, 32)) {
         (Ok(handle), Ok(event), Ok(io_status), Ok(buffer), Ok(length), Ok(offset)) =>
             NtFileIoRequest { handle, event, io_status, buffer, length, offset },
         _ => return STATUS_INVALID_PARAMETER,
@@ -813,7 +815,7 @@ fn set_information_values(cur: &sched::Task, handle: u32, io_status: u64, inform
         if length < 8 { return STATUS_INVALID_PARAMETER; }
         let Some(endpoint) = object.pipe_endpoint() else { return STATUS_INVALID_HANDLE; };
         let Ok(read_mode) = read_u32(information) else { return STATUS_INVALID_PARAMETER; };
-        let Ok(completion_mode) = read_u32(information + 4) else { return STATUS_INVALID_PARAMETER; };
+        let Ok(completion_mode) = read_u32_at(information, 4) else { return STATUS_INVALID_PARAMETER; };
         if !endpoint.set_modes(read_mode, completion_mode) { return STATUS_INVALID_PARAMETER; }
         write_io_status(io_status, STATUS_SUCCESS, 0);
         return STATUS_SUCCESS;
@@ -845,13 +847,14 @@ fn set_rename_information(file: &vfs::File, information: u64, length: u32, io_st
     let length = length as usize;
     if length < RENAME_HEADER_BYTES { return STATUS_INVALID_PARAMETER; }
     let Ok(replace) = read_u32(information) else { return STATUS_INVALID_PARAMETER; };
-    let Ok(root) = read_u64(information + 8) else { return STATUS_INVALID_PARAMETER; };
-    let Ok(name_len) = read_u32(information + 16) else { return STATUS_INVALID_PARAMETER; };
+    let Ok(root) = read_u64_at(information, 8) else { return STATUS_INVALID_PARAMETER; };
+    let Ok(name_len) = read_u32_at(information, 16) else { return STATUS_INVALID_PARAMETER; };
     let name_len = name_len as usize;
     if replace > 1 || root != 0 || name_len == 0 || name_len & 1 != 0
         || name_len > length - RENAME_HEADER_BYTES || name_len > 32766 { return STATUS_INVALID_PARAMETER; }
     let mut bytes = vec![0u8; name_len];
-    if uaccess::copy_from_user(&mut bytes, information + RENAME_HEADER_BYTES as u64).is_err() { return STATUS_INVALID_PARAMETER; }
+    let Some(name_address) = information.checked_add(RENAME_HEADER_BYTES as u64) else { return STATUS_INVALID_PARAMETER; };
+    if uaccess::copy_from_user(&mut bytes, name_address).is_err() { return STATUS_INVALID_PARAMETER; }
     let Some(raw_target) = utf16_string(&bytes) else { return STATUS_INVALID_PARAMETER; };
     let Some(target) = crate::nt_path::normalize_path(&raw_target) else { return STATUS_INVALID_PARAMETER; };
     let source = vfs::path_from_bytes(&file.dentry().absolute_path());
