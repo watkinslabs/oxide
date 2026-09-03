@@ -142,6 +142,9 @@ bitflags::bitflags! {
         /// what refuses a pin of such a page and what stops the mapping from
         /// being unlocked.
         const SECRETMEM = 1 << 19;
+        /// Windows NT reserved address space: the VMA exists for later
+        /// MEM_COMMIT, but faults must not instantiate pages yet.
+        const NT_RESERVED = 1 << 20;
     }
 }
 

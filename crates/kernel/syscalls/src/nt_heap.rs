@@ -45,7 +45,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
                 Some(size) if size != 0 && size <= usize::MAX as u64 => size as usize,
                 _ => return Some(STATUS_NO_MEMORY),
             };
-            match elf_load::nt_memory::allocate(&mm, None, size, vmm::VmaProt::READ | vmm::VmaProt::WRITE) {
+            match elf_load::nt_memory::allocate(&mm, None, size, vmm::VmaProt::READ | vmm::VmaProt::WRITE, true) {
                 Ok(allocation) => {
                     let base = allocation.base.as_u64();
                     cur.thread_group.nt_heap_user_info.lock().push((base, flags as u32, 0, size));
@@ -59,7 +59,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
             let Some(base) = hal::UserVirtAddr::new(base) else { return Some(0); };
             let Some((_, _, _, size)) = cur.thread_group.nt_heap_user_info.lock().iter().find(|entry| entry.0 == base.as_u64()).copied() else { return Some(0); };
             let Some(info) = elf_load::nt_memory::query(&mm, base).ok() else { return Some(0); };
-            match elf_load::nt_memory::free(&mm, elf_load::nt_memory::NtAllocation { base, size, protection: info.protection }) {
+            match elf_load::nt_memory::free(&mm, elf_load::nt_memory::NtAllocation { base, size, protection: info.protection, reserved: !info.committed }) {
                 elf_load::nt_memory::NtStatus::Success => { cur.thread_group.nt_heap_user_info.lock().retain(|entry| entry.0 != base.as_u64()); 1 }
                 _ => 0,
             }
@@ -71,14 +71,14 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
             let Some(old_size) = cur.thread_group.nt_heap_user_info.lock().iter()
                 .find(|entry| entry.0 == old_base.as_u64()).map(|entry| entry.3) else { return Some(0); };
             let Ok(old_info) = elf_load::nt_memory::query(&mm, old_base) else { return Some(0); };
-            let Ok(new) = elf_load::nt_memory::allocate(&mm, None, size as usize, vmm::VmaProt::READ | vmm::VmaProt::WRITE) else { return Some(0); };
+            let Ok(new) = elf_load::nt_memory::allocate(&mm, None, size as usize, vmm::VmaProt::READ | vmm::VmaProt::WRITE, true) else { return Some(0); };
             let copy_len = core::cmp::min(old_size, size as usize);
             let mut bytes = alloc::vec![0u8; copy_len];
             if uaccess::copy_from_user(&mut bytes, old_base.as_u64()).is_err() || uaccess::copy_to_user(new.base.as_u64(), &bytes).is_err() {
                 let _ = elf_load::nt_memory::free(&mm, new);
                 return Some(0);
             }
-            let _ = elf_load::nt_memory::free(&mm, elf_load::nt_memory::NtAllocation { base: old_base, size: old_size, protection: old_info.protection });
+            let _ = elf_load::nt_memory::free(&mm, elf_load::nt_memory::NtAllocation { base: old_base, size: old_size, protection: old_info.protection, reserved: !old_info.committed });
             let mut user_info = cur.thread_group.nt_heap_user_info.lock();
             if let Some(entry) = user_info.iter_mut().find(|entry| entry.0 == old_base.as_u64()) { entry.0 = new.base.as_u64(); entry.3 = size as usize; }
             new.base.as_u64()
