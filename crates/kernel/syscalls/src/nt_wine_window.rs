@@ -73,6 +73,8 @@ const WM_NCDESTROY: u64 = 0x0082;
 const WM_NCHITTEST: u64 = 0x0084;
 const WM_NCACTIVATE: u64 = 0x0086;
 
+fn paintstruct_field(base: u64, offset: u64) -> Option<u64> { base.checked_add(offset) }
+
 #[cfg(target_os = "oxide-kernel")]
 fn read_args(pointer: u64) -> Option<[u64; 17]> {
     let mut args = [0u64; 17];
@@ -463,7 +465,7 @@ fn win_bool(status: u64) -> u64 { (status == STATUS_SUCCESS) as u64 }
 #[cfg(target_os = "oxide-kernel")]
 fn begin_paint<F, G>(args: &[u64; 17], native: F, gdi: G) -> u64
 where F: Fn(NtService, SyscallArgs) -> u64, G: Fn(NtService, SyscallArgs) -> u64 {
-    let Some(rect) = args[1].checked_add(PAINTSTRUCT_RECT_OFFSET) else { return STATUS_INVALID_PARAMETER; };
+    let Some(rect) = paintstruct_field(args[1], PAINTSTRUCT_RECT_OFFSET) else { return STATUS_INVALID_PARAMETER; };
     let (width, height) = if args[0] == 0 {
         (DEFAULT_WINDOW_SURFACE_WIDTH, DEFAULT_WINDOW_SURFACE_HEIGHT)
     } else {
@@ -476,7 +478,12 @@ where F: Fn(NtService, SyscallArgs) -> u64, G: Fn(NtService, SyscallArgs) -> u64
     let hdc = gdi(NtService::CreateCompatibleDc, SyscallArgs { a0: width, a1: height, a2: 0, a3: 0, a4: 0, a5: 0 });
     if hdc == STATUS_INVALID_PARAMETER || hdc == 0 { return hdc; }
     if native(NtService::BeginWindowPaint, SyscallArgs { a0: args[0], a1: rect, a2: 0, a3: 0, a4: 0, a5: 0 }) != STATUS_SUCCESS { let _ = gdi(NtService::DeleteGdiObject, SyscallArgs { a0: hdc, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 }); return STATUS_INVALID_PARAMETER; }
-    if uaccess::copy_to_user(args[1].saturating_add(PAINTSTRUCT_HDC_OFFSET), &hdc.to_le_bytes()).is_err() {
+    let Some(hdc_field) = paintstruct_field(args[1], PAINTSTRUCT_HDC_OFFSET) else {
+        let _ = native(NtService::EndWindowPaint, SyscallArgs { a0: args[0], a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 });
+        let _ = gdi(NtService::DeleteGdiObject, SyscallArgs { a0: hdc, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 });
+        return STATUS_INVALID_PARAMETER;
+    };
+    if uaccess::copy_to_user(hdc_field, &hdc.to_le_bytes()).is_err() {
         let _ = native(NtService::EndWindowPaint, SyscallArgs { a0: args[0], a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 });
         let _ = gdi(NtService::DeleteGdiObject, SyscallArgs { a0: hdc, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 });
         return STATUS_INVALID_PARAMETER;
@@ -503,6 +510,12 @@ mod tests {
         assert_eq![(WINE_CREATE_WINDOW_EX, 0x136b), (WINE_DESTROY_WINDOW, 0x1384), (WINE_GET_MESSAGE, 0x141b), (WINE_PEEK_MESSAGE, 0x14ca), (WINE_POST_MESSAGE, 0x14d0), (WINE_SHOW_WINDOW, 0x15bd), (WINE_BEGIN_PAINT, 0x1327), (WINE_END_PAINT, 0x13bc), (WINE_GET_DC, 0x13eb), (WINE_GET_DC_EX, 0x13ec), (WINE_INVALIDATE_RECT, 0x148c), (WINE_RELEASE_DC, 0x1509), (WINE_SET_WINDOW_POS, 0x15a7), (WINE_GET_TEXT_METRICS, 0x1229), (WINE_GET_TEXT_EXTENT_EX, 0x1227), (WINE_REGISTER_CLASS_EX, 0x14eb), (WINE_DISPATCH_MESSAGE, 0x138b), (WINE_MESSAGE_CALL, 0x14b5), (WINE_GET_CLASS_NAME, 0x13d9), (WINE_GET_CLASS_INFO_EX, 0x13d8), (WINE_UNREGISTER_CLASS, 0x15df), (WINE_NTUSER_INITIALIZE_CLIENT_PFN_ARRAYS, 0x147a), (WINE_NTUSER_GET_SYSTEM_DPI_FOR_PROCESS, 0x144b), (WINE_GET_WINDOW_PLACEMENT, 0x1463), (WINE_CALL_NO_PARAM, 0x133c), (WINE_CALL_ONE_PARAM, 0x133d), (WINE_CREATE_MENU, 0x1366), (WINE_CREATE_POPUP_MENU, 0x1368), (WINE_DELETE_MENU, 0x1378), (WINE_REMOVE_MENU, 0x151d), (WINE_DRAW_MENU_BAR, 0x139b), (WINE_DRAW_MENU_BAR_TEMP, 0x139c), (WINE_SET_ACTIVE_WINDOW, 0x1532), (WINE_SET_FOCUS, 0x1557), (WINE_TRANSLATE_MESSAGE, 0x15d8), (WINE_THUNKED_MENU_ITEM_INFO, 0x15d0)] .iter().for_each(|(actual, expected)| assert_eq!(*actual, *expected));
         assert_eq!(WINE_DEF_WINDOW_PROC, 0x029e);
         assert_eq!(WINE_CALL_WINDOW_PROC, 0x02ab);
+    }
+
+    #[test]
+    fn paintstruct_offsets_fail_closed_on_pointer_wrap() {
+        assert_eq!(paintstruct_field(u64::MAX, 0), Some(u64::MAX));
+        assert_eq!(paintstruct_field(u64::MAX, PAINTSTRUCT_RECT_OFFSET), None);
     }
 
     #[test]
