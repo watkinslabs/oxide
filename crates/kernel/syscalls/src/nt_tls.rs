@@ -38,7 +38,8 @@ fn zero_tls_cell(thread: u64, info: u64, length: u32) -> u64 {
     }
     let expansion_index = index - TEB_TLS_SLOT_COUNT;
     if expansion_index >= TLS_EXPANSION_SLOT_COUNT { return STATUS_INVALID_PARAMETER; }
-    let Ok(slots) = uaccess::get_user_u64(teb.saturating_add(TEB_TLS_EXPANSION_POINTER_OFFSET)) else { return STATUS_INVALID_PARAMETER; };
+    let Some(expansion_pointer) = teb.checked_add(TEB_TLS_EXPANSION_POINTER_OFFSET) else { return STATUS_INVALID_PARAMETER; };
+    let Ok(slots) = uaccess::get_user_u64(expansion_pointer) else { return STATUS_INVALID_PARAMETER; };
     if slots == 0 { return STATUS_SUCCESS; }
     let Some(address) = slots.checked_add(expansion_index as u64 * 8) else { return STATUS_INVALID_PARAMETER; };
     uaccess::put_user_u64(address, 0).map_or(STATUS_INVALID_PARAMETER, |_| STATUS_SUCCESS)
