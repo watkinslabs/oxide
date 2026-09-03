@@ -73,7 +73,7 @@ pub trait DrmDriver: Send + Sync {
     /// VIRTGPU_GETPARAM: `Some(value)` if this is a virtio-gpu driver answering
     /// `param`; `None` → not a virtgpu driver (caller returns ENOTTY, matching
     /// Linux where non-virtgpu cards lack the ioctl). # C: O(1)
-    fn virtgpu_getparam(&self, _param: u64) -> Option<u64> { None }
+    fn virtgpu_getparam(&self, _param: u64) -> Option<KResult<u64>> { None }
 
     /// VIRTGPU_GET_CAPS. `None` means this is not a virtio-gpu driver; the
     /// caller returns ENOTTY just as DRM core does for an unregistered ioctl.

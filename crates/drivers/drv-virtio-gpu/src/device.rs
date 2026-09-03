@@ -179,11 +179,11 @@ impl drm::DrmDriver for VirtioGpuDrm {
     /// complete capset blob and render ioctl owner is present. This prevents
     /// Mesa from selecting a path whose userspace data contract is incomplete.
     /// # C: O(1)
-    fn virtgpu_getparam(&self, param: u64) -> Option<u64> {
+    fn virtgpu_getparam(&self, param: u64) -> Option<drm::KResult<u64>> {
         Some(match param {
-            drm::VIRTGPU_PARAM_3D_FEATURES      => 0,
-            drm::VIRTGPU_PARAM_CAPSET_QUERY_FIX => 1,
-            _                                   => 0,
+            drm::VIRTGPU_PARAM_3D_FEATURES      => Ok(0),
+            drm::VIRTGPU_PARAM_CAPSET_QUERY_FIX => Ok(1),
+            _                                   => Err(drm::Error::Inval),
         })
     }
 
