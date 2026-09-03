@@ -178,10 +178,10 @@ fn get_path(module: u64, flags: u32, path_output: u64, unknown_output: u64) -> u
         append_directory(&mut path, directory_of(&module_name));
     }
     if search_flags & LOAD_LIBRARY_SEARCH_APPLICATION_DIR != 0 {
-        let peb = read_u64(cur.nt_teb().saturating_add(TEB_PEB_OFFSET));
-        let parameters = read_u64(peb.saturating_add(PEB_IMAGE_BASE_OFFSET + 0x10));
+        let peb = cur.nt_teb().checked_add(TEB_PEB_OFFSET).and_then(read_u64_checked).unwrap_or(0);
+        let parameters = peb.checked_add(PEB_IMAGE_BASE_OFFSET + 0x10).and_then(read_u64_checked).unwrap_or(0);
         if parameters != 0 {
-            let image = read_unicode(parameters.saturating_add(0x60)).unwrap_or_default();
+            let image = parameters.checked_add(0x60).and_then(|address| read_unicode(address)).unwrap_or_default();
             append_directory(&mut path, directory_of(&image));
         }
     }
@@ -250,16 +250,20 @@ fn set_default_dll_directories(flags: u32) -> u64 {
 fn unload(module: u64) -> u64 {
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !cur.is_nt_personality() || module == 0 { return STATUS_INVALID_PARAMETER; }
-    let peb = read_u64(cur.nt_teb().saturating_add(TEB_PEB_OFFSET));
-    let ldr = read_u64(peb.saturating_add(PEB_LDR_OFFSET));
+    let Some(peb_address) = cur.nt_teb().checked_add(TEB_PEB_OFFSET) else { return STATUS_INVALID_PARAMETER; };
+    let peb = read_u64_checked(peb_address).unwrap_or(0);
+    let Some(ldr_address) = peb.checked_add(PEB_LDR_OFFSET) else { return STATUS_INVALID_PARAMETER; };
+    let ldr = read_u64_checked(ldr_address).unwrap_or(0);
     if peb == 0 || ldr == 0 { return STATUS_INVALID_PARAMETER; }
-    let head = ldr.saturating_add(LDR_LOAD_LIST_OFFSET);
-    let mut entry = read_u64(head);
+    let Some(head) = ldr.checked_add(LDR_LOAD_LIST_OFFSET) else { return STATUS_INVALID_PARAMETER; };
+    let mut entry = read_u64_checked(head).unwrap_or(0);
     let mut loaded = false;
     for _ in 0..MAX_MODULE_SCAN {
         if entry == 0 || entry == head { break; }
-        if read_u64(entry.saturating_add(MODULE_BASE_OFFSET)) == module { loaded = true; break; }
-        entry = read_u64(entry.saturating_add(LIST_LINK_OFFSET));
+        let Some(base_address) = entry.checked_add(MODULE_BASE_OFFSET) else { break; };
+        if read_u64_checked(base_address).unwrap_or(0) == module { loaded = true; break; }
+        let Some(link_address) = entry.checked_add(LIST_LINK_OFFSET) else { break; };
+        entry = read_u64_checked(link_address).unwrap_or(0);
     }
     if !loaded { return STATUS_DLL_NOT_FOUND; }
     let mut refs = cur.thread_group.nt_module_refs.lock();
@@ -406,15 +410,15 @@ fn copy_full_name(source_descriptor: u64, destination: u64) -> u64 {
     if maximum < source_len { STATUS_BUFFER_TOO_SMALL } else { STATUS_SUCCESS }
 }
 
-fn read_u64(address: u64) -> u64 {
-    let mut raw = [0u8; 8];
-    if uaccess::copy_from_user(&mut raw, address).is_err() { 0 } else { u64::from_le_bytes(raw) }
-}
-
 fn read_u64_checked(address: u64) -> Option<u64> {
     let mut raw = [0u8; 8];
     uaccess::copy_from_user(&mut raw, address).ok()?;
     Some(u64::from_le_bytes(raw))
+}
+
+#[cfg(target_arch = "x86_64")]
+pub(super) fn read_u64(address: u64) -> u64 {
+    read_u64_checked(address).unwrap_or(0)
 }
 
 fn set_search_path_mode(flags: u32) -> u64 {
