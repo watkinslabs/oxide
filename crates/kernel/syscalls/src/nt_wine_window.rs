@@ -19,6 +19,7 @@ const WINE_SHOW_WINDOW: u64 = 0x15bd;
 const WINE_BEGIN_PAINT: u64 = 0x1327;
 const WINE_END_PAINT: u64 = 0x13bc;
 const WINE_GET_DC: u64 = 0x13eb;
+const WINE_GET_DC_EX: u64 = 0x13ec;
 const WINE_INVALIDATE_RECT: u64 = 0x148c;
 const WINE_RELEASE_DC: u64 = 0x1509;
 const WINE_SET_WINDOW_POS: u64 = 0x15a7;
@@ -40,6 +41,7 @@ const WINE_DEF_WINDOW_PROC: u64 = 0x029e;
 // four-argument client-table publication entry.
 const WINE_NTUSER_INITIALIZE_CLIENT_PFN_ARRAYS: u64 = 0x147a;
 const WINE_NTUSER_GET_SYSTEM_DPI_FOR_PROCESS: u64 = 0x144b;
+const DCX_WINDOW: u64 = 0x0000_0001;
 const WM_TIMER: u32 = 0x0113;
 const WM_SETTEXT: u64 = 0x000c;
 const WM_GETTEXT: u64 = 0x000d;
@@ -207,13 +209,34 @@ pub fn dispatch(call: NtCall) -> u64 {
         }
         WINE_BEGIN_PAINT => begin_paint(&args, native, gdi),
         WINE_END_PAINT => end_paint(&args, native, gdi),
-        WINE_GET_DC | WINE_CREATE_COMPATIBLE_DC => gdi(NtService::CreateCompatibleDc, SyscallArgs { a0: DEFAULT_WINDOW_SURFACE_WIDTH, a1: DEFAULT_WINDOW_SURFACE_HEIGHT, a2: 0, a3: 0, a4: 0, a5: 0 }),
+        WINE_GET_DC => create_window_dc(args[0], 0, gdi),
+        WINE_GET_DC_EX => create_window_dc(args[0], args[2], gdi),
+        WINE_CREATE_COMPATIBLE_DC => gdi(NtService::CreateCompatibleDc, SyscallArgs { a0: DEFAULT_WINDOW_SURFACE_WIDTH, a1: DEFAULT_WINDOW_SURFACE_HEIGHT, a2: 0, a3: 0, a4: 0, a5: 0 }),
         WINE_RELEASE_DC => win_bool(gdi(NtService::DeleteGdiObject, SyscallArgs { a0: args[1], a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 })),
         WINE_DELETE_OBJECT => gdi(NtService::DeleteGdiObject, SyscallArgs { a0: args[0], a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 }),
         WINE_GET_TEXT_METRICS => win_bool(gdi(NtService::GetGdiTextMetrics, SyscallArgs { a0: args[0], a1: args[1], a2: 0, a3: 0, a4: 0, a5: 0 })),
         WINE_GET_TEXT_EXTENT_EX => win_bool(gdi(NtService::GetGdiTextExtent, SyscallArgs { a0: args[0], a1: args[1], a2: args[2], a3: args[6], a4: 0, a5: 0 })),
         _ => STATUS_NOT_IMPLEMENTED,
     }
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn create_window_dc<F>(hwnd: u64, flags: u64, gdi: F) -> u64
+where F: Fn(NtService, SyscallArgs) -> u64 {
+    // Wine's GetDCEx accepts a null clip region; region ownership is not
+    // represented by the native GDI surface yet, so reject that shape rather
+    // than silently drawing with the wrong clipping contract.
+    if flags & !DCX_WINDOW != 0 { return STATUS_NOT_IMPLEMENTED; }
+    let (width, height) = if hwnd == 0 { (DEFAULT_WINDOW_SURFACE_WIDTH, DEFAULT_WINDOW_SURFACE_HEIGHT) }
+    else {
+        let Some(hwnd) = u32::try_from(hwnd).ok() else { return STATUS_INVALID_PARAMETER; };
+        let Some((rect, _)) = crate::nt_window::window_rect_for_current(hwnd) else { return STATUS_INVALID_PARAMETER; };
+        let width = rect.right.checked_sub(rect.left).filter(|value| *value > 0).map(|value| value as u64);
+        let height = rect.bottom.checked_sub(rect.top).filter(|value| *value > 0).map(|value| value as u64);
+        let (Some(width), Some(height)) = (width, height) else { return STATUS_INVALID_PARAMETER; };
+        (width, height)
+    };
+    gdi(NtService::CreateCompatibleDc, SyscallArgs { a0: width, a1: height, a2: 0, a3: 0, a4: 0, a5: 0 })
 }
 
 #[cfg(target_os = "oxide-kernel")]
@@ -307,7 +330,7 @@ mod tests {
 
     #[test]
     fn wine_user32_ordinals_match_the_generated_table() {
-        assert_eq![(WINE_CREATE_WINDOW_EX, 0x136b), (WINE_DESTROY_WINDOW, 0x1384), (WINE_GET_MESSAGE, 0x141b), (WINE_PEEK_MESSAGE, 0x14ca), (WINE_POST_MESSAGE, 0x14d0), (WINE_SHOW_WINDOW, 0x15bd), (WINE_BEGIN_PAINT, 0x1327), (WINE_END_PAINT, 0x13bc), (WINE_GET_DC, 0x13eb), (WINE_INVALIDATE_RECT, 0x148c), (WINE_RELEASE_DC, 0x1509), (WINE_SET_WINDOW_POS, 0x15a7), (WINE_GET_TEXT_METRICS, 0x1229), (WINE_GET_TEXT_EXTENT_EX, 0x1227), (WINE_REGISTER_CLASS_EX, 0x14eb), (WINE_DISPATCH_MESSAGE, 0x138b), (WINE_MESSAGE_CALL, 0x14b5), (WINE_GET_CLASS_NAME, 0x13d9), (WINE_GET_CLASS_INFO_EX, 0x13d8), (WINE_UNREGISTER_CLASS, 0x15df), (WINE_NTUSER_INITIALIZE_CLIENT_PFN_ARRAYS, 0x147a), (WINE_NTUSER_GET_SYSTEM_DPI_FOR_PROCESS, 0x144b)] .iter().for_each(|(actual, expected)| assert_eq!(*actual, *expected));
+        assert_eq![(WINE_CREATE_WINDOW_EX, 0x136b), (WINE_DESTROY_WINDOW, 0x1384), (WINE_GET_MESSAGE, 0x141b), (WINE_PEEK_MESSAGE, 0x14ca), (WINE_POST_MESSAGE, 0x14d0), (WINE_SHOW_WINDOW, 0x15bd), (WINE_BEGIN_PAINT, 0x1327), (WINE_END_PAINT, 0x13bc), (WINE_GET_DC, 0x13eb), (WINE_GET_DC_EX, 0x13ec), (WINE_INVALIDATE_RECT, 0x148c), (WINE_RELEASE_DC, 0x1509), (WINE_SET_WINDOW_POS, 0x15a7), (WINE_GET_TEXT_METRICS, 0x1229), (WINE_GET_TEXT_EXTENT_EX, 0x1227), (WINE_REGISTER_CLASS_EX, 0x14eb), (WINE_DISPATCH_MESSAGE, 0x138b), (WINE_MESSAGE_CALL, 0x14b5), (WINE_GET_CLASS_NAME, 0x13d9), (WINE_GET_CLASS_INFO_EX, 0x13d8), (WINE_UNREGISTER_CLASS, 0x15df), (WINE_NTUSER_INITIALIZE_CLIENT_PFN_ARRAYS, 0x147a), (WINE_NTUSER_GET_SYSTEM_DPI_FOR_PROCESS, 0x144b)] .iter().for_each(|(actual, expected)| assert_eq!(*actual, *expected));
         assert_eq!(WINE_DEF_WINDOW_PROC, 0x029e);
         assert_eq!(WINE_CALL_WINDOW_PROC, 0x02ab);
     }
