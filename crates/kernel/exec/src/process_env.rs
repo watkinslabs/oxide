@@ -12,6 +12,8 @@ pub const X64_SHADOW_SPACE: u64 = 32;
 const PAGE: usize = 4096;
 const THREAD_TEB_BYTES: usize = 0x4000;
 const TEB_SYSCALL_FRAME_OFFSET: usize = 0x378;
+const TEB_ACTIVATION_CONTEXT_STACK_OFFSET: usize = 0x2c8;
+const TEB_ACTIVATION_CONTEXT_STACK_INLINE: usize = 0x290;
 const THREAD_SYSCALL_FRAME_OFF: usize = 0x3000;
 const PROCESS_SYSCALL_FRAME_OFF: usize = 0x7000;
 pub const NT_DEBUG_INFO_OFFSET: u64 = 0x2f00;
@@ -119,6 +121,8 @@ pub fn build_thread_teb(process_id: u32, thread_id: u32, peb: u64, as_: &Address
     put_u32(&mut teb, 0x40, process_id);
     put_u32(&mut teb, 0x48, thread_id);
     put_u64(&mut teb, 0x58, base + 0x180);
+    put_u64(&mut teb, TEB_ACTIVATION_CONTEXT_STACK_OFFSET,
+        base + TEB_ACTIVATION_CONTEXT_STACK_INLINE as u64);
     put_u32(&mut teb, TEB_CURRENT_LOCALE_OFF, 0x409);
     // TlsSlots and TlsExpansionSlots are deliberately zero-initialized.  A
     // later TlsAlloc/TlsSetValue call owns their contents and must not inherit
@@ -205,6 +209,8 @@ pub fn build_with_modules_and_params(input: &EnvironmentInput<'_>, modules: &[Nt
     put_u32(&mut block, TEB_OFF + 0x40, input.process_id);
     put_u32(&mut block, TEB_OFF + 0x48, input.thread_id);
     put_u64(&mut block, TEB_OFF + 0x58, base + TLS_OFF as u64);
+    put_u64(&mut block, TEB_OFF + TEB_ACTIVATION_CONTEXT_STACK_OFFSET,
+        base + TEB_OFF as u64 + TEB_ACTIVATION_CONTEXT_STACK_INLINE as u64);
     put_u32(&mut block, TEB_OFF + TEB_CURRENT_LOCALE_OFF, 0x409);
     // The fixed TEB block contains all 64 native TLS slots inline.  The
     // expansion pointer stays NULL until a slot >= 64 is requested, matching
@@ -427,6 +433,8 @@ mod tests {
         assert_eq!(read64(TEB_OFF + 0x30), base as u64 + TEB_OFF as u64);
         assert_eq!(read64(TEB_OFF + 0x60), base as u64);
         assert_eq!(read64(TEB_OFF + 0x58), base as u64 + TLS_OFF as u64);
+        assert_eq!(read64(TEB_OFF + TEB_ACTIVATION_CONTEXT_STACK_OFFSET),
+            base as u64 + TEB_OFF as u64 + TEB_ACTIVATION_CONTEXT_STACK_INLINE as u64);
         assert_eq!(read64(TEB_OFF + TEB_SYSCALL_FRAME_OFFSET), base as u64 + PROCESS_SYSCALL_FRAME_OFF as u64);
         assert_eq!(read16(PARAM_OFF + 0x60), ("C:\\Windows\\notepad.exe".encode_utf16().count() * 2) as u16);
         assert_eq!(read16(PARAM_OFF + 0x70), ("notepad.exe a.txt".encode_utf16().count() * 2) as u16);
@@ -511,6 +519,8 @@ mod tests {
         assert_eq!(u32::from_le_bytes(data[0x40..0x44].try_into().unwrap()), 7);
         assert_eq!(u32::from_le_bytes(data[0x48..0x4c].try_into().unwrap()), 8);
         assert_eq!(u64::from_le_bytes(data[0x58..0x60].try_into().unwrap()), first.as_u64() + 0x180);
+        assert_eq!(u64::from_le_bytes(data[TEB_ACTIVATION_CONTEXT_STACK_OFFSET..TEB_ACTIVATION_CONTEXT_STACK_OFFSET + 8].try_into().unwrap()),
+            first.as_u64() + TEB_ACTIVATION_CONTEXT_STACK_INLINE as u64);
         assert_eq!(u32::from_le_bytes(data[TEB_CURRENT_LOCALE_OFF..TEB_CURRENT_LOCALE_OFF + 4].try_into().unwrap()), 0x409);
         assert!(data[TEB_TLS_SLOTS_OFF..TEB_TLS_SLOTS_OFF + TEB_TLS_SLOTS * 8].iter().all(|byte| *byte == 0));
         assert_eq!(u64::from_le_bytes(data[TEB_TLS_EXPANSION_SLOTS_OFF..TEB_TLS_EXPANSION_SLOTS_OFF + 8].try_into().unwrap()), 0);

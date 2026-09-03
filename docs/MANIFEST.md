@@ -265,6 +265,7 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `31fv-windows-nt-unwind-dispatch.md` | FROZEN | 2026-09-03 | `31fp`,`31fu`,`31ft`,`31h`,`52`,`53` |
 | `31fw-windows-nt-load-so-dll.md` | FROZEN | 2026-09-03 | `31h`,`31fp`,`31fv`,`52`,`53` |
 | `31fx-windows-nt-dll-init-result.md` | FROZEN | 2026-09-03 | `31fw`,`31h`,`52`,`53` |
+| `31fz-windows-nt-activation-stack.md` | FROZEN | 2026-09-03 | `01`,`02`,`13`,`31b`,`31f`,`31ff`,`52`,`53` |
 
 ## Deleted
 
