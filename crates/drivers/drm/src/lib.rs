@@ -10,7 +10,8 @@ mod ids;
 mod registry;
 
 pub use core_api::{
-    fixed_mode_dimensions_valid, mode_from_rect, ConnectorInfo, CrtcInfo, DrmDriver, EncoderInfo, Error, KResult, PlaneInfo,
+    dpi_from_geometry, fixed_mode_dimensions_valid, mode_from_rect, ConnectorInfo, CrtcInfo, DrmDriver, EncoderInfo, Error, KResult, PlaneInfo,
+    DEFAULT_SCREEN_DPI,
     VirtgpuCaps,
 };
 pub use ids::{
@@ -21,7 +22,7 @@ pub use ids::{
 pub use registry::{
     advertised_cap, alloc_handle, card, card_count, cards, default_cap, format_depth,
     is_master_only,
-    primary_card, register, register_with_parent, unregister,
+    primary_card, primary_system_dpi, register, register_with_parent, unregister,
 };
 
 #[cfg(test)]

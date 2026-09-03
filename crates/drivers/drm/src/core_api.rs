@@ -127,6 +127,19 @@ pub fn mode_from_rect(w: u32, h: u32) -> DrmModeModeinfo {
 
 /// Refresh rate a synthesised mode carries when none was asserted.
 pub const DEFAULT_REFRESH_HZ: u32 = 60;
+/// Windows' default screen density when the display does not publish a
+/// physical size. # C: O(1)
+pub const DEFAULT_SCREEN_DPI: u32 = 96;
+
+/// Derive the system density from one display's pixel and physical geometry.
+/// A missing physical dimension cannot produce a measurement and therefore
+/// uses the platform default rather than dividing by zero. # C: O(1)
+pub fn dpi_from_geometry(width: u32, height: u32, mm_width: u32, mm_height: u32) -> u32 {
+    if width == 0 || height == 0 || mm_width == 0 || mm_height == 0 { return DEFAULT_SCREEN_DPI; }
+    let x = width as u64 * 254 / (mm_width as u64 * 10);
+    let y = height as u64 * 254 / (mm_height as u64 * 10);
+    ((x + y) / 2).clamp(1, u32::MAX as u64) as u32
+}
 
 /// Validate dimensions against a fixed scanout geometry. Timing values are
 /// deliberately not compared: fixed-output KMS validation constrains the

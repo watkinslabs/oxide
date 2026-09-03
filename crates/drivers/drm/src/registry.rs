@@ -49,6 +49,16 @@ pub fn primary_card() -> Option<Arc<dyn DrmDriver>> {
     CARDS.lock().iter().find_map(|slot| slot.as_ref().cloned())
 }
 
+/// Return the primary display's measured system density for Win32 clients.
+/// The DRM driver owns display geometry; callers must not maintain a second
+/// resolution or physical-size table. # C: O(1)
+pub fn primary_system_dpi() -> u32 {
+    let Some(card) = primary_card() else { return crate::DEFAULT_SCREEN_DPI; };
+    let mode = card.mode_for(0);
+    let Some(info) = card.connector_info(0) else { return crate::DEFAULT_SCREEN_DPI; };
+    crate::dpi_from_geometry(mode.hdisplay as u32, mode.vdisplay as u32, info.mm_width, info.mm_height)
+}
+
 pub fn cards() -> Vec<Arc<dyn DrmDriver>> {
     CARDS.lock().iter().filter_map(|slot| slot.as_ref().cloned()).collect()
 }
