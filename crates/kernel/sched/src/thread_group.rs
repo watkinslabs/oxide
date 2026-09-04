@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
-use sync::{Spinlock, TaskList as TaskListClass};
+use sync::{Spinlock, TaskList as TaskListClass, ThreadGroupSched};
 pub mod child_acct;
 mod exec;
 pub mod group_acct;
@@ -150,6 +150,7 @@ pub struct ThreadGroup {
     #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
     exec_wait: crate::live::WaitList,
     state: Spinlock<ThreadGroupState, TaskListClass>,
+    nt_sched: Spinlock<crate::nt::NtProcessState, ThreadGroupSched>,
     /// Linux `signal_struct::group_exit_code` and its `SIGNAL_GROUP_EXIT`
     /// flag fused into one word: the status EVERY thread of this group
     /// reports, in `crate::exit::status`' internal encoding, whatever signal
@@ -285,6 +286,7 @@ impl ThreadGroup {
             #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
             exec_wait: crate::live::WaitList::new(),
             state: Spinlock::new(ThreadGroupState { live: 1, pending_leader: None }),
+            nt_sched: Spinlock::new(crate::nt::NtProcessState::new()),
             group_exit_code: AtomicI32::new(GROUP_EXIT_UNSET),
             group_stop_count: AtomicU32::new(0),
             stop_stopped: AtomicBool::new(false),
@@ -302,6 +304,16 @@ impl ThreadGroup {
     }
     /// Access this process's native object table. # C: O(1)
     pub fn nt_handles(&self) -> &crate::nt_object::NtHandleTable { &self.nt_handles }
+    pub(crate) fn with_nt_sched<R>(&self,
+        f: impl FnOnce(&mut crate::nt::NtProcessState) -> R) -> R {
+        f(&mut self.nt_sched.lock())
+    }
+    pub fn nt_sched_config(&self) -> crate::nt::NtProcessSchedConfig {
+        self.nt_sched.lock().config
+    }
+    pub(crate) fn register_nt_sched_member(&self, task: &Arc<Task>) {
+        self.nt_sched.lock().register(task);
+    }
     /// Return the runtime-owned PE catalog for this NT process, if installed.
     /// # C: O(1)
     pub fn nt_module_catalog(&self) -> Option<Arc<pe::catalog::ModuleCatalog>> {

@@ -19,6 +19,7 @@ pub static LOOKUPS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU6
 pub fn insert(task: &Arc<Task>) {
     task.configure_initial_pid_mapping();
     task.pid.attach(task);
+    task.thread_group.register_nt_sched_member(task);
     let tid = task.tid;
     let weak = Arc::downgrade(task);
     // The secondary buckets are ready before the authoritative tid entry is

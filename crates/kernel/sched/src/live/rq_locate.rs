@@ -273,6 +273,8 @@ fn queue_key_changed(old: crate::SchedClass, old_deadline: u64,
                      new_group_id: u64, new_group_shares: u32) -> bool {
     match (old, new) {
         (crate::SchedClass::Rt { prio: a, .. }, crate::SchedClass::Rt { prio: b, .. }) => a != b,
+        (crate::SchedClass::NtFixed { level: a, .. },
+         crate::SchedClass::NtFixed { level: b, .. }) => a != b,
         (crate::SchedClass::Normal { weight: a }, crate::SchedClass::Normal { weight: b }) =>
             a != b || old_group_id != new_group_id || old_group_shares != new_group_shares,
         (crate::SchedClass::Deadline, crate::SchedClass::Deadline) => old_deadline != new_deadline,
@@ -282,6 +284,10 @@ fn queue_key_changed(old: crate::SchedClass, old_deadline: u64,
 }
 
 impl SchedChange<'_> {
+    pub(crate) fn has_nt_peer_at(&self, level: u8) -> bool {
+        self.lock.inner.has_nt_peer_at(level)
+    }
+
     fn should_preempt(&self, changed: &Task) -> bool {
         let current = self.lock.rq.current.load(Ordering::Acquire);
         if current.is_null() || current.cast_const() == core::ptr::from_ref(changed) { return false; }

@@ -43,6 +43,7 @@ pub struct PrioritySnapshot {
     pub has_donor: bool,
     pub sched_class: SchedClassId,
     pub load: LoadWeight,
+    pub nt: crate::nt::NtSchedSnapshot,
 }
 
 /// Validated Linux utilization-clamp request owned by one task.
@@ -90,6 +91,7 @@ pub(crate) struct TaskSched {
     class: AtomicU8,
     pub(crate) se: SchedEntityState,
     pub(crate) rt: SchedRtEntityState,
+    pub(crate) nt: crate::nt::NtEntityState,
     pub(crate) dl: crate::deadline::DlEntity,
     uclamp_min: AtomicU32,
     uclamp_max: AtomicU32,
@@ -113,6 +115,11 @@ impl TaskSched {
 
     /// Build a complete task scheduler state from the legacy construction descriptor. # C: O(NICE_WIDTH)
     pub(crate) fn new(class: SchedClass, rr_ticks: u32, uclamp_max: u32) -> Self {
+        let nt_initial = match class {
+            SchedClass::NtFixed { level, quantum } => (level, quantum),
+            _ => (crate::nt::NtPriorityClass::Normal.base(),
+                crate::nt::NtQuantumPolicy::VariableShort.quantum(0, false) as u32),
+        };
         let (static_prio, normal_prio, class_id, policy, rt_priority, load) = match class {
             SchedClass::Deadline => (SchedPriority::Deadline, SchedClassId::Deadline,
                 TaskPolicy::Deadline, 0,
@@ -151,6 +158,7 @@ impl TaskSched {
             class: AtomicU8::new(class_id as u8),
             se: SchedEntityState::new(SchedEntity::new(load)),
             rt: SchedRtEntityState::new(SchedRtEntity::new(rr_ticks)),
+            nt: crate::nt::NtEntityState::new(nt_initial.0, nt_initial.1),
             dl: crate::deadline::DlEntity::new(), uclamp_min: AtomicU32::new(0),
             uclamp_max: AtomicU32::new(uclamp_max), uclamp_user_defined: AtomicU8::new(0),
             group_shares: AtomicU32::new(1024),
@@ -174,6 +182,7 @@ impl TaskSched {
                 sched_class: SchedClassId::from_raw(self.class.load(Ordering::Relaxed))
                     .expect("published scheduler class must be valid"),
                 load: self.se.load.snapshot(),
+                nt: self.nt.load(),
             };
             fence(Ordering::Acquire);
             if self.publish_sequence.load(Ordering::Relaxed) == before { return state; }
@@ -193,7 +202,7 @@ impl TaskSched {
             }
             SchedClassId::NtFixed => SchedClass::NtFixed {
                 level: state.prio.nt_level().expect("NT class requires NT priority"),
-                quantum: self.rt.time_slice.load(Ordering::Acquire),
+                quantum: state.nt.quantum_remaining as u32,
             },
             SchedClassId::Fair => SchedClass::Normal {
                 weight: (state.load.weight >> SCHED_FIXEDPOINT_SHIFT) as u32 },
@@ -210,7 +219,7 @@ impl TaskSched {
                 policy: if state.policy == TaskPolicy::Rr { SchedPolicy::Rr }
                 else { SchedPolicy::Fifo } },
             SchedPriority::NtFixed(p) => SchedClass::NtFixed {
-                level: p.level(), quantum: self.rt.time_slice.load(Ordering::Acquire),
+                level: p.level(), quantum: state.nt.quantum_remaining as u32,
             },
             SchedPriority::Fair(_) => SchedClass::Normal {
                 weight: (state.load.weight >> SCHED_FIXEDPOINT_SHIFT) as u32 },
@@ -419,7 +428,25 @@ impl TaskSched {
         self.rt_priority.store(rt_priority, Ordering::Relaxed);
         self.policy.store(policy as u8, Ordering::Relaxed);
         self.normal_prio.store(normal.raw(), Ordering::Relaxed);
+        if let SchedClass::NtFixed { level, quantum } = class {
+            self.nt.store(crate::nt::NtSchedSnapshot::new(level, quantum));
+        }
         self.store_effective_from_normal(normal, normal_id);
+        self.end_publish();
+    }
+
+    pub(crate) fn nt_snapshot(&self) -> crate::nt::NtSchedSnapshot {
+        self.priority_snapshot().nt
+    }
+
+    pub(crate) fn store_nt_unlocked(&self, state: crate::nt::NtSchedSnapshot) {
+        self.begin_publish();
+        self.nt.store(state);
+        let normal = SchedPriority::nt_fixed(state.dynamic_priority)
+            .expect("native dynamic priority must be 1 through 31");
+        self.normal_prio.store(normal.raw(), Ordering::Relaxed);
+        self.policy.store(TaskPolicy::NtFixed as u8, Ordering::Relaxed);
+        self.store_effective_from_normal(normal, SchedClassId::NtFixed);
         self.end_publish();
     }
     fn store_effective_from_normal(&self, normal: SchedPriority, normal_id: SchedClassId) {

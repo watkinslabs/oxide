@@ -139,6 +139,10 @@ decl_lock_class! {
     // sits immediately above TaskList; readers release it before pinning a
     // candidate task's mm.
     MmTaskIndex  = 101,
+    // Native process scheduler configuration and its stable member set.
+    // Process-wide priority changes retain this while walking one member at a
+    // time through RtMutexWait -> TaskPi -> Runqueue.
+    ThreadGroupSched = 103,
     // PI futex/rtmutex waiter tree. Held while taking the owner's TaskPi then
     // runqueue lock so top-donor selection and publication are one transaction.
     // Wakeups are queued and performed only after this lock is released.

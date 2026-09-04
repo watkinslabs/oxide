@@ -127,6 +127,11 @@ pub use cmdline::argv_to_cmdline;
 pub use registry::kernel_stack_bytes_snapshot;
 pub use runqueue::RunqueueInner;
 pub use sched_enc::{SchedUpdate, SchedUpdateResult};
+pub use nt::{apply_nt_process, apply_nt_thread, class_relative_priority,
+    initialize_current_process, initialize_new_thread,
+    NtAdjustReason, NtPriorityClass, NtProcessSchedConfig, NtProcessSchedRequest,
+    NtQuantumPolicy, NtRelativePriority, NtSchedError, NtSchedSnapshot,
+    NtThreadSchedRequest};
 pub use task::{cap, securebits, ArchFpuBuf, Creds, FairPriority, GroupList, LoadWeight,
     NtFixedPriority, PosixRtPriority, PosixTimer, PrioritySnapshot, SaHandler, SchedUclamp,
     SchedClassId, SchedEntity, SchedPriority, SchedRtEntity, TaskPolicy,

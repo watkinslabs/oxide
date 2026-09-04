@@ -57,6 +57,8 @@ impl RunqueueInner {
         self.dl.nr_running() + self.rt.nr_running() + self.nt.nr_running() + self.cfs.nr_running()
     }
 
+    pub(crate) fn has_nt_peer_at(&self, level: u8) -> bool { self.nt.has_peer_at(level) }
+
     /// Aggregate runnable entity utilization, including the task currently
     /// executing on this CPU. The idle task contributes zero.
     pub fn util_avg(&self, current: &Task) -> u32 {
