@@ -24,6 +24,7 @@ FROZEN 2026-08-31. Dep:`01`,`02`,`06`,`13`,`31d`,`52`,`53`. Provides: process-lo
 | process, thread | `sched` |
 | file, directory | `vfs` adapter |
 | section | `exec`/VMM adapter |
+| symbolic link | `sched` object namespace |
 | event, semaphore, mutant, timer | native synchronization layer |
 | completion port | I/O layer |
 | token | security layer |
@@ -49,3 +50,7 @@ FROZEN 2026-08-31. Dep:`01`,`02`,`06`,`13`,`31d`,`52`,`53`. Provides: process-lo
   optional source closing, and preserves the shared object reference.
 - directory handles retain the VFS readdir cursor while NT name records are
   packed into the caller's buffer.
+- native object-directory traversal follows symbolic-link objects through the
+  same case-insensitive namespace, retains suffix components, and rejects
+  cycles or more than 32 substitutions; explicit symbolic-link opens retain
+  the link object instead of following it.

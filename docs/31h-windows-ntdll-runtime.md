@@ -96,8 +96,8 @@ registry.
 
 Unnamed objects are created with Wine’s requested access mask; mutex ownership
 uses the current NT thread and semaphore release wakes the native multiple-wait
-queue. Variable object-attribute data is a separate packet shape and is
-rejected until its native object-namespace translation is wired.
+queue. Named object attributes use the same canonical object-directory resolver,
+including native symbolic-link traversal and bounded cycle rejection.
 
 ## 8 Named server objects
 
