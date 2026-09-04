@@ -27,7 +27,9 @@ const PROCESS_AFFINITY_MASK_CLASS: u32 = 21;
 const PROCESS_WOW64_INFORMATION_CLASS: u32 = 26;
 const PROCESS_IMAGE_FILE_NAME_CLASS: u32 = 27;
 const PROCESS_IMAGE_FILE_NAME_WIN32_CLASS: u32 = 43;
+const PROCESS_HANDLE_COUNT_CLASS: u32 = 51;
 const PROCESS_POINTER_BYTES: usize = 8;
+const PROCESS_HANDLE_COUNT_BYTES: usize = 4;
 const CURRENT_PROCESS: u64 = u64::MAX;
 const CURRENT_THREAD: u64 = u64::MAX - 1;
 const THREAD_QUERY_INFORMATION: u32 = 0x0000_0040;
@@ -148,10 +150,13 @@ fn query_process(process: u64, class: u32, info: syscall::UserPtr<u8>, length: u
     let required = match class {
         PROCESS_BASIC_INFORMATION_CLASS => PROCESS_BASIC_INFORMATION_BYTES,
         PROCESS_AFFINITY_MASK_CLASS | PROCESS_WOW64_INFORMATION_CLASS => PROCESS_POINTER_BYTES,
+        PROCESS_HANDLE_COUNT_CLASS => PROCESS_HANDLE_COUNT_BYTES,
         _ => return Some(STATUS_INVALID_INFO_CLASS),
     };
     if (class == PROCESS_BASIC_INFORMATION_CLASS && (length as usize) < required)
-        || (class != PROCESS_BASIC_INFORMATION_CLASS && length as usize != required) {
+        || (class != PROCESS_BASIC_INFORMATION_CLASS && class != PROCESS_HANDLE_COUNT_CLASS
+            && (length as usize) != required)
+        || (class == PROCESS_HANDLE_COUNT_CLASS && (length as usize) < required) {
         return Some(STATUS_INFO_LENGTH_MISMATCH);
     }
     if info.as_u64() == 0 { return Some(STATUS_INVALID_PARAMETER); }
@@ -163,6 +168,17 @@ fn query_process(process: u64, class: u32, info: syscall::UserPtr<u8>, length: u
         let mask = target.cpus_allowed.load(core::sync::atomic::Ordering::Acquire).low_word();
         if uaccess::put_user_u64(info.as_u64(), mask).is_err() { return Some(STATUS_INVALID_PARAMETER); }
         return write_process_return_length(return_length, required);
+    }
+    if class == PROCESS_HANDLE_COUNT_CLASS {
+        let table = target.thread_group.nt_handles();
+        let handle_count = table.live_handle_count();
+        if uaccess::put_user_u32(info.as_u64(), handle_count).is_err() { return Some(STATUS_INVALID_PARAMETER); }
+        let status = if (length as usize) > required { STATUS_INFO_LENGTH_MISMATCH } else { STATUS_SUCCESS };
+        if status == STATUS_SUCCESS { return write_process_return_length(return_length, required); }
+        if let Some(return_length) = return_length {
+            if uaccess::put_user_u32(return_length.as_u64(), required as u32).is_err() { return Some(STATUS_INVALID_PARAMETER); }
+        }
+        return Some(status);
     }
     let mut out = [0u8; PROCESS_BASIC_INFORMATION_BYTES];
     out[8..16].copy_from_slice(&target.nt_peb().to_ne_bytes());

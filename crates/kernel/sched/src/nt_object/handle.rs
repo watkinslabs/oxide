@@ -253,6 +253,12 @@ impl NtHandleTable {
         self.get(handle, 0).is_some()
     }
 
+    /// Return the number of live handles in this process table from one
+    /// lock-consistent snapshot. # C: O(N)
+    pub fn live_handle_count(&self) -> u32 {
+        self.entries.lock().iter().filter(|entry| entry.object.is_some()).count() as u32
+    }
+
     /// Return the rights granted to a live handle without resolving its object.
     /// # C: O(1)
     pub fn access(&self, handle: NtHandle) -> Option<u32> {
