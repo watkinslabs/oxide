@@ -1,6 +1,6 @@
 # Known issues
 
-**Live issue count: 296** — 293 `OPEN`, 3 `IN-PROGRESS`.
+**Live issue count: 295** — 293 `OPEN`, 2 `IN-PROGRESS`.
 
 | Id | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|---|
@@ -299,7 +299,6 @@
 | KI-0319 | OPEN | INFRA | high | feature-gate is red on main itself: a debug-feature block in syscalls dispatch/core.rs uses return_task outside its scope (E0425 x2 at lines 264/272; binding declared at 199 in a different scope), so make feature-gate-x86 fails and every push needs SKIP_FEATURE_GATE=1. | C320 push at origin/main e01678b2b: make feature-gate-x86 -> E0425 in crates/kernel/syscalls/src/dispatch/core.rs; branch touches no crate. Plain xtask kernel --check is green, so the break is only in the debug-feature build. | unowned |
 | KI-0324 | OPEN | INFRA | high | Spec manifest omits the tracked 31fy named-pipe document on pristine main | cargo run --quiet -p spec-lint -- manifest on origin/main 6e0b4b2b reports docs/31fy-windows-nt-named-pipe.md manifest/missing-row; the file also has a noncanonical IN PROGRESS status and must be repaired by its owning Windows lane. | unowned |
 | KI-0325 | OPEN | INFRA | high | Spec xref cannot resolve the existing 52 to 64 section reference on pristine main | cargo run --quiet -p spec-lint -- xref on origin/main 6e0b4b2b reports docs/52-repo-structure-and-ownership.md:155 64§10 -> doc 64 not found; R135 does not add this reference. | unowned |
-| KI-0326 | IN-PROGRESS B3323-scheduler-transaction-regressions | COVERAGE | high | [CLAIMED B3323-scheduler-transaction-regressions 2026-09-04] Queued scheduler transactions lack deterministic rollback, post-migration ownership, group-key refresh, and PI rekey/preemption regression coverage | origin/main 98af43a51: rq_locate tests cover successful class changes and migration lock retry separately, but no queued stale transaction, unwind restoration, group-shares cache refresh, post-move policy rekey, or PI waiter promotion test observes the real destination class queues plus current need_resched. | B3323-scheduler-transaction-regressions |
 
 ## Ext4 master program
 
