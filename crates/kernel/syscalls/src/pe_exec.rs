@@ -182,8 +182,8 @@ pub fn prepare_pe_process(cur: &sched::Task, path: &[u8], blob: &[u8], command_l
         command_line: command_line.unwrap_or(path), environment, process_id, thread_id,
     };
     let process = match catalog.map_or_else(
-        || elf_load::pe_loader::load_pe_process_with_resolver_and_modules_and_params(blob, &as_, &input, stack_top, &*runtime, &[runtime_module], params),
-        |catalog| elf_load::pe_loader::load_pe_process_with_catalog_and_params(blob, &as_, &input, stack_top, &runtime, catalog, params),
+        || elf_load::pe_loader::load_pe_process_with_resolver_and_modules_and_params_with_stack_bounds(blob, &as_, &input, stack.as_u64(), stack_top, &*runtime, &[runtime_module], params),
+        |catalog| elf_load::pe_loader::load_pe_process_with_catalog_and_params_with_stack_bounds(blob, &as_, &input, stack.as_u64(), stack_top, &runtime, catalog, params),
     ) {
         Ok(process) => process,
         Err(_) => {

@@ -1007,10 +1007,16 @@ pub fn load_pe_process_with_catalog_and_params(blob: &[u8], as_: &AddressSpace,
     input: &process_env::EnvironmentInput<'_>, stack_top: u64, runtime: &NtRuntime,
     catalog: &pe::catalog::ModuleCatalog,
     params: Option<&process_env::NtProcessParameters<'_>>) -> Result<PeProcess, pe::Error> {
-    load_pe_process_with_catalog_with_fallback(blob, as_, input, stack_top, runtime, runtime, catalog, params)
+    load_pe_process_with_catalog_with_stack_bounds(blob, as_, input, 0, stack_top, runtime, runtime, catalog, params)
 }
-fn load_pe_process_with_catalog_with_fallback<R: ImportResolver>(blob: &[u8], as_: &AddressSpace,
-    input: &process_env::EnvironmentInput<'_>, stack_top: u64, runtime: &NtRuntime, fallback: &R,
+pub fn load_pe_process_with_catalog_and_params_with_stack_bounds(blob: &[u8], as_: &AddressSpace,
+    input: &process_env::EnvironmentInput<'_>, stack_base: u64, stack_top: u64, runtime: &NtRuntime,
+    catalog: &pe::catalog::ModuleCatalog,
+    params: Option<&process_env::NtProcessParameters<'_>>) -> Result<PeProcess, pe::Error> {
+    load_pe_process_with_catalog_with_stack_bounds(blob, as_, input, stack_base, stack_top, runtime, runtime, catalog, params)
+}
+fn load_pe_process_with_catalog_with_stack_bounds<R: ImportResolver>(blob: &[u8], as_: &AddressSpace,
+    input: &process_env::EnvironmentInput<'_>, stack_base: u64, stack_top: u64, runtime: &NtRuntime, fallback: &R,
     catalog: &pe::catalog::ModuleCatalog, params: Option<&process_env::NtProcessParameters<'_>>) -> Result<PeProcess, pe::Error> {
     let source = catalog;
     let owned = pe::discover_owned_modules_with_builtins(input.image_path.as_bytes(), blob, &source,
@@ -1040,8 +1046,8 @@ fn load_pe_process_with_catalog_with_fallback<R: ImportResolver>(blob: &[u8], as
         });
     }
     let environment = match params.map_or_else(
-        || process_env::build_with_modules_and_stack(&environment_input, &modules, 0, stack_top, as_),
-        |params| process_env::build_with_modules_and_params_and_stack(&environment_input, &modules, params, 0, stack_top, as_)) {
+        || process_env::build_with_modules_and_stack(&environment_input, &modules, stack_base, stack_top, as_),
+        |params| process_env::build_with_modules_and_params_and_stack(&environment_input, &modules, params, stack_base, stack_top, as_)) {
         Ok(environment) => environment,
         Err(error) => {
             unmap_loaded_modules(as_, &loaded);
@@ -1083,6 +1089,13 @@ fn load_pe_process_with_catalog_with_fallback<R: ImportResolver>(blob: &[u8], as
     }
     Ok(PeProcess { image: loaded[0].image, environment, entry, initializers, initializer_trampoline })
 }
+
+#[cfg(test)]
+fn load_pe_process_with_catalog_with_fallback<R: ImportResolver>(blob: &[u8], as_: &AddressSpace,
+    input: &process_env::EnvironmentInput<'_>, stack_top: u64, runtime: &NtRuntime, fallback: &R,
+    catalog: &pe::catalog::ModuleCatalog, params: Option<&process_env::NtProcessParameters<'_>>) -> Result<PeProcess, pe::Error> {
+    load_pe_process_with_catalog_with_stack_bounds(blob, as_, input, 0, stack_top, runtime, fallback, catalog, params)
+}
 fn unmap_loaded_modules(as_: &AddressSpace, loaded: &[PeLoadedModule<'_>]) {
     for module in loaded {
         if let Some(base) = UserVirtAddr::new(module.image.base) {
@@ -1097,6 +1110,11 @@ pub fn load_pe_process_with_resolver_and_modules<R: ImportResolver>(blob: &[u8],
 pub fn load_pe_process_with_resolver_and_modules_and_params<R: ImportResolver>(blob: &[u8], as_: &AddressSpace,
     input: &process_env::EnvironmentInput<'_>, stack_top: u64, resolver: &R,
     additional_modules: &[process_env::NtModuleInput<'_>], params: Option<&process_env::NtProcessParameters<'_>>) -> Result<PeProcess, pe::Error> {
+    load_pe_process_with_resolver_and_modules_and_params_with_stack_bounds(blob, as_, input, 0, stack_top, resolver, additional_modules, params)
+}
+pub fn load_pe_process_with_resolver_and_modules_and_params_with_stack_bounds<R: ImportResolver>(blob: &[u8], as_: &AddressSpace,
+    input: &process_env::EnvironmentInput<'_>, stack_base: u64, stack_top: u64, resolver: &R,
+    additional_modules: &[process_env::NtModuleInput<'_>], params: Option<&process_env::NtProcessParameters<'_>>) -> Result<PeProcess, pe::Error> {
     let image = load_pe_image_with_resolver(blob, as_, resolver)?;
     // PEB image metadata belongs to the mapped image, not to caller-supplied
     // bookkeeping. Keep the other process strings/IDs from the caller while
@@ -1108,8 +1126,8 @@ pub fn load_pe_process_with_resolver_and_modules_and_params<R: ImportResolver>(b
     let mut modules = alloc::vec![process_env::NtModuleInput { base: image.base, entry: image.entry.as_u64(), size: image.size, full_name: input.image_path, base_name: root_name }];
     modules.extend_from_slice(additional_modules);
     let environment = match params.map_or_else(
-        || process_env::build_with_modules_and_stack(&environment_input, &modules, 0, stack_top, as_),
-        |params| process_env::build_with_modules_and_params_and_stack(&environment_input, &modules, params, 0, stack_top, as_)) {
+        || process_env::build_with_modules_and_stack(&environment_input, &modules, stack_base, stack_top, as_),
+        |params| process_env::build_with_modules_and_params_and_stack(&environment_input, &modules, params, stack_base, stack_top, as_)) {
         Ok(environment) => environment,
         Err(error) => { let _ = as_.munmap(UserVirtAddr::new(image.base).ok_or(pe::Error::Einval)?, image.size as usize); return Err(error); }
     };

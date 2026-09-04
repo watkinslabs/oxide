@@ -541,16 +541,25 @@
         blob[0x421..0x423].copy_from_slice(&[0x31, 0xd2]);
         blob[0x423..0x425].copy_from_slice(&[0x0f, 0x05]);
         let as_ = AddressSpace::new(0x20_000).unwrap();
-        let process = load_pe_process(&blob, &as_, &process_env::EnvironmentInput {
+        let stack = as_.mmap(None, 0x8000, VmaProt::READ | VmaProt::WRITE,
+            VmaFlags::PRIVATE, VmaBacking::Anonymous, false).unwrap();
+        let stack_top = stack.as_u64() + 0x8000;
+        let process = load_pe_process_with_resolver_and_modules_and_params_with_stack_bounds(&blob, &as_, &process_env::EnvironmentInput {
             image_base: 0, image_size: 0, image_path: "C:\\hello.exe", command_line: "hello.exe",
             environment: &[], process_id: 1, thread_id: 2,
-        }, 0x6000_0000).unwrap();
+        }, stack.as_u64(), stack_top, &RejectImports, &[], None).unwrap();
         let vma = as_.find_vma(process.image.entry).unwrap();
         let data = match vma.backing { VmaBacking::KernelBytes { data, .. } => data, _ => panic!("Hello PE text must be kernel-backed") };
         assert_eq!(&data[0x1010..0x1025], &blob[0x410..0x425]);
         assert_eq!(process.entry.rip, process.image.entry);
         assert_eq!(process.entry.personality, ExecutionPersonality::Nt);
         assert_eq!(process.entry.rsp.as_u64() % 16, 0);
+        let env_vma = as_.find_vma(process.environment.base).unwrap();
+        let data = match env_vma.backing { VmaBacking::KernelBytes { data, .. } => data, _ => panic!("PE environment must be kernel-backed") };
+        let read64 = |offset: usize| u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
+        assert_eq!(read64(0x108), stack_top);
+        assert_eq!(read64(0x110), stack.as_u64());
+        assert_eq!(read64(0x1578), stack.as_u64());
     }
 
     #[test]
