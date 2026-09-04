@@ -239,6 +239,33 @@ fn rejects_exception_tables_that_are_not_sorted_or_have_truncated_unwind_data() 
 }
 
 #[test]
+fn follows_x64_chained_runtime_function_and_rejects_a_chain_cycle() {
+    let mut b = image();
+    let dir = OPT + 112 + IMAGE_DIRECTORY_ENTRY_EXCEPTION * 8;
+    b[dir..dir + 4].copy_from_slice(&0x1100u32.to_le_bytes()); b[dir + 4..dir + 8].copy_from_slice(&12u32.to_le_bytes());
+    b[0x500..0x50c].copy_from_slice(&[0x00, 0x10, 0, 0, 0x60, 0x10, 0, 0, 0x81, 0x11, 0, 0]);
+    b[0x580..0x58c].copy_from_slice(&[0x00, 0x10, 0, 0, 0x60, 0x10, 0, 0, 0xf0, 0x11, 0, 0]);
+    b[0x5f0..0x5f6].copy_from_slice(&[1, 2, 1, 0, 2, 0x22]);
+    b[0x5e0..0x5e4].copy_from_slice(&[0x21, 0, 0, 0]);
+    let parsed = parse(&b).unwrap(); let function = parsed.exception_function_for(0x1040).unwrap().unwrap();
+    assert_eq!(function.unwind_rva, 0x11f0);
+    assert_eq!(parsed.unwind_stack_allocation(function).unwrap(), 24);
+    let context = UnwindContext { regs: [0; 16], rip: 0x1040, rsp: 0x8000 };
+    let result = parsed.unwind_x64(Some(function), 0x1040, context, |address| if address == 0x8018 { Ok(0x2222) } else { Err(Error::Einval) }).unwrap();
+    assert_eq!(result.rip, 0x2222); assert_eq!(result.rsp, 0x8020);
+
+    let mut flagged = b.clone();
+    flagged[0x508..0x50c].copy_from_slice(&0x11e0u32.to_le_bytes());
+    flagged[0x5e0..0x5f0].copy_from_slice(&[0x21, 0, 0, 0, 0x00, 0x10, 0, 0, 0x60, 0x10, 0, 0, 0xf0, 0x11, 0, 0]);
+    let flagged = parse(&flagged).unwrap();
+    assert_eq!(flagged.unwind_stack_allocation(flagged.exception_function_for(0x1040).unwrap().unwrap()).unwrap(), 24);
+
+    let mut cyclic = b;
+    cyclic[0x580 + 8..0x580 + 12].copy_from_slice(&0x1181u32.to_le_bytes());
+    assert_eq!(parse(&cyclic).unwrap().exception_functions(), Err(Error::Einval));
+}
+
+#[test]
 fn unwinds_x64_saved_register_and_return_address_through_reader() {
     let mut b = image();
     let dir = OPT + 112 + IMAGE_DIRECTORY_ENTRY_EXCEPTION * 8;
