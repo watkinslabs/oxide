@@ -28,6 +28,16 @@ fn build_idle_task(cpu: u16) -> Arc<Task> {
     crate::task::dup::new_kthread_arc(cpu as u32 * 0x1_0000, "idle", SchedClass::Idle)
 }
 
+/// Build and publish the large runqueue value in its own boot-stack frame.
+/// # SAFETY: caller owns this CPU's uninitialized runqueue slot.
+/// # C: O(RT_PRIO_COUNT)
+#[inline(never)]
+unsafe fn build_and_install_runqueue(cpu: u16, idle: Arc<Task>) {
+    let rq = Runqueue::new(cpu, idle);
+    // SAFETY: forwarded from the caller; this is the first slot publication.
+    unsafe { install_global(rq); }
+}
+
 /// Install the per-CPU runqueue and its idle task. Must run before
 /// any `spawn_kernel_thread` / `schedule()`.
 /// # SAFETY: caller is the boot path; allocator up; single-CPU
@@ -44,9 +54,8 @@ pub unsafe fn install_default_runqueue() {
         { hal_aarch64::ArmCpuOps::current_cpu() as u16 }
     };
     let idle = build_idle_task(cpu);
-    let rq = Runqueue::new(cpu, idle);
     // SAFETY: per fn contract; first writer wins; we just confirmed `global().is_none()`.
-    unsafe { install_global(rq); }
+    unsafe { build_and_install_runqueue(cpu, idle); }
     // SAFETY: install_default_runqueue is the per-CPU bring-up path; preempt_enable hook is read at every decrement-to-zero with appropriate barriers via the count atomic.
     unsafe { crate::preempt::set_schedule_hook(schedule_hook_trampoline); }
     #[cfg(feature = "debug-smp")]
