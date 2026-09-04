@@ -5,6 +5,7 @@ extern crate alloc;
 // - `cards`: card-number reservation, publication, teardown.
 // - `device`: /dev/snd and OSS inode/node routing, shared file ops.
 // - `format`: ALSA sample-format/rate math shared by every card driver.
+// - `windows`: bounded Windows endpoint geometry shared by compatibility adapters.
 // - `identity`: driver-supplied card identity strings in ALSA field widths.
 // - `elem`: driver-registered control (mixer/jack) element registry.
 // - `pcm_info`: the one writer for `struct snd_pcm_info`.
@@ -21,6 +22,7 @@ mod pcm_time;
 mod mmap;
 pub mod uapi;
 pub mod format;
+pub mod windows;
 pub mod beep;
 pub mod identity;
 pub mod elem;
