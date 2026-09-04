@@ -22,6 +22,9 @@ const CURRENT_PROCESS: u64 = u64::MAX;
 const CURRENT_THREAD: u64 = u64::MAX;
 const TOKEN_BASIC_INFORMATION: u32 = 0;
 const TOKEN_TYPE_INFORMATION: u32 = 8;
+const TOKEN_USER: u32 = 1;
+const TOKEN_GROUPS: u32 = 2;
+const TOKEN_PRIVILEGES: u32 = 3;
 const SE_PRIVILEGE_VALID_ATTRIBUTES: u32 = 0x8000_0007;
 const STATUS_ACCESS_VIOLATION: u64 = 0xc000_0005;
 const TOKEN_DUPLICATE: u32 = 0x0002;
@@ -72,11 +75,18 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
             let (bytes, required) = match class {
                 TOKEN_BASIC_INFORMATION => { let mut bytes = [0u8; 8]; bytes[..4].copy_from_slice(&token.uid().to_ne_bytes()); bytes[4..].copy_from_slice(&token.gid().to_ne_bytes()); (bytes.to_vec(), 8) }
                 TOKEN_TYPE_INFORMATION => (1u32.to_ne_bytes().to_vec(), 4),
+                TOKEN_USER | TOKEN_GROUPS | TOKEN_PRIVILEGES => {
+                    let base = info.map(|ptr| ptr.as_u64()).unwrap_or(0);
+                    let Some(bytes) = token.query_bytes(class, base) else { return Some(STATUS_INVALID_PARAMETER); };
+                    let required = bytes.len() as u32;
+                    (bytes, required)
+                }
                 _ => return Some(STATUS_INVALID_PARAMETER),
             };
-            if length < required { return Some(STATUS_INVALID_PARAMETER); }
-            if uaccess::copy_to_user(info.as_u64(), &bytes).is_err() { return Some(STATUS_INVALID_PARAMETER); }
             if let Some(return_length) = return_length { if uaccess::put_user_u32(return_length.as_u64(), required).is_err() { return Some(STATUS_INVALID_PARAMETER); } }
+            if length < required { return Some(STATUS_BUFFER_TOO_SMALL); }
+            let Some(info) = info else { return Some(STATUS_ACCESS_VIOLATION); };
+            if uaccess::copy_to_user(info.as_u64(), &bytes).is_err() { return Some(STATUS_ACCESS_VIOLATION); }
             Some(STATUS_SUCCESS)
         }
         _ => None,
@@ -264,7 +274,17 @@ fn allocate_luid(call: NtCall) -> u64 {
 fn insert_token(cur: &sched::Task, access: u32, output: syscall::UserPtr<u32>, table: &sched::nt_object::NtHandleTable) -> Option<u64> {
     let uid = cur.security.creds.euid.load(core::sync::atomic::Ordering::Acquire);
     let gid = cur.security.creds.egid.load(core::sync::atomic::Ordering::Acquire);
-    let Some(handle) = table.insert(table.new_token(uid, gid), access) else { return Some(STATUS_INVALID_PARAMETER); };
+    let object = table.new_token(uid, gid);
+    let Some(token) = object.token() else { return Some(STATUS_INVALID_PARAMETER); };
+    token.add_privilege(sched::nt_object::NtTokenPrivilege { luid: 23, attributes: 3 });
+    let mut groups = token.groups();
+    if let Some(extra) = cur.security.creds.group_list() {
+        groups.extend(extra.iter().copied().map(|gid| sched::nt_object::NtTokenGroup {
+            sid: sched::nt_object::sid_for_id(gid), attributes: 4,
+        }));
+    }
+    token.replace_groups(groups);
+    let Some(handle) = table.insert(object, access) else { return Some(STATUS_INVALID_PARAMETER); };
     if uaccess::put_user_u32(output.as_u64(), handle.raw()).is_err() { let _ = table.close(handle); return Some(STATUS_INVALID_PARAMETER); }
     Some(STATUS_SUCCESS)
 }

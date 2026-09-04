@@ -38,7 +38,7 @@ pub use object::{NtEvent, NtFileInfo, NtObject, NtObjectType, NtSection, NtSemap
 pub use pipe::{NtPipe, NtPipeConfig, NtPipeEndpoint, NtPipeIo, NtPipeListen, NtPipePeek,
     NtPipeSide, NtPipeWait};
 pub use timer::NtTimer;
-pub use token::{NtToken, NtTokenGroup, NtTokenPrivilege};
+pub use token::{sid_for_id, NtToken, NtTokenGroup, NtTokenPrivilege};
 
 #[cfg(test)]
 #[path = "nt_object/tests.rs"]
