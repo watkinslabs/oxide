@@ -19,6 +19,9 @@ const PROCESS_SYSCALL_FRAME_OFF: usize = 0x7000;
 pub const NT_DEBUG_INFO_OFFSET: u64 = 0x2f00;
 const PEB_OFF: usize = 0x000;
 const TEB_OFF: usize = 0x100;
+const TEB_STACK_BASE_OFF: usize = 0x08;
+const TEB_STACK_LIMIT_OFF: usize = 0x10;
+const TEB_DEALLOCATION_STACK_OFF: usize = 0x1478;
 const TLS_OFF: usize = 0x180;
 // TEB64 offsets from Wine's winternl.h.  Keep these named separately from
 // TLS_OFF: the latter is the ThreadLocalStoragePointer used by ntdll, while
@@ -142,16 +145,43 @@ pub fn build_thread_teb(process_id: u32, thread_id: u32, peb: u64, as_: &Address
 /// Build the initial process environment and publish the supplied loader list.
 /// # C: O(image_path + command_line + environment + N_modules)
 pub fn build_with_modules(input: &EnvironmentInput<'_>, modules: &[NtModuleInput<'_>], as_: &AddressSpace) -> Result<NtProcessEnvironment, Error> {
-    build_with_modules_and_params(input, modules, &NtProcessParameters {
+    build_with_modules_and_stack(input, modules, 0, 0, as_)
+}
+
+/// Build the initial environment while publishing the already allocated
+/// process stack in the TEB NT_TIB. Zero bounds are retained for callers that
+/// construct only an environment fixture; the PE exec path always supplies
+/// the real VMA bounds from its single address space.
+/// # C: O(image_path + command_line + environment + N_modules)
+pub fn build_with_modules_and_stack(input: &EnvironmentInput<'_>, modules: &[NtModuleInput<'_>], stack_base: u64, stack_top: u64, as_: &AddressSpace) -> Result<NtProcessEnvironment, Error> {
+    build_with_modules_and_params_and_stack(input, modules, &NtProcessParameters {
         current_directory: CURRENT_DIR, current_directory_handle: 0,
         console_handle: 0, standard_handles: [0; 3],
-    }, as_)
+    }, stack_base, stack_top, as_)
 }
 
 /// Build the initial environment with caller-supplied process parameters.
 /// # C: O(image_path + command_line + environment + N_modules)
 pub fn build_with_modules_and_params(input: &EnvironmentInput<'_>, modules: &[NtModuleInput<'_>], params: &NtProcessParameters<'_>, as_: &AddressSpace) -> Result<NtProcessEnvironment, Error> {
+    build_with_modules_and_params_and_stack(input, modules, params, 0, 0, as_)
+}
+
+/// Build process parameters and publish the canonical stack VMA in NT_TIB.
+/// # C: O(image_path + command_line + environment + N_modules)
+pub fn build_with_modules_and_params_and_stack(input: &EnvironmentInput<'_>, modules: &[NtModuleInput<'_>], params: &NtProcessParameters<'_>, stack_base: u64, stack_top: u64, as_: &AddressSpace) -> Result<NtProcessEnvironment, Error> {
     if modules.is_empty() || modules.len() > MAX_MODULES { return Err(Error::Einval); }
+    let (stack_base, stack_top) = if stack_base == 0 && stack_top != 0 {
+        let top = UserVirtAddr::new(stack_top).ok_or(Error::Einval)?;
+        let probe = UserVirtAddr::new(stack_top.checked_sub(1).ok_or(Error::Einval)?).ok_or(Error::Einval)?;
+        match as_.find_vma(probe) {
+            Some(vma) => {
+                if vma.end != top || !matches!(vma.backing, VmaBacking::Anonymous) { return Err(Error::Einval); }
+                (vma.start.as_u64(), stack_top)
+            },
+            None => (0, 0),
+        }
+    } else { (stack_base, stack_top) };
+    if (stack_base == 0) != (stack_top == 0) || stack_base > stack_top { return Err(Error::Einval); }
     let image_path = utf16(input.image_path)?;
     let command_line = utf16(input.command_line)?;
     let mut env = Vec::new();
@@ -205,6 +235,8 @@ pub fn build_with_modules_and_params(input: &EnvironmentInput<'_>, modules: &[Nt
     put_u32(&mut block, TLS_EXP_BITMAP_DESC_OFF, 1024);
     put_u64(&mut block, TLS_EXP_BITMAP_DESC_OFF + 8, base + PEB_OFF as u64 + 0x240);
     put_u64(&mut block, TEB_OFF + 0x30, base + TEB_OFF as u64);
+    put_u64(&mut block, TEB_OFF + TEB_STACK_BASE_OFF, stack_top);
+    put_u64(&mut block, TEB_OFF + TEB_STACK_LIMIT_OFF, stack_base);
     put_u64(&mut block, TEB_OFF + 0x60, base + PEB_OFF as u64);
     put_u32(&mut block, TEB_OFF + 0x40, input.process_id);
     put_u32(&mut block, TEB_OFF + 0x48, input.thread_id);
@@ -212,6 +244,7 @@ pub fn build_with_modules_and_params(input: &EnvironmentInput<'_>, modules: &[Nt
     put_u64(&mut block, TEB_OFF + TEB_ACTIVATION_CONTEXT_STACK_OFFSET,
         base + TEB_OFF as u64 + TEB_ACTIVATION_CONTEXT_STACK_INLINE as u64);
     put_u32(&mut block, TEB_OFF + TEB_CURRENT_LOCALE_OFF, 0x409);
+    put_u64(&mut block, TEB_OFF + TEB_DEALLOCATION_STACK_OFF, stack_base);
     // The fixed TEB block contains all 64 native TLS slots inline.  The
     // expansion pointer stays NULL until a slot >= 64 is requested, matching
     // kernelbase's TlsAlloc/TlsSetValue behavior.
@@ -547,5 +580,24 @@ mod tests {
         assert_eq!(read64(TLS_EXP_BITMAP_DESC_OFF + 8), e.base.as_u64() + PEB_OFF as u64 + 0x240);
         assert_eq!(read32(TEB_OFF + TEB_CURRENT_LOCALE_OFF), 0x409);
         assert_eq!(read64(TEB_OFF + TEB_TLS_EXPANSION_SLOTS_OFF), 0);
+    }
+
+    #[test]
+    fn process_teb_publishes_the_actual_exec_stack_nt_tib_bounds() {
+        let as_ = AddressSpace::new(0x40_000).unwrap();
+        let stack = as_.mmap(None, 0x8000, VmaProt::READ | VmaProt::WRITE,
+            VmaFlags::PRIVATE, VmaBacking::Anonymous, false).unwrap();
+        let stack_top = stack.as_u64() + 0x8000;
+        let e = build_with_modules_and_stack(&EnvironmentInput {
+            image_base: 0x1400_0000, image_size: 0x5000, image_path: "C:\\Windows\\notepad.exe",
+            command_line: "notepad.exe", environment: &[], process_id: 1, thread_id: 2,
+        }, &[NtModuleInput { base: 0x1400_0000, entry: 0x1400_1000, size: 0x5000,
+            full_name: "C:\\Windows\\notepad.exe", base_name: "notepad.exe" }], 0, stack_top, &as_).unwrap();
+        let vma = as_.find_vma(e.base).unwrap();
+        let data = match vma.backing { VmaBacking::KernelBytes { data, .. } => data, _ => panic!("environment must be kernel-backed") };
+        let read64 = |offset: usize| u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
+        assert_eq!(read64(TEB_OFF + TEB_STACK_BASE_OFF), stack_top);
+        assert_eq!(read64(TEB_OFF + TEB_STACK_LIMIT_OFF), stack.as_u64());
+        assert_eq!(read64(TEB_OFF + TEB_DEALLOCATION_STACK_OFF), stack.as_u64());
     }
 }

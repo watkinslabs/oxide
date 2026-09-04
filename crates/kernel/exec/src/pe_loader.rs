@@ -1044,8 +1044,8 @@ fn load_pe_process_with_catalog_with_fallback<R: ImportResolver>(blob: &[u8], as
         });
     }
     let environment = match params.map_or_else(
-        || process_env::build_with_modules(&environment_input, &modules, as_),
-        |params| process_env::build_with_modules_and_params(&environment_input, &modules, params, as_)) {
+        || process_env::build_with_modules_and_stack(&environment_input, &modules, 0, stack_top, as_),
+        |params| process_env::build_with_modules_and_params_and_stack(&environment_input, &modules, params, 0, stack_top, as_)) {
         Ok(environment) => environment,
         Err(error) => {
             unmap_loaded_modules(as_, &loaded);
@@ -1112,8 +1112,8 @@ pub fn load_pe_process_with_resolver_and_modules_and_params<R: ImportResolver>(b
     let mut modules = alloc::vec![process_env::NtModuleInput { base: image.base, entry: image.entry.as_u64(), size: image.size, full_name: input.image_path, base_name: root_name }];
     modules.extend_from_slice(additional_modules);
     let environment = match params.map_or_else(
-        || process_env::build_with_modules(&environment_input, &modules, as_),
-        |params| process_env::build_with_modules_and_params(&environment_input, &modules, params, as_)) {
+        || process_env::build_with_modules_and_stack(&environment_input, &modules, 0, stack_top, as_),
+        |params| process_env::build_with_modules_and_params_and_stack(&environment_input, &modules, params, 0, stack_top, as_)) {
         Ok(environment) => environment,
         Err(error) => { let _ = as_.munmap(UserVirtAddr::new(image.base).ok_or(pe::Error::Einval)?, image.size as usize); return Err(error); }
     };
