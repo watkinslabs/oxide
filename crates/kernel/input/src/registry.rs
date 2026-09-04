@@ -9,7 +9,7 @@ use crate::packet::InputValue;
 use crate::state::OutputBatch;
 use crate::uapi::{
     ABS_CNT, CAP_BITMAP_BYTES, INPUT_EV_STORAGE_BYTES, INPUT_NAME_BYTES, INPUT_PHYS_BYTES,
-    INPUT_PROP_STORAGE_BYTES, INPUT_SERIAL_BYTES,
+    INPUT_PROP_STORAGE_BYTES, INPUT_SERIAL_BYTES, KEY_RELEASED, KEY_REPEAT,
 };
 use crate::{
     types::{VirtioInputAbsInfo, VirtioInputDevIds}, DEFAULT_REPEAT, MAX_INPUT_DEVICES,
@@ -237,7 +237,7 @@ pub fn unpublish_evdev(id: u32) -> bool {
 /// Filter and dispatch one input event from canonical device state.
 /// # C: O(N_devices)
 pub fn push_evdev_event(id: u32, ev_type: u16, code: u16, value: i32) -> bool {
-    let packet = {
+    let (packet, native_key) = {
         let mut devs = DEVICES.lock();
         let Some(dev) = devs.iter_mut().find(|dev| dev.evdev_id == id) else {
             return false;
@@ -245,11 +245,16 @@ pub fn push_evdev_event(id: u32, ev_type: u16, code: u16, value: i32) -> bool {
         let Some(accepted) = dev.accept_event(ev_type, code, value) else {
             return false;
         };
+        let native_key = (ev_type == crate::EV_KEY && code < crate::BTN_LEFT)
+            .then_some((code, accepted.value));
         dev.stage_accepted(ev_type, code, accepted).map(|values| {
             crate::repeat::accepted_packet(dev, &values);
             (dev.is_pointer, values)
-        })
+        }).map_or((None, native_key), |packet| (Some(packet), native_key))
     };
+    if let Some((key, state)) = native_key {
+        let _ = dispatch_native_key_event(key, state != KEY_RELEASED, state == KEY_REPEAT);
+    }
     if let Some((is_pointer, values)) = packet {
         dispatch_values(id, is_pointer, &values);
     }
