@@ -278,11 +278,12 @@ fn native_create(call: NtCall) -> u64 {
     let Some(share) = crate::nt_dispatch::stack_argument(6) else { return STATUS_INVALID_PARAMETER; };
     let Some(disposition) = crate::nt_dispatch::stack_argument(7) else { return STATUS_INVALID_PARAMETER; };
     let Some(options) = crate::nt_dispatch::stack_argument(8) else { return STATUS_INVALID_PARAMETER; };
-    if disposition > u32::MAX as u64 || share > u32::MAX as u64 || options > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
+    if disposition > u32::MAX as u64 || share > u32::MAX as u64 || options > u32::MAX as u64
+        || call.args.a5 > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
     let Some(disposition) = CreateDisposition::decode(disposition as u32) else { return STATUS_INVALID_PARAMETER; };
     if call.args.a0 == 0 || call.args.a2 == 0 || call.args.a1 > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
     let status = open_path(cur, call.args.a0, call.args.a1 as u32,
-        call.args.a2, options as u32, share as u32, disposition);
+        call.args.a2, options as u32, share as u32, call.args.a5 as u32, disposition);
     if call.args.a3 != 0 { let _ = uaccess::put_user_u64(call.args.a3, status); let _ = uaccess::put_user_u64(call.args.a3 + 8, 0); }
     status
 }
@@ -293,7 +294,7 @@ fn native_open(call: NtCall) -> u64 {
     let options = call.args.a5;
     if call.args.a0 == 0 || call.args.a2 == 0 || call.args.a1 > u32::MAX as u64 || call.args.a4 > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
     let status = open_path(cur, call.args.a0, call.args.a1 as u32,
-        call.args.a2, options as u32, call.args.a4 as u32, CreateDisposition::Open);
+        call.args.a2, options as u32, call.args.a4 as u32, 0, CreateDisposition::Open);
     if call.args.a3 != 0 { let _ = uaccess::put_user_u64(call.args.a3, status); let _ = uaccess::put_user_u64(call.args.a3 + 8, 0); }
     status
 }
@@ -516,7 +517,7 @@ fn open_create(cur: &sched::Task, addr: u64) -> u64 {
     if request.handle == 0 || request.object_attributes == 0 { return STATUS_INVALID_PARAMETER; }
     let Some(disposition) = CreateDisposition::decode(request.disposition) else { return STATUS_INVALID_PARAMETER; };
     open_path(cur, request.handle, request.desired_access, request.object_attributes,
-        request.options, request.share_access, disposition)
+        request.options, request.share_access, request.file_attributes, disposition)
 }
 
 fn open_existing(cur: &sched::Task, addr: u64, _create: bool) -> u64 {
@@ -527,10 +528,12 @@ fn open_existing(cur: &sched::Task, addr: u64, _create: bool) -> u64 {
         _ => return STATUS_INVALID_PARAMETER,
     };
     if request.handle == 0 || request.object_attributes == 0 { return STATUS_INVALID_PARAMETER; }
-    open_path(cur, request.handle, request.desired_access, request.object_attributes, request.options, request.share_access, CreateDisposition::Open)
+    open_path(cur, request.handle, request.desired_access, request.object_attributes, request.options,
+        request.share_access, 0, CreateDisposition::Open)
 }
 
-fn open_path(cur: &sched::Task, output: u64, desired: u32, attrs: u64, options: u32, sharing: u32, disposition: CreateDisposition) -> u64 {
+fn open_path(cur: &sched::Task, output: u64, desired: u32, attrs: u64, options: u32,
+             sharing: u32, file_attributes: u32, disposition: CreateDisposition) -> u64 {
     if sharing & !0x7 != 0 { return STATUS_INVALID_PARAMETER; }
     let table = cur.thread_group.nt_handles();
     let Some(path) = object_path_with_root(attrs, &table) else { return STATUS_INVALID_PARAMETER; };
@@ -560,7 +563,9 @@ fn open_path(cur: &sched::Task, output: u64, desired: u32, attrs: u64, options: 
             };
             let Some(name) = parent.last_component.clone() else { return STATUS_INVALID_PARAMETER; };
             let ctx = vfs::CreateCtx { idmap: &vfs::IDENTITY, cred: &crate::pathresolve::current_cred(), umask: cur.umask() as u16 };
-            match vfs::vfs_create_at(&parent, &name, 0o666, &ctx) {
+            let mode = crate::nt_file_policy::creation_mode(file_attributes,
+                options & FILE_DIRECTORY_FILE != 0);
+            match vfs::vfs_create_at(&parent, &name, mode, &ctx) {
                 Ok((inode, dentry)) => (inode, dentry, parent.mnt_id, true),
                 Err(error) => return crate::nt_file_policy::status_from_errno(-(error as i64)),
             }
