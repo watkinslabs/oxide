@@ -35,7 +35,10 @@ impl NtTimer {
     pub fn cancel(&self) -> bool {
         self.due_ns.store(DISARMED, Ordering::Release);
         self.period_ns.store(0, Ordering::Release);
-        self.signaled.swap(false, Ordering::AcqRel)
+        let was_signaled = self.signaled.swap(false, Ordering::AcqRel);
+        #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
+        self.waiters.wake_all();
+        was_signaled
     }
 
     pub fn due_ns(&self) -> u64 { self.due_ns.load(Ordering::Acquire) }
