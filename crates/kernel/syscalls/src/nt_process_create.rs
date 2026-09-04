@@ -59,6 +59,7 @@ pub fn dispatch(call: NtCall, stack: [u64; 5]) -> u64 {
     child.set_session(cur.session());
     child.inherit_audit_identity(&cur);
     child.set_nt_personality(true);
+    sched::initialize_new_thread(&child);
     child.set_nt_peb(prepared.process.environment.peb.as_u64());
     child.set_nt_teb(prepared.process.environment.teb.as_u64());
     child.set_exe_path(Some(image_path.clone()));

@@ -127,6 +127,12 @@ pub use cmdline::argv_to_cmdline;
 pub use registry::kernel_stack_bytes_snapshot;
 pub use runqueue::RunqueueInner;
 pub use sched_enc::{SchedUpdate, SchedUpdateResult};
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
+pub use nt::{apply_nt_process, apply_nt_thread, initialize_current_process};
+pub use nt::{class_relative_priority, initialize_new_thread,
+    NtAdjustReason, NtPriorityClass, NtProcessSchedConfig, NtProcessSchedRequest,
+    NtQuantumPolicy, NtRelativePriority, NtSchedError, NtSchedSnapshot,
+    NtThreadSchedRequest};
 pub use task::{cap, securebits, ArchFpuBuf, Creds, FairPriority, GroupList, LoadWeight,
     NtFixedPriority, PosixRtPriority, PosixTimer, PrioritySnapshot, SaHandler, SchedUclamp,
     SchedClassId, SchedEntity, SchedPriority, SchedRtEntity, TaskPolicy,

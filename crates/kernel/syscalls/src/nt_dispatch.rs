@@ -817,7 +817,8 @@ pub fn dispatch(call: NtCall) -> u64 {
         }
         return STATUS_SUCCESS;
     }
-    if matches!(call.service, nt::NtService::DeviceIoControlFile | nt::NtService::FsControlFile | nt::NtService::OpenJobObject | nt::NtService::SetInformationDebugObject | nt::NtService::SetInformationProcess | nt::NtService::SetInformationThread) {
+    if let Some(result) = crate::nt_priority::dispatch(call) { return result; }
+    if matches!(call.service, nt::NtService::DeviceIoControlFile | nt::NtService::FsControlFile | nt::NtService::OpenJobObject | nt::NtService::SetInformationDebugObject) {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
         if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
         return 0xc000_0002;

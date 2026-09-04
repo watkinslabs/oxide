@@ -40,19 +40,25 @@ pub fn task_tick() {
         else { crate::preempt::set_need_resched(); return; };
     // SAFETY: timer IRQ context is preempt-disabled and this CPU's runqueue
     // owns its current task for the complete tick callback.
-    let cur = unsafe { rq.current_ref() };
+    let cur = unsafe { rq.current_arc() };
     // Deadline class first: it is the only class whose tick can REVOKE the CPU
     // outright, and its budget must be charged before any other class rule runs.
     if matches!(cur.sched_class(), crate::SchedClass::Deadline) {
-        crate::deadline::live::task_tick_dl(cur);
+        crate::deadline::live::task_tick_dl(&cur);
         return;
     }
-    task_tick_with_clock(cur, rq, crate::live::schedule::change_clock_now);
+    task_tick_with_clock(&cur, rq, crate::live::schedule::change_clock_now);
 }
 
-fn task_tick_with_clock<F>(cur: &crate::Task, rq: &crate::live::runqueue::Runqueue, now: F)
+fn task_tick_with_clock<F>(cur: &alloc::sync::Arc<crate::Task>,
+                           rq: &crate::live::runqueue::Runqueue, now: F)
 where F: FnOnce() -> u64 {
     use core::sync::atomic::Ordering;
+
+    if matches!(cur.sched_class(), crate::SchedClass::NtFixed { .. }) {
+        nt_task_tick(cur, rq, now());
+        return;
+    }
 
     // The rq lock serialises this snapshot with class changes and keeps the
     // running Fair entity outside its class tree while its vruntime advances.
@@ -83,6 +89,27 @@ where F: FnOnce() -> u64 {
         cur.rt_requeue_tail.store(true, Ordering::Release);
     }
     if crate::sched_enc::rt_tick_wants_resched(policy, left, peer) {
+        crate::preempt::set_need_resched();
+    }
+}
+
+fn nt_task_tick(cur: &alloc::sync::Arc<crate::Task>,
+                rq: &crate::live::runqueue::Runqueue, now: u64) {
+    use core::sync::atomic::Ordering;
+    let stable = crate::live::rq_locate::task_rq_lock_with(
+        &|cpu| if cpu == rq.cpu as u32 { Some(rq) } else { None }, cur);
+    let crate::live::rq_locate::StableTaskGuard::Owned(lock) = stable else {
+        panic!("running native task lost its runqueue owner")
+    };
+    let change = crate::live::rq_locate::SchedChange::from_lock(lock, cur, now);
+    let outcome = crate::nt::tick_unlocked(cur);
+    let level = cur.sched.nt_snapshot().dynamic_priority;
+    let peer = change.has_nt_peer_at(level);
+    if outcome.expired && peer {
+        cur.rt_requeue_tail.store(true, Ordering::Release);
+    }
+    drop(change);
+    if outcome.priority_changed || outcome.expired && peer {
         crate::preempt::set_need_resched();
     }
 }

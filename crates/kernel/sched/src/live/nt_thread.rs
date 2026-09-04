@@ -28,6 +28,7 @@ pub unsafe fn new_nt_thread_unpublished(
         child.set_nt_personality(true);
         child.set_nt_peb(parent.nt_peb());
     }
+    crate::nt::initialize_new_thread(child);
     child.set_nt_teb(teb);
     child.set_nt_start_address(entry_va);
     // SAFETY: task remains unpublished and entry/stack belong to its mm.

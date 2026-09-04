@@ -197,6 +197,16 @@ impl Runqueue {
         t
     }
 
+    /// Clone the runqueue-owned current reference while preemption is disabled.
+    /// # SAFETY: the caller excludes a concurrent current-task swap.
+    pub unsafe fn current_arc(&self) -> Arc<Task> {
+        let raw = self.current.load(Ordering::Acquire).cast_const();
+        // SAFETY: current owns a strong reference until it is swapped.
+        unsafe { Arc::increment_strong_count(raw); }
+        // SAFETY: the increment above created the returned strong reference.
+        unsafe { Arc::from_raw(raw) }
+    }
+
     /// Atomically swap `current` to `next`, returning the prior
     /// `Arc<Task>`. The caller is `schedule()` and is responsible
     /// for ensuring the prior task is still reachable (e.g. via
@@ -484,6 +494,19 @@ where P: FnOnce(&Task) -> bool, M: FnOnce(&Task) {
                     super::schedule::change_clock_now());
                 mutate(task);
             } else { mutate(task); }
+        }
+        super::rq_locate::StableTaskGuard::OffRq(_pi) => mutate(task),
+    }
+}
+
+/// Mutate native configured/dynamic priority under the stable task/rq pair.
+pub(crate) fn mutate_nt<M>(task: &Arc<Task>, mutate: M)
+where M: FnOnce(&Task) {
+    match super::rq_locate::task_rq_lock_with(&|cpu| unsafe { global_for(cpu) }, task) {
+        super::rq_locate::StableTaskGuard::Owned(lock) => {
+            let _change = super::rq_locate::SchedChange::from_lock(lock, task,
+                super::schedule::change_clock_now());
+            mutate(task);
         }
         super::rq_locate::StableTaskGuard::OffRq(_pi) => mutate(task),
     }

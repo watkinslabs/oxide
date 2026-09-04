@@ -96,6 +96,7 @@ fn commit_x86(cur: &sched::Task, path: &[u8], blob: &[u8], exec_vp: Option<&vfs:
         (*ctx).gs_base = process.entry.gs_base.as_u64();
     }
     cur.set_nt_personality(true);
+    sched::initialize_current_process(cur);
     cur.set_nt_peb(process.environment.peb.as_u64());
     cur.set_nt_teb(process.environment.teb.as_u64());
     crate::exec_transition::commit(cur, &creds);
