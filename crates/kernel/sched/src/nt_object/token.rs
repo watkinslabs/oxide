@@ -56,16 +56,7 @@ impl NtToken {
             }
             TOKEN_GROUPS => {
                 let groups = self.groups();
-                let sid_base = 8usize.checked_add(groups.len().checked_mul(16)?)?;
-                bytes.resize(sid_base.checked_add(groups.len().checked_mul(16)?)?, 0);
-                bytes[0..4].copy_from_slice(&(groups.len() as u32).to_ne_bytes());
-                for (index, group) in groups.iter().enumerate() {
-                    let entry = 8 + index * 16;
-                    let sid_offset = sid_base + index * 16;
-                    bytes[entry..entry + 8].copy_from_slice(&base.checked_add(sid_offset as u64)?.to_ne_bytes());
-                    bytes[entry + 8..entry + 12].copy_from_slice(&group.attributes.to_ne_bytes());
-                    bytes[sid_offset..sid_offset + 16].copy_from_slice(&group.sid);
-                }
+                bytes = Self::groups_bytes(&groups, base)?;
             }
             TOKEN_PRIVILEGES => {
                 let privileges = self.privileges();
@@ -80,6 +71,28 @@ impl NtToken {
             _ => return None,
         }
         Some(bytes)
+    }
+    /// Serialize a TOKEN_GROUPS record with inline SIDs at `base`. # C: O(groups)
+    pub fn groups_bytes(groups: &[NtTokenGroup], base: u64) -> Option<Vec<u8>> {
+        let sid_base = 8usize.checked_add(groups.len().checked_mul(16)?)?;
+        let mut bytes = Vec::new();
+        bytes.resize(sid_base.checked_add(groups.len().checked_mul(16)?)?, 0);
+        bytes[0..4].copy_from_slice(&(groups.len() as u32).to_ne_bytes());
+        for (index, group) in groups.iter().enumerate() {
+            let entry = 8 + index * 16;
+            let sid_offset = sid_base + index * 16;
+            bytes[entry..entry + 8].copy_from_slice(&base.checked_add(sid_offset as u64)?.to_ne_bytes());
+            bytes[entry + 8..entry + 12].copy_from_slice(&group.attributes.to_ne_bytes());
+            bytes[sid_offset..sid_offset + 16].copy_from_slice(&group.sid);
+        }
+        Some(bytes)
+    }
+    /// Replace or reset NT group state and return the state replaced. # C: O(groups)
+    pub fn adjust_groups(&self, reset_to_default: bool, groups: Vec<NtTokenGroup>) -> Vec<NtTokenGroup> {
+        let mut current = self.groups.lock();
+        let previous = current.clone();
+        *current = if reset_to_default { alloc::vec![NtTokenGroup { sid: sid(5, self.gid), attributes: 4 }] } else { groups };
+        previous
     }
     pub fn replace_groups(&self, groups: Vec<NtTokenGroup>) { *self.groups.lock() = groups; }
     pub fn has_sid(&self, sid: &[u8; 16]) -> bool {
@@ -202,5 +215,34 @@ mod tests {
         assert_eq!(u32::from_ne_bytes(bytes[..4].try_into().unwrap()), 1);
         assert_eq!(u64::from_ne_bytes(bytes[8..16].try_into().unwrap()), 23);
         assert_eq!(u32::from_ne_bytes(bytes[16..20].try_into().unwrap()), 3);
+    }
+
+    #[test]
+    fn adjust_groups_returns_replaced_state_and_packs_previous_groups() {
+        let token = NtToken::new(1000, 1001);
+        let replacement = sid(5, 2000);
+        token.replace_groups(vec![NtTokenGroup { sid: replacement, attributes: 4 }]);
+
+        let previous = token.adjust_groups(false, vec![NtTokenGroup { sid: sid(5, 3000), attributes: 4 }]);
+        let bytes = NtToken::groups_bytes(&previous, 0x4000).unwrap();
+
+        assert_eq!(previous.len(), 1);
+        assert_eq!(u32::from_ne_bytes(bytes[0..4].try_into().unwrap()), 1);
+        assert_eq!(u64::from_ne_bytes(bytes[8..16].try_into().unwrap()), 0x4018);
+        assert_eq!(&bytes[24..40], &replacement);
+        assert!(token.has_sid(&sid(5, 3000)));
+        assert!(!token.has_sid(&replacement));
+    }
+
+    #[test]
+    fn reset_groups_restores_the_token_gid_group() {
+        let token = NtToken::new(1000, 1001);
+        token.replace_groups(vec![NtTokenGroup { sid: sid(5, 3000), attributes: 4 }]);
+
+        let previous = token.adjust_groups(true, alloc::vec::Vec::new());
+
+        assert_eq!(previous[0].sid, sid(5, 3000));
+        assert!(token.has_sid(&sid(5, 1001)));
+        assert!(!token.has_sid(&sid(5, 3000)));
     }
 }
