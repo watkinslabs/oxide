@@ -31,7 +31,7 @@ fn doc_id_of(stem: &str) -> Option<String> {
     // `<doc>-v<n>` companion form: `00-v2`, etc. Suffix extends the id
     // so the section_map for `00` isn't overwritten by `00-v2`.
     let leading_alpha = id.len();
-    if leading_alpha == 2 && stem.len() >= 5 && &stem[2..4] == "-v"
+    if leading_alpha == 2 && &stem[..2] == "00" && stem.len() >= 5 && &stem[2..4] == "-v"
        && bytes.get(4).map_or(false, |c| c.is_ascii_digit()) {
         id.push('-');
         id.push('v');
@@ -187,4 +187,20 @@ fn scan_refs(line: &str) -> Vec<(String, String)> {
         i += 1;
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{doc_id_of, scan_refs};
+
+    #[test]
+    fn numbered_document_with_v_in_its_title_keeps_its_numeric_id() {
+        assert_eq!(doc_id_of("64-v4l2-video-capture"), Some("64".into()));
+        assert_eq!(doc_id_of("00-v2"), Some("00-v2".into()));
+    }
+
+    #[test]
+    fn xref_scanner_preserves_explicit_companion_ids() {
+        assert_eq!(scan_refs("`64§10` and `00-v2§3`"), vec![("64".into(), "10".into()), ("00-v2".into(), "3".into())]);
+    }
 }

@@ -1,10 +1,8 @@
 # Windows NT Named-Pipe Object Contract
 
-Status: IN PROGRESS
+DRAFT 2026-09-04. Dep:`01`,`02`,`06`,`13`,`31d`,`31f`,`31g`,`52`,`53`.
 
-Date: 2026-09-03
-
-## Ownership
+## 1 Ownership
 
 Named pipes are NT objects, not aliases for Linux VFS FIFOs or Unix sockets.
 The scheduler/object layer owns the immutable creation configuration, instance
@@ -17,7 +15,7 @@ This follows Wine's `server/named_pipe.c` model and Linux's separation of
 pipe state from the filesystem inode. It avoids creating a second source of
 truth in the NT syscall adapter.
 
-## Current contract
+## 2 Contract
 
 `NtPipe::validate_create` rejects zero access, invalid sharing bits, zero
 resource quotas, zero instance limits, and unknown message/read/completion
@@ -57,3 +55,20 @@ complete with `STATUS_CANCELLED`, while transport state is preserved. True
 overlapped/APC request retention and completion, plus the remaining pipe FSCTLs,
 stay separate work;
 those paths do not fall through to VFS files.
+
+## 3 Tests
+
+- creation rejects zero access, invalid sharing, quotas, instance limits, and
+  unsupported modes without publishing an object;
+- server admission is bounded and released only by the final endpoint object
+  reference; client close cannot release a server reservation;
+- directional queue quotas report backpressure and peer close without
+  converting a pipe into a VFS or Unix-socket operation;
+- disconnect discards queued data, listen reports pending until pairing, and
+  peek does not consume data;
+- cancel-by-thread and cancel-by-I/O-status-block have distinct ownership and
+  wake the corresponding waiters;
+- invalid information buffers, unsupported FSCTLs, wrong object types, and
+  repeated close/disconnect operations return their specified NT statuses;
+- both kernel targets compile the shared contract, while the x86-64 Windows
+  acceptance suite exercises the native pipe path.
