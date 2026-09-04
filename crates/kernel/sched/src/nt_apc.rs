@@ -158,4 +158,15 @@ mod tests {
             Err(QueueFlagsError::CallbackDataContext));
         assert_eq!(validate_queue_flags(0x8000_0000), Err(QueueFlagsError::Unknown));
     }
+
+    #[test]
+    fn threadpool_callback_preserves_context_and_wait_result() {
+        let queue = Queue::new();
+        let callback = Apc { routine: 0x1000, argument1: 0xfeed, argument2: 0,
+            argument3: 0, flags: 0 };
+        assert!(queue.push(callback).is_ok());
+        assert!(queue.request_delivery());
+        assert_eq!(queue.peek_deliverable(), Some(callback));
+        assert_eq!(queue.pop().unwrap().argument1, 0xfeed);
+    }
 }
