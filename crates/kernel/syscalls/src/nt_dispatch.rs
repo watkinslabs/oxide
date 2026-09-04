@@ -629,6 +629,15 @@ pub fn dispatch(call: NtCall) -> u64 {
         sched::nt_object::make_temporary(&object);
         return STATUS_SUCCESS;
     }
+    if call.service == syscall::nt::NtService::NtMakePermanentObject {
+        let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+        if !cur.is_nt_personality() || call.args.a0 > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
+        let table = cur.thread_group.nt_handles();
+        let handle = sched::nt_object::NtHandle::from_raw(call.args.a0 as u32);
+        let Some(object) = table.get(handle, 0) else { return STATUS_INVALID_HANDLE; };
+        sched::nt_object::make_permanent(&object);
+        return STATUS_SUCCESS;
+    }
     if call.service == syscall::nt::NtService::NtNotifyChangeDirectoryFile {
         return crate::nt_directory_notify::dispatch(call);
     }

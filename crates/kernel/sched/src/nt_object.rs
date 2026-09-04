@@ -30,7 +30,7 @@ pub use handle::{NtHandle, NtHandleTable};
 pub use job::{NtJob, NtJobLimits};
 pub use mutant::NtMutant;
 pub use namespace::{create_event, create_semaphore, directory_entries, directory_path,
-    lookup_directory, lookup_object, make_temporary, object_name, publish_mutant,
+    lookup_directory, lookup_object, make_permanent, make_temporary, object_name, publish_mutant,
     publish_named_pipe, publish_section, publish_symbolic_link, publish_timer,
     release_temporary, resolve_symbolic_links, NamedObjectState, SymbolicLinkResolutionError,
     MAX_SYMBOLIC_LINK_DEPTH};
