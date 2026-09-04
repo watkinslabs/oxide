@@ -8,6 +8,7 @@ pub const WM_DESTROY: u32 = 0x0002;
 pub const WM_KILLFOCUS: u32 = 0x0008;
 pub const WM_KEYDOWN: u32 = 0x0100;
 pub const WM_KEYUP: u32 = 0x0101;
+pub const WM_MOUSEMOVE: u32 = 0x0200;
 pub const WM_NCHITTEST: u32 = 0x0084;
 pub const WM_NCACTIVATE: u32 = 0x0086;
 pub const WM_PAINT: u32 = 0x000f;
@@ -20,6 +21,11 @@ const KEY_TRANSITION_STATE: u32 = 1 << 31;
 pub const HTCLIENT: i64 = 1;
 pub const HTNOWHERE: i64 = 0;
 pub const SW_HIDE: u32 = 0;
+
+/// Encode signed client coordinates in the Win32 mouse-message lParam. # C: O(1)
+pub const fn mouse_lparam(x: i32, y: i32) -> i64 {
+    (((y as u16 as u32) << 16) | x as u16 as u32) as i64
+}
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct WindowId(u32);
@@ -101,7 +107,7 @@ pub struct WindowRect { pub left: i32, pub top: i32, pub right: i32, pub bottom:
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum WindowError { NoSuchWindow, InvalidParent, ClassInUse, WrongThread, NoFocus, QueueFull }
 
-pub struct WindowManager { next: u32, next_atom: u16, classes: Vec<WindowClass>, windows: Vec<(WindowId, WindowRecord)>, rects: Vec<(WindowId, WindowRect)>, texts: Vec<(WindowId, Vec<u16>)>, dirty: Vec<(WindowId, WindowRect)>, queues: Vec<(u64, MessageQueue)>, timers: Vec<WindowTimer>, focus: Option<WindowId>, destroying: Vec<WindowId> }
+pub struct WindowManager { next: u32, next_atom: u16, classes: Vec<WindowClass>, windows: Vec<(WindowId, WindowRecord)>, rects: Vec<(WindowId, WindowRect)>, texts: Vec<(WindowId, Vec<u16>)>, dirty: Vec<(WindowId, WindowRect)>, queues: Vec<(u64, MessageQueue)>, timers: Vec<WindowTimer>, focus: Option<WindowId>, cursor: (i32, i32), destroying: Vec<WindowId> }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 struct WindowTimer { owner_tid: u64, hwnd: Option<WindowId>, id: u64, period_ns: u64, due_ns: u64, proc: u64 }
@@ -112,7 +118,7 @@ pub enum QueueResult { Message(WinMessage), Quit(i32), Empty }
 impl Default for WindowManager { fn default() -> Self { Self::new() } }
 
 impl WindowManager {
-    pub fn new() -> Self { Self { next: 1, next_atom: 1, classes: Vec::new(), windows: Vec::new(), rects: Vec::new(), texts: Vec::new(), dirty: Vec::new(), queues: Vec::new(), timers: Vec::new(), focus: None, destroying: Vec::new() } }
+    pub fn new() -> Self { Self { next: 1, next_atom: 1, classes: Vec::new(), windows: Vec::new(), rects: Vec::new(), texts: Vec::new(), dirty: Vec::new(), queues: Vec::new(), timers: Vec::new(), focus: None, cursor: (0, 0), destroying: Vec::new() } }
     /// Register one process-local window class and retain its procedure. # C: O(N_classes)
     pub fn register_class(&mut self, name: &[u16], wndproc: u64) -> Result<u16, WindowError> {
         if name.is_empty() || self.classes.iter().any(|class| same_name(&class.name, name)) { return Err(WindowError::InvalidParent); }
@@ -329,6 +335,17 @@ impl WindowManager {
     pub fn post_focused_key(&mut self, key: u16, pressed: bool, repeat: bool) -> Result<(), WindowError> {
         let window = self.focus.ok_or(WindowError::NoFocus)?;
         self.post_to_window(window, WinMessage { hwnd: Some(window), message: if pressed { WM_KEYDOWN } else { WM_KEYUP }, wparam: key as u64, lparam: key_lparam(pressed, repeat) })
+    }
+    /// Enqueue one relative mouse transition on the focused window. # C: O(N_windows)
+    pub fn post_focused_mouse(&mut self, code: u16, delta: i32) -> Result<(), WindowError> {
+        let window = self.focus.ok_or(WindowError::NoFocus)?;
+        let rect = self.client_rect(window).ok_or(WindowError::NoSuchWindow)?;
+        if code != 0 && code != 1 { return Ok(()); }
+        let axis = if code == 0 { &mut self.cursor.0 } else { &mut self.cursor.1 };
+        *axis = axis.saturating_add(delta);
+        let limit = if code == 0 { rect.right } else { rect.bottom };
+        if limit > 0 { *axis = (*axis).clamp(0, limit - 1); }
+        self.post_to_window(window, WinMessage { hwnd: Some(window), message: WM_MOUSEMOVE, wparam: 0, lparam: mouse_lparam(self.cursor.0, self.cursor.1) })
     }
     /// Arm or replace one process-owned timer using the canonical window queue. # C: O(N_timers)
     pub fn set_timer(&mut self, owner_tid: u64, hwnd: Option<WindowId>, id: u64, timeout_ms: u32, proc: u64, now_ns: u64) -> Result<u64, WindowError> {
@@ -699,6 +716,19 @@ mod tests {
         for _ in 0..MESSAGE_QUEUE_LIMIT { queue.post(message(None, 1)).unwrap(); }
         assert_eq!(queue.post(message(None, 2)), Err(QueueError::Full));
         assert_eq!(queue.len(), MESSAGE_QUEUE_LIMIT);
+    }
+
+    #[test]
+    fn focused_relative_motion_posts_bounded_client_coordinates() {
+        let mut manager = WindowManager::new();
+        let window = manager.create(9, None, 0).unwrap();
+        manager.set_rect(window, WindowRect { left: 40, top: 50, right: 140, bottom: 130 }).unwrap();
+        manager.set_focus(9, Some(window)).unwrap();
+        manager.post_focused_mouse(0, 120).unwrap();
+        manager.post_focused_mouse(1, 90).unwrap();
+        let filter = MessageFilter { hwnd: Some(window), first: WM_MOUSEMOVE, last: WM_MOUSEMOVE };
+        assert_eq!(manager.take_for_thread(9, filter), QueueResult::Message(WinMessage { hwnd: Some(window), message: WM_MOUSEMOVE, wparam: 0, lparam: mouse_lparam(99, 0) }));
+        assert_eq!(manager.take_for_thread(9, filter), QueueResult::Message(WinMessage { hwnd: Some(window), message: WM_MOUSEMOVE, wparam: 0, lparam: mouse_lparam(99, 79) }));
     }
 
     #[test]

@@ -23,6 +23,7 @@ pub type UnregisterEvdevFn = fn(u32) -> bool;
 pub type PushEvdevPacketFn = fn(u32, bool, &[InputValue]);
 pub type PushOutputFn = fn(virtio::VirtioChildDeviceKey, &OutputBatch);
 pub type NativeKeyHook = fn(u16, bool, bool) -> bool;
+pub type NativeRelHook = fn(u16, i32) -> bool;
 
 /// Stable owner identity for one input device. Input devices are not all
 /// virtio children: platform controllers and transport devices share the same
@@ -190,6 +191,7 @@ pub(crate) static DEVICES: Spinlock<Vec<Box<VirtioInputDev>>, DriverLockClass> =
     Spinlock::new(Vec::new());
 static EVDEV_HOOKS: Spinlock<EvdevHooks, DriverLockClass> = Spinlock::new(NO_EVDEV_HOOKS);
 static NATIVE_KEY_HOOK: Spinlock<Option<NativeKeyHook>, DriverLockClass> = Spinlock::new(None);
+static NATIVE_REL_HOOK: Spinlock<Option<NativeRelHook>, DriverLockClass> = Spinlock::new(None);
 pub(crate) static OUTPUT_HOOK: Spinlock<Option<PushOutputFn>, DriverLockClass> = Spinlock::new(None);
 static NEXT_INPUT_ID: AtomicU32 = AtomicU32::new(0);
 
@@ -201,6 +203,17 @@ pub fn set_evdev_hooks(hooks: EvdevHooks) {
 /// Install the optional NT foreground keyboard sink. # C: O(1)
 pub fn set_native_key_hook(hook: Option<NativeKeyHook>) {
     *NATIVE_KEY_HOOK.lock() = hook;
+}
+
+/// Install the optional NT relative-pointer sink. # C: O(1)
+pub fn set_native_rel_hook(hook: Option<NativeRelHook>) {
+    *NATIVE_REL_HOOK.lock() = hook;
+}
+
+/// Offer one accepted relative input event to the native sink. # C: O(1)
+pub fn dispatch_native_rel_event(code: u16, value: i32) -> bool {
+    let hook = *NATIVE_REL_HOOK.lock();
+    hook.is_some_and(|hook| hook(code, value))
 }
 
 /// Offer one accepted physical key transition to the native sink. # C: O(1)
@@ -237,7 +250,7 @@ pub fn unpublish_evdev(id: u32) -> bool {
 /// Filter and dispatch one input event from canonical device state.
 /// # C: O(N_devices)
 pub fn push_evdev_event(id: u32, ev_type: u16, code: u16, value: i32) -> bool {
-    let (packet, native_key) = {
+    let (packet, native_key, native_rel) = {
         let mut devs = DEVICES.lock();
         let Some(dev) = devs.iter_mut().find(|dev| dev.evdev_id == id) else {
             return false;
@@ -247,13 +260,17 @@ pub fn push_evdev_event(id: u32, ev_type: u16, code: u16, value: i32) -> bool {
         };
         let native_key = (ev_type == crate::EV_KEY && code < crate::BTN_LEFT)
             .then_some((code, accepted.value));
+        let native_rel = (ev_type == crate::EV_REL).then_some((code, accepted.value));
         dev.stage_accepted(ev_type, code, accepted).map(|values| {
             crate::repeat::accepted_packet(dev, &values);
             (dev.is_pointer, values)
-        }).map_or((None, native_key), |packet| (Some(packet), native_key))
+        }).map_or((None, native_key, native_rel), |packet| (Some(packet), native_key, native_rel))
     };
     if let Some((key, state)) = native_key {
         let _ = dispatch_native_key_event(key, state != KEY_RELEASED, state == KEY_REPEAT);
+    }
+    if let Some((code, value)) = native_rel {
+        let _ = dispatch_native_rel_event(code, value);
     }
     if let Some((is_pointer, values)) = packet {
         dispatch_values(id, is_pointer, &values);
