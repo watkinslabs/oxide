@@ -10,6 +10,7 @@ const STATUS_FAILURE_MASK: u64 = 0x8000_0000;
 pub const WM_KEYDOWN: u32 = 0x0100;
 pub const WM_KEYUP: u32 = 0x0101;
 pub const WM_CHAR: u32 = 0x0102;
+pub const WM_QUIT: u32 = 0x0012;
 pub const VK_BACK: u16 = 0x08;
 pub const VK_TAB: u16 = 0x09;
 pub const VK_RETURN: u16 = 0x0d;
@@ -51,6 +52,13 @@ pub struct MenuItemInfoW {
 
 #[derive(Debug)]
 pub enum WindowError { Status(u64), Host(io::Error) }
+
+/// Result of one blocking GetMessageW operation. # C: O(1)
+#[derive(Debug, Eq, PartialEq)]
+pub enum GetMessageResult {
+    Message(NtWindowMessage),
+    Quit(NtWindowMessage),
+}
 
 #[derive(Debug)]
 pub enum MenuRenderError { Window(WindowError), Gdi(GdiError), Raster(RasterError) }
@@ -215,10 +223,11 @@ impl User32 {
         match result { Ok(_) => Ok(Some(message)), Err(WindowError::Status(STATUS_NO_MORE_ENTRIES)) => Ok(None), Err(error) => Err(error) }
     }
 
-    /// Remove and return the next matching message, waiting in the native service if needed. # C: O(1) plus scheduler wait
-    pub fn get_message(&self, hwnd: u64, first: u32, last: u32) -> Result<NtWindowMessage, WindowError> {
+    /// Remove and return the next matching message, preserving GetMessageW's quit result. # C: O(1) plus scheduler wait
+    pub fn get_message(&self, hwnd: u64, first: u32, last: u32) -> Result<GetMessageResult, WindowError> {
         let mut message = NtWindowMessage { hwnd: 0, message: 0, padding: 0, wparam: 0, lparam: 0 };
-        invoke(NtService::GetMessage, [(&mut message as *mut NtWindowMessage) as u64, hwnd, first as u64, last as u64, 0, 0]).map(|_| message)
+        invoke(NtService::GetMessage, [(&mut message as *mut NtWindowMessage) as u64, hwnd, first as u64, last as u64, 0, 0])?;
+        Ok(classify_get_message(message))
     }
 
     /// Dispatch one message through its canonical native window procedure. # C: O(1) plus one callback transition
@@ -303,6 +312,10 @@ fn translate_virtual_key(key: u16, shift: bool, caps_lock: bool) -> Option<u16> 
     character
 }
 
+fn classify_get_message(message: NtWindowMessage) -> GetMessageResult {
+    if message.message == WM_QUIT { GetMessageResult::Quit(message) } else { GetMessageResult::Message(message) }
+}
+
 fn invoke(service: NtService, args: [u64; 6]) -> Result<u64, WindowError> {
     let result = unsafe { libc::syscall(service.entry() as libc::c_long, args[0], args[1], args[2], args[3], args[4], args[5]) };
     if result == -1 { return Err(WindowError::Host(io::Error::last_os_error())); }
@@ -344,6 +357,14 @@ mod tests {
     fn no_message_status_is_not_a_transport_failure() {
         assert_eq!(STATUS_NO_MORE_ENTRIES & STATUS_FAILURE_MASK, STATUS_FAILURE_MASK);
         assert!(matches!(WindowError::Status(STATUS_NO_MORE_ENTRIES), WindowError::Status(value) if value == STATUS_NO_MORE_ENTRIES));
+    }
+
+    #[test]
+    fn get_message_preserves_wm_quit_loop_termination() {
+        let ordinary = NtWindowMessage { hwnd: 7, message: WM_KEYDOWN, padding: 0, wparam: 0x41, lparam: 0 };
+        let quit = NtWindowMessage { hwnd: 0, message: WM_QUIT, padding: 0, wparam: 9, lparam: 0 };
+        assert_eq!(classify_get_message(ordinary), GetMessageResult::Message(ordinary));
+        assert_eq!(classify_get_message(quit), GetMessageResult::Quit(quit));
     }
 
     #[test]
