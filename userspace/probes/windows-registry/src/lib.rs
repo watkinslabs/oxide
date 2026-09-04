@@ -101,6 +101,7 @@ impl RegistryStore {
         let lock = OpenOptions::new().read(true).write(true).create(true).open(lock_path)?;
         let fd = lock.as_raw_fd();
         // SAFETY: the descriptor belongs to the live sidecar File and remains open for the session.
+        // SAFETY: the descriptor belongs to the live sidecar File and remains open for the session.
         if unsafe { libc::flock(fd, libc::LOCK_EX) } != 0 { return Err(io::Error::last_os_error().into()); }
         let registry = if path.exists() { Registry::load(path)? } else { Registry::new() };
         Ok(Self { registry, path: path.to_path_buf(), _lock: lock, dirty: false })
@@ -655,16 +656,51 @@ mod tests {
     #[test]
     fn registry_session_lock_serializes_open_and_releases_on_drop() {
         use std::sync::{mpsc, Arc};
-        use std::thread;
         let path = std::env::temp_dir().join(format!("oxide-registry-lock-{}", std::process::id()));
         let _ = fs::remove_file(&path); let _ = fs::remove_file(path.with_extension("oxide-registry.lock"));
         let first = RegistryStore::open(&path).unwrap();
+        let lock_path = path.with_extension("oxide-registry.lock");
+        let probe = OpenOptions::new().read(true).write(true).open(&lock_path).unwrap();
+        // SAFETY: the probe descriptor is open for this test and remains valid for the call.
+        let result = unsafe { libc::flock(probe.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        assert_eq!(result, -1);
+        assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::EWOULDBLOCK));
+        drop(probe);
         let (started_tx, started_rx) = mpsc::channel(); let (acquired_tx, acquired_rx) = mpsc::channel(); let shared = Arc::new(path.clone());
         let second_path = Arc::clone(&shared);
-        let waiter = thread::spawn(move || { started_tx.send(()).unwrap(); let store = RegistryStore::open(&second_path).unwrap(); acquired_tx.send(()).unwrap(); drop(store); });
+        let waiter = std::thread::spawn(move || { started_tx.send(()).unwrap(); let store = RegistryStore::open(&second_path).unwrap(); acquired_tx.send(()).unwrap(); drop(store); });
         started_rx.recv().unwrap(); assert!(acquired_rx.recv_timeout(std::time::Duration::from_millis(50)).is_err());
         drop(first); assert!(acquired_rx.recv_timeout(std::time::Duration::from_secs(1)).is_ok());
         waiter.join().unwrap(); let _ = fs::remove_file(path); let _ = fs::remove_file(shared.with_extension("oxide-registry.lock"));
+    }
+
+    #[test]
+    fn registry_session_lock_preserves_committed_writes_between_contending_sessions() {
+        use std::sync::{mpsc, Arc};
+        let path = std::env::temp_dir().join(format!("oxide-registry-contention-{}", std::process::id()));
+        let lock_path = path.with_extension("oxide-registry.lock");
+        let _ = fs::remove_file(&path); let _ = fs::remove_file(&lock_path);
+        let mut first = RegistryStore::open(&path).unwrap();
+        let first_key = first.registry_mut().create_handle(Root::CurrentUser, r"Software\First").unwrap();
+        first.registry_mut().set_value_handle(first_key, "Committed", Value { kind: ValueType::Dword, data: vec![1, 0, 0, 0] }).unwrap();
+        first.flush().unwrap();
+        let (started_tx, started_rx) = mpsc::channel(); let (done_tx, done_rx) = mpsc::channel(); let shared = Arc::new(path.clone());
+        let second_path = Arc::clone(&shared);
+        let writer = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            let mut second = RegistryStore::open(&second_path).unwrap();
+            let second_key = second.registry_mut().create_handle(Root::CurrentUser, r"Software\Second").unwrap();
+            second.registry_mut().set_value_handle(second_key, "Committed", Value { kind: ValueType::Dword, data: vec![2, 0, 0, 0] }).unwrap();
+            second.flush().unwrap(); done_tx.send(()).unwrap();
+        });
+        started_rx.recv().unwrap(); assert!(done_rx.recv_timeout(std::time::Duration::from_millis(50)).is_err());
+        drop(first); done_rx.recv_timeout(std::time::Duration::from_secs(1)).unwrap(); writer.join().unwrap();
+        let restored = RegistryStore::open(&path).unwrap();
+        let first_key = restored.registry().open_key(Root::CurrentUser, r"software\first").unwrap();
+        let second_key = restored.registry().open_key(Root::CurrentUser, r"software\second").unwrap();
+        assert_eq!(restored.registry().query_value(&first_key, "committed").unwrap().data, vec![1, 0, 0, 0]);
+        assert_eq!(restored.registry().query_value(&second_key, "committed").unwrap().data, vec![2, 0, 0, 0]);
+        drop(restored); let _ = fs::remove_file(path); let _ = fs::remove_file(lock_path);
     }
 
     #[test]
