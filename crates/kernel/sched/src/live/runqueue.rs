@@ -24,7 +24,7 @@ use vmm::AddressSpace;
 
 #[path = "runqueue/nice.rs"]
 mod nice;
-pub use nice::{set_group_shares, set_nice};
+pub use nice::{set_nice, set_task_group};
 
 /// Architecture IRQ gate for Linux's `raw_spin_rq_lock_irqsave()` boundary.
 /// `schedule()` is the sole exception: it disables IRQs explicitly and holds
@@ -337,6 +337,36 @@ pub unsafe fn uninstall_global() -> Option<Runqueue> {
     if cpu >= MAX_CPUS { return None; }
     // SAFETY: this CPU is the sole writer for its own slot.
     unsafe { (*GLOBALS[cpu].0.get()).take() }
+}
+
+/// Attach one complete group descriptor to every installed CPU hierarchy.
+/// # C: O(CPUs * depth * log groups)
+pub(crate) fn online_group(group: &crate::task_group::TaskGroup) {
+    for cpu in 0..MAX_CPUS as u32 {
+        // SAFETY: slots are queried only for installed runqueues; absent CPUs are skipped.
+        let Some(rq) = (unsafe { global_for(cpu) }) else { continue; };
+        rq.inner.lock_irqsave::<RqIrq>().cfs.online_group(group);
+    }
+}
+
+/// Reweight one group entity independently on every installed CPU.
+/// # C: O(CPUs * depth * log groups)
+pub(crate) fn reweight_group(group: &crate::task_group::TaskGroup) {
+    for cpu in 0..MAX_CPUS as u32 {
+        // SAFETY: slots are queried only for installed runqueues; absent CPUs are skipped.
+        let Some(rq) = (unsafe { global_for(cpu) }) else { continue; };
+        rq.inner.lock_irqsave::<RqIrq>().cfs.reweight_group(group);
+    }
+}
+
+/// Detach one empty group from every installed CPU hierarchy.
+/// # C: O(CPUs * depth * log groups)
+pub(crate) fn offline_group(id: u64) {
+    for cpu in 0..MAX_CPUS as u32 {
+        // SAFETY: slots are queried only for installed runqueues; absent CPUs are skipped.
+        let Some(rq) = (unsafe { global_for(cpu) }) else { continue; };
+        rq.inner.lock_irqsave::<RqIrq>().cfs.offline_group(id);
+    }
 }
 
 /// Settle scheduler-owned runtime and publish terminal state atomically with

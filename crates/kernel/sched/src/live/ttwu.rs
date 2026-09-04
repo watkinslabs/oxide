@@ -120,7 +120,7 @@ pub fn sched_ttwu_pending(cpu: u32, current: *mut Task, rq: &Runqueue) -> bool {
                 let curr = if raw.is_null() { None } else { Some(cand_of(unsafe { &*raw })) };
                 #[cfg(feature = "debug-watchdog")]
                 task.wake_diag_mark(WakeDiagPhase::Activating, wake_diag_now_ns());
-                task.lift_vruntime(inner.cfs.min_vruntime());
+                task.lift_vruntime(inner.cfs.min_vruntime_for(&task));
                 let outranks = curr.is_none_or(|c| wakeup_preempt(cand_of(&task), c));
                 rq.account_wake(&task);
                 #[cfg(target_os = "oxide-kernel")]
@@ -349,7 +349,7 @@ where F: Fn(u32) -> Option<&'a Runqueue>, A: Fn(u32) -> bool,
             // visibility, matching deferred publication and migration.
             task.cpu.store(target as u16, Ordering::Release);
             // Sleeper credit on wake (F211).
-            task.lift_vruntime(inner.cfs.min_vruntime());
+            task.lift_vruntime(inner.cfs.min_vruntime_for(&task));
             // Linux `ttwu_do_activate` -> `wakeup_preempt`: the wake only takes
             // the CPU away from the running task when the class/policy/priority
             // comparison says it should. Resching unconditionally here made

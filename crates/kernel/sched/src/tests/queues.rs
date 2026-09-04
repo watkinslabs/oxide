@@ -504,32 +504,3 @@ fn priority_still_beats_position() {
     assert_eq!(rq.pick_next_task().tid, 2);
     assert_eq!(rq.pick_next_task().tid, 1);
 }
-
-#[test]
-fn cgroup_share_changes_eevdf_request_without_changing_nice_weight() {
-    let mut q = CfsRunqueue::new();
-    let low = normal(90, 0, 1024);
-    let high = normal(91, 0, 1024);
-    low.sched.store_group_shares(512);
-    high.sched.store_group_shares(2048);
-    q.enqueue(Arc::clone(&low));
-    q.enqueue(Arc::clone(&high));
-    assert!(high.sched.se.deadline.load(Ordering::Acquire)
-        < low.sched.se.deadline.load(Ordering::Acquire));
-    assert_eq!(low.sched.se.load.snapshot().weight, high.sched.se.load.snapshot().weight);
-}
-
-#[test]
-fn cfs_descends_through_parent_group_entities() {
-    let mut q = CfsRunqueue::new();
-    let first = normal(92, 0, 1024);
-    let second = normal(93, 0, 1024);
-    first.sched.store_group_id(10);
-    second.sched.store_group_id(20);
-    first.sched.store_group_shares(1024);
-    second.sched.store_group_shares(512);
-    q.enqueue(Arc::clone(&first));
-    q.enqueue(Arc::clone(&second));
-    assert_eq!(q.pick_leftmost().unwrap().tid, 92);
-    assert_eq!(q.pick_leftmost().unwrap().tid, 93);
-}

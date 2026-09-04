@@ -12,6 +12,7 @@
 // - interleave_pidfd: pidfd lifetime across namespace teardown and reap.
 // - exit_notify: exit_notify/forget_original_parent adoption order + autoreap.
 // - enqueue_reject: failed activation state restoration + idle CPU publication.
+// - fair_group_live: live hierarchical fair runqueues and cgroup attachment.
 // - net_namespace: task-owned network namespace lifetime and exit ordering.
 // - namespaces: concrete non-network owner lifetime and exit ordering.
 // - keyring_hooks: keyring exit/fsid-change hook dispatch + last-thread rule.
@@ -47,6 +48,7 @@ mod cpu_clock_measure;
 mod cpu_nanosleep;
 mod enqueue_reject;
 mod exit_notify;
+mod fair_group_live;
 pub(crate) mod interleave;
 mod interleave_wait;
 mod interleave_pidfd;

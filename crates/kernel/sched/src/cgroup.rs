@@ -13,6 +13,35 @@ use core::sync::atomic::Ordering;
 
 use crate::{Task, TaskState};
 
+fn scheduler_group(cgid: u64) -> alloc::sync::Arc<crate::task_group::TaskGroup> {
+    if cgid == cgroup::ROOT_CGROUP { return crate::task_group::root(); }
+    if let Some(group) = crate::task_group::lookup(cgid) {
+        group.wait_online();
+        return group;
+    }
+    let parent_id = cgroup::node_parent(cgid)
+        .expect("live cgroup lacks scheduler parent");
+    let parent = scheduler_group(parent_id);
+    let shares = cgroup::cpu_weight_to_cfs(cgroup::cpu_weight(cgid));
+    let (group, _) = crate::task_group::register(cgid, &parent, shares);
+    if group.claim_online() {
+        crate::live::runqueue::online_group(&group);
+        group.finish_online();
+    } else { group.wait_online(); }
+    group
+}
+
+pub(crate) fn sync_task_group(task: &Task) {
+    let group = scheduler_group(cgroup::cgroup_of(task.tid as u64));
+    task.sched.store_group_id(group.id());
+}
+
+fn release_group(cgid: u64) {
+    if crate::task_group::lookup(cgid).is_none() { return; }
+    crate::live::runqueue::offline_group(cgid);
+    let _ = crate::task_group::unregister(cgid);
+}
+
 /// Serialize canonical membership against fork, migration, and task exit.
 /// # C: O(body + contention)
 /// # Sleeps: yes, in process context while another writer owns the transaction
@@ -47,6 +76,7 @@ pub(crate) fn commit_untracked_nt_task(task: &Task) {
     } else { (tgid, true) };
     let result = commit_new_task(None, task.tid as u64, parent, thread);
     debug_assert!(result.is_ok());
+    sync_task_group(task);
 }
 
 fn lookup_init_pid(pid: u32) -> Option<alloc::sync::Arc<crate::Task>> {
@@ -150,15 +180,11 @@ pub fn cpuset_hook(pid: u64, mask: cpu::CpuMask) {
     }
 }
 
-/// Record no per-task mutation for a cpu.weight membership callback.
-/// # C: O(1)
-pub fn weight_hook(pid: u64, weight: u32) {
-    // Keep the task's nice-derived load unchanged; the group multiplier is
-    // applied when its fair entity is (re)enqueued.
-    if let Some(task) = lookup_init_pid(pid as u32) {
-        crate::live::runqueue::set_group_shares(
-            &task, cgroup::cgroup_of(pid), weight);
-    }
+/// Reweight one scheduler group entity on every installed CPU. # C: O(CPUs * depth)
+pub fn weight_hook(cgid: u64, weight: u32) {
+    let group = scheduler_group(cgid);
+    group.store_shares(weight);
+    crate::live::runqueue::reweight_group(&group);
 }
 
 /// vpid → global tid for cgroup.procs/threads writes (identity fallback).
@@ -220,13 +246,12 @@ pub fn migrate_hook(vpid: u64, cgid: u64, thread: bool) -> vfs::KResult<u64> {
     // lifecycle writer are the only state consulted by this transaction.
     let result = migrate_resolved_with(&task, cgid, thread, || {});
     if result.is_ok() {
-        let shares = cgroup::cpu_weight_to_cfs(cgroup::cpu_weight(cgid));
-        // Process migration can move every thread. Refresh the scheduler
-        // entity for each destination member so no sibling retains the old
-        // parent group after the cgroup transaction commits.
-        for tid in cgroup::subtree_pids(cgid) {
+        let group = scheduler_group(cgid);
+        // Process migration moves every thread. Consume only direct members;
+        // descendants retain their own scheduler group.
+        for tid in cgroup::direct_tids(cgid).unwrap_or_default() {
             if let Some(member) = lookup_init_pid(tid as u32) {
-                crate::live::runqueue::set_group_shares(&member, cgid, shares);
+                crate::live::runqueue::set_task_group(&member, group.id());
             }
         }
     }
@@ -250,6 +275,7 @@ pub fn install() {
     cgroup::set_signal_hook(kill_hook);
     cgroup::set_freeze_hook(freeze_hook);
     cgroup::set_weight_hook(weight_hook);
+    cgroup::set_group_release_hook(release_group);
     cgroup::set_cpuset_hook(cpuset_hook);
     cgroup::set_pid_resolve_hook(pid_resolve_hook);
     cgroup::set_pid_display_hook(pid_display_hook);

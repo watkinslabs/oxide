@@ -42,12 +42,14 @@ impl RunqueueInner {
         // Every task-rq lookup treats `task.cpu` as authoritative once on-rq.
         idle.cpu.store(cpu, core::sync::atomic::Ordering::Release);
         idle.on_rq.store(true, core::sync::atomic::Ordering::Release);
+        let mut cfs = CfsRunqueue::new();
+        for group in crate::task_group::snapshot() { cfs.online_group(&group); }
         Self {
             cpu,
             dl:  DlRunqueue::new(),
             rt:  RtRunqueue::new(),
             nt:  NtRunqueue::new(),
-            cfs: CfsRunqueue::new(),
+            cfs,
             idle,
         }
     }
@@ -252,7 +254,7 @@ impl RunqueueInner {
         if self.nr_running() == 0 { return; }
         match task.sched_class() {
             SchedClass::Normal { .. } => {
-                let floor = self.cfs.max_vruntime().wrapping_add(1);
+                let floor = self.cfs.max_vruntime_for(task).wrapping_add(1);
                 task.lift_vruntime(floor);
             }
             // A real-time task that yields gives up its turn explicitly, so

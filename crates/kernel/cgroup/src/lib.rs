@@ -30,27 +30,23 @@ pub use membership::{
     migrate_thread, read_file,
 };
 pub use fork::PreparedFork;
-
 /// Serialize hierarchy writers with prepared fork transactions. # C: O(body + contention)
 pub fn with_fork_writer<R>(body: impl FnOnce() -> R) -> R { fork_lock::with_write(body) }
-
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
-
 use vfs::{KResult, VfsError};
-
 pub use fs::{mount_at, realize_tree, CgroupFs};
 pub use policy::{CpuAction, cpu_bandwidth_decision, cpulist_to_mask, cpu_weight_to_cfs};
 pub use state::{
     set_cpuset_hook, set_freeze_hook, set_notify_hook,
     set_pid_display_hook, set_pid_resolve_hook,
     set_memory_pressure_hook, set_migrate_hook, set_signal_hook, set_tid_display_hook,
-    set_weight_hook,
+    set_group_release_hook, set_weight_hook,
 };
 use state::{
     SIGKILL, TREE, cpuset_hook, freeze_hook, migrate_task, notify_events_chain,
-    notify_events_self, memory_pressure_hook, signal_hook, weight_hook,
+    notify_events_self, group_release_hook, memory_pressure_hook, signal_hook, weight_hook,
 };
 
 /// Mount-point of the unified hierarchy.
@@ -252,13 +248,10 @@ pub fn write_file(cgid: u64, file: &str, buf: &str) -> KResult<()> {
             Ok(())
         }
         "cpu.weight" => {
-            // Persist the value, then push the mapped CFS weight to every
-            // member task so the cgroup weight actually shifts CPU shares.
-            let pids = { let mut t = TREE.lock(); t.write_file(cgid, file, buf)?; t.subtree_pids(cgid) };
+            // Reweight the scheduler group; task nice weights stay independent.
+            TREE.lock().write_file(cgid, file, buf)?;
             let w = cpu_weight_to_cfs(TREE.lock().node(cgid).map(|n| n.cpu_weight).unwrap_or(100));
-            if let Some(hook) = weight_hook() {
-                for p in pids { hook(p, w); }
-            }
+            if let Some(hook) = weight_hook() { hook(cgid, w); }
             Ok(())
         }
         "cpuset.cpus" => {
@@ -289,11 +282,14 @@ pub fn mkdir_child(parent_cgid: u64, name: &str, uid: u32, gid: u32) -> KResult<
     Ok(id)
 }
 
-/// `rmdir(2)` on a cgroup directory: remove the (empty) child node from
-/// `tree.rs`. No registry to clean up — inodes were synthesized.
+/// `rmdir(2)` on an empty cgroup directory.
 /// # C: O(log n)
-pub fn rmdir_child(parent_cgid: u64, name: &str) -> KResult<()> { hugetlb::remove_child(parent_cgid, name) }
-
+pub fn rmdir_child(parent_cgid: u64, name: &str) -> KResult<()> {
+    let id = node_child_id(parent_cgid, name).ok_or(VfsError::Enoent)?;
+    hugetlb::remove_child(parent_cgid, name)?;
+    if let Some(hook) = group_release_hook() { hook(id); }
+    Ok(())
+}
 // --- sched glue ----------------------------------------------------
 
 /// Try to charge resident bytes to an allocating memcg. Page allocation and
@@ -367,6 +363,9 @@ pub fn subtree_pids(cgid: u64) -> Vec<u64> { TREE.lock().subtree_pids(cgid) }
 /// # C: O(subtree + tasks)
 pub fn subtree_tids(cgid: u64) -> Vec<u64> { TREE.lock().subtree_tids(cgid) }
 
+/// Snapshot every live task directly attached to one cgroup. # C: O(tasks)
+pub fn direct_tids(cgid: u64) -> KResult<Vec<u64>> { TREE.lock().direct_threads(cgid) }
+
 /// Whether an OOM at `cgid` must kill the whole cgroup rather than one
 /// selected process (`memory.oom.group`). # C: O(log n)
 pub fn memory_oom_group(cgid: u64) -> bool {
@@ -435,8 +434,7 @@ pub fn charge_io(pid: u64, bytes: u64, is_write: bool) {
     }
 }
 
-/// Snapshot cgroups with a cpu.max quota for the bandwidth scanner.
-/// Empty when unmounted. See `tree::Tree::cpu_quota_groups`.
+/// Snapshot mounted cgroups with a cpu.max quota for the bandwidth scanner.
 /// # C: O(N nodes + members)
 pub fn cpu_quota_groups() -> alloc::vec::Vec<tree::CpuGroup> {
     let t = TREE.lock();
@@ -444,15 +442,14 @@ pub fn cpu_quota_groups() -> alloc::vec::Vec<tree::CpuGroup> {
     t.cpu_quota_groups()
 }
 
-/// Commit a bandwidth-scan decision (throttled flag + period re-baseline).
+/// Commit a bandwidth-scan throttle and period baseline decision.
 /// # C: O(log n)
 pub fn set_cpu_state(cgid: u64, throttled: bool, base_ns: u64, period_start_ns: u64) {
     let mut t = TREE.lock();
     if t.is_mounted() { t.set_cpu_state(cgid, throttled, base_ns, period_start_ns); }
 }
 
-/// Drop one task from its cgroup on exit. Process membership remains live
-/// while any sibling thread survives, including after the leader exits.
+/// Drop one task; process membership lives while any sibling survives.
 /// # C: O(threads)
 pub fn on_exit(tid: u64, tgid: u64) {
     let changed = fork_lock::with_write(|| {
@@ -461,15 +458,12 @@ pub fn on_exit(tid: u64, tgid: u64) {
         t.exit_task(tid, tgid)
     });
     if let Some(cg) = changed {
-        // Last task leaving a cgroup flips `populated` 1→0; systemd's
-        // empty-cgroup handler is driven by this inotify event (`26§4.1`).
+        // Last-task departure drives the populated 1→0 notification.
         notify_events_chain(cg);
     }
 }
 
-/// Absolute unified-hierarchy path of the cgroup `pid` belongs to. Linux
-/// `task_cgroup_from_root` + `cgroup_path`; the caller decides whether to
-/// render it absolute or relative to a cgroup namespace root.
+/// Absolute unified-hierarchy path of the cgroup `pid` belongs to.
 /// # C: O(depth)
 pub fn cgroup_path_of(pid: u64) -> String {
     let t = TREE.lock();
@@ -478,7 +472,7 @@ pub fn cgroup_path_of(pid: u64) -> String {
     t.path_of(cg)
 }
 
-/// Absolute unified-hierarchy path of live cgroup `cgid`.
+/// Absolute unified-hierarchy path of live `cgid`.
 /// # C: O(depth)
 pub fn path_of_cgroup(cgid: u64) -> Option<String> {
     let t = TREE.lock();
