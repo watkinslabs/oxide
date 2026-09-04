@@ -29,12 +29,13 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     let Some(object) = table.get(handle, 0) else { return Some(STATUS_INVALID_HANDLE); };
     match call.args.a1 as u32 {
         OBJECT_BASIC_INFORMATION => {
-            let Some(access) = table.access(handle) else { return Some(STATUS_INVALID_HANDLE); };
+            let Some((access, handle_count)) = table.access_and_handle_count(handle) else { return Some(STATUS_INVALID_HANDLE); };
             if return_length != 0 && uaccess::put_user_u32(return_length, OBJECT_BASIC_INFORMATION_BYTES as u32).is_err() { return Some(STATUS_INVALID_PARAMETER); }
             if (call.args.a3 as usize) < OBJECT_BASIC_INFORMATION_BYTES { return Some(STATUS_INFO_LENGTH_MISMATCH); }
             if call.args.a2 == 0 { return Some(STATUS_INVALID_PARAMETER); }
             let mut output = [0u8; OBJECT_BASIC_INFORMATION_BYTES];
             output[4..8].copy_from_slice(&access.to_le_bytes());
+            output[8..12].copy_from_slice(&handle_count.to_le_bytes());
             if uaccess::copy_to_user(call.args.a2, &output).is_err() { return Some(STATUS_INVALID_PARAMETER); }
             Some(STATUS_SUCCESS)
         }
