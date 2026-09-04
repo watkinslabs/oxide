@@ -4,7 +4,7 @@
 
 use syscall::nt::{NtCall, NtService};
 
-use crate::nt_process_memory_policy::{completion_status, destination_fault_status};
+use crate::nt_process_memory_policy::{completion_status, copy_operands, destination_fault_status, write_destination_fault_status, write_source_fault_status};
 
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 const STATUS_ACCESS_VIOLATION: u64 = 0xc000_0005;
@@ -29,10 +29,21 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
     let desired_access = if read { PROCESS_VM_READ } else { PROCESS_VM_OPERATION | PROCESS_VM_WRITE };
     let size = match usize::try_from(call.args.a3) { Ok(size) => size, Err(_) => return Some(STATUS_INVALID_PARAMETER) };
-    let destination_valid = if size == 0 { true } else {
-        crate::userbuf::validate_user_buf_writable(call.args.a2, call.args.a3, 1).is_ok()
-    };
-    if let Some(status) = destination_fault_status(size, destination_valid) { return Some(status); }
+    if read {
+        let destination_valid = if size == 0 { true } else {
+            crate::userbuf::validate_user_buf_writable(call.args.a2, call.args.a3, 1).is_ok()
+        };
+        if let Some(status) = destination_fault_status(size, destination_valid) { return Some(status); }
+    } else {
+        let source_valid = if size == 0 { true } else {
+            crate::userbuf::validate_user_buf_readable(call.args.a2, call.args.a3, 1).is_ok()
+        };
+        if let Some(status) = write_source_fault_status(size, source_valid) { return Some(status); }
+        let destination_valid = if size == 0 { true } else {
+            crate::userbuf::validate_user_buf_writable(call.args.a1, call.args.a3, 1).is_ok()
+        };
+        if let Some(status) = write_destination_fault_status(size, destination_valid) { return Some(status); }
+    }
     let same_process = if call.args.a0 == CURRENT_PROCESS { true } else {
         if call.args.a0 > u32::MAX as u64 { return Some(STATUS_INVALID_HANDLE); }
         let handle = sched::nt_object::NtHandle::from_raw(call.args.a0 as u32);
@@ -44,7 +55,8 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         alloc::sync::Arc::ptr_eq(&target.thread_group, &cur.thread_group)
     };
     if !same_process { return Some(STATUS_NOT_IMPLEMENTED); }
-    let copied = elf_load::nt_memory::copy_current_process(read, call.args.a1, call.args.a2, size).copied;
+    let (source, destination) = copy_operands(read, call.args.a1, call.args.a2);
+    let copied = elf_load::nt_memory::copy_current_process(read, source, destination, size).copied;
     if call.args.a4 != 0 && uaccess::put_user_u64(call.args.a4, copied as u64).is_err() {
         return Some(STATUS_ACCESS_VIOLATION);
     }
