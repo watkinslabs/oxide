@@ -54,4 +54,5 @@ FROZEN 2026-08-31. Dep:`01`,`02`,`06`,`13`,`31f`,`52`,`53`. Provides: event stat
   signal-specific failures are mapped before the signal object changes;
   successful signal state is committed before the wait predicate runs.
 - one-shot timers fire once, periodic timers rearm, and cancellation clears
-  readiness without affecting event objects.
+  readiness without affecting event objects; cancellation wakes direct timer
+  waiters through the timer's own wait queue.

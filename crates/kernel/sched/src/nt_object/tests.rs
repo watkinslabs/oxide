@@ -109,6 +109,19 @@ fn timer_deadlines_support_one_shot_periodic_and_cancel() {
 }
 
 #[test]
+fn timer_cancel_clears_readiness_after_a_periodic_expiry() {
+    let timer = NtObject::new_timer(8, false).timer().unwrap();
+    timer.arm(100, 10);
+    assert!(timer.try_wait_at(100));
+    assert!(!timer.is_signaled_at(109));
+    timer.arm(200, 10);
+    assert!(timer.is_signaled_at(200));
+    assert!(timer.cancel());
+    assert!(!timer.is_signaled_at(210));
+    assert!(!timer.try_wait_at(210));
+}
+
+#[test]
 fn completion_port_retains_packets_until_removed() {
     let table = NtHandleTable::new();
     let port = table.new_completion_port(2).completion().unwrap();
