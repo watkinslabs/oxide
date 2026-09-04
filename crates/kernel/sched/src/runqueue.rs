@@ -212,8 +212,9 @@ impl RunqueueInner {
     /// own runqueue's class tree from `schedule()`. Named apart from
     /// [`RunqueueInner::enqueue`] because this is the ONE enqueue whose task is
     /// legitimately still `on_cpu` — it stops running a few instructions later,
-    /// under this same rq lock, and its `on_rq` is published BEFORE `on_cpu`
-    /// drops (see [`RunqueueInner::pick_next_task_claim`] for the pairing).
+    /// under this same rq lock. Canonical `on_rq` remains queued throughout,
+    /// pairing with [`RunqueueInner::pick_next_task_claim`] and the eventual
+    /// outgoing-task `on_cpu` release.
     /// # C: O(log N) (CFS) / O(1) (RT)
     pub fn put_prev_task(&mut self, task: Arc<Task>) {
         // A running task is OFF its queue here, so the end it goes back on is
@@ -281,8 +282,8 @@ impl RunqueueInner {
         Arc::clone(&self.idle)
     }
 
-    /// `pick_next_task` fused with Linux `prepare_task(next)`: publish the
-    /// picked task's `on_cpu` before it leaves the class tree, and report whether
+    /// `pick_next_task` followed by Linux `prepare_task(next)`: select one exact
+    /// task, then publish that same task's `on_cpu` ownership and report whether
     /// someone already owned it. Returns `(task, was_already_on_cpu)`.
     ///
     /// The order is load-bearing and is Linux's, documented beside
@@ -301,13 +302,14 @@ impl RunqueueInner {
     /// goes wrong are "it would be possible to, falsely, observe p->on_cpu == 0".
     ///
     /// A running task keeps canonical `on_rq == QUEUED`; only the separate
-    /// `on_class_rq` membership clears when the class pick removes it.
+    /// `on_class_rq` membership clears when the class pick removes it. That
+    /// makes selection-before-claim safe and, critically, prevents a policy
+    /// peek and its mutating pick from claiming different tasks.
     /// # C: O(log N)
     pub fn pick_next_task_claim(&mut self) -> (Arc<Task>, bool) {
-        // Claim through the same selection `pick_next_task` will make — one
-        // `&mut self` scope, no interleaving, so peek and pick agree.
-        let claimed = self.peek_next_task().on_cpu.swap(true, core::sync::atomic::Ordering::AcqRel);
-        (self.pick_next_task(), claimed)
+        let task = self.pick_next_task();
+        let claimed = task.on_cpu.swap(true, core::sync::atomic::Ordering::AcqRel);
+        (task, claimed)
     }
 
     /// Peek at the next pick without removing. Used by `need_resched`
