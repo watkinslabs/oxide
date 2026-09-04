@@ -14,6 +14,21 @@ fn handles_are_process_local_and_type_stable() {
     assert_eq!(resolved.id(), 1);
     assert!(table.get(handle, 4).is_none());
     assert!(table.contains(handle));
+    assert_eq!(table.handle_count(handle), Some(1));
+}
+
+#[test]
+fn object_handle_count_tracks_duplicates_and_final_close() {
+    let table = NtHandleTable::new();
+    let object = table.new_object(NtObjectType::Event);
+    let first = table.insert(alloc::sync::Arc::clone(&object), READ).unwrap();
+    let second = table.duplicate(first, READ).unwrap();
+    assert_eq!(table.handle_count(first), Some(2));
+    assert_eq!(table.handle_count(second), Some(2));
+    assert_eq!(table.close_with_last(first), Some(false));
+    assert_eq!(table.handle_count(second), Some(1));
+    assert_eq!(table.close_with_last(second), Some(true));
+    assert_eq!(table.handle_count(second), None);
 }
 
 #[test]

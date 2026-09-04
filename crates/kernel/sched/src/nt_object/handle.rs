@@ -257,6 +257,32 @@ impl NtHandleTable {
         Some(entry.access)
     }
 
+    /// Return the live handle count for the object named by `handle` while
+    /// holding the table lock, so object queries cannot observe a torn count.
+    /// # C: O(N)
+    pub fn handle_count(&self, handle: NtHandle) -> Option<u32> {
+        let (index, generation) = handle.parts()?;
+        let entries = self.entries.lock();
+        let entry = entries.get(index - FIRST_INDEX)?;
+        let object = entry.object.as_ref()?;
+        if entry.generation != generation { return None; }
+        Some(entries.iter().filter(|candidate| candidate.object.as_ref().is_some_and(|other|
+            alloc::sync::Arc::ptr_eq(other, object))).count() as u32)
+    }
+
+    /// Return the granted rights and live object-handle count from one table
+    /// snapshot for `NtQueryObject`. # C: O(N)
+    pub fn access_and_handle_count(&self, handle: NtHandle) -> Option<(u32, u32)> {
+        let (index, generation) = handle.parts()?;
+        let entries = self.entries.lock();
+        let entry = entries.get(index - FIRST_INDEX)?;
+        let object = entry.object.as_ref()?;
+        if entry.generation != generation { return None; }
+        let count = entries.iter().filter(|candidate| candidate.object.as_ref().is_some_and(|other|
+            alloc::sync::Arc::ptr_eq(other, object))).count() as u32;
+        Some((entry.access, count))
+    }
+
     /// Return the user-visible handle flags. # C: O(1)
     pub fn flags(&self, handle: NtHandle) -> Option<u32> {
         let (index, generation) = handle.parts()?;
