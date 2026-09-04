@@ -140,6 +140,7 @@ impl crate::task::Task {
             self.sched.rt.timeout.store(0, core::sync::atomic::Ordering::Release);
         }
         self.sched.store_normal_class(update.class, update.policy);
+        crate::deadline::live::replenish_pi(self, crate::deadline::clock::now_ns());
         self.sched.store_uclamp(update.clamp);
         self.sched.store_reset_on_fork(update.reset_on_fork);
         if matches!(update.policy, SCHED_FIFO | SCHED_RR | SCHED_DEADLINE) {

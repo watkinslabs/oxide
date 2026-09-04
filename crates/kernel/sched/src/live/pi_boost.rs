@@ -106,16 +106,15 @@ pub fn donor_key(task: &Arc<Task>) -> crate::pi_prio::PiDonorKey {
 
 /// Publish donor identity and the key selected under RtMutexWait. # C: O(N_cpus · log N)
 pub fn apply_boost_keyed(task: &Arc<Task>, donor: Option<(Arc<Task>, crate::pi_prio::PiDonorKey)>) {
+    let now = super::schedule::change_clock_now();
     super::runqueue::mutate_effective_if(task,
         |task| {
-            let (effective, deadline, special) = effective_target(task, donor.as_ref());
+            let (effective, special) = effective_target(task, donor.as_ref());
             task.sched_class() != effective
                 || matches!(effective, SchedClass::Deadline)
-                    && (task.effective_dl_deadline() != deadline
-                        || task.effective_dl_special() != special)
+                    && task.effective_dl_special() != special
         },
-        |task| task.set_pi_top_task_unlocked(
-            donor.as_ref().map(|(task, key)| (task, *key))));
+        |task| publish_top(task, donor.as_ref(), now));
 }
 
 /// Edit one task's intrusive PI waiter tree and publish its cached top donor
@@ -145,28 +144,33 @@ where
     if before == after { return false; }
     let donor = pi.top_donor();
     let moves_queue = {
-        let (effective, deadline, special) = effective_target(task, donor.as_ref());
+        let (effective, special) = effective_target(task, donor.as_ref());
         task.sched_class() != effective
             || matches!(effective, SchedClass::Deadline)
-                && (task.effective_dl_deadline() != deadline
-                    || task.effective_dl_special() != special)
+                && task.effective_dl_special() != special
     };
     let stable = super::rq_locate::__task_rq_lock_with(get_rq, task, pi);
     match stable {
         StableTaskGuard::Owned(lock) if moves_queue => {
-            let _change = SchedChange::from_lock(lock, task,
-                super::schedule::change_clock_now());
-            task.set_pi_top_task_unlocked(donor.as_ref().map(|(task, key)| (task, *key)));
+            let now = super::schedule::change_clock_now();
+            let _change = SchedChange::from_lock(lock, task, now);
+            publish_top(task, donor.as_ref(), now);
         }
         StableTaskGuard::Owned(_) | StableTaskGuard::OffRq(_) => {
-            task.set_pi_top_task_unlocked(donor.as_ref().map(|(task, key)| (task, *key)));
+            publish_top(task, donor.as_ref(), super::schedule::change_clock_now());
         }
     }
     true
 }
 
+fn publish_top(task: &Task,
+    donor: Option<&(Arc<Task>, crate::pi_prio::PiDonorKey)>, now: u64) {
+    task.set_pi_top_task_unlocked(donor.map(|(task, key)| (task, *key)));
+    task.replenish_pi_unlocked(now);
+}
+
 fn effective_target(task: &Task,
-    donor: Option<&(Arc<Task>, crate::pi_prio::PiDonorKey)>) -> (SchedClass, u64, bool) {
+    donor: Option<&(Arc<Task>, crate::pi_prio::PiDonorKey)>) -> (SchedClass, bool) {
     let base = task.normal_sched_class();
     let base_deadline = task.configured_dl_deadline();
     let effective = donor.map(|(_, key)| crate::pi_prio::class_with_key(base, base_deadline, *key))
@@ -176,9 +180,9 @@ fn effective_target(task: &Task,
             || key.special || crate::deadline::dl_time_before(key.deadline, base_deadline)));
     if borrowed {
         let key = donor.unwrap().1;
-        (effective, key.deadline, key.special)
+        (effective, key.special)
     } else {
-        (effective, base_deadline, task.configured_dl_special())
+        (effective, task.configured_dl_special())
     }
 }
 

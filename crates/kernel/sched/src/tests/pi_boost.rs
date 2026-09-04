@@ -40,7 +40,10 @@ fn blocked_owner(tid: u32, class: SchedClass) -> Arc<Task> {
 
 fn dl_donor(tid: u32, deadline: u64) -> Arc<Task> {
     let task = donor(tid, SchedClass::Deadline);
+    let params = crate::deadline::DlParams::from_request(1, deadline, deadline, 0);
+    task.sched.dl.set_params(&params);
     let mut state = task.sched.dl.sched();
+    state.runtime = 1;
     state.deadline = deadline;
     task.sched.dl.store_sched(&state);
     task
@@ -116,7 +119,8 @@ fn fair_owner_borrows_concrete_deadline_donor() {
     let donor = dl_donor(12, 900);
     crate::live::pi_boost::apply_boost(&owner, Some(Arc::clone(&donor)));
     assert_eq!(owner.sched_class(), SchedClass::Deadline);
-    assert_eq!(owner.effective_dl_deadline(), 900);
+    assert_eq!(owner.effective_dl_params(), donor.sched.dl.params());
+    assert_eq!(owner.sched.dl.sched().runtime, 1);
     let _pi = owner.pi_lock.lock();
     assert!(Arc::ptr_eq(&owner.pi_top_task_unlocked().unwrap(), &donor));
 }
@@ -127,9 +131,12 @@ fn later_deadline_owner_borrows_earlier_donor_then_restores() {
     let early = dl_donor(14, 200);
     let late = dl_donor(15, 600);
     pi_boost::apply_boost(&owner, Some(Arc::clone(&early)));
-    assert_eq!(owner.effective_dl_deadline(), 200);
+    assert_eq!(owner.effective_dl_params(), early.sched.dl.params());
+    assert_eq!(owner.effective_dl_deadline(), 400,
+        "PI must retain the owner's mutable absolute deadline");
     pi_boost::apply_boost(&owner, Some(Arc::clone(&late)));
-    assert_eq!(owner.effective_dl_deadline(), 400, "later donor cannot displace owner's earlier entity");
+    assert_eq!(owner.effective_dl_params(), owner.sched.dl.params(),
+        "later donor cannot displace owner's earlier entity");
     let _pi = owner.pi_lock.lock();
     assert!(Arc::ptr_eq(&owner.pi_top_task_unlocked().unwrap(), &late));
     drop(_pi);

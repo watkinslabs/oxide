@@ -139,7 +139,8 @@ pub(super) fn take_due(now: u64) -> Option<DueReplenishment> {
 }
 
 #[cfg(test)]
-pub(super) fn clear_for_tests() {
+/// Remove every hosted-test replenishment claim. # C: O(N)
+pub(crate) fn clear_for_tests() {
     loop {
         let node = {
             let mut queue = q_lock!();

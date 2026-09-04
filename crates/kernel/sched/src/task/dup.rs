@@ -21,6 +21,7 @@ use super::{SchedClass, Task};
 
 /// Allocate a kernel-thread `Task` (no `mm`) directly into its `Arc`.
 /// # C: O(1)
+#[inline(never)]
 pub fn new_kthread_arc(tid: u32, name: &'static str, class: SchedClass) -> Arc<Task> {
     build(|| Task::new(tid, name, class))
 }

@@ -18,6 +18,25 @@ pub struct PiDonorKey {
     pub class: SchedClass,
     pub deadline: u64,
     pub special: bool,
+    pub dl_params: PiDlParams,
+}
+
+/// Value snapshot of the immutable reservation propagated through PI waiter trees.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub struct PiDlParams {
+    pub runtime: u64,
+    pub deadline: u64,
+    pub period: u64,
+    pub bw: u64,
+    pub density: u64,
+    pub flags: u64,
+}
+
+impl Default for PiDonorKey {
+    fn default() -> Self {
+        Self { class: SchedClass::Idle, deadline: 0, special: false,
+            dl_params: PiDlParams::default() }
+    }
 }
 
 /// Total order over scheduling classes, matching what `pick_next_task`

@@ -1,11 +1,10 @@
 //! One task-owned scheduler state tree and coherent priority snapshots (`13a§5`).
 
-use alloc::sync::{Arc, Weak};
-use core::cell::UnsafeCell;
 use core::sync::atomic::{fence, AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use super::{LoadWeight, SchedClass, SchedEntity, SchedEntityState, SchedPolicy,
     SchedPriority, SchedRtEntity, SchedRtEntityState};
 use super::sched_entity::{MIN_NICE, SCHED_FIXEDPOINT_SHIFT, SCHED_PRIO_TO_WEIGHT};
+mod dl_pi;
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SchedClassId { Deadline, PosixRt, NtFixed, Fair, Idle }
@@ -83,10 +82,7 @@ pub(crate) struct TaskSched {
     has_donor: AtomicBool,
     donor_prio: AtomicU8,
     donor_class: AtomicU8,
-    pi_top_task: UnsafeCell<Option<Weak<super::Task>>>,
-    borrowed_dl_deadline: AtomicU64,
-    borrowed_dl_special: AtomicBool,
-    uses_borrowed_dl: AtomicBool,
+    dl_pi: dl_pi::DlPiState,
     class: AtomicU8,
     pub(crate) se: SchedEntityState,
     pub(crate) rt: SchedRtEntityState,
@@ -146,8 +142,7 @@ impl TaskSched {
             policy: AtomicU8::new(policy as u8), reset_on_fork: AtomicBool::new(false),
             has_donor: AtomicBool::new(false), donor_prio: AtomicU8::new(SchedPriority::Idle.raw()),
             donor_class: AtomicU8::new(SchedClassId::Idle as u8),
-            pi_top_task: UnsafeCell::new(None), borrowed_dl_deadline: AtomicU64::new(0),
-            borrowed_dl_special: AtomicBool::new(false), uses_borrowed_dl: AtomicBool::new(false),
+            dl_pi: dl_pi::DlPiState::new(),
             class: AtomicU8::new(class_id as u8),
             se: SchedEntityState::new(SchedEntity::new(load)),
             rt: SchedRtEntityState::new(SchedRtEntity::new(rr_ticks)),
@@ -243,66 +238,6 @@ impl TaskSched {
         self.has_donor.load(Ordering::Acquire)
     }
 
-    /// Effective absolute deadline used by EDF ordering. # C: O(1)
-    pub(crate) fn effective_dl_deadline(&self) -> u64 {
-        if self.uses_borrowed_dl.load(Ordering::Acquire) { self.borrowed_dl_deadline.load(Ordering::Acquire) }
-        else { self.dl.abs_deadline() }
-    }
-    /// Effective special-entity bit used by deadline preemption. # C: O(1)
-    pub(crate) fn effective_dl_special(&self) -> bool {
-        if self.uses_borrowed_dl.load(Ordering::Acquire) { self.borrowed_dl_special.load(Ordering::Acquire) }
-        else { self.dl.params().is_special() }
-    }
-    /// Replace the concrete top PI donor while TaskPi and the owner rq are held. # C: O(1)
-    pub(crate) fn store_top_donor(&self,
-        donor: Option<(&Arc<super::Task>, crate::pi_prio::PiDonorKey)>) {
-        let normal = load_priority(&self.normal_prio);
-        let normal_id = class_id(normal);
-        let base = self.normal_class();
-        let base_deadline = self.dl.abs_deadline();
-        let state = donor.map(|(task, key)| (key.class, key.deadline, key.special,
-            crate::pi_prio::class_with_key(base, base_deadline, key), Arc::downgrade(task)));
-        self.begin_publish();
-        // SAFETY: callers hold the owner's TaskPi and stable rq lock, which are
-        // the exclusive writer protocol for this non-owning donor back-link.
-        unsafe { *self.pi_top_task.get() = state.as_ref().map(|value| value.4.clone()); }
-        match state {
-            Some((class, deadline, special, effective, _)) => {
-                let (prio, donor_id) = priority_for_class(class);
-                self.has_donor.store(true, Ordering::Relaxed);
-                self.donor_prio.store(prio.raw(), Ordering::Relaxed);
-                self.donor_class.store(donor_id as u8, Ordering::Relaxed);
-                self.borrowed_dl_deadline.store(deadline, Ordering::Relaxed);
-                self.borrowed_dl_special.store(special, Ordering::Relaxed);
-                let borrowed = matches!((effective, class),
-                    (SchedClass::Deadline, SchedClass::Deadline))
-                    && (!matches!(base, SchedClass::Deadline)
-                        || special || crate::deadline::dl_time_before(deadline, base_deadline));
-                self.uses_borrowed_dl.store(borrowed, Ordering::Relaxed);
-                let (effective_prio, effective_id) = priority_for_class(effective);
-                self.prio.store(effective_prio.raw(), Ordering::Relaxed);
-                self.class.store(effective_id as u8, Ordering::Relaxed);
-            }
-            None => {
-                self.has_donor.store(false, Ordering::Relaxed);
-                self.donor_prio.store(SchedPriority::Idle.raw(), Ordering::Relaxed);
-                self.donor_class.store(SchedClassId::Idle as u8, Ordering::Relaxed);
-                self.borrowed_dl_deadline.store(0, Ordering::Relaxed);
-                self.borrowed_dl_special.store(false, Ordering::Relaxed);
-                self.uses_borrowed_dl.store(false, Ordering::Relaxed);
-                self.prio.store(normal.raw(), Ordering::Relaxed);
-                self.class.store(normal_id as u8, Ordering::Relaxed);
-            }
-        }
-        self.end_publish();
-    }
-    /// Clone the concrete top donor while TaskPi or the owner rq is held. # C: O(1)
-    #[cfg(test)]
-    pub(crate) fn top_donor(&self) -> Option<Arc<super::Task>> {
-        // SAFETY: the caller holds one lock from the donor publication
-        // protocol, so the weak pointer cannot be replaced during this clone.
-        unsafe { (&*self.pi_top_task.get()).as_ref().and_then(Weak::upgrade) }
-    }
     pub(crate) fn uclamp_snapshot(&self) -> SchedUclamp {
         loop {
             let before = self.publish_sequence.load(Ordering::Acquire);
@@ -430,16 +365,16 @@ impl TaskSched {
         let donor_wins = self.has_donor.load(Ordering::Relaxed) && inheritable
             && (idle_policy_donor || donor > normal
                 || (donor == SchedPriority::Deadline && normal == SchedPriority::Deadline
-                    && (self.borrowed_dl_special.load(Ordering::Relaxed) || crate::deadline::dl_time_before(
-                        self.borrowed_dl_deadline.load(Ordering::Relaxed), self.dl.abs_deadline()))));
+                    && (self.dl_pi.snapshot().2.is_special() || crate::deadline::dl_time_before(
+                        self.dl_pi.snapshot().1, self.dl.abs_deadline()))));
         if donor_wins {
             self.prio.store(self.donor_prio.load(Ordering::Relaxed), Ordering::Relaxed);
             self.class.store(self.donor_class.load(Ordering::Relaxed), Ordering::Relaxed);
-            self.uses_borrowed_dl.store(donor == SchedPriority::Deadline, Ordering::Relaxed);
+            self.dl_pi.set_used(donor == SchedPriority::Deadline);
         } else {
             self.prio.store(normal.raw(), Ordering::Relaxed);
             self.class.store(normal_id as u8, Ordering::Relaxed);
-            self.uses_borrowed_dl.store(false, Ordering::Relaxed);
+            self.dl_pi.set_used(false);
         }
     }
     /// Clear donor state after the configured class already became effective. # C: O(1)
@@ -450,12 +385,7 @@ impl TaskSched {
         self.has_donor.store(false, Ordering::Relaxed);
         self.donor_prio.store(SchedPriority::Idle.raw(), Ordering::Relaxed);
         self.donor_class.store(SchedClassId::Idle as u8, Ordering::Relaxed);
-        self.borrowed_dl_deadline.store(0, Ordering::Relaxed);
-        self.borrowed_dl_special.store(false, Ordering::Relaxed);
-        self.uses_borrowed_dl.store(false, Ordering::Relaxed);
-        // SAFETY: restore_normal is called with TaskPi and the stable owner rq
-        // held, excluding every writer of the non-owning donor back-link.
-        unsafe { *self.pi_top_task.get() = None; }
+        self.dl_pi.clear();
         self.store_effective_from_normal(normal, class_id(normal));
         self.end_publish();
     }
@@ -514,29 +444,6 @@ fn priority_for_class(class: SchedClass) -> (SchedPriority, SchedClassId) {
         }
         SchedClass::Idle => (SchedPriority::Idle, SchedClassId::Idle),
     }
-}
-impl super::Task {
-    /// Configured absolute deadline without PI borrowing. # C: O(1)
-    pub(crate) fn configured_dl_deadline(&self) -> u64 { self.sched.dl.abs_deadline() }
-    /// Configured special-entity bit without PI borrowing. # C: O(1)
-    pub(crate) fn configured_dl_special(&self) -> bool { self.sched.dl.params().is_special() }
-    /// Absolute deadline used by the effective deadline entity. # C: O(1)
-    pub fn effective_dl_deadline(&self) -> u64 { self.sched.effective_dl_deadline() }
-    /// Special bit used by the effective deadline entity. # C: O(1)
-    pub fn effective_dl_special(&self) -> bool { self.sched.effective_dl_special() }
-    /// Coherent PI key while TaskPi and this task's rq are held. # C: O(1)
-    pub(crate) fn pi_donor_key_unlocked(&self) -> crate::pi_prio::PiDonorKey {
-        crate::pi_prio::PiDonorKey { class: self.sched_class(),
-            deadline: self.effective_dl_deadline(), special: self.effective_dl_special() }
-    }
-    /// Publish one concrete top donor while TaskPi and the owner rq are held. # C: O(1)
-    pub(crate) fn set_pi_top_task_unlocked(&self,
-        donor: Option<(&Arc<super::Task>, crate::pi_prio::PiDonorKey)>) {
-        self.sched.store_top_donor(donor);
-    }
-    /// Clone the concrete top donor while TaskPi or the owner rq is held. # C: O(1)
-    #[cfg(test)]
-    pub(crate) fn pi_top_task_unlocked(&self) -> Option<Arc<super::Task>> { self.sched.top_donor() }
 }
 #[cfg(test)]
 #[path = "sched_state/tests.rs"]

@@ -317,7 +317,7 @@ mod tests {
 
     fn key(priority: u8) -> PiDonorKey {
         PiDonorKey { class: SchedClass::Rt { prio: priority, policy: SchedPolicy::Fifo },
-            deadline: 0, special: false }
+            ..PiDonorKey::default() }
     }
 
     fn test_node(priority: u8, order: u64, lock_id: u64, waiter_id: u64) -> PiTreeNode {

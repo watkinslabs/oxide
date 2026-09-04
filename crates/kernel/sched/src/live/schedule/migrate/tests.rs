@@ -83,6 +83,7 @@ fn parked_switch_migration_does_not_deadlock_owner_waiter_update() {
     let updater = std::thread::spawn(move || {
         let key = crate::pi_prio::PiDonorKey {
             class: update_donor.sched_class(), deadline: 0, special: false,
+            ..crate::pi_prio::PiDonorKey::default()
         };
         let mut node = Box::pin(crate::pi_prio::PiTreeNode::new(
             &update_donor, key, 1, 1, 1));
