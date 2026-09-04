@@ -90,7 +90,6 @@ pub(crate) struct TaskSched {
     uclamp_min: AtomicU32,
     uclamp_max: AtomicU32,
     uclamp_user_defined: AtomicU8,
-    group_shares: AtomicU32,
     group_id: AtomicU64,
 }
 
@@ -148,7 +147,6 @@ impl TaskSched {
             rt: SchedRtEntityState::new(SchedRtEntity::new(rr_ticks)),
             dl: crate::deadline::DlEntity::new(), uclamp_min: AtomicU32::new(0),
             uclamp_max: AtomicU32::new(uclamp_max), uclamp_user_defined: AtomicU8::new(0),
-            group_shares: AtomicU32::new(1024),
             group_id: AtomicU64::new(0),
         }
     }
@@ -263,14 +261,6 @@ impl TaskSched {
     /// Linux nice derived from canonical static priority. # C: O(1)
     pub fn nice(&self) -> i8 {
         self.priority_snapshot().static_prio.nice().unwrap_or(0) as i8
-    }
-
-    pub(crate) fn store_group_shares(&self, shares: u32) {
-        self.group_shares.store(shares.clamp(1, 102_400), Ordering::Release);
-    }
-
-    pub(crate) fn group_shares(&self) -> u32 {
-        self.group_shares.load(Ordering::Acquire)
     }
 
     pub(crate) fn store_group_id(&self, id: u64) {
