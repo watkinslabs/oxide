@@ -28,6 +28,11 @@ grep -Fq "pub(super) fn register_class(args: SyscallArgs)" "$raw_class_source"
 grep -Fq "pub(super) fn create_window(args: SyscallArgs)" "$raw_class_source"
 grep -Fq "const SERVER_REQ_CREATE_MAPPING: u32 = 63;" "$wine_unix_source"
 grep -Fq "const SERVER_REQ_OPEN_MAPPING: u32 = 64;" "$wine_unix_source"
+grep -Fq "const SERVER_REQ_SELECT: u32 = 29;" "$wine_unix_source"
+if grep -Fq "const SERVER_REQ_SELECT: u32 = 23;" "$wine_unix_source"; then
+    echo "windows-notepad-harness: stale Wine select request ID 23" >&2
+    exit 1
+fi
 grep -Fq "fn server_create_mapping(" "$wine_unix_source"
 grep -Fq "const SERVER_REQ_GET_MAPPING_INFO: u32 = 65;" "$wine_unix_source"
 grep -Fq "const SERVER_REQ_GET_IMAGE_MAP_ADDRESS: u32 = 66;" "$wine_unix_source"
