@@ -1,6 +1,6 @@
 # Known issues
 
-**Live issue count: 296** — 293 `OPEN`, 3 `IN-PROGRESS`.
+**Live issue count: 299** — 296 `OPEN`, 3 `IN-PROGRESS`.
 
 | Id | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|---|
@@ -300,6 +300,9 @@
 | KI-0324 | OPEN | INFRA | high | Spec manifest omits the tracked 31fy named-pipe document on pristine main | cargo run --quiet -p spec-lint -- manifest on origin/main 6e0b4b2b reports docs/31fy-windows-nt-named-pipe.md manifest/missing-row; the file also has a noncanonical IN PROGRESS status and must be repaired by its owning Windows lane. | unowned |
 | KI-0325 | OPEN | INFRA | high | Spec xref cannot resolve the existing 52 to 64 section reference on pristine main | cargo run --quiet -p spec-lint -- xref on origin/main 6e0b4b2b reports docs/52-repo-structure-and-ownership.md:155 64§10 -> doc 64 not found; R135 does not add this reference. | unowned |
 | KI-0326 | IN-PROGRESS B3321-deadline-pi-entity | DEFECT | critical | [CLAIMED B3321-deadline-pi-entity 2026-09-04] [CLAIMED B3321-deadline-pi-entity 2026-09-04] Deadline PI borrows only scalar deadline identity while CBS runtime, throttling, replenishment, and ready-node ownership remain on the mutex owner inert deadline entity | Audit of origin/main 98af43a51 against pinned Linux 7.2.0-rc4: Linux sched_dl_entity.pi_se redirects deadline behavior to the donor effective entity. Oxide TaskSched stores borrowed_dl_deadline/borrowed_dl_special, but deadline/live.rs charges task.sched.dl and dl.rs queues the owner ready_node. A fair or RT mutex owner promoted by a deadline waiter therefore advertises the donor deadline while executing against zero/unrelated owner budget. KI-0321 was closed without this residual. | B3321-deadline-pi-entity |
+| KI-0327 | OPEN | DEFECT | critical | SMP boot can select a task already owned by another CPU | B3322 final x86 smoke reached systemd, logged OWNCONFLICT for tid 4096 with on_rq=1 and picked_on_cpu=1, then panicked at crates/kernel/smoke/src/elf.rs:187. B3322 changes PI ordering only when a waiter is SchedClass::NtFixed; the Fedora boot creates no NT-fixed task, so this failure is outside that changed decision. Log /tmp/oxide-boot-smoke-x86-FgUJJb.log has 30 kernel/userspace lines. | unowned |
+| KI-0329 | OPEN | MISSING | high | Fair task-group hierarchy is not connected to the live scheduler | At origin/main fa595d012, TaskGroup is referenced only by its own tests. Live CfsRunqueue stores groups in one flat map, multiplies each task weight by group_shares, and picks a group id before picking a task; it has no per-CPU child cfs_rq or schedulable parent entity descent. PR #7140 therefore delivered flat group-weight dispatch and transactional rekeying, not the complete nested hierarchy described by docs/13 and the closed KI-0322 text. | unowned |
+| KI-0330 | OPEN | MISSING | high | Native fixed-priority dispatch lacks quantum and variable-priority process semantics | At origin/main fa595d012, NtRunqueue provides 32 strict FIFO levels and explicit yield rotation, but task_tick handles NtFixed as a generic non-RT policy: it requests reschedule each tick without decrementing or rotating the stored quantum. No production state or callers implement Windows variable-priority boosts and decay or a ThreadGroup process-priority transaction. PR #7139 therefore delivered the fixed ready queues and class ordering, not the complete native dispatcher model described by docs/13 and the closed KI-0323 text. | unowned |
 
 ## Ext4 master program
 
