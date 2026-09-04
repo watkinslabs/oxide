@@ -1,5 +1,8 @@
 //! Untargeted Windows DLL search-policy decisions.
 
+#[cfg(target_arch = "x86_64")]
+use alloc::vec::Vec;
+
 pub const LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR: u32 = 0x0000_0100;
 pub const LOAD_LIBRARY_SEARCH_APPLICATION_DIR: u32 = 0x0000_0200;
 pub const LOAD_LIBRARY_SEARCH_USER_DIRS: u32 = 0x0000_0400;
@@ -55,9 +58,51 @@ pub fn dll_load_directory_path_valid(path: &[u8]) -> bool {
     (path[4] == b'\\' || path[4] == b'/') && path[5] == 0
 }
 
+/// Join one canonical Windows directory and a module basename.
+/// # C: O(directory length + name length)
+#[cfg(target_arch = "x86_64")]
+pub fn join_windows_path(directory: &[u8], name: &[u8]) -> Vec<u8> {
+    let mut path = directory.to_vec();
+    if !path.is_empty() && !matches!(path.last(), Some(b'\\' | b'/')) { path.push(b'\\'); }
+    let mut base = name;
+    for (index, byte) in name.iter().enumerate() {
+        if *byte == b'\\' || *byte == b'/' { base = &name[index + 1..]; }
+    }
+    path.extend_from_slice(base);
+    if base.len() < 4 || !base[base.len() - 4..].eq_ignore_ascii_case(b".dll") { path.extend_from_slice(b".dll"); }
+    path
+}
+
+/// Convert an absolute Z-drive Windows path into the mounted Linux VFS path.
+/// Other drive mappings remain explicit rather than silently selecting a host
+/// directory that could disagree with the process DOS-device namespace.
+/// # C: O(path length)
+#[cfg(target_arch = "x86_64")]
+pub fn windows_path_to_vfs(path: &[u8]) -> Option<Vec<u8>> {
+    let mut path = path.to_vec();
+    if path.starts_with(b"\\??\\") { path.drain(..4); }
+    for byte in &mut path { if *byte == b'\\' { *byte = b'/'; } }
+    if path.len() >= 2 && (path[0] == b'Z' || path[0] == b'z') && path[1] == b':' { path.drain(..2); }
+    if path.first().copied() != Some(b'/') { return None; }
+    Some(path)
+}
+
+/// Select the first readable candidate while preserving the caller's order.
+/// # C: O(N_candidates)
+#[cfg(target_arch = "x86_64")]
+pub fn first_readable_candidate<F>(candidates: &[Vec<u8>], mut read: F) -> Option<(Vec<u8>, Vec<u8>)>
+where F: FnMut(&[u8]) -> Option<Vec<u8>> {
+    for candidate in candidates {
+        if let Some(blob) = read(candidate) { return Some((candidate.clone(), blob)); }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_arch = "x86_64")]
+    use alloc::vec;
 
     #[test]
     fn default_directory_contract_accepts_only_nonzero_allowed_bits() {
@@ -112,5 +157,29 @@ mod tests {
         assert!(dll_load_directory_path_valid(&u16_bytes(b"\\\\host\\share\\x.dll")));
         assert!(!dll_load_directory_path_valid(&u16_bytes(b"C:x.dll")));
         assert!(!dll_load_directory_path_valid(&u16_bytes(b"x.dll")));
+    }
+
+    #[test]
+    fn filesystem_probe_preserves_search_order_and_skips_missing_candidates() {
+        let candidates = vec![b"Z:\\first\\foo.dll".to_vec(), b"Z:\\second\\foo.dll".to_vec()];
+        let found = first_readable_candidate(&candidates, |candidate| {
+            if candidate.starts_with(b"Z:\\second") { Some(b"MZ-valid".to_vec()) } else { None }
+        }).unwrap();
+        assert_eq!(found.0, candidates[1]);
+        assert_eq!(found.1, b"MZ-valid");
+    }
+
+    #[test]
+    fn filesystem_probe_prefers_the_first_readable_candidate() {
+        let candidates = vec![b"Z:\\first\\foo.dll".to_vec(), b"Z:\\second\\foo.dll".to_vec()];
+        let found = first_readable_candidate(&candidates, |_| Some(b"MZ-valid".to_vec())).unwrap();
+        assert_eq!(found.0, candidates[0]);
+    }
+
+    #[test]
+    fn filesystem_probe_maps_only_absolute_z_drive_paths_into_vfs() {
+        assert_eq!(windows_path_to_vfs(b"Z:\\usr\\lib\\foo.dll"), Some(b"/usr/lib/foo.dll".to_vec()));
+        assert_eq!(windows_path_to_vfs(b"C:\\Windows\\System32\\foo.dll"), None);
+        assert_eq!(windows_path_to_vfs(b"foo.dll"), None);
     }
 }
