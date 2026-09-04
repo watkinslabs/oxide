@@ -13,6 +13,7 @@ use syscall::nt::{self, NtCall, NtWindowCall, NtWindowMessage};
 const STATUS_SUCCESS: u64 = 0;
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 const STATUS_INVALID_HANDLE: u64 = 0xc000_0008;
+const STATUS_ACCESS_DENIED: u64 = 0xc000_0022;
 const STATUS_NO_MORE_ENTRIES: u64 = 0x8000_001a;
 const STATUS_QUOTA_EXCEEDED: u64 = 0xc000_0044;
 const STATUS_ALERTED: u64 = 0x0000_0101;
@@ -112,7 +113,11 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
                     let Some(window) = ipc::win32_window::WindowId::from_raw(hwnd as u32) else { return Some(STATUS_INVALID_HANDLE); };
                     if let Some(record) = state.get(window) {
                         if record.wndproc != 0 {
-                            let reserved = match state.begin_destroy(window) { Ok(value) => value, Err(_) => return Some(STATUS_INVALID_HANDLE) };
+                            let reserved = match state.begin_destroy(cur.tid as u64, window) {
+                                Ok(value) => value,
+                                Err(ipc::win32_window::WindowError::WrongThread) => return Some(STATUS_ACCESS_DENIED),
+                                Err(_) => return Some(STATUS_INVALID_HANDLE),
+                            };
                             if !reserved { return Some(STATUS_SUCCESS); }
                             let callback = crate::nt_rtl::begin_wndproc_callback_with_completion(hwnd, WM_DESTROY, 0, 0, record.wndproc, sched::nt_callback::Completion { kind: CALLBACK_DESTROY, argument: callback_argument(hwnd, 0) });
                             if callback == STATUS_PENDING { return Some(callback); }
