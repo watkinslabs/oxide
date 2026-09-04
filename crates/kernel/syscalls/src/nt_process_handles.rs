@@ -3,6 +3,7 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use syscall::nt::{NtCall, NtObjectCall};
+use crate::nt_process_vm_counters;
 
 const STATUS_SUCCESS: u64 = 0;
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
@@ -12,6 +13,7 @@ const STATUS_INVALID_INFO_CLASS: u64 = 0xc000_0003;
 const STATUS_INFO_LENGTH_MISMATCH: u64 = 0xc000_0004;
 const STATUS_INVALID_HANDLE: u64 = 0xc000_0008;
 const STATUS_ACCESS_DENIED: u64 = 0xc000_0022;
+const STATUS_ACCESS_VIOLATION: u64 = 0xc000_0005;
 pub(crate) const PROCESS_ALL_ACCESS: u32 = 0x001f_0fff;
 pub(crate) const THREAD_ALL_ACCESS: u32 = 0x001f_03ff;
 pub(crate) const SYNCHRONIZE: u32 = 0x0010_0000;
@@ -147,6 +149,9 @@ fn query_process(process: u64, class: u32, info: syscall::UserPtr<u8>, length: u
     if class == PROCESS_IMAGE_FILE_NAME_CLASS || class == PROCESS_IMAGE_FILE_NAME_WIN32_CLASS {
         return query_process_image_name(target, info, length, return_length, class == PROCESS_IMAGE_FILE_NAME_WIN32_CLASS);
     }
+    if class == nt_process_vm_counters::CLASS {
+        return query_process_vm_counters(target, info, length, return_length);
+    }
     let required = match class {
         PROCESS_BASIC_INFORMATION_CLASS => PROCESS_BASIC_INFORMATION_BYTES,
         PROCESS_AFFINITY_MASK_CLASS | PROCESS_WOW64_INFORMATION_CLASS => PROCESS_POINTER_BYTES,
@@ -186,6 +191,41 @@ fn query_process(process: u64, class: u32, info: syscall::UserPtr<u8>, length: u
     out[40..48].copy_from_slice(&(target.parent_tid.load(core::sync::atomic::Ordering::Acquire) as u64).to_ne_bytes());
     if uaccess::copy_to_user(info.as_u64(), &out).is_err() { return Some(STATUS_INVALID_PARAMETER); }
     write_process_return_length(return_length, required)
+}
+
+fn query_process_vm_counters(target: &sched::Task, info: syscall::UserPtr<u8>, length: u32,
+    return_length: Option<syscall::UserPtr<u32>>) -> Option<u64> {
+    let length = length as usize;
+    if length < nt_process_vm_counters::BYTES {
+        return Some(if write_process_return_length(return_length, nt_process_vm_counters::EX_BYTES) == Some(STATUS_SUCCESS) {
+            STATUS_INFO_LENGTH_MISMATCH
+        } else {
+            STATUS_INVALID_PARAMETER
+        });
+    }
+    if info.as_u64() == 0 {
+        return Some(if write_process_return_length(return_length, 0) == Some(STATUS_SUCCESS) {
+            STATUS_ACCESS_VIOLATION
+        } else {
+            STATUS_INVALID_PARAMETER
+        });
+    }
+    let Some(mm) = target.clone_mm() else { return Some(STATUS_INVALID_PARAMETER); };
+    let out = nt_process_vm_counters::encode(&mm.accounting_snapshot());
+    let copy = length.min(nt_process_vm_counters::EX_BYTES);
+    if uaccess::copy_to_user(info.as_u64(), &out[..copy]).is_err() { return Some(STATUS_INVALID_PARAMETER); }
+    let required = nt_process_vm_counters::required_length(length);
+    let status = if nt_process_vm_counters::valid_length(length) {
+        STATUS_SUCCESS
+    } else {
+        STATUS_INFO_LENGTH_MISMATCH
+    };
+    if let Some(return_length) = return_length {
+        if uaccess::put_user_u32(return_length.as_u64(), required as u32).is_err() {
+            return Some(STATUS_INVALID_PARAMETER);
+        }
+    }
+    Some(status)
 }
 
 fn query_process_image_name(target: &sched::Task, info: syscall::UserPtr<u8>, length: u32,

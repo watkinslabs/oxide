@@ -62,6 +62,7 @@ mod nt_file_lock;
 mod nt_duplicate;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_process_handles;
+mod nt_process_vm_counters;
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 mod nt_process_create;
 mod nt_process_memory;
