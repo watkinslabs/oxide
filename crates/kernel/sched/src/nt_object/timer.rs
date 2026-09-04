@@ -70,4 +70,21 @@ impl NtTimer {
             return outcome;
         }
     }
+
+    /// Alertable timer wait with a distinct native APC outcome. # C: sleeps
+    /// # SAFETY: caller is process context and keeps this object alive.
+    #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
+    pub unsafe fn wait_alertable(&self, deadline_ns: u64, now: impl Fn() -> u64,
+                                 mut apc: impl FnMut() -> bool) -> crate::NtWaitOutcome {
+        loop {
+            let current = now();
+            if self.try_wait_at(current) { return crate::NtWaitOutcome::Ready; }
+            let wake_at = deadline_ns.min(self.due_ns());
+            // SAFETY: forwarded to the scheduler alertable wait contract.
+            let outcome = unsafe { crate::live::wait_event_interruptible_until_user_apc(
+                &self.waiters, wake_at, &now, &mut apc, || self.try_wait_at(now())) };
+            if matches!(outcome, crate::NtWaitOutcome::TimedOut) && wake_at == self.due_ns() { continue; }
+            return outcome;
+        }
+    }
 }

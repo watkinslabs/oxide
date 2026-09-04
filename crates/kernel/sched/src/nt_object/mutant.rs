@@ -66,4 +66,14 @@ impl NtMutant {
         // SAFETY: the predicate only accesses this live mutant and its owned wait list.
         unsafe { crate::live::wait_event_interruptible_until(&self.waiters, deadline_ns, now, || self.try_acquire(tid)) }
     }
+
+    /// Alertable mutant wait with a distinct native APC outcome. # C: O(N_wakeups)
+    /// # SAFETY: caller is process context and keeps this object alive.
+    #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
+    pub unsafe fn wait_alertable(&self, tid: u64, deadline_ns: u64, now: impl Fn() -> u64,
+                                 apc: impl FnMut() -> bool) -> crate::NtWaitOutcome {
+        // SAFETY: forwarded to the scheduler alertable wait contract.
+        unsafe { crate::live::wait_event_interruptible_until_user_apc(&self.waiters,
+            deadline_ns, now, apc, || self.try_acquire(tid)) }
+    }
 }

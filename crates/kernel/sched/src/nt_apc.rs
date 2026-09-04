@@ -65,6 +65,9 @@ impl Queue {
         self.len() == 0
     }
 
+    /// Observe queued records without arming user-return delivery. # C: O(1)
+    pub fn has_pending(&self) -> bool { !self.is_empty() }
+
     /// Mark APCs already queued on this thread as deliverable by the next
     /// return-to-user pass. A request against an empty queue does not arm a
     /// future APC; a later enqueue needs its own alertable delivery point.
@@ -118,5 +121,16 @@ mod tests {
         assert_eq!(queue.peek_deliverable(), Some(first));
         assert_eq!(queue.pop(), Some(first));
         assert!(!queue.delivery_pending());
+    }
+
+    #[test]
+    fn alertable_observation_does_not_consume_target_owned_record() {
+        let queue = Queue::new();
+        let apc = Apc { routine: 0x1000, argument1: 11, argument2: 12, argument3: 13, flags: 0 };
+        assert!(queue.push(apc).is_ok());
+        assert!(queue.has_pending());
+        assert!(queue.request_delivery());
+        assert_eq!(queue.peek_deliverable(), Some(apc));
+        assert_eq!(queue.len(), 1, "only the return dispatcher may dequeue");
     }
 }

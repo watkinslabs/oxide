@@ -290,6 +290,55 @@ pub unsafe fn wait_event_interruptible_until(wq: &WaitList, deadline_ns: u64,
     unsafe { wait_event_at(Location::caller(), wq, WaitState::Interruptible, deadline_ns, now, cond) }
 }
 
+/// Alertable native-NT wait loop. APC pending is checked independently of
+/// Linux signal state and is reported as its own outcome after wakeup.
+/// # SAFETY: same process-context and lock-ordering contract as the ordinary
+/// interruptible wait loop.
+/// # C: O(N_wakeups) condition evaluations
+pub unsafe fn wait_event_interruptible_until_user_apc(
+    wq: &WaitList, deadline_ns: u64, now: impl Fn() -> u64,
+    mut apc: impl FnMut() -> bool, mut cond: impl FnMut() -> bool,
+) -> NtWaitOutcome {
+    if cond() { return NtWaitOutcome::Ready; }
+    loop {
+        // SAFETY: forwarded fn-level contract; the caller is process context
+        // and holds no lock owned by a waker.
+        unsafe { wq.park_with_wait_state(deadline_ns, WaitState::Interruptible); }
+        if apc() { wq.cancel_current_park(); return NtWaitOutcome::UserApc; }
+        if cond() { break; }
+        if signal_pending_state_current(WaitState::Interruptible) {
+            wq.cancel_current_park(); return NtWaitOutcome::Interrupted;
+        }
+        if deadline_ns != 0 && now() >= deadline_ns {
+            wq.cancel_current_park();
+            return if apc() { NtWaitOutcome::UserApc }
+                else if cond() { NtWaitOutcome::Ready } else { NtWaitOutcome::TimedOut };
+        }
+        // SAFETY: the task published Sleeping and the wait list owns the
+        // wakeup protocol until the next predicate recheck.
+        unsafe { super::park_yield(); }
+        if apc() { wq.cancel_current_park(); return NtWaitOutcome::UserApc; }
+        if cond() { break; }
+    }
+    wq.cancel_current_park();
+    NtWaitOutcome::Ready
+}
+
+/// Result family private to native NT alertable waits; Linux wait callers use
+/// [`WaitOutcome`] and cannot observe or produce this APC result.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum NtWaitOutcome { Ready, Interrupted, TimedOut, UserApc }
+
+impl From<WaitOutcome> for NtWaitOutcome {
+    fn from(outcome: WaitOutcome) -> Self {
+        match outcome {
+            WaitOutcome::Ready => Self::Ready,
+            WaitOutcome::Interrupted => Self::Interrupted,
+            WaitOutcome::TimedOut => Self::TimedOut,
+        }
+    }
+}
+
 /// Linux `wait_event_killable(wq, cond)` — only a fatal signal ends the wait.
 /// # SAFETY: see [`wait_event`].
 /// # C: O(N_wakeups)
@@ -367,6 +416,19 @@ mod tests {
             let site = site.expect("every family must record a site");
             assert_eq!(site.line(), at, "{name} recorded the wrong line");
         }
+    }
+
+    #[test]
+    fn alertable_wait_returns_user_apc_without_consuming_or_using_linux_signal_state() {
+        let wait = WaitList::new();
+        let apc_checks = AtomicU32::new(0);
+        let out = unsafe {
+            wait_event_interruptible_until_user_apc(&wait, 0, || 0,
+                || apc_checks.fetch_add(1, Ordering::Relaxed) != 0, || false)
+        };
+        assert_eq!(out, NtWaitOutcome::UserApc);
+        assert_eq!(apc_checks.load(Ordering::Relaxed), 2,
+            "the predicate is observed before and after the scheduler park");
     }
 
     #[test]
