@@ -596,8 +596,10 @@ requires a canonical exception-record dispatcher and resumable x86-64 user
 context owner, still absent from the current exception module.
 `NtReadFileScatter` is exposed at the file boundary; segmented user-buffer
 validation and completion require a scatter-read owner in the NT file adapter.
-`NtReadVirtualMemory` is exposed at the process-memory boundary; cross-address-
-space copying and partial-copy accounting require an address-space-aware owner.
+`NtReadVirtualMemory` current-process copying now uses the canonical
+`elf-load::nt_memory` owner with destination-first validation, prefix byte
+accounting, and `STATUS_PARTIAL_COPY` source-fault semantics. Cross-address-
+space copying remains explicit until an address-space-aware owner exists.
 `NtRemoveIoCompletionEx` now removes multiple packets through the canonical NT
 completion-port queue; APC interruption remains dependent on the future APC
 delivery owner.
