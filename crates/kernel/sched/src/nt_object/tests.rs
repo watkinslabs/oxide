@@ -245,3 +245,23 @@ fn mutant_is_reentrant_and_release_requires_owner() {
     assert_eq!(mutant.release(41), Ok(-2)); assert!(!mutant.is_signaled_for(42));
     assert_eq!(mutant.release(41), Ok(-1)); assert!(mutant.is_signaled_for(42)); assert!(mutant.try_acquire(42));
 }
+
+#[test]
+fn signal_and_wait_signal_sources_use_their_native_object_rules() {
+    let event = NtObject::new_event(50, false, false);
+    assert_eq!(event.signal_for_wait(41), Ok(()));
+    assert!(event.event().unwrap().try_wait());
+
+    let semaphore = NtObject::new_semaphore(51, 0, 1);
+    assert_eq!(semaphore.signal_for_wait(41), Ok(()));
+    assert_eq!(semaphore.signal_for_wait(41), Err(NtSignalError::LimitExceeded));
+    assert!(semaphore.semaphore().unwrap().try_wait());
+
+    let mutant = NtObject::new_mutant(52, Some(41));
+    assert_eq!(mutant.signal_for_wait(42), Err(NtSignalError::NotOwner));
+    assert_eq!(mutant.signal_for_wait(41), Ok(()));
+    assert!(mutant.mutant().unwrap().is_signaled_for(42));
+
+    let file = NtObject::new(NtObjectType::File, 53);
+    assert_eq!(file.signal_for_wait(41), Err(NtSignalError::Unsupported));
+}

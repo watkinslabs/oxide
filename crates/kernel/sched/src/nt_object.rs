@@ -34,7 +34,7 @@ pub use namespace::{create_event, create_semaphore, directory_entries, directory
     publish_named_pipe, publish_section, publish_symbolic_link, publish_timer,
     release_temporary, resolve_symbolic_links, NamedObjectState, SymbolicLinkResolutionError,
     MAX_SYMBOLIC_LINK_DEPTH};
-pub use object::{NtEvent, NtFileInfo, NtObject, NtObjectType, NtSection, NtSemaphore, NtSymbolicLink};
+pub use object::{NtEvent, NtFileInfo, NtObject, NtObjectType, NtSection, NtSemaphore, NtSignalError, NtSymbolicLink};
 pub use pipe::{NtPipe, NtPipeConfig, NtPipeEndpoint, NtPipeIo, NtPipeListen, NtPipePeek,
     NtPipeSide, NtPipeWait};
 pub use timer::NtTimer;
