@@ -40,6 +40,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         NtGdiCall::BlitSurface { dc, pixels, x, y, width, height, stride } => Some(blit_surface(state, dc, pixels, x, y, width, height, stride)),
         NtGdiCall::PresentSurface { dc, x, y } => Some(present_surface(state, dc, x, y)),
         NtGdiCall::PresentWindow { hwnd, dc } => Some(present_window(state, hwnd, dc)),
+        NtGdiCall::PresentWindowRegion { hwnd, dc, left, top, right, bottom } => Some(present_window_region(state, hwnd, dc, left, top, right, bottom)),
     }
 }
 
@@ -81,6 +82,16 @@ fn present_window(state: &ipc::win32_gdi::GdiManager, hwnd: u32, dc: u32) -> u64
     let Some((width, height, pixels)) = state.surface(dc) else { return STATUS_INVALID_HANDLE; };
     if width <= 0 || height <= 0 { return STATUS_INVALID_PARAMETER; }
     if drv_virtio_gpu::post_init::present_window_pixels(pixels, width as u32, height as u32, rect.left, rect.top) { STATUS_SUCCESS } else { STATUS_INVALID_PARAMETER }
+}
+
+fn present_window_region(state: &ipc::win32_gdi::GdiManager, hwnd: u32, dc: u32, left: i32, top: i32, right: i32, bottom: i32) -> u64 {
+    let Some((rect, visible)) = super::nt_window::window_rect_for_current(hwnd) else { return STATUS_INVALID_HANDLE; };
+    if !visible || rect.right <= rect.left || rect.bottom <= rect.top || right <= left || bottom <= top { return STATUS_INVALID_PARAMETER; }
+    let Some((width, height, pixels)) = state.surface(dc) else { return STATUS_INVALID_HANDLE; };
+    if width <= 0 || height <= 0 || right > width || bottom > height { return STATUS_INVALID_PARAMETER; }
+    let Some(x) = rect.left.checked_add(left) else { return STATUS_INVALID_PARAMETER; };
+    let Some(y) = rect.top.checked_add(top) else { return STATUS_INVALID_PARAMETER; };
+    if drv_virtio_gpu::post_init::present_window_pixels_region(pixels, width as u32, height as u32, x, y, left as u32, top as u32, right as u32, bottom as u32) { STATUS_SUCCESS } else { STATUS_INVALID_PARAMETER }
 }
 
 fn create_font(state: &mut ipc::win32_gdi::GdiManager, pointer: syscall::UserPtr<NtGdiFont>) -> u64 {

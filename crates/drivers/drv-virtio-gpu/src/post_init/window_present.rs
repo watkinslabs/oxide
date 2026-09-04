@@ -2,18 +2,28 @@ use super::{console_owner_key, ctx_lock, runtime_queue};
 
 /// Copy a native GDI surface into the primary scanout and flush its damage. # C: O(width*height)
 pub fn present_window_pixels(pixels: &[u32], width: u32, height: u32, x: i32, y: i32) -> bool {
-    if width == 0 || height == 0 || pixels.len() < (width as usize).saturating_mul(height as usize) { return false; }
+    present_window_pixels_region(pixels, width, height, x, y, 0, 0, width, height)
+}
+
+/// Copy one bounded source region into the primary scanout and flush its damage. # C: O(region_pixels)
+pub fn present_window_pixels_region(pixels: &[u32], width: u32, height: u32, x: i32, y: i32, source_left: u32, source_top: u32, source_right: u32, source_bottom: u32) -> bool {
+    if width == 0 || height == 0 || pixels.len() < (width as usize).saturating_mul(height as usize) || source_left > source_right || source_top > source_bottom || source_right > width || source_bottom > height { return false; }
+    let region_width = source_right - source_left;
+    let region_height = source_bottom - source_top;
+    if region_width == 0 || region_height == 0 { return true; }
+    let Some(dest_x) = x.checked_add(source_left as i32) else { return false; };
+    let Some(dest_y) = y.checked_add(source_top as i32) else { return false; };
     let Some(owner) = console_owner_key() else { return false; };
     let mut contexts = ctx_lock();
     let Some(ctx) = contexts.iter_mut().find(|ctx| ctx.device_key == owner) else { return false; };
     if ctx.quiesced { return false; }
-    let Some(clip) = clip_present_rect(width, height, x, y, ctx.w, ctx.h) else { return true; };
+    let Some(clip) = clip_present_rect(region_width, region_height, dest_x, dest_y, ctx.w, ctx.h) else { return true; };
     let (left, top, right, bottom) = (clip.left, clip.top, clip.right, clip.bottom);
     let source_x = clip.source_x as usize;
     let source_y = clip.source_y as usize;
     let row_words = (right - left) as usize;
     for row in 0..(bottom - top) as usize {
-        let source = &pixels[(source_y + row) * width as usize + source_x..(source_y + row) * width as usize + source_x + row_words];
+        let source = &pixels[(source_top as usize + source_y + row) * width as usize + source_left as usize + source_x..(source_top as usize + source_y + row) * width as usize + source_left as usize + source_x + row_words];
         let destination = (ctx.fb_va as *mut u32).wrapping_add((top as usize + row) * ctx.w as usize + left as usize);
         // SAFETY: ctx owns a mapped guest scanout of ctx.fb_bytes bytes; the clipped row lies within that allocation and source is bounded by pixels above.
         unsafe { core::ptr::copy_nonoverlapping(source.as_ptr(), destination, row_words); }
