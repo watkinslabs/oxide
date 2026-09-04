@@ -4,6 +4,14 @@
 //! remain owned by the kernel networking stack. This crate fixes the Windows
 //! ABI conversion and error vocabulary used by `ws2_32`.
 
+extern crate alloc;
+
+mod select;
+
+pub use select::{project_select, SelectProjection, SocketReadiness};
+pub use select::{READY_ACCEPT, READY_CONNECT_ERROR, READY_ERROR, READY_HUP, READY_OOB,
+    READY_READ, READY_RESET, READY_WRITE};
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SockAddrIn { pub family: u16, pub port_be: u16, pub addr_be: u32, pub zero: [u8; 8] }
