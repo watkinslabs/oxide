@@ -413,6 +413,9 @@ pub enum NtGdiCall {
 }
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum NtLoaderCall { ResolveDelayLoadedApi { args: [u64; 6] }, ExecuteWithCatalog { request: UserPtr<crate::nt_exec::NtExecRequest> } }
+/// True when the process/thread identity adapter owns the query class. # C: O(1)
+pub const fn thread_query_is_basic_class(class: u32) -> bool { class == 0 }
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum NtObjectCall {
     CreateEvent { handle: UserPtr<u32>, desired_access: u32, attributes: u64, event_type: u32, initial_state: u32 },

@@ -6,6 +6,10 @@ FROZEN 2026-08-31. Dep:`01`,`02`,`06`,`13`,`31f`,`31k`,`31m`,`52`,`53`. Provides
 
 - `NtOpenThread` resolves a non-zero `CLIENT_ID` through the canonical scheduler registry, verifies that the thread belongs to the named process, and installs a process-local thread handle.
 - `NtQueryInformationThread` accepts the current-thread pseudo-handle or a live process-local thread handle.
+- Basic thread information is handled by the process/thread identity adapter;
+  classes 9, 16, 20, 30, and 35 route to the scheduler-backed native NT
+  dispatch owner. A narrower adapter must not intercept classes owned by that
+  native query implementation.
 - A real handle must grant `THREAD_QUERY_INFORMATION`; wrong type, stale generation, and missing rights fail before output copyout.
 - `NtTerminateThread` accepts the current-thread pseudo-handle or a live process-local thread handle with `THREAD_TERMINATE`.
 - `NtSuspendThread` increments the task-owned suspend depth up to `127`, and
