@@ -1,6 +1,6 @@
 # Windows NTDLL runtime boundary
 
-FROZEN 2026-08-31. Dep:`01`,`02`,`31a`,`31b`,`31d`,`31e`,`52`,`53`. Provides: PE import binding contract and the first NTDLL-compatible runtime seam.
+FROZEN 2026-09-04. Dep:`01`,`02`,`31a`,`31b`,`31d`,`31e`,`52`,`53`. Provides: PE import binding contract and the first NTDLL-compatible runtime seam.
 
 ## 1 Contract
 
@@ -54,6 +54,11 @@ a user-provided kernel function pointer. The kernel validates that identity
 before dispatching a typed Unix operation. Operations requiring Wine's server
 protocol or a Unix module loader remain explicit implementation work behind
 this boundary.
+
+The catalog loader binds Wine DLL imports to implementation export RVAs. It
+does not select relay-entry RVAs unless relay installation is explicitly
+published by the runtime; an uninitialized relay descriptor is not a native
+call target.
 
 Tests verify the dispatcher encoding, service decoding, handle validation, and
 that the three private runtime exports are distinct, mapped, and backed by the
