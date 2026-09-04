@@ -254,12 +254,15 @@ pub unsafe fn exit_to_user_mode_loop(regs: *mut UserRegs, syscall_rv: Option<i64
             && task.nt_apc_queue.delivery_pending()).unwrap_or(false);
         let exception_pending = sched::live::current().map(|task| task.is_nt_personality()
             && task.nt_exception.is_pending()).unwrap_or(false);
+        let nt_suspend_pending = sched::live::current().map(|task| task.is_nt_personality()
+            && task.nt_suspend_requested()).unwrap_or(false);
         let want_notify = (w & work::NOTIFY_SIGNAL) != 0;
         let want_freeze = (w & work::FREEZE) != 0;
         let want_signal = (w & work::SIGPENDING) != 0 || owe_signal_arm || want_notify;
         let bounded = passes < sched::exit_to_user::MAX_PASSES;
         if !(sched::exit_to_user::should_continue(w, passes) || (want_signal && bounded)
-            || (apc_pending && bounded) || (exception_pending && bounded)) { break; }
+            || (apc_pending && bounded) || (exception_pending && bounded)
+            || (nt_suspend_pending && bounded)) { break; }
         passes += 1;
         // Linux `local_irq_enable()` at the top of the pass: delivery writes
         // user memory and can fault, and `schedule()` must be able to take a
@@ -286,6 +289,11 @@ pub unsafe fn exit_to_user_mode_loop(regs: *mut UserRegs, syscall_rv: Option<i64
             // SAFETY: this is the return-to-user safe point, after the entry
             // path released its locks and enabled interrupts.
             unsafe { sched::live::freezer::freeze_current_if_requested(); }
+        }
+        if nt_suspend_pending {
+            // SAFETY: return-to-user context owns the live task frame and has
+            // released all syscall locks before entering the scheduler.
+            unsafe { sched::live::nt_suspend::suspend_current_if_requested(); }
         }
         if exception_pending {
             // SAFETY: the loop owns the live user frame and runs with the

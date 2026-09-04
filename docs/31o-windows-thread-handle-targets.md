@@ -8,6 +8,10 @@ FROZEN 2026-08-31. Dep:`01`,`02`,`06`,`13`,`31f`,`31k`,`31m`,`52`,`53`. Provides
 - `NtQueryInformationThread` accepts the current-thread pseudo-handle or a live process-local thread handle.
 - A real handle must grant `THREAD_QUERY_INFORMATION`; wrong type, stale generation, and missing rights fail before output copyout.
 - `NtTerminateThread` accepts the current-thread pseudo-handle or a live process-local thread handle with `THREAD_TERMINATE`.
+- `NtSuspendThread` increments the task-owned suspend depth up to `127`, and
+  the target acknowledges the request only at the return-to-user scheduler
+  checkpoint; `NtResumeThread` releases one depth and activates the task only
+  after the final release.
 - A thread handle remains process-local to the opener, but may reference a
   thread in another NT process after `CLIENT_ID` ownership validation.
 - Current-thread termination uses the existing direct exit path; another thread receives a forced-fatal Linux signal through the canonical scheduler signal owner.
@@ -21,6 +25,8 @@ FROZEN 2026-08-31. Dep:`01`,`02`,`06`,`13`,`31f`,`31k`,`31m`,`52`,`53`. Provides
   implicit synchronize right;
 - query and termination reject wrong object kinds, stale handles, insufficient rights, and cross-process targets;
 - real thread objects retain their canonical scheduler task until handle close;
+- suspension never re-enqueues a task at an ordinary wake while its NT depth is
+  nonzero; that wake is retained and released by the final resume;
 - both architecture kernel checks compile identical target resolution and signal routing.
 
 `ThreadGroupInformation` (class 30) returns one native 64-bit group-affinity

@@ -112,6 +112,7 @@ const STATUS_OBJECT_NAME_NOT_FOUND: u64 = 0xc000_0034;
 const STATUS_BUFFER_TOO_SMALL: u64 = 0xc000_0023;
 #[cfg(target_os = "oxide-kernel")]
 const STATUS_ACCESS_DENIED: u64 = 0xc000_0022;
+const STATUS_SUSPEND_COUNT_EXCEEDED: u64 = 0xc000_004a;
 #[cfg(target_os = "oxide-kernel")]
 #[cfg(target_os = "oxide-kernel")]
 const STATUS_NOT_SAME_OBJECT: u64 = 0xc000_01ac;
@@ -922,7 +923,10 @@ pub fn dispatch(call: NtCall) -> u64 {
         let target = match resolve_thread_target(&cur, thread, &table, THREAD_SUSPEND_RESUME) {
             Ok(target) => target, Err(error) => return error,
         };
-        let previous = target.nt_suspend();
+        let previous = match target.nt_suspend() {
+            Ok(previous) => previous,
+            Err(()) => return STATUS_SUSPEND_COUNT_EXCEEDED,
+        };
         if let Some(count) = count {
             if uaccess::put_user_u32(count.as_u64(), previous).is_err() { return STATUS_INVALID_PARAMETER; }
         }
@@ -937,7 +941,7 @@ pub fn dispatch(call: NtCall) -> u64 {
             Ok(target) => target, Err(error) => return error,
         };
         let previous = target.nt_resume();
-        if previous == 1 { sched::live::wake_new_task(&target); }
+        if previous == 1 { sched::live::nt_suspend::resume_task(&target); }
         if let Some(count) = count {
             if uaccess::put_user_u32(count.as_u64(), previous).is_err() { return STATUS_INVALID_PARAMETER; }
         }

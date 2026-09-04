@@ -14,6 +14,10 @@ impl Task {
         let mut seen = self.state.load(Ordering::Acquire);
         loop {
             if TaskState::from_u8(seen) != Some(TaskState::Sleeping) { return false; }
+            if self.nt_suspend_requested() {
+                self.nt_wake_pending.store(true, core::sync::atomic::Ordering::Release);
+                return false;
+            }
             let next = (seen & !TaskState::LIFECYCLE_MASK) | TaskState::Waking as u8;
             match self.state.compare_exchange_weak(seen, next, Ordering::AcqRel,
                                                    Ordering::Acquire) {

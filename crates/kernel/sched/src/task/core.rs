@@ -78,6 +78,12 @@ pub struct TaskCore {
     /// NT per-thread suspend depth, owned by the task rather than an NT-side
     /// shadow table so all thread-control paths observe one counter.
     pub nt_suspend_count: AtomicU32,
+    /// True only after the task itself has parked at an NT suspend checkpoint.
+    /// A request against an already sleeping task does not claim that task's
+    /// unrelated wait; this distinguishes the NT refrigerator from blocking.
+    pub nt_suspend_ack: AtomicBool,
+    /// An ordinary wake arriving while NT-suspended is retained until resume.
+    pub nt_wake_pending: AtomicBool,
     /// Linux `sched_yield`: consumed by `schedule()` before re-enqueueing current.
     pub yield_pending: AtomicBool,
     /// Linux `kthread_should_stop`: set by `kthread_stop`, polled by the thread's

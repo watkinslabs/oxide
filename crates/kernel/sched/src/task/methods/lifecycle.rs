@@ -92,6 +92,8 @@ impl Task {
                 nofreeze: AtomicBool::new(!starts_in_user),
                 suspend_task: AtomicBool::new(false),
                 nt_suspend_count: AtomicU32::new(0),
+                nt_suspend_ack: AtomicBool::new(false),
+                nt_wake_pending: AtomicBool::new(false),
                 yield_pending: AtomicBool::new(false),
                 kthread_stop: AtomicBool::new(false),
                 kthread_park: AtomicBool::new(false),
