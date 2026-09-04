@@ -43,11 +43,11 @@ impl SchedPolicy {
     /// Stable wire code for the atomic class encoding.
     /// # C: O(1)
     pub fn code(self) -> u8 {
-        match self { SchedPolicy::Normal => 0, SchedPolicy::Fifo => 1, SchedPolicy::Rr => 2, SchedPolicy::Idle => 3 }
+        match self { SchedPolicy::Normal => 0, SchedPolicy::Fifo => 1, SchedPolicy::Rr => 2, SchedPolicy::Idle => 3, SchedPolicy::NtFixed => 4 }
     }
     /// # C: O(1)
     pub fn from_code(c: u8) -> SchedPolicy {
-        match c { 1 => SchedPolicy::Fifo, 2 => SchedPolicy::Rr, 3 => SchedPolicy::Idle, _ => SchedPolicy::Normal }
+        match c { 1 => SchedPolicy::Fifo, 2 => SchedPolicy::Rr, 3 => SchedPolicy::Idle, 4 => SchedPolicy::NtFixed, _ => SchedPolicy::Normal }
     }
 }
 
@@ -60,6 +60,7 @@ impl SchedClass {
             SchedClass::Normal { weight } => 1 | ((weight as u64) << 8),
             SchedClass::Rt { prio, policy } => 2 | ((prio as u64) << 8) | ((policy.code() as u64) << 16),
             SchedClass::Deadline          => 3,
+            SchedClass::NtFixed { level, quantum } => 4 | ((level as u64) << 8) | ((quantum as u64) << 16),
         }
     }
     /// # C: O(1)
@@ -68,6 +69,7 @@ impl SchedClass {
             1 => SchedClass::Normal { weight: (v >> 8) as u32 },
             2 => SchedClass::Rt { prio: (v >> 8) as u8, policy: SchedPolicy::from_code((v >> 16) as u8) },
             3 => SchedClass::Deadline,
+            4 => SchedClass::NtFixed { level: (v >> 8) as u8, quantum: (v >> 16) as u32 },
             _ => SchedClass::Idle,
         }
     }

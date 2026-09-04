@@ -16,6 +16,7 @@ use alloc::sync::Arc;
 use crate::cfs::CfsRunqueue;
 use crate::dl::DlRunqueue;
 use crate::rt::RtRunqueue;
+use crate::nt::NtRunqueue;
 use crate::task::{SchedClass, Task};
 
 /// Per-CPU runqueue inner state. Mutated under the per-CPU `Runqueue`
@@ -26,6 +27,7 @@ pub struct RunqueueInner {
     /// outranks any priority.
     pub(crate) dl:  DlRunqueue,
     pub(crate) rt:  RtRunqueue,
+    pub(crate) nt:  NtRunqueue,
     pub(crate) cfs: CfsRunqueue,
     /// Per-CPU idle task. Always Runnable; never on RT/CFS lists per
     /// `13§2` invariant 7.
@@ -44,6 +46,7 @@ impl RunqueueInner {
             cpu,
             dl:  DlRunqueue::new(),
             rt:  RtRunqueue::new(),
+            nt:  NtRunqueue::new(),
             cfs: CfsRunqueue::new(),
             idle,
         }
@@ -51,13 +54,14 @@ impl RunqueueInner {
 
     /// # C: O(1)
     pub fn nr_running(&self) -> u32 {
-        self.dl.nr_running() + self.rt.nr_running() + self.cfs.nr_running()
+        self.dl.nr_running() + self.rt.nr_running() + self.nt.nr_running() + self.cfs.nr_running()
     }
 
     /// Aggregate runnable entity utilization, including the task currently
     /// executing on this CPU. The idle task contributes zero.
     pub fn util_avg(&self, current: &Task) -> u32 {
         self.dl.util_avg().saturating_add(self.rt.util_avg())
+            .saturating_add(self.nt.util_avg())
             .saturating_add(self.cfs.util_avg())
             .saturating_add(current.sched.se.avg_util.load(core::sync::atomic::Ordering::Acquire)
                 .min(u32::MAX as u64) as u32)
@@ -140,6 +144,7 @@ impl RunqueueInner {
         let inserted = match task.sched_class() {
             SchedClass::Deadline      => self.dl.enqueue(task),
             SchedClass::Rt { .. }     => self.rt.enqueue_at(task, pos),
+            SchedClass::NtFixed { .. } => self.nt.enqueue(task, matches!(pos, crate::sched_enc::requeue::RequeuePos::Head)),
             SchedClass::Normal { .. } => self.cfs.enqueue(task),
             SchedClass::Idle => {
                 Self::reject_enqueue(&task, false);
@@ -177,6 +182,7 @@ impl RunqueueInner {
         let inserted = match task.sched_class() {
             SchedClass::Deadline => self.dl.enqueue(task),
             SchedClass::Rt { .. } => self.rt.enqueue_at(task, pos),
+            SchedClass::NtFixed { .. } => self.nt.enqueue(task, false),
             SchedClass::Normal { .. } => self.cfs.enqueue(task),
             SchedClass::Idle => unreachable!(),
         };
@@ -254,6 +260,9 @@ impl RunqueueInner {
             SchedClass::Rt { .. } => {
                 task.rt_requeue_tail.store(true, core::sync::atomic::Ordering::Release);
             }
+            SchedClass::NtFixed { .. } => {
+                task.rt_requeue_tail.store(true, core::sync::atomic::Ordering::Release);
+            }
             // Handled above, before the empty-runqueue shortcut.
             SchedClass::Deadline => {}
             SchedClass::Idle => {}
@@ -267,6 +276,7 @@ impl RunqueueInner {
     pub fn pick_next_task(&mut self) -> Arc<Task> {
         if let Some(t) = self.dl.pick_earliest() { return t; }
         if let Some(t) = self.rt.pick_highest()  { return t; }
+        if let Some(t) = self.nt.pick_highest()  { return t; }
         if let Some(t) = self.cfs.pick_leftmost() { return t; }
         Arc::clone(&self.idle)
     }
@@ -306,6 +316,7 @@ impl RunqueueInner {
     pub fn peek_next_task(&self) -> Arc<Task> {
         if let Some(t) = self.dl.peek_earliest()  { return t; }
         if let Some(t) = self.rt.peek_highest()   { return t; }
+        if let Some(t) = self.nt.peek_highest()   { return t; }
         if let Some(t) = self.cfs.peek_leftmost() { return t; }
         Arc::clone(&self.idle)
     }
@@ -320,6 +331,7 @@ impl RunqueueInner {
         match task.sched_class() {
             SchedClass::Deadline => self.dl.remove(task),
             SchedClass::Rt { .. } => self.rt.remove(task),
+            SchedClass::NtFixed { .. } => self.nt.remove(task),
             SchedClass::Normal { .. } => self.cfs.remove(task),
             SchedClass::Idle => None,
         }

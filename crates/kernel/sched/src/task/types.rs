@@ -87,6 +87,8 @@ pub enum SchedPolicy {
     Rr,
     /// Per-CPU idle task; never user-set.
     Idle,
+    /// Native fixed-priority dispatcher (NT levels 1..=31).
+    NtFixed,
 }
 
 /// Class membership; mirrors the per-class data the runqueue needs to
@@ -101,6 +103,8 @@ pub enum SchedClass {
     Deadline,
     /// RT priority `1..=99` (higher = higher).
     Rt { prio: u8, policy: SchedPolicy },
+    /// Windows dispatcher priority. Higher levels preempt lower levels.
+    NtFixed { level: u8, quantum: u32 },
     /// Normal-class weight from the Linux nice→weight table; vruntime
     /// is held in `Task::vruntime` so the CFS tree can re-key it on
     /// each insert.

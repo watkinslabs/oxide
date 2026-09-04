@@ -51,7 +51,10 @@ pub fn inherit_sched_params(child: &mut Task, parent: &Task) {
         SchedPriority::Fair(_) => SchedClass::Normal {
             weight: crate::cputime::nice_to_weight(nice as i8),
         },
-        SchedPriority::NtFixed(_) | SchedPriority::Idle => {
+        SchedPriority::NtFixed(level) => {
+            SchedClass::NtFixed { level: level.level(), quantum: parent.sched.rt.snapshot().time_slice }
+        }
+        SchedPriority::Idle => {
             SchedClass::Normal { weight: NICE_0_WEIGHT }
         }
     };

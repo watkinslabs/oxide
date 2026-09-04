@@ -139,7 +139,10 @@ pub struct Vma {
 pub enum SchedPolicy { Normal, Fifo, Rr, Idle }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum SchedClass { Deadline, Rt { prio: u8, policy: SchedPolicy }, Normal { weight: u32 }, Idle }
+pub enum SchedClass {
+    Deadline, Rt { prio: u8, policy: SchedPolicy },
+    NtFixed { level: u8, quantum: u32 }, Normal { weight: u32 }, Idle,
+}
 
 pub mod deadline {
     pub fn dl_time_before(a: u64, b: u64) -> bool { (a.wrapping_sub(b) as i64) < 0 }
@@ -158,6 +161,7 @@ impl SchedClass {
                                        SchedPolicy::Rr => 2, SchedPolicy::Idle => 3 };
                 2 | ((prio as u64) << 8) | (c << 16)
             }
+            SchedClass::NtFixed { level, quantum } => 4 | ((level as u64) << 8) | ((quantum as u64) << 16),
             SchedClass::Deadline => 3,
         }
     }
@@ -168,6 +172,7 @@ impl SchedClass {
                 policy: match (v >> 16) as u8 { 1 => SchedPolicy::Fifo, 2 => SchedPolicy::Rr,
                                                 3 => SchedPolicy::Idle, _ => SchedPolicy::Normal } },
             3 => SchedClass::Deadline,
+            4 => SchedClass::NtFixed { level: (v >> 8) as u8, quantum: (v >> 16) as u32 },
             _ => SchedClass::Idle,
         }
     }

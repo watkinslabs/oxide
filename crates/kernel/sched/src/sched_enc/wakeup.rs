@@ -25,11 +25,13 @@ pub const RANK_IDLE: u8 = 0;
 /// Fair class (`SCHED_NORMAL` / `SCHED_BATCH` / `SCHED_IDLE`).
 pub const RANK_FAIR: u8 = 1;
 /// Real-time class (`SCHED_FIFO` / `SCHED_RR`).
-pub const RANK_RT: u8 = 2;
+pub const RANK_RT: u8 = 3;
+/// Native NT fixed dispatcher, below POSIX RT and above fair.
+pub const RANK_NT: u8 = 2;
 /// Deadline class (`SCHED_DEADLINE`). Above RT: an admitted deadline task
 /// carries a timing guarantee the priority-ordered class cannot make, so it
 /// wins on sight and never loses to a priority however high.
-pub const RANK_DL: u8 = 3;
+pub const RANK_DL: u8 = 4;
 
 /// The scheduler-visible facts about one task that the wakeup-preemption
 /// decision reads. Snapshotted so the decision is a pure function and cannot
@@ -57,6 +59,7 @@ pub fn cand_of(t: &Task) -> Cand {
     let (rank, rt_prio) = match t.sched_class() {
         SchedClass::Deadline        => (RANK_DL, 0),
         SchedClass::Rt { prio, .. } => (RANK_RT, prio),
+        SchedClass::NtFixed { level, .. } => (RANK_NT, level),
         SchedClass::Normal { .. }   => (RANK_FAIR, 0),
         SchedClass::Idle            => (RANK_IDLE, 0),
     };
@@ -86,6 +89,7 @@ pub fn wakeup_preempt(wakee: Cand, curr: Cand) -> bool {
     match wakee.rank {
         RANK_DL   => dl_wakeup_preempt(wakee, curr),
         RANK_RT   => rt_wakeup_preempt(wakee, curr),
+        RANK_NT   => rt_wakeup_preempt(wakee, curr),
         RANK_FAIR => fair_wakeup_preempt(wakee, curr),
         _         => true,
     }

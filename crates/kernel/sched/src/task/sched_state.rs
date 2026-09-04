@@ -19,13 +19,14 @@ impl SchedClassId {
 /// Exact Linux task policy values; distinct from runqueue class membership.
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum TaskPolicy { Normal = 0, Fifo = 1, Rr = 2, Batch = 3, Idle = 5, Deadline = 6 }
+pub enum TaskPolicy { Normal = 0, Fifo = 1, Rr = 2, Batch = 3, Idle = 5, Deadline = 6, NtFixed = 7 }
 impl TaskPolicy {
     /// Validate a Linux scheduler policy wire value. # C: O(1)
     pub const fn from_code(code: u32) -> Option<Self> {
         match code {
             0 => Some(Self::Normal), 1 => Some(Self::Fifo), 2 => Some(Self::Rr),
-            3 => Some(Self::Batch), 5 => Some(Self::Idle), 6 => Some(Self::Deadline), _ => None,
+            3 => Some(Self::Batch), 5 => Some(Self::Idle), 6 => Some(Self::Deadline),
+            7 => Some(Self::NtFixed), _ => None,
         }
     }
     /// Linux scheduler policy wire value. # C: O(1)
@@ -118,6 +119,10 @@ impl TaskSched {
                     .expect("RT task construction requires priority 1 through 99"),
                 SchedClassId::PosixRt, rt_task_policy(policy), prio,
                 LoadWeight::for_nice(0).unwrap()).with_static_nice(0),
+            SchedClass::NtFixed { level, .. } => (SchedPriority::nt_fixed(level)
+                .expect("NT task construction requires priority 1 through 31"),
+                SchedClassId::NtFixed, TaskPolicy::NtFixed, 0,
+                LoadWeight::for_nice(0).unwrap()).with_static_nice(0),
             SchedClass::Normal { weight } => {
                 let (nice, policy, load) = if weight == super::sched_entity::WEIGHT_IDLEPRIO {
                     (0, TaskPolicy::Idle, LoadWeight::idle())
@@ -182,10 +187,13 @@ impl TaskSched {
                     else { SchedPolicy::Fifo };
                 SchedClass::Rt { prio: p, policy }
             }
+            SchedClassId::NtFixed => SchedClass::NtFixed {
+                level: state.prio.nt_level().expect("NT class requires NT priority"),
+                quantum: self.rt.time_slice.load(Ordering::Acquire),
+            },
             SchedClassId::Fair => SchedClass::Normal {
                 weight: (state.load.weight >> SCHED_FIXEDPOINT_SHIFT) as u32 },
             SchedClassId::Idle => SchedClass::Idle,
-            SchedClassId::NtFixed => panic!("native fixed priority requires its own class descriptor"),
         }
     }
 
@@ -196,11 +204,13 @@ impl TaskSched {
             SchedPriority::Deadline => SchedClass::Deadline,
             SchedPriority::PosixRt(p) => SchedClass::Rt { prio: p.rt_priority(),
                 policy: if state.policy == TaskPolicy::Rr { SchedPolicy::Rr }
-                    else { SchedPolicy::Fifo } },
+                else { SchedPolicy::Fifo } },
+            SchedPriority::NtFixed(p) => SchedClass::NtFixed {
+                level: p.level(), quantum: self.rt.time_slice.load(Ordering::Acquire),
+            },
             SchedPriority::Fair(_) => SchedClass::Normal {
                 weight: (state.load.weight >> SCHED_FIXEDPOINT_SHIFT) as u32 },
             SchedPriority::Idle => SchedClass::Idle,
-            SchedPriority::NtFixed(_) => panic!("native fixed priority requires its own class descriptor"),
         }
     }
     /// Publish effective class/priority without changing configured state. # C: O(NICE_WIDTH)
@@ -341,6 +351,10 @@ impl TaskSched {
                 assert!(SchedPriority::posix_rt(prio).is_some());
                 assert!(policy == rt_task_policy(class_policy));
             }
+            SchedClass::NtFixed { level, .. } => {
+                assert!(super::NtFixedPriority::new(level).is_some());
+                assert!(policy == TaskPolicy::NtFixed);
+            }
             SchedClass::Normal { weight } => {
                 assert!(matches!(policy, TaskPolicy::Normal | TaskPolicy::Batch | TaskPolicy::Idle));
                 assert!(policy == TaskPolicy::Idle || nice_for_weight(weight).is_some());
@@ -358,6 +372,10 @@ impl TaskSched {
                 assert!(policy == class_policy);
                 (SchedPriority::posix_rt(prio).expect("RT priority must be 1 through 99"),
                     SchedClassId::PosixRt, prio, policy)
+            }
+            SchedClass::NtFixed { level, .. } => {
+                (SchedPriority::nt_fixed(level).expect("NT priority must be 1 through 31"),
+                    SchedClassId::NtFixed, 0, policy)
             }
             SchedClass::Normal { weight } => {
                 assert!(matches!(policy, TaskPolicy::Normal | TaskPolicy::Batch | TaskPolicy::Idle));
@@ -467,6 +485,8 @@ fn priority_for_class(class: SchedClass) -> (SchedPriority, SchedClassId) {
         SchedClass::Deadline => (SchedPriority::Deadline, SchedClassId::Deadline),
         SchedClass::Rt { prio, .. } => (SchedPriority::posix_rt(prio)
             .expect("effective RT priority must be 1 through 99"), SchedClassId::PosixRt),
+        SchedClass::NtFixed { level, .. } => (SchedPriority::nt_fixed(level)
+            .expect("effective NT priority must be 1 through 31"), SchedClassId::NtFixed),
         SchedClass::Normal { weight } => {
             let nice = if weight == super::sched_entity::WEIGHT_IDLEPRIO { 0 } else {
                 nice_for_weight(weight).expect("effective fair class requires a Linux nice-table weight") };
