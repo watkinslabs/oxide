@@ -122,6 +122,9 @@ const GENERIC_ALL: u32 = 0x1000_0000;
 const GENERIC_READ: u32 = 0x8000_0000;
 const GENERIC_WRITE: u32 = 0x4000_0000;
 const GENERIC_EXECUTE: u32 = 0x2000_0000;
+const STATUS_SHARING_VIOLATION: u64 = 0xc000_0043;
+const FILE_MAPPING_ACCESS: u32 = 0x2000_0000;
+const FILE_MAPPING_WRITE: u32 = 0x4000_0000;
 const EVENT_ALLOWED_ACCESS: u32 = EVENT_ALL_ACCESS | GENERIC_READ | GENERIC_WRITE | GENERIC_EXECUTE | GENERIC_ALL;
 #[cfg(target_os = "oxide-kernel")]
 const EVENT_MODIFY_STATE: u32 = 0x0002;
@@ -1175,7 +1178,9 @@ pub fn dispatch(call: NtCall) -> u64 {
                     let file_size = (stat.size as u64).checked_add(hal::PAGE_SIZE_BYTES - 1)
                         .map(|value| value & !(hal::PAGE_SIZE_BYTES - 1)).unwrap_or(0);
                     if file_size == 0 || size < file_size { return STATUS_INVALID_PARAMETER; }
-                    table.new_file_section(file, size as usize)
+                    let mapping_access = FILE_MAPPING_ACCESS | if protection.contains(vmm::VmaProt::WRITE) { FILE_MAPPING_WRITE } else { 0 };
+                    let Some(share) = sched::nt_object::NtFileShare::claim_mapping(&file, mapping_access) else { return STATUS_SHARING_VIOLATION; };
+                    table.new_file_section_with_share(file, size as usize, 0, share)
                 };
                 if attributes != 0 {
                     let Some(path) = crate::nt_directory::resolve_object_path(attributes, &table) else { return STATUS_INVALID_PARAMETER; };

@@ -202,6 +202,12 @@ impl NtHandleTable {
         NtObject::new_section(id, NtSection::from_file_with_flags(file, size, flags))
     }
 
+    /// Wrap a VFS file in a section while retaining its mapping share claim. # C: O(1)
+    pub fn new_file_section_with_share(&self, file: Arc<vfs::File>, size: usize, flags: u32, share: Arc<NtFileShare>) -> Arc<NtObject> {
+        let id = self.next_object_id.fetch_add(1, Ordering::Relaxed);
+        NtObject::new_section(id, NtSection::from_file_with_share(file, size, flags, share))
+    }
+
     /// Allocate a symbolic-link object with one immutable target. # C: O(1)
     pub fn new_symbolic_link(&self, target: String) -> Arc<NtObject> {
         let id = self.next_object_id.fetch_add(1, Ordering::Relaxed);
