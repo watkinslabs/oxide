@@ -401,6 +401,16 @@ pub unsafe fn try_to_wake_up(task: Arc<Task>) -> bool {
     unsafe { ttwu_inner(task, irq_context) }
 }
 
+/// Wake a task released from the final native NT suspend depth. # C: O(N_cpus + log N)
+/// # SAFETY: caller owns an Arc and observed the final suspend-depth release.
+pub(crate) unsafe fn wake_nt_suspended(task: Arc<Task>) -> bool {
+    let irq_context = wake_context_requires_defer();
+    if !task.claim_nt_wake() { return false; }
+    // SAFETY: Sleeping→Waking is exclusively claimed; placement owns the Arc.
+    unsafe { place_runnable(task, irq_context); }
+    true
+}
+
 #[inline]
 fn wake_context_requires_defer() -> bool {
     // Hard IRQs cannot take a runqueue lock that they may have interrupted.

@@ -58,6 +58,7 @@ pub mod zombies;
 pub mod send;
 pub mod sigpend;
 pub mod freezer;
+pub mod nt_suspend;
 pub mod sb_freeze;
 pub mod quota_wait;
 pub mod inode_wait;

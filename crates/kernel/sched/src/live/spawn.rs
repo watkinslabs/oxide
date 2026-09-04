@@ -410,6 +410,7 @@ pub fn publish_new_task(task: &Arc<Task>) {
 /// observe — FS_BASE/TLS, vtgid, fd table, sigmask, `set_child_tid` — is final,
 /// so no CPU picks a half-constructed task. # C: O(1)
 pub fn wake_new_task(task: &Arc<Task>) {
+    if task.nt_suspend_requested() { return; }
     // Linux `wake_up_new_task` picks the CPU with
     // `__set_task_cpu(p, select_task_rq(p, task_cpu(p), WF_FORK))` BEFORE
     // `activate_task`. Enqueueing unconditionally on the forking CPU instead

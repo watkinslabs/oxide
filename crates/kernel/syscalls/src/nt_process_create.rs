@@ -110,7 +110,7 @@ pub fn dispatch(call: NtCall, stack: [u64; 5]) -> u64 {
         }
     }
     sched::live::publish_new_task(&child);
-    if c.thread_flags & CREATE_SUSPENDED != 0 { child.nt_suspend(); }
+    if c.thread_flags & CREATE_SUSPENDED != 0 { let _ = child.nt_suspend(); }
     else { sched::live::wake_new_task(&child); }
     SUCCESS
 }
