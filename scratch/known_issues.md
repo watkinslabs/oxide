@@ -592,9 +592,13 @@ Windows APC queue and x86-64 user APC return path; it must not be conflated
 with Linux signal pending state.
 `NtQueueApcThreadEx2` is exposed alongside the base APC boundary; reserve
 handles, special APC flags, and callback delivery require that same owner.
-`NtRaiseException` is exposed at the exception boundary; complete behavior
-requires a canonical exception-record dispatcher and resumable x86-64 user
-context owner, still absent from the current exception module.
+`NtRaiseException` now copies and validates the caller's x86-64 context through
+the canonical context decoder, retains it in the current thread's scheduler-
+owned pending state, and enters the installed user dispatcher at return to
+user mode. Breakpoint resumes apply the architectural instruction correction;
+unsupported context components and non-x86-64 execution return an honest
+unsupported status. Remote exception delivery remains outside this current-
+thread owner.
 `NtReadFileScatter` is exposed at the file boundary; segmented user-buffer
 validation and completion require a scatter-read owner in the NT file adapter.
 `NtReadVirtualMemory` current-process copying now uses the canonical
