@@ -3,6 +3,28 @@
 extern crate alloc;
 use alloc::string::String;
 
+/// Decode one NT `UNICODE_STRING` payload after the user copy. Unpaired
+/// surrogates are malformed; valid pairs become one Rust scalar so the VFS
+/// receives the supplied Unicode name.
+pub(crate) fn decode_utf16(units: &[u16]) -> Option<String> {
+    let mut output = String::new();
+    let mut index = 0;
+    while index < units.len() {
+        let unit = units[index];
+        let scalar = if (0xd800..=0xdbff).contains(&unit) {
+            let next = *units.get(index + 1)?;
+            if !(0xdc00..=0xdfff).contains(&next) { return None; }
+            index += 1;
+            0x1_0000 + (((unit - 0xd800) as u32) << 10) + (next - 0xdc00) as u32
+        } else if (0xdc00..=0xdfff).contains(&unit) {
+            return None;
+        } else { unit as u32 };
+        output.push(core::char::from_u32(scalar)?);
+        index += 1;
+    }
+    Some(output)
+}
+
 /// Translate an absolute DOS/NT path to the Windows VFS root.
 ///
 /// Drive-relative paths such as `C:foo` are deliberately rejected until the
@@ -144,5 +166,13 @@ mod tests {
     #[test]
     fn renders_non_drive_paths_without_changing_root() {
         assert_eq!(render_windows_path("/Device/Null"), Some(String::from(r"\Device\Null")));
+    }
+
+    #[test]
+    fn utf16_boundaries_accept_pairs_and_reject_unpaired_surrogates() {
+        assert_eq!(super::decode_utf16(&[0xd83d, 0xde00]).as_deref(), Some("😀"));
+        assert_eq!(super::decode_utf16(&[0xd83d]), None);
+        assert_eq!(super::decode_utf16(&[0xde00]), None);
+        assert_eq!(super::decode_utf16(&[b'A' as u16, 0xd83d, b'B' as u16]), None);
     }
 }
