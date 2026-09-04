@@ -1,6 +1,6 @@
 # Known issues
 
-**Live issue count: 300** — 294 `OPEN`, 6 `IN-PROGRESS`.
+**Live issue count: 301** — 294 `OPEN`, 7 `IN-PROGRESS`.
 
 | Id | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|---|
@@ -304,6 +304,7 @@
 | KI-0337 | IN-PROGRESS H1541-windows-exception-unwind-chain | DEFECT | high | [CLAIMED H1541-windows-exception-unwind-chain 2026-09-04] Phase 9 x86-64 chained unwind records are rejected instead of following the IMAGE_RUNTIME_FUNCTION_ENTRY chain, preventing canonical RtlVirtualUnwind behavior for functions split across chained prolog records. | Current shared PE unwind_x64 rejects UNW_FLAG_CHAININFO. Wine resolves the chained runtime function and continues unwind; focused regression will cover the chain and reject malformed chain targets. | NT runtime |
 | KI-0339 | IN-PROGRESS L1541-windows-audio-extensible-pr | MISSING | med | [CLAIMED L1541-windows-audio-extensible-pr 2026-09-04] Phase 11 audio boundary lacks canonical WAVEFORMATEXTENSIBLE validation | Current windows-audio rejects every nonzero cbSize. The Wine-derived audio boundary accepts WAVEFORMATEXTENSIBLE extension only for PCM/IEEE-float subtype, valid bits, and channel mask that fit native format. Add hosted ABI/semantic tests and preserve the existing native audio owner. | windows-audio |
 | KI-0340 | IN-PROGRESS P1543-windows-phase7-sharing-delete | MISSING | med | [CLAIMED P1543-windows-phase7-sharing-delete 2026-09-04] Phase 7 NT opens reject zero DesiredAccess even though metadata-only Windows opens are valid | Current nt_file::open_path rejects an open when no read/write bits are present. The Wine server sharing path explicitly permits access mode 0 and ignores sharing for that open; the resulting handle is not granted data access. Add a canonical admission predicate and focused regression coverage. | windows-vfs |
+| KI-0341 | IN-PROGRESS T1546-nt-handle-protected-duplicate | DEFECT | med | [CLAIMED T1546-nt-handle-protected-duplicate 2026-09-04] DUPLICATE_CLOSE_SOURCE bypasses protect-from-close and closes a protected source handle | Current sched::nt_object::close_duplicate_source bypasses the canonical protected-close check. Wine validates the per-handle close-protection bit before removal; add a hosted regression proving protected source remains live while duplicate succeeds, then route source close through the normal close path. | NT |
 
 ## Ext4 master program
 

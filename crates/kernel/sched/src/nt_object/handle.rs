@@ -274,7 +274,7 @@ impl NtHandleTable {
     /// Consume a source handle as part of a successful duplicate operation.
     /// # C: O(N_handles)
     pub fn close_duplicate_source(&self, handle: NtHandle) -> bool {
-        self.close_with_last_inner(handle, true).is_some()
+        self.close_with_last_inner(handle, false).is_some()
     }
 
     /// Close one handle and report whether it was the final handle for its
