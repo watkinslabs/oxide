@@ -699,6 +699,18 @@ mod tests {
     }
 
     #[test]
+    fn framed_service_rejects_bounded_length_errors_before_dispatch() {
+        let path = std::env::temp_dir().join(format!("oxide-registry-frame-bound-{}", std::process::id())); let _ = fs::remove_file(&path);
+        let mut store = RegistryStore::open(&path).unwrap();
+        let mut zero = std::io::Cursor::new(0u32.to_le_bytes().to_vec());
+        assert_eq!(serve_connection(&mut zero, &mut store).unwrap_err().kind(), std::io::ErrorKind::InvalidData);
+        let mut oversized = std::io::Cursor::new((MAX_FRAME as u32 + 1).to_le_bytes().to_vec());
+        assert_eq!(serve_connection(&mut oversized, &mut store).unwrap_err().kind(), std::io::ErrorKind::InvalidData);
+        assert!(!store.is_dirty());
+        fs::remove_file(path).ok();
+    }
+
+    #[test]
     fn shared_wire_contract_keeps_relative_operations_distinct() {
         assert_eq!(registry_wire::OPEN, 1);
         assert_eq!(registry_wire::CREATE, 2);

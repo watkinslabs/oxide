@@ -155,7 +155,7 @@ must use grouped paths from day one.
     `sound` and `graphics` use and keeps no device list of its own.
 14. `crates/drivers/drv-vivid` owns the virtual capture device: the
     test-pattern generator, the reported format and control tables, and the
-    frame pacing (`64§10`). It is a `v4l2` driver like any other and has no
+    frame pacing (the `drv-vivid` contract in `64§10`). It is a `v4l2` driver like any other and has no
     private path into the device core.
 
 15. Device-class ownership: `crates/kernel/power-supply` owns the power-supply
