@@ -422,11 +422,11 @@ fn query_attributes(attributes: u64, information: u64) -> u64 {
     if file_type != vfs::FileType::Regular && file_type != vfs::FileType::Directory { return STATUS_INVALID_INFO_CLASS; }
     let stat = vfs::generic_fillattr(vp.inode.as_ref(), &vfs::IDENTITY);
     let mut out = [0u8; 40];
-    put_i64(&mut out, 0, filetime(stat.btime.unwrap_or(stat.ctime)));
+    put_i64(&mut out, 0, filetime(crate::nt_file_policy::creation_time(&stat)));
     put_i64(&mut out, 8, filetime(stat.atime));
     put_i64(&mut out, 16, filetime(stat.mtime));
     put_i64(&mut out, 24, filetime(stat.ctime));
-    let file_attributes: u32 = if file_type == vfs::FileType::Directory { 0x10 } else { 0x80 };
+    let file_attributes = crate::nt_file_policy::file_attributes(stat.mode, file_type == vfs::FileType::Directory);
     out[32..36].copy_from_slice(&file_attributes.to_ne_bytes());
     if uaccess::copy_to_user(information, &out).is_err() { STATUS_ACCESS_VIOLATION } else { STATUS_SUCCESS }
 }
@@ -441,13 +441,13 @@ fn query_full_attributes(attributes: u64, information: u64) -> u64 {
     if file_type != vfs::FileType::Regular && file_type != vfs::FileType::Directory { return STATUS_INVALID_INFO_CLASS; }
     let stat = vfs::generic_fillattr(vp.inode.as_ref(), &vfs::IDENTITY);
     let mut out = [0u8; 56];
-    put_i64(&mut out, 0, filetime(stat.btime.unwrap_or(stat.ctime)));
+    put_i64(&mut out, 0, filetime(crate::nt_file_policy::creation_time(&stat)));
     put_i64(&mut out, 8, filetime(stat.atime));
     put_i64(&mut out, 16, filetime(stat.mtime));
     put_i64(&mut out, 24, filetime(stat.ctime));
     put_i64(&mut out, 32, stat.size as i64);
     put_i64(&mut out, 40, stat.size as i64);
-    let file_attributes: u32 = if file_type == vfs::FileType::Directory { 0x10 } else { 0x80 };
+    let file_attributes = crate::nt_file_policy::file_attributes(stat.mode, file_type == vfs::FileType::Directory);
     out[48..52].copy_from_slice(&file_attributes.to_ne_bytes());
     if uaccess::copy_to_user(information, &out).is_err() { STATUS_ACCESS_VIOLATION } else { STATUS_SUCCESS }
 }
@@ -715,7 +715,7 @@ fn query_information_values(cur: &sched::Task, handle: u32, io_status: u64, info
     let Some(file) = object.file() else { return STATUS_INVALID_HANDLE; };
     let stat = vfs::generic_fillattr(file.inode(), &vfs::IDENTITY);
     let is_directory = file.inode().file_type() == vfs::FileType::Directory;
-    let file_attributes: u32 = if is_directory { 0x10 } else { 0x80 };
+    let file_attributes = crate::nt_file_policy::file_attributes(stat.mode, is_directory);
     let path = String::from_utf8(file.dentry().absolute_path()).ok()
         .and_then(|path| crate::nt_path::render_windows_path(&path));
     let name: alloc::vec::Vec<u16> = path.as_deref().unwrap_or("").encode_utf16().collect();
@@ -725,7 +725,7 @@ fn query_information_values(cur: &sched::Task, handle: u32, io_status: u64, info
     let needed = match class {
         FILE_BASIC_INFORMATION => {
             out.resize(40, 0);
-            put_i64(&mut out, 0, filetime(stat.btime.unwrap_or(stat.ctime)));
+            put_i64(&mut out, 0, filetime(crate::nt_file_policy::creation_time(&stat)));
             put_i64(&mut out, 8, filetime(stat.atime));
             put_i64(&mut out, 16, filetime(stat.mtime));
             put_i64(&mut out, 24, filetime(stat.ctime));
@@ -754,7 +754,7 @@ fn query_information_values(cur: &sched::Task, handle: u32, io_status: u64, info
         FILE_END_OF_FILE_INFORMATION => { out.resize(8, 0); put_i64(&mut out, 0, stat.size as i64); 8 }
         FILE_ALL_INFORMATION => {
             out.resize(all_size, 0);
-            put_i64(&mut out, 0, filetime(stat.btime.unwrap_or(stat.ctime)));
+            put_i64(&mut out, 0, filetime(crate::nt_file_policy::creation_time(&stat)));
             put_i64(&mut out, 8, filetime(stat.atime));
             put_i64(&mut out, 16, filetime(stat.mtime));
             put_i64(&mut out, 24, filetime(stat.ctime));
@@ -769,7 +769,7 @@ fn query_information_values(cur: &sched::Task, handle: u32, io_status: u64, info
         }
         FILE_NETWORK_OPEN_INFORMATION => {
             out.resize(56, 0);
-            put_i64(&mut out, 0, filetime(stat.btime.unwrap_or(stat.ctime)));
+            put_i64(&mut out, 0, filetime(crate::nt_file_policy::creation_time(&stat)));
             put_i64(&mut out, 8, filetime(stat.atime));
             put_i64(&mut out, 16, filetime(stat.mtime));
             put_i64(&mut out, 24, filetime(stat.ctime));
