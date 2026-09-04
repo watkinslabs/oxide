@@ -4,6 +4,15 @@ use syscall::{nt, SyscallArgs}; use syscall::nt::NtCall;
 #[cfg(target_os = "oxide-kernel")] use syscall::UserPtr;
 #[cfg(target_os = "oxide-kernel")]
 use syscall::nt::NtMemoryCall;
+
+/// Accept the zero-entry extended-parameter form used by the current-process
+/// mapping path. Nonzero entries need an extended-parameter owner and remain
+/// outside this bounded contract.
+pub fn map_view_ex_parameters_admitted(parameters: u64, count: u64) -> bool {
+    let _ = parameters;
+    count == 0
+}
+
 /// Decode one NT personality entry without making it visible to Linux routes.
 /// # C: O(1)
 pub fn decode_entry(entry: u64, args: SyscallArgs) -> Option<NtCall> {
@@ -60,7 +69,9 @@ fn native_section_object(call: NtCall) -> Option<NtObjectCall> {
             })
         }
         nt::NtService::NtMapViewOfSectionEx => {
-            if stack_argument(7)? != 0 || stack_argument(8)? != 0 { return None; }
+            let parameters = stack_argument(7)?;
+            let count = stack_argument(8)?;
+            if !map_view_ex_parameters_admitted(parameters, count) { return None; }
             let protect = stack_argument(6)?;
             if call.args.a0 > u32::MAX as u64 || call.args.a5 > u32::MAX as u64 || protect > u32::MAX as u64 {
                 return None;
@@ -1469,7 +1480,7 @@ pub fn dispatch(call: NtCall) -> u64 {
     }
     if call.service == nt::NtService::NtAllocateVirtualMemoryEx {
         let Some(parameter_count) = stack_argument(6) else { return STATUS_INVALID_PARAMETER; };
-        if call.args.a5 != 0 || parameter_count != 0 { return STATUS_INVALID_PARAMETER; }
+        if call.args.a5 != 0 || parameter_count == 0 { return STATUS_INVALID_PARAMETER; }
     }
     let call = match nt::decode_memory(call) {
         Ok(call) => call,
@@ -1631,5 +1642,11 @@ mod tests {
         let call = decode_entry(nt::NT_SERVICE_NAMESPACE | 0, args).unwrap();
         assert_eq!(call.service, nt::NtService::AllocateVirtualMemory);
         assert_eq!(call.args, args);
+    }
+    #[test]
+    fn map_view_ex_allows_ignored_parameters_when_count_is_zero() {
+        assert!(map_view_ex_parameters_admitted(0, 0));
+        assert!(map_view_ex_parameters_admitted(0x1000, 0));
+        assert!(!map_view_ex_parameters_admitted(0, 1));
     }
 }
