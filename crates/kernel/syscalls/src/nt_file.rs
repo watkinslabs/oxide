@@ -108,6 +108,7 @@ pub fn dispatch(call: NtFileCall) -> u64 {
 /// Stack arguments are fetched only for the x86-64 Windows calling convention.
 /// # C: O(path) + O(bytes)
 pub fn dispatch_native(call: NtCall) -> Option<u64> {
+    if let Some(result) = crate::nt_file_scatter::dispatch(call) { return Some(result); }
     match call.service {
         NtService::NtCreateNamedPipeFile => Some(native_create_named_pipe(call)),
         NtService::FsControlFile => Some(native_fs_control(call)),
@@ -661,13 +662,13 @@ fn io(cur: &sched::Task, addr: u64, write: bool) -> u64 {
     }
 }
 
-fn write_io_status(addr: u64, status: u64, information: u64) {
+pub(crate) fn write_io_status(addr: u64, status: u64, information: u64) {
     let Some(information_addr) = addr.checked_add(8) else { return; };
     let _ = uaccess::put_user_u64(addr, status);
     let _ = uaccess::put_user_u64(information_addr, information);
 }
 
-fn post_completion(object: &sched::nt_object::NtObject, overlapped: u64, status: u64, information: u64) {
+pub(crate) fn post_completion(object: &sched::nt_object::NtObject, overlapped: u64, status: u64, information: u64) {
     let Some((port, key)) = object.file_completion() else { return; };
     port.post(sched::nt_object::NtCompletionPacket { key, overlapped, status: status as u32, information });
 }

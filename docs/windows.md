@@ -258,6 +258,7 @@ Initial syscall families should include equivalents for:
 -   `NtCreateFile`
 -   `NtOpenFile`
 -   `NtReadFile`
+-   `NtReadFileScatter`
 -   `NtWriteFile`
 -   `NtQueryInformationFile`
 -   `NtSetInformationFile`
