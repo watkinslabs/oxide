@@ -172,6 +172,11 @@ pub fn cgid_from_dir_inode(inode: &vfs::Inode) -> Option<u64> {
     inode.private::<inode::CgDirData>().map(|d| d.cgid)
 }
 
+/// Return the persisted cpu.weight for scheduler task-group integration.
+pub fn cpu_weight(cgid: u64) -> u32 {
+    TREE.lock().node(cgid).map(|node| node.cpu_weight).unwrap_or(100)
+}
+
 /// True iff `cgid` names a live cgroup. # C: O(log n)
 pub fn node_exists(cgid: u64) -> bool { TREE.lock().contains(cgid) }
 

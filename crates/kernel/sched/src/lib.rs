@@ -26,6 +26,7 @@ extern crate std;
 
 pub mod bh;
 pub mod cfs;
+pub mod task_group;
 mod eevdf;
 pub mod deadline;
 pub mod dl;

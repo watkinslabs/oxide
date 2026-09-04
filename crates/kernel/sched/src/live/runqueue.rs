@@ -24,7 +24,7 @@ use vmm::AddressSpace;
 
 #[path = "runqueue/nice.rs"]
 mod nice;
-pub use nice::set_nice;
+pub use nice::{set_group_shares, set_nice};
 
 /// Architecture IRQ gate for Linux's `raw_spin_rq_lock_irqsave()` boundary.
 /// `schedule()` is the sole exception: it disables IRQs explicitly and holds

@@ -152,9 +152,13 @@ pub fn cpuset_hook(pid: u64, mask: cpu::CpuMask) {
 
 /// Record no per-task mutation for a cpu.weight membership callback.
 /// # C: O(1)
-pub fn weight_hook(_pid: u64, _weight: u32) {
-    // cpu.weight changes task-group shares and its per-CPU fair entities;
-    // a member task's nice-derived load remains unchanged (`13a§7`).
+pub fn weight_hook(pid: u64, weight: u32) {
+    // Keep the task's nice-derived load unchanged; the group multiplier is
+    // applied when its fair entity is (re)enqueued.
+    if let Some(task) = lookup_init_pid(pid as u32) {
+        crate::live::runqueue::set_group_shares(
+            &task, cgroup::cgroup_of(pid), weight);
+    }
 }
 
 /// vpid → global tid for cgroup.procs/threads writes (identity fallback).
@@ -214,7 +218,19 @@ pub fn migrate_hook(vpid: u64, cgid: u64, thread: bool) -> vfs::KResult<u64> {
     }.ok_or(vfs::VfsError::Esrch)?;
     // Exiting tasks are skipped successfully. Canonical membership and the
     // lifecycle writer are the only state consulted by this transaction.
-    migrate_resolved_with(&task, cgid, thread, || {})
+    let result = migrate_resolved_with(&task, cgid, thread, || {});
+    if result.is_ok() {
+        let shares = cgroup::cpu_weight_to_cfs(cgroup::cpu_weight(cgid));
+        // Process migration can move every thread. Refresh the scheduler
+        // entity for each destination member so no sibling retains the old
+        // parent group after the cgroup transaction commits.
+        for tid in cgroup::subtree_pids(cgid) {
+            if let Some(member) = lookup_init_pid(tid as u32) {
+                crate::live::runqueue::set_group_shares(&member, cgid, shares);
+            }
+        }
+    }
+    result
 }
 
 /// Publish exit before removing canonical cgroup membership, excluding a
