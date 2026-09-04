@@ -63,9 +63,14 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         Ok(NtObjectCall::QueryProcess { process, class, info, length, return_length }) => {
             return query_process(process, class, info, length, return_length);
         }
-        Ok(NtObjectCall::QueryThread { thread, class, info, length, return_length }) => {
+        Ok(NtObjectCall::QueryThread { thread, class, info, length, return_length })
+            if syscall::nt::thread_query_is_basic_class(class) => {
             return query_thread(thread, class, info, length, return_length);
         }
+        // Extended thread-information classes are owned by the native NT
+        // dispatch adapter, which has the scheduler-backed implementations.
+        // Leaving them unconsumed here keeps that owner reachable.
+        Ok(NtObjectCall::QueryThread { .. }) => return None,
         _ => return None,
     };
     let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
