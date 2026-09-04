@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, ErrorKind, Read, Write};
+use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use syscall::registry_wire;
 
@@ -67,7 +68,7 @@ impl From<io::Error> for Error { fn from(error: io::Error) -> Self { Self::Io(er
 pub struct Registry { keys: BTreeMap<String, Key>, handles: BTreeMap<KeyHandle, String>, deleted: BTreeSet<KeyHandle>, next_handle: u64 }
 
 /// One runtime/user registry session backed by one Linux file.
-pub struct RegistryStore { registry: Registry, path: PathBuf, dirty: bool }
+pub struct RegistryStore { registry: Registry, path: PathBuf, _lock: File, dirty: bool }
 
 #[derive(Debug)]
 pub enum Request {
@@ -96,8 +97,13 @@ pub enum Response { Handle(KeyHandle), Value(Value), Keys(Vec<String>), Values(V
 impl RegistryStore {
     /// Load an existing per-user database or create a new one when absent. # C: O(file bytes)
     pub fn open(path: &Path) -> Result<Self, Error> {
+        let lock_path = path.with_extension("oxide-registry.lock");
+        let lock = OpenOptions::new().read(true).write(true).create(true).open(lock_path)?;
+        let fd = lock.as_raw_fd();
+        // SAFETY: the descriptor belongs to the live sidecar File and remains open for the session.
+        if unsafe { libc::flock(fd, libc::LOCK_EX) } != 0 { return Err(io::Error::last_os_error().into()); }
         let registry = if path.exists() { Registry::load(path)? } else { Registry::new() };
-        Ok(Self { registry, path: path.to_path_buf(), dirty: false })
+        Ok(Self { registry, path: path.to_path_buf(), _lock: lock, dirty: false })
     }
 
     /// Borrow the live canonical registry session. # C: O(1)
@@ -640,9 +646,25 @@ mod tests {
         let key = store.registry_mut().create_handle(Root::CurrentUser, "Software\\Oxide").unwrap();
         store.registry_mut().set_value_handle(key, "Ready", Value { kind: ValueType::Dword, data: vec![1, 0, 0, 0] }).unwrap();
         assert!(store.is_dirty()); store.flush().unwrap(); assert!(!store.is_dirty());
+        drop(store);
         let restored = RegistryStore::open(&path).unwrap();
         let key = restored.registry().open_key(Root::CurrentUser, "software\\oxide").unwrap();
-        assert_eq!(restored.registry().query_value(&key, "ready").unwrap().data, vec![1, 0, 0, 0]); std::fs::remove_file(path).unwrap();
+        assert_eq!(restored.registry().query_value(&key, "ready").unwrap().data, vec![1, 0, 0, 0]); std::fs::remove_file(&path).unwrap(); std::fs::remove_file(path.with_extension("oxide-registry.lock")).unwrap();
+    }
+
+    #[test]
+    fn registry_session_lock_serializes_open_and_releases_on_drop() {
+        use std::sync::{mpsc, Arc};
+        use std::thread;
+        let path = std::env::temp_dir().join(format!("oxide-registry-lock-{}", std::process::id()));
+        let _ = fs::remove_file(&path); let _ = fs::remove_file(path.with_extension("oxide-registry.lock"));
+        let first = RegistryStore::open(&path).unwrap();
+        let (started_tx, started_rx) = mpsc::channel(); let (acquired_tx, acquired_rx) = mpsc::channel(); let shared = Arc::new(path.clone());
+        let second_path = Arc::clone(&shared);
+        let waiter = thread::spawn(move || { started_tx.send(()).unwrap(); let store = RegistryStore::open(&second_path).unwrap(); acquired_tx.send(()).unwrap(); drop(store); });
+        started_rx.recv().unwrap(); assert!(acquired_rx.recv_timeout(std::time::Duration::from_millis(50)).is_err());
+        drop(first); assert!(acquired_rx.recv_timeout(std::time::Duration::from_secs(1)).is_ok());
+        waiter.join().unwrap(); let _ = fs::remove_file(path); let _ = fs::remove_file(shared.with_extension("oxide-registry.lock"));
     }
 
     #[test]
