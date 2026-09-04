@@ -5,12 +5,14 @@ use alloc::vec::Vec;
 
 pub const WM_CLOSE: u32 = 0x0010;
 pub const WM_DESTROY: u32 = 0x0002;
+pub const WM_KILLFOCUS: u32 = 0x0008;
 pub const WM_KEYDOWN: u32 = 0x0100;
 pub const WM_KEYUP: u32 = 0x0101;
 pub const WM_NCHITTEST: u32 = 0x0084;
 pub const WM_NCACTIVATE: u32 = 0x0086;
 pub const WM_PAINT: u32 = 0x000f;
 pub const WM_QUIT: u32 = 0x0012;
+pub const WM_SETFOCUS: u32 = 0x0007;
 pub const WM_TIMER: u32 = 0x0113;
 const KEY_REPEAT_COUNT_MASK: u32 = 0xffff;
 const KEY_PREVIOUS_STATE: u32 = 1 << 30;
@@ -196,8 +198,28 @@ impl WindowManager {
             if record.owner_tid != tid { return Err(WindowError::WrongThread); }
         }
         let previous = self.focus;
+        if previous == id { return Ok(previous); }
+        let old_owner = previous.and_then(|window| self.get(window).map(|record| record.owner_tid));
+        let new_owner = id.and_then(|window| self.get(window).map(|record| record.owner_tid));
+        if let Some(owner) = old_owner {
+            let needed = 1 + usize::from(new_owner == Some(owner));
+            if !self.queue_has_capacity(owner, needed) { return Err(WindowError::QueueFull); }
+        }
+        if let Some(owner) = new_owner {
+            if new_owner != old_owner && !self.queue_has_capacity(owner, 1) { return Err(WindowError::QueueFull); }
+        }
         self.focus = id;
+        if let Some(old) = previous {
+            self.post_to_window(old, WinMessage { hwnd: Some(old), message: WM_KILLFOCUS, wparam: id.map_or(0, |window| window.raw() as u64), lparam: 0 })?;
+        }
+        if let Some(new) = id {
+            self.post_to_window(new, WinMessage { hwnd: Some(new), message: WM_SETFOCUS, wparam: previous.map_or(0, |window| window.raw() as u64), lparam: 0 })?;
+        }
         Ok(previous)
+    }
+
+    fn queue_has_capacity(&self, tid: u64, additional: usize) -> bool {
+        self.queues.iter().find(|(owner, _)| *owner == tid).is_some_and(|(_, queue)| queue.len().saturating_add(additional) <= MESSAGE_QUEUE_LIMIT)
     }
     /// Return the canonical focused window. # C: O(1)
     pub fn focused(&self) -> Option<WindowId> { self.focus }
@@ -557,6 +579,20 @@ mod tests {
         manager.post_key(9, 0x41, true, false).unwrap();
         let filter = MessageFilter { hwnd: Some(second), first: WM_KEYDOWN, last: WM_KEYDOWN };
         assert_eq!(manager.peek_for_thread(9, filter, true), Some(WinMessage { hwnd: Some(second), message: WM_KEYDOWN, wparam: 0x41, lparam: 1 }));
+    }
+
+    #[test]
+    fn focus_transition_notifies_old_and_new_windows_in_order() {
+        let mut manager = WindowManager::new();
+        let old = manager.create(9, None, 0).unwrap();
+        let new = manager.create(9, None, 0).unwrap();
+        assert_eq!(manager.set_focus(9, Some(old)), Ok(None));
+        assert_eq!(manager.peek_for_thread(9, MessageFilter { hwnd: Some(old), first: WM_SETFOCUS, last: WM_SETFOCUS }, true), Some(WinMessage { hwnd: Some(old), message: WM_SETFOCUS, wparam: 0, lparam: 0 }));
+        assert_eq!(manager.set_focus(9, Some(new)), Ok(Some(old)));
+        assert_eq!(manager.peek_for_thread(9, MessageFilter { hwnd: Some(old), first: WM_KILLFOCUS, last: WM_KILLFOCUS }, true), Some(WinMessage { hwnd: Some(old), message: WM_KILLFOCUS, wparam: new.raw() as u64, lparam: 0 }));
+        assert_eq!(manager.peek_for_thread(9, MessageFilter { hwnd: Some(new), first: WM_SETFOCUS, last: WM_SETFOCUS }, true), Some(WinMessage { hwnd: Some(new), message: WM_SETFOCUS, wparam: old.raw() as u64, lparam: 0 }));
+        assert_eq!(manager.set_focus(9, None), Ok(Some(new)));
+        assert_eq!(manager.peek_for_thread(9, MessageFilter { hwnd: Some(new), first: WM_KILLFOCUS, last: WM_KILLFOCUS }, true), Some(WinMessage { hwnd: Some(new), message: WM_KILLFOCUS, wparam: 0, lparam: 0 }));
     }
 
     #[test]
