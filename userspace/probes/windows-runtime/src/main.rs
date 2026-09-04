@@ -18,7 +18,7 @@ fn main() -> ExitCode {
     let image = PathBuf::from(image);
     let dll_dir = PathBuf::from(dll_dir);
     let windows_path = windows_path.as_os_str().as_bytes();
-    let request = match RuntimeRequest::from_paths(&image, windows_path, &dll_dir) {
+    let request = match RuntimeRequest::from_paths_with_environment(&image, windows_path, windows_path, &dll_dir, env::vars()) {
         Ok(request) => request,
         Err(error) => { eprintln!("cannot build Windows handoff: {error:?}"); return ExitCode::from(1); }
     };
