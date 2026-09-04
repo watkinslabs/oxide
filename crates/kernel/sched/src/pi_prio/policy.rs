@@ -29,6 +29,7 @@ const fn sched_rank(c: SchedClass) -> (u8, u32) {
     match c {
         SchedClass::Deadline          => (3, 0),
         SchedClass::Rt { prio, .. }   => (2, prio as u32),
+        SchedClass::NtFixed { level, .. } => (1, level as u32),
         SchedClass::Normal { .. }     => (1, 0),
         SchedClass::Idle              => (0, 0),
     }

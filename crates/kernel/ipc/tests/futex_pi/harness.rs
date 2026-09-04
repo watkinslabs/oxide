@@ -86,6 +86,7 @@ pub enum SchedPolicy { Normal, Fifo, Rr, Idle }
 pub enum SchedClass {
     Deadline,
     Rt { prio: u8, policy: SchedPolicy },
+    NtFixed { level: u8, quantum: u32 },
     Normal { weight: u32 },
     Idle,
 }
@@ -109,6 +110,7 @@ impl SchedClass {
                                        SchedPolicy::Rr => 2, SchedPolicy::Idle => 3 };
                 2 | ((prio as u64) << 8) | (c << 16)
             }
+            SchedClass::NtFixed { level, quantum } => 4 | ((level as u64) << 8) | ((quantum as u64) << 16),
             SchedClass::Deadline => 3,
         }
     }
@@ -121,6 +123,7 @@ impl SchedClass {
                                                 3 => SchedPolicy::Idle, _ => SchedPolicy::Normal },
             },
             3 => SchedClass::Deadline,
+            4 => SchedClass::NtFixed { level: (v >> 8) as u8, quantum: (v >> 16) as u32 },
             _ => SchedClass::Idle,
         }
     }

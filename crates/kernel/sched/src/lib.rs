@@ -92,6 +92,7 @@ pub mod ioprio;
 mod class_queue;
 mod intrusive_tree;
 pub mod rt;
+mod nt;
 pub mod session;
 pub mod ucounts;
 pub mod runqueue;

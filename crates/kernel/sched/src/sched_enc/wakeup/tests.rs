@@ -6,6 +6,7 @@ use super::*;
 use crate::sched_enc::{SCHED_BATCH, SCHED_FIFO, SCHED_RR};
 
 fn rt(prio: u8, policy: u32) -> Cand { Cand { rank: RANK_RT, policy, rt_prio: prio, vruntime: 0, dl_deadline: 0, dl_special: false } }
+fn nt(level: u8) -> Cand { Cand { rank: RANK_NT, policy: crate::sched_enc::SCHED_NORMAL, rt_prio: level, vruntime: 0, dl_deadline: 0, dl_special: false } }
 fn fair(policy: u32, vruntime: u64) -> Cand { Cand { rank: RANK_FAIR, policy, rt_prio: 0, vruntime, dl_deadline: 0, dl_special: false } }
 fn idle_task() -> Cand { Cand { rank: RANK_IDLE, policy: SCHED_NORMAL, rt_prio: 0, vruntime: 0, dl_deadline: 0, dl_special: false } }
 
@@ -34,6 +35,14 @@ fn fifo_keeps_the_cpu_against_an_equal_priority_peer() {
 fn rt_preempts_only_on_strictly_higher_priority() {
     assert!(wakeup_preempt(rt(51, SCHED_FIFO), rt(50, SCHED_FIFO)));
     assert!(!wakeup_preempt(rt(49, SCHED_FIFO), rt(50, SCHED_FIFO)));
+}
+
+#[test]
+fn nt_fixed_is_below_posix_rt_but_strict_within_its_levels() {
+    assert!(wakeup_preempt(nt(12), fair(SCHED_NORMAL, 0)));
+    assert!(!wakeup_preempt(nt(31), rt(1, SCHED_FIFO)));
+    assert!(wakeup_preempt(nt(13), nt(12)));
+    assert!(!wakeup_preempt(nt(12), nt(12)));
 }
 
 #[test]
