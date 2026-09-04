@@ -2,7 +2,7 @@
 
 use alloc::vec::Vec;
 
-use crate::{IpAddr, Ipv4Addr, Ipv6Addr, Port};
+use crate::{IpAddr, Ipv6Addr, Port};
 
 /// Maximum records copied across the native/Windows resolver boundary.
 pub const MAX_ADDRINFO_RESULTS: usize = 32;
@@ -148,6 +148,8 @@ fn sockaddr(address: IpAddr, port: Port) -> Result<WindowsSockaddr, ContractErro
 mod tests {
     use super::*;
     use alloc::vec;
+    use crate::Ipv4Addr;
+    use crate::Ipv4Addr;
 
     fn v4(last: u8, canon_name: Option<&[u8]>) -> NativeAddrInfo {
         NativeAddrInfo { flags: 0, socktype: 1, protocol: 6,
