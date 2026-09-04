@@ -12,6 +12,38 @@ pub struct NtAllocation { pub base: UserVirtAddr, pub size: usize, pub protectio
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct NtMemoryInfo { pub base: UserVirtAddr, pub allocation_base: UserVirtAddr, pub size: usize, pub protection: VmaProt, pub may_protection: VmaProt, pub committed: bool }
 
+/// Result of one native NT process-memory transfer. The destination is
+/// validated by the syscall boundary before this owner is called; a failed
+/// source or destination copy contributes no bytes for its current chunk.
+#[cfg(target_os = "oxide-kernel")]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct NtCopyResult { pub copied: usize }
+
+/// Copy between buffers in the current process address space. This is the
+/// transfer owner for both read and write; remote address spaces must acquire
+/// their own address-space-aware operation before reaching here.
+/// # C: O(size / PAGE)
+#[cfg(target_os = "oxide-kernel")]
+pub fn copy_current_process(read: bool, source: u64, destination: u64, size: usize) -> NtCopyResult {
+    let mut copied = 0usize;
+    let mut scratch = [0u8; PAGE];
+    while copied < size {
+        let count = (size - copied).min(PAGE);
+        let Some(src) = source.checked_add(copied as u64) else { break };
+        let Some(dst) = destination.checked_add(copied as u64) else { break };
+        let result = if read {
+            if uaccess::copy_from_user(&mut scratch[..count], src).is_err() { break; }
+            uaccess::copy_to_user(dst, &scratch[..count])
+        } else {
+            if uaccess::copy_from_user(&mut scratch[..count], dst).is_err() { break; }
+            uaccess::copy_to_user(src, &scratch[..count])
+        };
+        if result.is_err() { break; }
+        copied += count;
+    }
+    NtCopyResult { copied }
+}
+
 /// Normalize an NT protection request to the page range it covers.
 /// # C: O(1)
 pub fn normalize_protection_range(base: u64, size: u64) -> Result<(UserVirtAddr, usize), NtStatus> {

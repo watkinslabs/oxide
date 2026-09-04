@@ -57,6 +57,7 @@ mod nt_process_handles;
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 mod nt_process_create;
 mod nt_process_memory;
+mod nt_process_memory_policy;
 mod nt_system_time;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_timer;
