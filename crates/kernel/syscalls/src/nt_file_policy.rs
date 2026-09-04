@@ -22,6 +22,25 @@ const FILE_READ_DATA: u32 = 0x0001;
 const FILE_WRITE_DATA: u32 = 0x0002;
 const FILE_APPEND_DATA: u32 = 0x0004;
 const UNSUPPORTED_FILE_ACCESS: u32 = 0x0008;
+const FILE_ATTRIBUTE_READONLY: u32 = 0x0000_0001;
+const FILE_ATTRIBUTE_ARCHIVE: u32 = 0x0000_0020;
+const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x1000_0000;
+const POSIX_WRITE_BITS: u32 = 0o222;
+
+/// Translate the canonical VFS mode into the DOS attributes exposed by NT.
+/// Directories keep their directory bit; read-only is meaningful for files
+/// when no POSIX write owner, group, or other bit remains. # C: O(1)
+pub(crate) const fn file_attributes(mode: u32, is_directory: bool) -> u32 {
+    let base = if is_directory { FILE_ATTRIBUTE_DIRECTORY } else { FILE_ATTRIBUTE_ARCHIVE };
+    if !is_directory && mode & POSIX_WRITE_BITS == 0 { base | FILE_ATTRIBUTE_READONLY } else { base }
+}
+
+/// NT creation time uses the VFS birth time when the owner stores one. A VFS
+/// owner without birth time reports the modification time, matching NT's
+/// Unix-backed fallback rather than exposing Linux change time as creation. # C: O(1)
+pub(crate) const fn creation_time(stat: &vfs::Kstat) -> vfs::Timespec64 {
+    match stat.btime { Some(time) => time, None => stat.mtime }
+}
 
 /// Admit the NT open access classes that can produce a file object. A zero
 /// access mask is a metadata-only open; data access remains unavailable on
@@ -99,5 +118,15 @@ mod tests {
         assert_eq!(status_from_errno(-(Errno::Eexist.as_i32() as i64)), STATUS_OBJECT_NAME_COLLISION);
         assert_eq!(status_from_errno(-(Errno::Eacces.as_i32() as i64)), STATUS_ACCESS_DENIED);
         assert_eq!(status_from_errno(-(Errno::Eio.as_i32() as i64)), STATUS_INVALID_PARAMETER);
+    }
+
+    #[test]
+    fn basic_information_translation_preserves_vfs_readonly_and_birth_fallback() {
+        let stat = vfs::Kstat { mode: 0o100_444, mtime: vfs::Timespec64::from_secs(22),
+            ctime: vfs::Timespec64::from_secs(99), ..Default::default() };
+        assert_eq!(file_attributes(stat.mode, false), FILE_ATTRIBUTE_ARCHIVE | FILE_ATTRIBUTE_READONLY);
+        assert_eq!(file_attributes(0o100_644, false), FILE_ATTRIBUTE_ARCHIVE);
+        assert_eq!(file_attributes(0o040_555, true), FILE_ATTRIBUTE_DIRECTORY);
+        assert_eq!(creation_time(&stat), vfs::Timespec64::from_secs(22));
     }
 }
