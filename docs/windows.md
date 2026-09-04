@@ -260,6 +260,7 @@ Initial syscall families should include equivalents for:
 -   `NtReadFile`
 -   `NtReadFileScatter`
 -   `NtWriteFile`
+-   `NtWriteFileGather`
 -   `NtQueryInformationFile`
 -   `NtSetInformationFile`
 -   `NtQueryDirectoryFile`

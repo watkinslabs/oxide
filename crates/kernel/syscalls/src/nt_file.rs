@@ -109,6 +109,7 @@ pub fn dispatch(call: NtFileCall) -> u64 {
 /// # C: O(path) + O(bytes)
 pub fn dispatch_native(call: NtCall) -> Option<u64> {
     if let Some(result) = crate::nt_file_scatter::dispatch(call) { return Some(result); }
+    if let Some(result) = crate::nt_file_gather::dispatch(call) { return Some(result); }
     match call.service {
         NtService::NtCreateNamedPipeFile => Some(native_create_named_pipe(call)),
         NtService::FsControlFile => Some(native_fs_control(call)),
