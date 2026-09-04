@@ -3,11 +3,10 @@
 use std::process::ExitCode;
 use syscall::nt::NtWindowRect;
 use windows_gdi::{Gdi, Rect};
-use windows_user32::{ClassRegistry, MenuItemInfoW, User32, MF_POPUP, MIIM_ID, MIIM_STRING, MIIM_SUBMENU, WM_KEYDOWN};
+use windows_user32::{ClassRegistry, GetMessageResult, MenuItemInfoW, User32, MF_POPUP, MIIM_ID, MIIM_STRING, MIIM_SUBMENU, WM_KEYDOWN, WM_QUIT};
 
 const SW_SHOW: u32 = 1;
 const WM_PAINT: u32 = 0x000f;
-const WM_QUIT: u32 = 0x0012;
 const WM_CHAR: u32 = 0x0102;
 const VK_A: u16 = 0x41;
 
@@ -58,7 +57,7 @@ fn run() -> Result<(), String> {
 
     user32.invalidate_rect(hwnd, Some(&NtWindowRect { left: 10, top: 10, right: 100, bottom: 100 })).map_err(|error| format!("invalidate first region: {error:?}"))?;
     user32.invalidate_rect(hwnd, Some(&NtWindowRect { left: 80, top: 80, right: 200, bottom: 160 })).map_err(|error| format!("invalidate second region: {error:?}"))?;
-    let mut message = user32.get_message(hwnd, 0, u32::MAX).map_err(|error| format!("get paint: {error:?}"))?;
+    let mut message = match user32.get_message(hwnd, 0, u32::MAX).map_err(|error| format!("get paint: {error:?}"))? { GetMessageResult::Message(message) => message, GetMessageResult::Quit(_) => return Err("paint wait returned WM_QUIT".into()) };
     if message.message != WM_PAINT { return Err(format!("unexpected paint message: {}", message.message)); }
     let dirty = user32.begin_paint(hwnd).map_err(|error| format!("begin paint: {error:?}"))?;
     if dirty != (NtWindowRect { left: 10, top: 10, right: 200, bottom: 160 }) { return Err("paint region was not coalesced".into()); }
@@ -71,13 +70,13 @@ fn run() -> Result<(), String> {
 
     user32.set_focus(child).map_err(|error| format!("set child focus: {error:?}"))?;
     user32.inject_key(VK_A, true, false).map_err(|error| format!("inject key: {error:?}"))?;
-    message = user32.get_message(child, WM_KEYDOWN, WM_KEYDOWN).map_err(|error| format!("get key: {error:?}"))?;
+    message = match user32.get_message(child, WM_KEYDOWN, WM_KEYDOWN).map_err(|error| format!("get key: {error:?}"))? { GetMessageResult::Message(message) => message, GetMessageResult::Quit(_) => return Err("key wait returned WM_QUIT".into()) };
     if message.wparam != VK_A as u64 { return Err("key message mismatch".into()); }
     if !user32.translate_message(&message, false, false).map_err(|error| format!("translate key: {error:?}"))? { return Err("key was not translatable".into()); }
-    message = user32.get_message(child, WM_CHAR, WM_CHAR).map_err(|error| format!("get char: {error:?}"))?;
+    message = match user32.get_message(child, WM_CHAR, WM_CHAR).map_err(|error| format!("get char: {error:?}"))? { GetMessageResult::Message(message) => message, GetMessageResult::Quit(_) => return Err("character wait returned WM_QUIT".into()) };
     if message.wparam != b'a' as u64 { return Err("character message mismatch".into()); }
     user32.post_quit_message(0).map_err(|error| format!("post quit: {error:?}"))?;
-    message = user32.get_message(0, 0, u32::MAX).map_err(|error| format!("get quit: {error:?}"))?;
+    let message = match user32.get_message(0, 0, u32::MAX).map_err(|error| format!("get quit: {error:?}"))? { GetMessageResult::Quit(message) => message, GetMessageResult::Message(message) => return Err(format!("expected quit message, got {}", message.message)) };
     if message.message != WM_QUIT { return Err(format!("unexpected quit message: {}", message.message)); }
 
     gdi.delete_object(dc).map_err(|error| format!("delete DC: {error:?}"))?;
