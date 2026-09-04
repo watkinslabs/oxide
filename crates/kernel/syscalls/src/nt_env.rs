@@ -27,6 +27,9 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RtlNormalizeProcessParams {
         return Some(normalize_process_params(call.args.a0));
     }
+    if call.service == NtService::RtlDeNormalizeProcessParams {
+        return Some(denormalize_process_params(call.args.a0));
+    }
     if call.service == NtService::RtlExpandEnvironmentStringsU {
         return Some(expand_environment_strings(call));
     }
@@ -391,6 +394,29 @@ fn normalize_process_params(params: u64) -> u64 {
         if uaccess::put_user_u64(pointer_address, normalized[index]).is_err() { return 0; }
     }
     if uaccess::put_user_u32(flags_address, flags | NORMALIZED).is_err() { return 0; }
+    params
+}
+
+fn denormalize_process_params(params: u64) -> u64 {
+    const FLAGS: u64 = 8;
+    const NORMALIZED: u32 = 1;
+    const POINTER_FIELDS: [u64; 8] = [64, 80, 96, 112, 176, 192, 208, 224];
+    if params == 0 { return 0; }
+    let Some(flags_address) = params.checked_add(FLAGS) else { return 0; };
+    let Ok(flags) = uaccess::get_user_u32(flags_address) else { return 0; };
+    if flags & NORMALIZED == 0 { return params; }
+    let mut pointers = [0u64; POINTER_FIELDS.len()];
+    for (index, field) in POINTER_FIELDS.iter().enumerate() {
+        let Some(pointer_address) = params.checked_add(*field + 8) else { return 0; };
+        let Ok(value) = uaccess::get_user_u64(pointer_address) else { return 0; };
+        pointers[index] = value;
+    }
+    let Some(denormalized) = crate::nt_process_parameters::denormalize_pointer_offsets(params, pointers) else { return 0; };
+    for (index, field) in POINTER_FIELDS.iter().enumerate() {
+        let Some(pointer_address) = params.checked_add(*field + 8) else { return 0; };
+        if uaccess::put_user_u64(pointer_address, denormalized[index]).is_err() { return 0; }
+    }
+    if uaccess::put_user_u32(flags_address, flags & !NORMALIZED).is_err() { return 0; }
     params
 }
 

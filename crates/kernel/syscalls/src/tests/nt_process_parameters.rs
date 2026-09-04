@@ -27,3 +27,12 @@ fn environment_rejects_missing_name() {
 fn environment_accepts_empty_block() {
     assert_eq!(parse_environment(&[0, 0]), Some(Vec::new()));
 }
+
+#[test]
+fn denormalization_preserves_nulls_and_returns_record_offsets() {
+    let base = 0x1000_0000;
+    assert_eq!(super::denormalize_pointer_offsets(base,
+        [base + 0x410, 0, base + 0x428, base + 0x440, 0, 0, base + 0x458, 0]),
+        Some([0x410, 0, 0x428, 0x440, 0, 0, 0x458, 0]));
+    assert_eq!(super::denormalize_pointer_offsets(base, [base - 1, 0, 0, 0, 0, 0, 0, 0]), None);
+}
