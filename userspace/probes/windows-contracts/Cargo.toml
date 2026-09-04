@@ -1,0 +1,20 @@
+[package]
+name = "windows-contracts"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "windows-contracts"
+path = "src/main.rs"
+
+[dependencies]
+pe = { path = "../../../crates/shared/pe" }
+sched = { path = "../../../crates/kernel/sched", features = ["hosted"] }
+syscall = { path = "../../../crates/kernel/syscall" }
+windows-path = { path = "../windows-path" }
+windows-registry = { path = "../windows-registry" }
+windows-user32 = { path = "../windows-user32" }

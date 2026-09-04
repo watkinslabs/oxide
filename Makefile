@@ -119,6 +119,8 @@ test: windows-compat-test
 # compatibility gate.
 windows-compat-test:
 	./tools/test-windows-notepad-harness.sh
+	$(WARNING_RUN) $(CARGO) test --manifest-path userspace/probes/Cargo.toml -p windows-contracts --quiet
+	$(WARNING_RUN) $(CARGO) run --manifest-path userspace/probes/Cargo.toml -p windows-contracts --quiet
 	$(WARNING_RUN) $(CARGO) +nightly check -Z build-std=core,compiler_builtins,alloc -Z build-std-features=compiler-builtins-mem -Z unstable-options -Z json-target-spec --target targets/x86_64-unknown-oxide-kernel.json -p kmain -p boot-x86_64 -p kernel-bin-x86_64 --quiet
 	$(WARNING_RUN) $(CARGO) +nightly check -Z build-std=core,compiler_builtins,alloc -Z build-std-features=compiler-builtins-mem -Z unstable-options -Z json-target-spec --target targets/aarch64-unknown-oxide-kernel.json -p kmain -p boot-aarch64 -p kernel-bin-aarch64 --quiet
 	$(WARNING_RUN) $(CARGO) test --manifest-path userspace/probes/Cargo.toml -p vulkan_probe --quiet

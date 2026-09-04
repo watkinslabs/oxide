@@ -25,10 +25,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "audit"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "sync",
+ "syscall",
+ "timekeeper",
+]
+
+[[package]]
 name = "bitflags"
 version = "2.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da"
+
+[[package]]
+name = "cgroup"
+version = "0.1.0"
+dependencies = [
+ "cpu",
+ "hal",
+ "klog",
+ "sync",
+ "syscall",
+ "vfs",
+]
+
+[[package]]
+name = "cmdline"
+version = "0.1.0"
 
 [[package]]
 name = "core_maths"
@@ -38,6 +64,44 @@ checksum = "77745e017f5edba1a9c1d854f6f3a52dac8a12dd5af5d2f54aecf61e43d80d30"
 dependencies = [
  "libm",
 ]
+
+[[package]]
+name = "cpu"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "klog",
+ "sync",
+]
+
+[[package]]
+name = "cpufreq"
+version = "0.1.0"
+dependencies = [
+ "cpu",
+ "kstrtox",
+ "sync",
+ "timekeeper",
+ "vfs",
+]
+
+[[package]]
+name = "cpuidle"
+version = "0.1.0"
+dependencies = [
+ "cpu",
+ "hal-aarch64",
+ "hal-x86_64",
+ "kstrtox",
+ "sync",
+ "timekeeper",
+ "timer",
+ "vfs",
+]
+
+[[package]]
+name = "crypt"
+version = "0.1.0"
 
 [[package]]
 name = "drm_probe"
@@ -78,6 +142,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "hal-aarch64"
+version = "0.1.0"
+dependencies = [
+ "bitflags",
+ "cpu",
+ "hal",
+ "kalloc",
+ "klog",
+ "pci",
+ "sync",
+ "syscall",
+]
+
+[[package]]
+name = "hal-x86_64"
+version = "0.1.0"
+dependencies = [
+ "bitflags",
+ "hal",
+ "kalloc",
+ "klog",
+ "pci",
+ "sync",
+ "syscall",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.15.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -97,8 +188,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "kalloc"
+version = "0.1.0"
+dependencies = [
+ "sync",
+]
+
+[[package]]
 name = "klog"
 version = "0.1.0"
+
+[[package]]
+name = "kstrtox"
+version = "0.1.0"
+
+[[package]]
+name = "landlock"
+version = "0.1.0"
+dependencies = [
+ "audit",
+ "sync",
+ "syscall",
+ "vfs",
+]
 
 [[package]]
 name = "ldt_probe"
@@ -121,8 +233,48 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
+name = "mpi"
+version = "0.1.0"
+
+[[package]]
+name = "namespace-identity"
+version = "0.1.0"
+dependencies = [
+ "sync",
+]
+
+[[package]]
+name = "network-namespace"
+version = "0.1.0"
+dependencies = [
+ "namespace-identity",
+ "sync",
+]
+
+[[package]]
+name = "p256"
+version = "0.1.0"
+
+[[package]]
+name = "pci"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "klog",
+]
+
+[[package]]
 name = "pe"
 version = "0.1.0"
+
+[[package]]
+name = "pkey"
+version = "0.1.0"
+dependencies = [
+ "crypt",
+ "mpi",
+ "p256",
+]
 
 [[package]]
 name = "request_key_probe"
@@ -133,11 +285,67 @@ dependencies = [
 ]
 
 [[package]]
+name = "sched"
+version = "0.1.0"
+dependencies = [
+ "cgroup",
+ "cpu",
+ "cpufreq",
+ "cpuidle",
+ "hal",
+ "hal-aarch64",
+ "hal-x86_64",
+ "klog",
+ "landlock",
+ "namespace-identity",
+ "network-namespace",
+ "pe",
+ "selinux",
+ "selinux-runtime",
+ "softirq",
+ "sync",
+ "syscall",
+ "time-namespace",
+ "timekeeper",
+ "timer",
+ "uaccess",
+ "ucounts",
+ "user-namespace",
+ "vfs",
+ "vmm",
+]
+
+[[package]]
+name = "selinux"
+version = "0.1.0"
+
+[[package]]
+name = "selinux-runtime"
+version = "0.1.0"
+dependencies = [
+ "audit",
+ "cmdline",
+ "klog",
+ "selinux",
+ "sync",
+]
+
+[[package]]
 name = "sockopt_diff"
 version = "0.1.0"
 dependencies = [
  "libc",
  "support",
+]
+
+[[package]]
+name = "softirq"
+version = "0.1.0"
+dependencies = [
+ "cpu",
+ "hal",
+ "hal-aarch64",
+ "hal-x86_64",
 ]
 
 [[package]]
@@ -156,12 +364,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "sync"
+version = "0.1.0"
+dependencies = [
+ "hal",
+]
+
+[[package]]
 name = "syscall"
 version = "0.1.0"
 dependencies = [
  "hal",
  "klog",
  "pe",
+]
+
+[[package]]
+name = "time-namespace"
+version = "0.1.0"
+dependencies = [
+ "namespace-identity",
+ "sync",
+]
+
+[[package]]
+name = "timekeeper"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "hal-aarch64",
+ "hal-x86_64",
+ "sync",
+]
+
+[[package]]
+name = "timer"
+version = "0.1.0"
+dependencies = [
+ "sync",
 ]
 
 [[package]]
@@ -174,11 +414,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "uaccess"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "hal-aarch64",
+ "hal-x86_64",
+ "syscall",
+]
+
+[[package]]
+name = "ucounts"
+version = "0.1.0"
+dependencies = [
+ "namespace-identity",
+ "sync",
+]
+
+[[package]]
 name = "usb_scsi_probe"
 version = "0.1.0"
 dependencies = [
  "libc",
  "support",
+]
+
+[[package]]
+name = "user-namespace"
+version = "0.1.0"
+dependencies = [
+ "namespace-identity",
+ "sync",
 ]
 
 [[package]]
@@ -194,6 +460,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "vfs"
+version = "0.1.0"
+dependencies = [
+ "bitflags",
+ "hal",
+ "hal-aarch64",
+ "hal-x86_64",
+ "klog",
+ "namespace-identity",
+ "pkey",
+ "sync",
+ "syscall",
+ "user-namespace",
+ "utf8",
+ "vmm",
+]
+
+[[package]]
+name = "vmm"
+version = "0.1.0"
+dependencies = [
+ "bitflags",
+ "cpu",
+ "hal",
+ "hal-aarch64",
+ "hal-x86_64",
+ "klog",
+ "sync",
+ "uaccess",
+]
+
+[[package]]
 name = "vulkan_probe"
 version = "0.1.0"
 dependencies = [
@@ -203,6 +501,18 @@ dependencies = [
 [[package]]
 name = "windows-audio"
 version = "0.1.0"
+
+[[package]]
+name = "windows-contracts"
+version = "0.1.0"
+dependencies = [
+ "pe",
+ "sched",
+ "syscall",
+ "windows-path",
+ "windows-registry",
+ "windows-user32",
+]
 
 [[package]]
 name = "windows-gdi"
