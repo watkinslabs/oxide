@@ -49,8 +49,9 @@ pub const fn key_lparam(pressed: bool, repeat: bool) -> i64 {
 
 impl MessageFilter {
     fn matches(self, message: WinMessage) -> bool {
+        let last = if self.first == 0 && self.last == 0 { u32::MAX } else { self.last };
         (self.hwnd.is_none() || self.hwnd == message.hwnd)
-            && message.message >= self.first && message.message <= self.last
+            && message.message >= self.first && message.message <= last
     }
 }
 
@@ -395,6 +396,16 @@ mod tests {
         assert_eq!(queue.peek(filter, true), Some(message(Some(window), 2)));
         assert_eq!(queue.peek(MessageFilter { hwnd: None, first: 0, last: u32::MAX }, true), Some(message(None, 1)));
         assert_eq!(queue.len(), 1);
+    }
+
+    #[test]
+    fn zero_message_bounds_select_the_entire_queue() {
+        let mut queue = MessageQueue::default();
+        queue.post(message(None, 0x0042)).unwrap();
+        queue.post(message(None, WM_PAINT)).unwrap();
+        let filter = MessageFilter { hwnd: None, first: 0, last: 0 };
+        assert_eq!(queue.peek(filter, true).map(|value| value.message), Some(0x0042));
+        assert_eq!(queue.peek(filter, true).map(|value| value.message), Some(WM_PAINT));
     }
 
     #[test]
