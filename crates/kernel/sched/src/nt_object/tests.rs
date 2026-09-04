@@ -136,6 +136,12 @@ fn section_backing_is_zeroed_and_retains_exact_extent() {
 }
 
 #[test]
+fn section_backing_retains_protocol_mapping_flags() {
+    let section = NtSection::new_with_flags(4096, 0x0100_0000).unwrap();
+    assert_eq!(section.flags(), 0x0100_0000);
+}
+
+#[test]
 fn process_and_thread_objects_retain_canonical_scheduler_tasks() {
     let process_task = alloc::sync::Arc::new(Task::new(41, "nt-process", SchedClass::Normal { weight: 1024 }));
     let thread_task = alloc::sync::Arc::new(Task::new(42, "nt-thread", SchedClass::Normal { weight: 1024 }));
