@@ -1166,39 +1166,12 @@ pub fn load_pe_image_with_resolver_at<R: ImportResolver>(blob: &[u8], as_: &Addr
         let _ = as_.munmap(reservation, len);
         return Err(error);
     }
-    // Wine's relay setup keeps the original EAT targets privately, then
-    // replaces normal function entries in the loaded EAT with the generated
-    // Windows-ABI relay RVAs. Native RelayCall uses the immutable snapshot
-    // registered by the process loader, so these two views remain distinct.
-    if let Some(relays) = parsed.relay_export_rvas()? {
-        if let Some(exports) = parsed.exports()? {
-            for (index, relay) in relays.into_iter().enumerate() {
-                if relay == 0 { continue; }
-                let slot = (exports.functions_rva as usize).checked_add(index.checked_mul(4).ok_or(pe::Error::Einval)?)
-                    .ok_or(pe::Error::Einval)?;
-                let end = slot.checked_add(4).ok_or(pe::Error::Einval)?;
-                image.get_mut(slot..end).ok_or(pe::Error::Einval)?.copy_from_slice(&relay.to_le_bytes());
-                #[cfg(feature = "debug-faultdiag")]
-                if index == 394 || index == 395 {
-                    klog::write_raw(b"[WINDOWS-PE-EAT-PATCH] module=");
-                    klog::write_hex_u64(base);
-                    klog::write_raw(b" functions=");
-                    klog::write_hex_u64(exports.functions_rva as u64);
-                    klog::write_raw(b" index=");
-                    klog::write_dec_u64(index as u64);
-                    klog::write_raw(b" slot=");
-                    klog::write_hex_u64(base.checked_add(slot as u64).unwrap_or(0));
-                    klog::write_raw(b" relay=");
-                    klog::write_hex_u64(relay as u64);
-                    klog::write_raw(b" readback=");
-                    let readback = image.get(slot..end).and_then(|bytes| bytes.try_into().ok())
-                        .map(u32::from_le_bytes).unwrap_or(0);
-                    klog::write_hex_u64(readback as u64);
-                    klog::write_raw(b"\n");
-                }
-            }
-        }
-    }
+    // Wine owns relay installation. Its loader first records each original
+    // EAT target in relay_private_data, then patches the EAT to the generated
+    // Windows-ABI thunk. Patching here would make Wine record the thunk as
+    // orig_func and the native RelayCall would recurse into that thunk.
+    // Imports still resolve relay_export_rva through PeGraphResolver; direct
+    // exports remain untouched until Wine has initialized its descriptor.
     if relay_call != 0 {
         if let Some(descriptor_rva) = parsed.relay_descriptor_rva()? {
             let slot = (descriptor_rva as usize).checked_add(8).ok_or(pe::Error::Einval)?;
