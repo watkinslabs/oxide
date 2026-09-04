@@ -41,6 +41,12 @@ type DestroyInstance = unsafe extern "C" fn(*mut c_void, *const c_void);
 type EnumeratePhysicalDevices = unsafe extern "C" fn(*mut c_void, *mut u32, *mut *mut c_void) -> i32;
 type EnumerateInstanceVersion = unsafe extern "C" fn(*mut u32) -> i32;
 
+fn usable_device_handles(status: i32, handles: &[*mut c_void]) -> bool {
+    (status == VK_SUCCESS || status == VK_INCOMPLETE)
+        && !handles.is_empty()
+        && handles.iter().all(|handle| !handle.is_null())
+}
+
 unsafe fn symbol<T>(get_proc: GetProcAddr, instance: *mut c_void, name: &'static CStr) -> Option<T> {
     let address = get_proc(instance, name.as_ptr());
     if address.is_null() { None } else { Some(std::mem::transmute_copy(&address)) }
@@ -90,7 +96,13 @@ fn run(loader: *mut c_void) -> Result<(), &'static str> {
     let status = unsafe { enumerate(instance, &mut count, ptr::null_mut()) };
     if status != VK_SUCCESS && status != VK_INCOMPLETE { return Err("physical-device count failed"); }
     if count == 0 { return Err("Vulkan reports no physical devices"); }
-    println!("native-vulkan: PASS api={} physical_devices={count}", version_text(api_version));
+    let mut devices = vec![ptr::null_mut(); count as usize];
+    let status = unsafe { enumerate(instance, &mut count, devices.as_mut_ptr()) };
+    devices.truncate(count as usize);
+    if !usable_device_handles(status, &devices) {
+        return Err("Vulkan returned no usable physical-device handles");
+    }
+    println!("native-vulkan: PASS api={} physical_devices={}", version_text(api_version), devices.len());
     // SAFETY: instance was created by this function and no child objects exist.
     let destroy = unsafe { symbol::<DestroyInstance>(get_proc, instance, c"vkDestroyInstance") }.ok_or("vkDestroyInstance is unavailable")?;
     unsafe { destroy(instance, ptr::null()); }
@@ -99,11 +111,21 @@ fn run(loader: *mut c_void) -> Result<(), &'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::version_text;
+    use super::{usable_device_handles, version_text, VK_INCOMPLETE, VK_SUCCESS};
 
     #[test]
     fn vulkan_version_fields_are_rendered_without_losing_bits() {
         assert_eq!(version_text((1 << 22) | (4 << 12) | 313), "1.4.313");
         assert_eq!(version_text((1 << 22) | (0 << 12) | 0), "1.0.0");
+    }
+
+    #[test]
+    fn physical_device_enumeration_requires_non_null_handles() {
+        let valid = [1usize as *mut std::ffi::c_void];
+        assert!(usable_device_handles(VK_SUCCESS, &valid));
+        assert!(usable_device_handles(VK_INCOMPLETE, &valid));
+        assert!(!usable_device_handles(VK_SUCCESS, &[]));
+        assert!(!usable_device_handles(VK_SUCCESS, &[std::ptr::null_mut()]));
+        assert!(!usable_device_handles(-1, &valid));
     }
 }
