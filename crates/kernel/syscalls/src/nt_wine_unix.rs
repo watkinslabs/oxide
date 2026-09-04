@@ -5,6 +5,7 @@
 
 use syscall::nt::{NtCall, NtService};
 use syscall::nt_wine_unix::WineUnixFunction;
+use crate::nt_time_common::NT_EPOCH_100NS;
 
 const STATUS_SUCCESS: u64 = 0;
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
@@ -119,7 +120,9 @@ fn server_request_kind(request: u32) -> Option<ServerRequest> {
     }
 }
 
-fn windows_time_ticks(realtime_ns: u64) -> u64 { realtime_ns.saturating_div(100) }
+fn windows_time_ticks(realtime_ns: u64) -> u64 {
+    NT_EPOCH_100NS.saturating_add(realtime_ns.saturating_div(100))
+}
 
 fn valid_unwind_type(value: u32) -> bool { value & !UNW_FLAG_MASK == 0 }
 
@@ -668,8 +671,8 @@ mod tests {
 
     #[test]
     fn unix_system_time_uses_windows_100ns_units() {
-        assert_eq!(windows_time_ticks(1_700_000_000_123_456_700), 17_000_000_001_234_567);
-        assert_eq!(windows_time_ticks(99), 0);
+        assert_eq!(windows_time_ticks(1_700_000_000_123_456_700), 133_444_736_001_234_567);
+        assert_eq!(windows_time_ticks(99), NT_EPOCH_100NS);
     }
 
     #[test]
