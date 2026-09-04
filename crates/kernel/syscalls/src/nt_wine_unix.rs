@@ -174,7 +174,8 @@ fn unix_handle_to_fd(args: u64) -> u64 {
     let Some(file) = object.file() else { return STATUS_INVALID_HANDLE; };
     let Some(fdt) = cur.clone_fd_table() else { return STATUS_INVALID_PARAMETER; };
     let Ok(fd) = fdt.alloc(file) else { return STATUS_NO_MEMORY; };
-    if uaccess::put_user_u32(output_fd, fd as u32).is_err() || uaccess::put_user_u32(output_options, 0).is_err() {
+    let options = object.file_info().map(|info| info.options).unwrap_or(0);
+    if uaccess::put_user_u32(output_fd, fd as u32).is_err() || uaccess::put_user_u32(output_options, options).is_err() {
         let _ = fdt.close(fd);
         STATUS_INVALID_PARAMETER
     } else { STATUS_SUCCESS }

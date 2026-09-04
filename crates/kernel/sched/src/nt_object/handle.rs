@@ -5,7 +5,7 @@ use sync::{Spinlock, TaskList as TaskListClass};
 use crate::Task;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 use crate::live::WaitList;
-use super::{namespace, lookup_directory, NtCompletionPort, NtDeleteOnClose, NtFileShare,
+use super::{namespace, lookup_directory, NtCompletionPort, NtDeleteOnClose, NtFileInfo, NtFileShare,
     NtJob, NtObject, NtObjectType, NtPipe, NtPipeConfig, NtPipeSide, NtSection, NtToken};
 
 const HANDLE_INDEX_BITS: u32 = 16;
@@ -100,7 +100,7 @@ impl NtHandleTable {
     pub fn new_job(&self) -> Arc<NtObject> {
         let id = self.next_object_id.fetch_add(1, Ordering::Relaxed);
         Arc::new(NtObject { kind: NtObjectType::Job, id, event: None, semaphore: None, mutant: None,
-            timer: None, completion: None, activation: None, token: None, job: Some(Arc::new(NtJob::new())), pipe: None, pipe_endpoint: None, file: None,
+            timer: None, completion: None, activation: None, token: None, job: Some(Arc::new(NtJob::new())), pipe: None, pipe_endpoint: None, file: None, file_info: None,
             section: None, symbolic_link: None, task: None, file_share: None, delete_on_close: None,
             file_completion: Spinlock::new(None) })
     }
@@ -110,7 +110,7 @@ impl NtHandleTable {
         let id = self.next_object_id.fetch_add(1, Ordering::Relaxed);
         Arc::new(NtObject { kind: NtObjectType::NamedPipe, id, event: None, semaphore: None,
             mutant: None, timer: None, completion: None, activation: None, token: None, job: None,
-            pipe: Some(Arc::new(NtPipe::new(config))), pipe_endpoint: None, file: None, section: None,
+            pipe: Some(Arc::new(NtPipe::new(config))), pipe_endpoint: None, file: None, file_info: None, section: None,
             symbolic_link: None, task: None, file_share: None, delete_on_close: None,
             file_completion: Spinlock::new(None) })
     }
@@ -120,7 +120,7 @@ impl NtHandleTable {
         let endpoint = Arc::new(pipe.endpoint_with_instance(side));
         Arc::new(NtObject { kind: NtObjectType::NamedPipe, id, event: None, semaphore: None,
             mutant: None, timer: None, completion: None, activation: None, token: None, job: None,
-            pipe: Some(pipe), pipe_endpoint: Some(endpoint), file: None, section: None,
+            pipe: Some(pipe), pipe_endpoint: Some(endpoint), file: None, file_info: None, section: None,
             symbolic_link: None, task: None, file_share: None, delete_on_close: None,
             file_completion: Spinlock::new(None) })
     }
@@ -135,7 +135,7 @@ impl NtHandleTable {
         let id = self.next_object_id.fetch_add(1, Ordering::Relaxed);
         Arc::new(NtObject { kind: NtObjectType::CompletionPort, id, event: None, semaphore: None,
             mutant: None, timer: None, completion: Some(Arc::new(NtCompletionPort::new(concurrency))), activation: None, token: None, job: None,
-            file: None, section: None, symbolic_link: None, task: None, pipe: None, pipe_endpoint: None, file_share: None, delete_on_close: None, file_completion: Spinlock::new(None) })
+            file: None, file_info: None, section: None, symbolic_link: None, task: None, pipe: None, pipe_endpoint: None, file_share: None, delete_on_close: None, file_completion: Spinlock::new(None) })
     }
 
     pub fn new_token(&self, uid: u32, gid: u32) -> Arc<NtObject> {
@@ -171,9 +171,15 @@ impl NtHandleTable {
 
     /// Wrap a VFS file with sharing and final-close deletion state. # C: O(1)
     pub fn new_file_with_share_and_delete(&self, file: Arc<vfs::File>, share: Arc<NtFileShare>, delete: bool) -> Arc<NtObject> {
+        let info = NtFileInfo::from_file(file.as_ref(), 0);
+        self.new_file_with_share_and_delete_and_info(file, share, delete, info)
+    }
+
+    /// Wrap a VFS file with sharing, deletion, and Windows descriptor metadata. # C: O(1)
+    pub fn new_file_with_share_and_delete_and_info(&self, file: Arc<vfs::File>, share: Arc<NtFileShare>, delete: bool, info: NtFileInfo) -> Arc<NtObject> {
         let id = self.next_object_id.fetch_add(1, Ordering::Relaxed);
         let delete_state = NtDeleteOnClose::new(file.as_ref(), delete);
-        NtObject::new_file_with_share(id, file, Some(share), delete_state)
+        NtObject::new_file_with_share_and_info(id, file, info, Some(share), delete_state)
     }
 
     /// Allocate an anonymous section object. # C: O(size)

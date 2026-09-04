@@ -587,7 +587,8 @@ fn open_path(cur: &sched::Task, output: u64, desired: u32, attrs: u64, options: 
     let Some(share) = sched::nt_object::NtFileShare::claim(&file, desired, sharing) else {
         return STATUS_SHARING_VIOLATION;
     };
-    let object = table.new_file_with_share_and_delete(file, share, delete);
+    let info = sched::nt_object::NtFileInfo::from_file(file.as_ref(), options);
+    let object = table.new_file_with_share_and_delete_and_info(file, share, delete, info);
     let Some(handle) = table.insert(object, desired | SYNCHRONIZE_ACCESS) else {
         return STATUS_INVALID_PARAMETER;
     };
