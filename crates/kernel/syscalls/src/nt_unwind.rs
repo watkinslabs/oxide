@@ -7,6 +7,8 @@ use elf_load::pe_modules;
 
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 #[cfg(target_arch = "x86_64")]
+const STATUS_INVALID_UNWIND_TARGET: u64 = 0xc000_0028;
+#[cfg(target_arch = "x86_64")]
 const STATUS_NOT_SUPPORTED: u64 = 0xc000_00bb;
 #[cfg(target_arch = "x86_64")]
 const CONTEXT_BYTES: usize = 0x4d0;
@@ -48,6 +50,15 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         };
         let regs = hal_x86_64::current_pt_regs();
         if regs.is_null() { return Some(STATUS_INVALID_PARAMETER); }
+        // Windows reports an invalid unwind target when the requested end
+        // frame precedes the active user stack; do this before rewriting any
+        // part of the live return context.
+        // SAFETY: current_pt_regs is the live syscall frame owned by this
+        // running task; this read occurs before the transfer commit.
+        let current_rsp = unsafe { (*regs).rsp };
+        if !pe::nt_stub::valid_x64_unwind_target(current_rsp, frame) {
+            return Some(STATUS_INVALID_UNWIND_TARGET);
+        }
         // SAFETY: current_pt_regs is the live syscall frame owned by this
         // running task; RtlUnwind replaces its user return state atomically.
         let regs = unsafe { &mut *regs };

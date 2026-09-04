@@ -15,6 +15,13 @@ pub const X64_EXCEPTION_RECORD_OFFSET: u64 = 0x4f0;
 pub const X64_EXCEPTION_MACHINE_FRAME_OFFSET: u64 = 0x590;
 pub const X64_EXCEPTION_FRAME_BYTES: u64 = 0x5c0;
 
+/// Windows x64 rejects an unwind target below the active stack frame.  Keep
+/// this arithmetic independent of the kernel so the target-gated transfer
+/// path and hosted contract test use one decision.
+pub fn valid_x64_unwind_target(current_rsp: u64, end_frame: u64) -> bool {
+    end_frame >= current_rsp && end_frame.checked_add(8).is_some()
+}
+
 /// Addresses of the fixed portions of one Wine x86-64 exception frame.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct X64ExceptionFrame {
@@ -404,6 +411,14 @@ mod tests {
         assert_eq!(frame.exception_record - frame.stack, 0x4f0);
         assert_eq!(frame.machine_frame - frame.stack, 0x590);
         assert_eq!(x64_exception_frame(0x500, 0), None);
+    }
+
+    #[test]
+    fn unwind_target_must_not_move_backwards_or_wrap() {
+        assert!(valid_x64_unwind_target(0x7fff_0000_1000, 0x7fff_0000_1000));
+        assert!(valid_x64_unwind_target(0x7fff_0000_1000, 0x7fff_0000_1010));
+        assert!(!valid_x64_unwind_target(0x7fff_0000_1010, 0x7fff_0000_1000));
+        assert!(!valid_x64_unwind_target(u64::MAX - 4, u64::MAX - 4));
     }
 }
 use alloc::vec::Vec;
