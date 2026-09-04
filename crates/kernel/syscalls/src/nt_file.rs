@@ -541,7 +541,9 @@ fn open_path(cur: &sched::Task, output: u64, desired: u32, attrs: u64, options: 
     }
     let wants_write = desired & (GENERIC_WRITE | FILE_GENERIC_WRITE | FILE_WRITE_DATA | FILE_APPEND_DATA) != 0;
     let wants_read = desired & (GENERIC_READ | FILE_GENERIC_READ | FILE_READ_DATA) != 0;
-    if !wants_read && !wants_write { return STATUS_ACCESS_DENIED; }
+    if !wants_read && !wants_write && !crate::nt_file_policy::access_mask_admits_open(desired) {
+        return STATUS_ACCESS_DENIED;
+    }
     let mut flags = if wants_write {
         if desired & FILE_APPEND_DATA != 0 { vfs::OpenFlags::O_APPEND } else { vfs::OpenFlags::O_RDWR }
     } else { vfs::OpenFlags::O_RDONLY };

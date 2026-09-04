@@ -18,6 +18,17 @@ const STATUS_OBJECT_NAME_NOT_FOUND: u64 = 0xc000_0034;
 const STATUS_OBJECT_NAME_COLLISION: u64 = 0xc000_0035;
 const STATUS_ACCESS_DENIED: u64 = 0xc000_0022;
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
+const FILE_READ_DATA: u32 = 0x0001;
+const FILE_WRITE_DATA: u32 = 0x0002;
+const FILE_APPEND_DATA: u32 = 0x0004;
+const UNSUPPORTED_FILE_ACCESS: u32 = 0x0008;
+
+/// Admit the NT open access classes that can produce a file object. A zero
+/// access mask is a metadata-only open; data access remains unavailable on
+/// the handle inserted by the caller. # C: O(1)
+pub(crate) const fn access_mask_admits_open(desired: u32) -> bool {
+    desired == 0 || desired & (FILE_READ_DATA | FILE_WRITE_DATA | FILE_APPEND_DATA | DELETE_ACCESS) != 0
+}
 
 impl CreateDisposition {
     pub(crate) const fn decode(value: u32) -> Option<Self> {
@@ -73,6 +84,13 @@ mod tests {
         assert!(delete_on_close_access_valid(0, 0));
         assert!(!delete_on_close_access_valid(FILE_DELETE_ON_CLOSE, 0));
         assert!(delete_on_close_access_valid(FILE_DELETE_ON_CLOSE, DELETE_ACCESS));
+    }
+
+    #[test]
+    fn metadata_only_zero_access_open_is_admitted_without_data_rights() {
+        assert!(access_mask_admits_open(0));
+        assert!(access_mask_admits_open(DELETE_ACCESS));
+        assert!(!access_mask_admits_open(UNSUPPORTED_FILE_ACCESS));
     }
 
     #[test]
