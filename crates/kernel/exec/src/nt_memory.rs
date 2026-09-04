@@ -101,18 +101,28 @@ pub fn windows_protection(raw: u32) -> Result<VmaProt, NtStatus> {
 /// Allocate private anonymous NT memory through the common VMM.
 /// # C: O(log N_vmas)
 pub fn allocate(as_: &AddressSpace, base: Option<UserVirtAddr>, size: usize, protection: VmaProt, committed: bool) -> Result<NtAllocation, NtStatus> {
+    allocate_with_write_watch(as_, base, size, protection, committed, false)
+}
+
+/// Allocate private anonymous NT memory with optional VMM-owned dirty tracking.
+/// # C: O(number of pages) when write-watch is enabled
+pub fn allocate_with_write_watch(as_: &AddressSpace, base: Option<UserVirtAddr>, size: usize, protection: VmaProt, committed: bool, write_watch: bool) -> Result<NtAllocation, NtStatus> {
     if size == 0 || size % PAGE != 0 { return Err(NtStatus::InvalidParameter); }
     let placement = match base {
         Some(base) => MmapPlacement::FixedNoReplace(base),
         None => MmapPlacement::Advisory(None),
     };
-    let flags = if committed { VmaFlags::PRIVATE } else { VmaFlags::PRIVATE | VmaFlags::NT_RESERVED };
+    let flags = (if committed { VmaFlags::PRIVATE } else { VmaFlags::PRIVATE | VmaFlags::NT_RESERVED })
+        | if write_watch { VmaFlags::NT_WRITE_WATCH } else { VmaFlags::empty() };
     let actual = if committed { protection } else { VmaProt::empty() };
     let base = as_.mmap_with_may_at(placement, size, actual, protection, flags, VmaBacking::Anonymous)
         .map_err(|error| match error {
             vmm::MmapError::Exists => NtStatus::ConflictingAddresses,
             vmm::MmapError::Vmm(_) => NtStatus::NoMemory,
         })?;
+    if write_watch && as_.register_write_watch(base.as_u64(), size).is_err() {
+        let _ = as_.munmap(base, size); return Err(NtStatus::InvalidParameter);
+    }
     Ok(NtAllocation { base, size, protection: actual, reserved: !committed })
 }
 
@@ -142,7 +152,11 @@ pub fn free(as_: &AddressSpace, allocation: NtAllocation) -> NtStatus {
     if allocation.reserved != vma.flags.contains(VmaFlags::NT_RESERVED) { return NtStatus::InvalidParameter; }
     let Some(end) = allocation.base.as_u64().checked_add(allocation.size as u64) else { return NtStatus::InvalidParameter; };
     if allocation.base.as_u64() < vma.start.as_u64() || end > vma.end.as_u64() { return NtStatus::InvalidParameter; }
-    if as_.munmap(allocation.base, allocation.size).is_ok() { NtStatus::Success } else { NtStatus::NotMapped }
+    let watched = vma.flags.contains(VmaFlags::NT_WRITE_WATCH);
+    if as_.munmap(allocation.base, allocation.size).is_ok() {
+        if watched { as_.unregister_write_watch(allocation.base.as_u64(), allocation.size); }
+        NtStatus::Success
+    } else { NtStatus::NotMapped }
 }
 
 /// Change protection and return the previous protection.

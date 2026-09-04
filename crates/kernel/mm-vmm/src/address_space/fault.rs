@@ -170,6 +170,9 @@ impl AddressSpace {
         MR: FnMut(u64),
     {
         self.accounting.fault();
+        if matches!(fault, FaultKind::NotPresent { access: FaultAccess::Write } | FaultKind::Protection { access: FaultAccess::Write }) {
+            self.mark_write_watch(va.as_u64());
+        }
         // Linux `handle_pte_fault`: when the PTE is ABSENT the fault is a
         // FIRST TOUCH (`do_pte_missing` → do_anonymous_page / do_fault) no
         // matter what the hardware error code claims — a stale TLB entry or

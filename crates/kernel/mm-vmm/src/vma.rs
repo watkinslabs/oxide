@@ -145,6 +145,9 @@ bitflags::bitflags! {
         /// Windows NT reserved address space: the VMA exists for later
         /// MEM_COMMIT, but faults must not instantiate pages yet.
         const NT_RESERVED = 1 << 20;
+        /// Windows MEM_WRITE_WATCH ownership is attached to this VMA; dirty
+        /// pages remain in the canonical per-mm VMM state.
+        const NT_WRITE_WATCH = 1 << 21;
     }
 }
 

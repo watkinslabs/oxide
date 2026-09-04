@@ -95,6 +95,10 @@ const MEM_FREE: u32 = 0x10000;
 #[cfg(target_os = "oxide-kernel")]
 const MEM_TOP_DOWN: u32 = 0x100000;
 #[cfg(target_os = "oxide-kernel")]
+const MEM_WRITE_WATCH: u32 = 0x00200000;
+#[cfg(target_os = "oxide-kernel")]
+const WRITE_WATCH_FLAG_RESET: u64 = 1;
+#[cfg(target_os = "oxide-kernel")]
 const MEM_RELEASE: u32 = 0x8000;
 #[cfg(target_os = "oxide-kernel")]
 const MEMORY_BASIC_INFORMATION_CLASS: u32 = 0;
@@ -479,9 +483,21 @@ pub fn dispatch(call: NtCall) -> u64 {
     if call.service == syscall::nt::NtService::NtGetWriteWatch {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
         if !cur.is_nt_personality() || call.args.a0 != CURRENT_PROCESS { return STATUS_INVALID_PARAMETER; }
-        // Oxide has no per-VMA write-watch owner yet. Keep the ABI visible,
-        // but fail closed instead of claiming that every page is clean.
-        return STATUS_NOT_IMPLEMENTED;
+        if call.args.a1 & !WRITE_WATCH_FLAG_RESET != 0 || call.args.a3 == 0 || call.args.a4 == 0 || call.args.a5 == 0 { return STATUS_INVALID_PARAMETER; }
+        let Some(granularity) = stack_argument(6) else { return STATUS_INVALID_PARAMETER; };
+        let Some(mm) = (unsafe { cur.mm_ref() }).map(|mm| mm.clone()) else { return STATUS_INVALID_PARAMETER; };
+        let (base, size) = match elf_load::nt_memory::normalize_protection_range(call.args.a2, call.args.a3) {
+            Ok(range) => range, Err(_) => return STATUS_INVALID_PARAMETER,
+        };
+        let cap = match uaccess::get_user_u64(call.args.a5) { Ok(n) if n != 0 && n <= usize::MAX as u64 => n as usize, _ => return STATUS_INVALID_PARAMETER };
+        let pages = match mm.query_write_watch(base.as_u64(), size, cap, call.args.a1 & WRITE_WATCH_FLAG_RESET != 0) {
+            Ok(pages) => pages, Err(vmm::Error::Inval) => return STATUS_INVALID_PARAMETER, Err(_) => return STATUS_NO_MEMORY,
+        };
+        if crate::userbuf::validate_user_buf_writable(granularity, 4, 4).is_err() || uaccess::put_user_u32(granularity, hal::PAGE_SIZE_BYTES as u32).is_err() { return STATUS_ACCESS_VIOLATION; }
+        if crate::userbuf::validate_user_buf_writable(call.args.a4, (pages.len() * 8) as u64, 8).is_err() { return STATUS_ACCESS_VIOLATION; }
+        for (i, page) in pages.iter().enumerate() { if uaccess::put_user_u64(call.args.a4 + (i as u64) * 8, *page).is_err() { return STATUS_ACCESS_VIOLATION; } }
+        if uaccess::put_user_u64(call.args.a5, pages.len() as u64).is_err() { return STATUS_ACCESS_VIOLATION; }
+        return STATUS_SUCCESS;
     }
     if call.service == syscall::nt::NtService::NtWriteFileGather {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
@@ -1504,7 +1520,8 @@ pub fn dispatch(call: NtCall) -> u64 {
     let Some(mm) = (unsafe { cur.mm_ref() }).map(|mm| mm.clone()) else { return STATUS_INVALID_PARAMETER; };
     match call {
         NtMemoryCall::Allocate { base, size, allocation_type, protect, .. } => {
-            let allocation_flags = allocation_type & !MEM_TOP_DOWN;
+            let write_watch = allocation_type & MEM_WRITE_WATCH != 0;
+            let allocation_flags = allocation_type & !(MEM_TOP_DOWN | MEM_WRITE_WATCH);
             let creates_region = allocation_flags == MEM_RESERVE | MEM_COMMIT
                 || allocation_flags == MEM_COMMIT
                 || allocation_flags == MEM_RESERVE;
@@ -1524,7 +1541,7 @@ pub fn dispatch(call: NtCall) -> u64 {
             let allocation = match if allocation_flags == MEM_COMMIT {
                 elf_load::nt_memory::allocate_or_commit(&mm, requested_base, size, protection)
             } else {
-                elf_load::nt_memory::allocate(&mm, requested_base, size, protection, allocation_flags == (MEM_RESERVE | MEM_COMMIT))
+                elf_load::nt_memory::allocate_with_write_watch(&mm, requested_base, size, protection, allocation_flags == (MEM_RESERVE | MEM_COMMIT), write_watch)
             } {
                 Ok(allocation) => allocation,
                 Err(elf_load::nt_memory::NtStatus::NoMemory) => return STATUS_NO_MEMORY,
