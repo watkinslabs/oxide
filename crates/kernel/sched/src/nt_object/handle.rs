@@ -178,14 +178,22 @@ impl NtHandleTable {
 
     /// Allocate an anonymous section object. # C: O(size)
     pub fn new_section(&self, size: usize) -> Option<Arc<NtObject>> {
+        self.new_section_with_flags(size, 0)
+    }
+    /// Allocate an anonymous section with protocol-visible flags. # C: O(size)
+    pub fn new_section_with_flags(&self, size: usize, flags: u32) -> Option<Arc<NtObject>> {
         let id = self.next_object_id.fetch_add(1, Ordering::Relaxed);
-        Some(NtObject::new_section(id, NtSection::new(size)?))
+        Some(NtObject::new_section(id, NtSection::new_with_flags(size, flags)?))
     }
 
     /// Wrap a VFS file in a section object. # C: O(1)
     pub fn new_file_section(&self, file: Arc<vfs::File>, size: usize) -> Arc<NtObject> {
+        self.new_file_section_with_flags(file, size, 0)
+    }
+    /// Wrap a VFS file in a section carrying protocol-visible flags. # C: O(1)
+    pub fn new_file_section_with_flags(&self, file: Arc<vfs::File>, size: usize, flags: u32) -> Arc<NtObject> {
         let id = self.next_object_id.fetch_add(1, Ordering::Relaxed);
-        NtObject::new_section(id, NtSection::from_file(file, size))
+        NtObject::new_section(id, NtSection::from_file_with_flags(file, size, flags))
     }
 
     /// Allocate a symbolic-link object with one immutable target. # C: O(1)
