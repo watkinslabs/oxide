@@ -25,6 +25,100 @@ impl ImportResolver for Resolver<'_> {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
+const STATUS_INVALID_IMAGE_FORMAT: u64 = 0xc000_007b;
+
+/// Process-local filesystem view of the canonical PE module catalog. Bytes are
+/// copied into the same catalog used by the runtime handoff; paths only retain
+/// the resolved name for loader metadata and never become another lookup DB.
+#[cfg(target_arch = "x86_64")]
+struct FilesystemCatalog {
+    catalog: pe::catalog::ModuleCatalog,
+    directories: Vec<Vec<u8>>,
+    locations: Vec<(Vec<u8>, Vec<u8>)>,
+}
+
+#[cfg(target_arch = "x86_64")]
+impl FilesystemCatalog {
+    fn new(seed: Option<&pe::catalog::ModuleCatalog>, directories: Vec<Vec<u8>>) -> Self {
+        let mut catalog = pe::catalog::ModuleCatalog::new();
+        if let Some(seed) = seed {
+            for module in seed.modules() {
+                let _ = catalog.add(&module.name, &module.blob);
+            }
+        }
+        Self { catalog, directories, locations: Vec::new() }
+    }
+
+    fn ensure_root(&mut self, wanted: &[u8], original: &[u8]) -> Result<(), u64> {
+        if self.catalog.load(wanted).is_some() { return Ok(()); }
+        let explicit = if original.iter().any(|byte| *byte == b'\\' || *byte == b'/') {
+            Some(original)
+        } else { None };
+        self.probe(wanted, explicit, None)
+    }
+
+    fn populate_dependencies(&mut self) -> Result<(), u64> {
+        let mut index = 0;
+        while index < self.catalog.modules().len() {
+            let (module_name, module_blob) = {
+                let module = &self.catalog.modules()[index];
+                (module.name.clone(), module.blob.clone())
+            };
+            let image = pe::parse(&module_blob).map_err(|_| STATUS_INVALID_IMAGE_FORMAT)?;
+            let dependencies = image.dependencies().map_err(|_| STATUS_INVALID_IMAGE_FORMAT)?;
+            let parent = self.location_for(&module_name);
+            for dependency in dependencies {
+                let resolved = pe::apiset::target(dependency).unwrap_or(dependency);
+                if pe::loader_name::matches_ascii(resolved, b"ntdll.dll")
+                    || self.catalog.load(resolved).is_some() { continue; }
+                self.probe(resolved, None, Some(parent.as_slice()))?;
+            }
+            index += 1;
+        }
+        Ok(())
+    }
+
+    fn probe(&mut self, name: &[u8], explicit: Option<&[u8]>, parent: Option<&[u8]>) -> Result<(), u64> {
+        let mut candidates = Vec::new();
+        if let Some(explicit) = explicit { push_candidate(&mut candidates, explicit); }
+        if let Some(parent) = parent { push_candidate(&mut candidates, &crate::nt_loader_dir_policy::join_windows_path(parent, name)); }
+        for directory in &self.directories { push_candidate(&mut candidates, &crate::nt_loader_dir_policy::join_windows_path(directory, name)); }
+        let Some((candidate, blob)) = crate::nt_loader_dir_policy::first_readable_candidate(&candidates, |candidate| {
+            let unix_path = crate::nt_loader_dir_policy::windows_path_to_vfs(candidate)?;
+            let path = core::str::from_utf8(&unix_path).ok()?;
+            vfs::read_abs(path).ok()
+        }) else { return Err(STATUS_DLL_NOT_FOUND); };
+        pe::parse(&blob).map_err(|_| STATUS_INVALID_IMAGE_FORMAT)?;
+        if self.catalog.add(name, &blob).is_err() { return Err(STATUS_INVALID_IMAGE_FORMAT); }
+        self.locations.push((name.to_vec(), candidate));
+        Ok(())
+    }
+
+    fn location_for(&self, name: &[u8]) -> Vec<u8> {
+        self.locations.iter().find(|(known, _)| pe::loader_name::matches_ascii(known, name))
+            .map(|(_, path)| directory_of_narrow(path).to_vec())
+            .unwrap_or_else(|| b"C:\\Windows\\System32".to_vec())
+    }
+
+    fn full_name_for(&self, name: &[u8]) -> Vec<u8> {
+        self.locations.iter().find(|(known, _)| pe::loader_name::matches_ascii(known, name))
+            .map(|(_, path)| path.clone())
+            .unwrap_or_else(|| { let mut path = b"C:\\Windows\\System32\\".to_vec(); path.extend_from_slice(name); path })
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn push_candidate(candidates: &mut Vec<Vec<u8>>, candidate: &[u8]) {
+    if candidate.is_empty() || candidates.iter().any(|known| known == candidate) { return; }
+    candidates.push(candidate.to_vec());
+}
+
+#[cfg(target_arch = "x86_64")]
+fn directory_of_narrow(path: &[u8]) -> &[u8] {
+    path.iter().rposition(|byte| *byte == b'\\' || *byte == b'/').map(|index| &path[..index]).unwrap_or(&[])
+}
+
 pub(super) fn load(name_descriptor: u64, module_output: u64) -> u64 {
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !cur.is_nt_personality() || cur.tid == 0 { return STATUS_INVALID_PARAMETER; }
@@ -48,17 +142,21 @@ fn load_locked(cur: &sched::Task, name_descriptor: u64, module_output: u64) -> u
         return STATUS_SUCCESS;
     }
     let Some(as_) = (unsafe { cur.mm_ref() }).map(|mm| mm.clone()) else { return STATUS_INVALID_PARAMETER; };
-    if let Some(base) = load_native_unixlib(&narrow_wanted, &as_) {
-        if uaccess::copy_to_user(module_output, &base.to_le_bytes()).is_err() { return STATUS_INVALID_PARAMETER; }
-        return STATUS_SUCCESS;
-    }
-    let Some(catalog) = cur.thread_group.nt_module_catalog() else { return STATUS_DLL_NOT_FOUND; };
-    let Some((name, blob)) = catalog.modules().iter()
-        .find(|module| pe::loader_name::matches_ascii(&narrow_wanted, &module.name))
-        .map(|module| (module.name.clone(), module.blob.clone())) else { return STATUS_DLL_NOT_FOUND; };
-    let (exports, ntdll) = match loaded_exports(peb, &catalog) { Ok(value) => value, Err(status) => return status };
+    let seed = cur.thread_group.nt_module_catalog();
+    let directories = match super::search_directories(cur, &wanted, 0) {
+        Ok(value) => value.into_iter().filter_map(|value| narrow_name(&value)).collect(),
+        Err(status) => return status,
+    };
+    let mut filesystem = FilesystemCatalog::new(seed.as_deref(), directories);
+    if filesystem.ensure_root(&narrow_wanted, &narrow_wanted).is_err() { return STATUS_DLL_NOT_FOUND; }
+    if filesystem.populate_dependencies().is_err() { return STATUS_DLL_NOT_FOUND; }
+    let Some(root) = filesystem.catalog.modules().iter()
+        .find(|module| pe::loader_name::matches_ascii(&narrow_wanted, &module.name)) else { return STATUS_DLL_NOT_FOUND; };
+    let name = root.name.clone();
+    let blob = root.blob.clone();
+    let (exports, ntdll) = match loaded_exports(peb, &filesystem.catalog) { Ok(value) => value, Err(status) => return status };
     let resolver = Resolver { exports: PeExportResolver { modules: &exports }, ntdll };
-    let catalog_source = &*catalog;
+    let catalog_source = &filesystem.catalog;
     let modules = match pe::discover_owned_modules_with_builtins(&name, &blob, &catalog_source,
         |candidate| pe::loader_name::matches_ascii(candidate, b"ntdll.dll") || loaded_module(peb, candidate)) {
         Ok(modules) => modules,
@@ -72,9 +170,7 @@ fn load_locked(cur: &sched::Task, name_descriptor: u64, module_output: u64) -> u
     let mut inputs = Vec::new();
     for module in &modules {
         let base_name = narrow_base_name(&module.name);
-        let full_name = if module.name.iter().any(|byte| *byte == b'\\' || *byte == b'/') { module.name.clone() } else {
-            let mut path = b"C:\\Windows\\System32\\".to_vec(); path.extend_from_slice(&module.name); path
-        };
+        let full_name = filesystem.full_name_for(&module.name);
         let full_name = match String::from_utf8(full_name) { Ok(value) => value, Err(_) => { unmap_all(&as_, &loaded); return STATUS_INVALID_PARAMETER; } };
         let base_name = match String::from_utf8(base_name) { Ok(value) => value, Err(_) => { unmap_all(&as_, &loaded); return STATUS_INVALID_PARAMETER; } };
         names.push((full_name, base_name));
@@ -122,53 +218,13 @@ fn load_locked(cur: &sched::Task, name_descriptor: u64, module_output: u64) -> u
         }
         cur.thread_group.nt_module_refs.lock().push((loaded.image.base, 1));
     }
+    cur.thread_group.set_nt_module_catalog(alloc::sync::Arc::new(filesystem.catalog.clone()));
     if let Some(trampoline) = trampoline {
         // SAFETY: current_user_regs is the live syscall frame owned by this
         // dispatch; changing RIP redirects only this task's return-to-user path.
         unsafe { (*return_regs.expect("initializer path validated its return frame")).rip = trampoline.entry.as_u64(); }
     }
     STATUS_SUCCESS
-}
-
-#[cfg(target_arch = "x86_64")]
-fn load_native_unixlib(name: &[u8], as_: &vmm::AddressSpace) -> Option<u64> {
-    let path = native_unixlib_path(name)?;
-    let bytes = vfs::read_abs(core::str::from_utf8(&path).ok()?).ok()?;
-    let root = as_.root_pa();
-    elf_load::unixlib::map_shared_object_with_resolver(&bytes, as_, |symbol| {
-        elf_load::elf_modules::resolve_symbol(root, symbol)
-    }).ok().map(|image| image.base)
-}
-
-#[cfg(target_arch = "x86_64")]
-fn native_unixlib_path(name: &[u8]) -> Option<Vec<u8>> {
-    let mut path = name.to_vec();
-    if path.starts_with(b"\\??\\") { path.drain(..4); }
-    for byte in &mut path { if *byte == b'\\' { *byte = b'/'; } }
-    if path.starts_with(b"Z:") || path.starts_with(b"z:") { path.drain(..2); }
-    let suffix = path.len().checked_sub(4)?;
-    if !path[suffix..].eq_ignore_ascii_case(b".dll") { return None; }
-    path.truncate(suffix);
-    path.extend_from_slice(b".so");
-    if path.first().copied() != Some(b'/') { return None; }
-    Some(path)
-}
-
-#[cfg(all(test, target_arch = "x86_64"))]
-mod native_unixlib_tests {
-    use super::native_unixlib_path;
-
-    #[test]
-    fn nt_z_drive_unixlib_name_maps_to_vfs_so_path() {
-        assert_eq!(native_unixlib_path(b"\\??\\Z:\\usr\\lib64\\wine\\x86_64-unix\\winevulkan.dll"),
-            Some(b"/usr/lib64/wine/x86_64-unix/winevulkan.so".to_vec()));
-    }
-
-    #[test]
-    fn non_absolute_or_non_dll_names_are_not_native_unixlibs() {
-        assert_eq!(native_unixlib_path(b"kernel32.dll"), None);
-        assert_eq!(native_unixlib_path(b"/tmp/module.exe"), None);
-    }
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -254,6 +310,7 @@ fn narrow_name(wide: &[u8]) -> Option<Vec<u8>> {
     for pair in wide.chunks_exact(2) { if pair[1] != 0 { return None; } out.push(pair[0]); }
     Some(out)
 }
+
 #[cfg(target_arch = "x86_64")]
 fn narrow_base_name(name: &[u8]) -> Vec<u8> { name.rsplit(|byte| *byte == b'\\' || *byte == b'/').next().unwrap_or(name).to_vec() }
 #[cfg(target_arch = "x86_64")]

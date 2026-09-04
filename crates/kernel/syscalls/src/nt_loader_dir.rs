@@ -167,35 +167,12 @@ fn get_path(module: u64, flags: u32, path_output: u64, unknown_output: u64) -> u
     if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
     let Some(module_name) = read_wide_z(module) else { return STATUS_INVALID_PARAMETER; };
     if !nt_loader_dir_policy::request_flags_valid(flags) { return STATUS_INVALID_PARAMETER; }
-    let search_flags = nt_loader_dir_policy::expand_default_flags(
-        nt_loader_dir_policy::effective_flags(flags,
-            cur.thread_group.nt_default_dll_search_flags.load(Ordering::Acquire)));
-    if search_flags & LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR != 0
-        && !nt_loader_dir_policy::dll_load_directory_path_valid(&module_name) {
-        return STATUS_INVALID_PARAMETER;
-    }
     let mut path = Vec::new();
-    if search_flags & LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR != 0
-        || flags & LOAD_WITH_ALTERED_SEARCH_PATH != 0 {
-        append_directory(&mut path, directory_of(&module_name));
-    }
-    if search_flags & LOAD_LIBRARY_SEARCH_APPLICATION_DIR != 0 {
-        let peb = cur.nt_teb().checked_add(TEB_PEB_OFFSET).and_then(read_u64_checked).unwrap_or(0);
-        let parameters = peb.checked_add(PEB_IMAGE_BASE_OFFSET + 0x10).and_then(read_u64_checked).unwrap_or(0);
-        if parameters != 0 {
-            let image = parameters.checked_add(0x60).and_then(|address| read_unicode(address)).unwrap_or_default();
-            append_directory(&mut path, directory_of(&image));
-        }
-    }
-    if search_flags & LOAD_LIBRARY_SEARCH_USER_DIRS != 0 {
-        let dirs = cur.thread_group.nt_dll_directories.lock();
-        for (_, directory) in dirs.iter() { append_directory(&mut path, directory); }
-        let override_dir = cur.thread_group.nt_dll_directory.lock();
-        append_directory(&mut path, &override_dir);
-    }
-    if search_flags & (LOAD_LIBRARY_SEARCH_SYSTEM32 | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS) != 0 {
-        append_directory(&mut path, &utf16_bytes_const(b"C:\\Windows\\System32"));
-    }
+    let directories = match search_directories(cur, &module_name, flags) {
+        Ok(directories) => directories,
+        Err(status) => return status,
+    };
+    for directory in directories { append_directory(&mut path, &directory); }
     if path.is_empty() { append_directory(&mut path, &utf16_bytes_const(b"C:\\Windows")); }
     if uaccess::put_user_u64(unknown_output, 0).is_err() { return STATUS_INVALID_PARAMETER; }
     let Some(buffer) = allocate_utf16(&path) else { return STATUS_DLL_NOT_FOUND; };
@@ -204,6 +181,49 @@ fn get_path(module: u64, flags: u32, path_output: u64, unknown_output: u64) -> u
         return STATUS_INVALID_PARAMETER;
     }
     STATUS_SUCCESS
+}
+
+/// Construct the one ordered DLL search path consumed by both the public
+/// `LdrGetDllPath` ABI and the filesystem-backed `LdrLoadDll` owner.
+/// # C: O(N_directories + path length)
+pub(super) fn search_directories(cur: &sched::Task, module_name: &[u8], flags: u32) -> Result<Vec<Vec<u8>>, u64> {
+    if !nt_loader_dir_policy::request_flags_valid(flags) { return Err(STATUS_INVALID_PARAMETER); }
+    let search_flags = nt_loader_dir_policy::expand_default_flags(
+        nt_loader_dir_policy::effective_flags(flags,
+            cur.thread_group.nt_default_dll_search_flags.load(Ordering::Acquire)));
+    if search_flags & LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR != 0
+        && !nt_loader_dir_policy::dll_load_directory_path_valid(module_name) {
+        return Err(STATUS_INVALID_PARAMETER);
+    }
+    let mut directories = Vec::new();
+    if search_flags & LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR != 0
+        || flags & LOAD_WITH_ALTERED_SEARCH_PATH != 0 {
+        push_unique_directory(&mut directories, directory_of(module_name));
+    }
+    if search_flags & LOAD_LIBRARY_SEARCH_APPLICATION_DIR != 0 {
+        let peb = cur.nt_teb().checked_add(TEB_PEB_OFFSET).and_then(read_u64_checked).unwrap_or(0);
+        let parameters = peb.checked_add(PEB_IMAGE_BASE_OFFSET + 0x10).and_then(read_u64_checked).unwrap_or(0);
+        if parameters != 0 {
+            let image = parameters.checked_add(0x60).and_then(|address| read_unicode(address)).unwrap_or_default();
+            push_unique_directory(&mut directories, directory_of(&image));
+        }
+    }
+    if search_flags & LOAD_LIBRARY_SEARCH_USER_DIRS != 0 {
+        let dirs = cur.thread_group.nt_dll_directories.lock();
+        for (_, directory) in dirs.iter() { push_unique_directory(&mut directories, directory); }
+        let override_dir = cur.thread_group.nt_dll_directory.lock();
+        push_unique_directory(&mut directories, &override_dir);
+    }
+    if search_flags & (LOAD_LIBRARY_SEARCH_SYSTEM32 | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS) != 0 {
+        push_unique_directory(&mut directories, &utf16_bytes_const(b"C:\\Windows\\System32"));
+    }
+    if directories.is_empty() { push_unique_directory(&mut directories, &utf16_bytes_const(b"C:\\Windows")); }
+    Ok(directories)
+}
+
+fn push_unique_directory(directories: &mut Vec<Vec<u8>>, directory: &[u8]) {
+    if directory.is_empty() || directories.iter().any(|known| known == directory) { return; }
+    directories.push(directory.to_vec());
 }
 
 fn append_directory(path: &mut Vec<u8>, directory: &[u8]) {
