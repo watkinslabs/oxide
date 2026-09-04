@@ -147,6 +147,7 @@ mod nt_security;
 #[path = "nt_time.rs"]
 mod nt_time;
 mod nt_time_common;
+mod nt_wine_timeout;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_object_query;
 #[cfg(target_os = "oxide-kernel")]
