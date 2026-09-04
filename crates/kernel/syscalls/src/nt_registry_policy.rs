@@ -31,7 +31,7 @@ pub const fn supported_request(
 
 #[cfg(test)]
 mod tests {
-    use super::{supported_request, REG_NOTIFY_CHANGE_LAST_SET, REG_NOTIFY_CHANGE_NAME};
+    use super::{supported_request, REG_NOTIFY_CHANGE_LAST_SET};
 
     fn valid() -> bool {
         supported_request(0, 0, 0x1000, 0, 0, 1, 0, REG_NOTIFY_CHANGE_LAST_SET)
@@ -50,13 +50,13 @@ mod tests {
     #[test]
     fn rejects_subtree_and_invalid_filters() {
         assert!(!supported_request(0, 0, 0x1000, 0, 0, 1, 1, REG_NOTIFY_CHANGE_LAST_SET));
-        assert!(!supported_request(0, 0, 0x1000, 0, 0, 1, 0, REG_NOTIFY_CHANGE_NAME));
+        assert!(!supported_request(0, 0, 0x1000, 0, 0, 1, 0, REG_NOTIFY_CHANGE_LAST_SET | 0x0000_0001));
         assert!(!supported_request(0, 0, 0x1000, 0, 0, 1, 2, REG_NOTIFY_CHANGE_LAST_SET));
         assert!(!supported_request(0, 0, 0x1000, 0, 0, 1, 0, 2));
     }
 
     #[test]
     fn rejects_io_status_block_pointer_wraparound() {
-        assert!(!supported_request(0, 0, u64::MAX - 7, 0, 0, 1, 0, REG_NOTIFY_CHANGE_NAME));
+        assert!(!supported_request(0, 0, u64::MAX - 7, 0, 0, 1, 0, REG_NOTIFY_CHANGE_LAST_SET));
     }
 }
