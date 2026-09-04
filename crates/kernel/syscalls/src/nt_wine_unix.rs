@@ -85,6 +85,8 @@ const SERVER_SELECT_REPLY_SIGNALED: u64 = 12;
 const SERVER_TIMEOUT_INFINITE: u64 = 0x7fff_ffff_ffff_ffff;
 const SERVER_MAPPING_ACCESS_WRITE: u32 = 0x0002;
 const SERVER_MAPPING_MAX_BYTES: u64 = 1 << 36;
+const WINE_OBJ_INHERIT: u32 = 0x0000_0002;
+const NT_HANDLE_INHERIT: u32 = 0x0000_0001;
 
 fn wine_arg(base: u64, offset: u64) -> Option<u64> { base.checked_add(offset) }
 
@@ -126,18 +128,28 @@ fn windows_time_ticks(realtime_ns: u64) -> u64 {
 
 fn valid_unwind_type(value: u32) -> bool { value & !UNW_FLAG_MASK == 0 }
 
+fn wine_handle_flags(attributes: u32) -> u32 {
+    if attributes & WINE_OBJ_INHERIT != 0 { NT_HANDLE_INHERIT } else { 0 }
+}
+
 #[cfg(target_os = "oxide-kernel")]
 fn unix_fd_to_handle(args: u64) -> u64 {
     let Ok(fd) = uaccess::get_user_u32(args) else { return STATUS_INVALID_PARAMETER; };
     let Some(access_address) = wine_arg(args, 4) else { return STATUS_INVALID_PARAMETER; };
+    let Some(attributes_address) = wine_arg(args, 8) else { return STATUS_INVALID_PARAMETER; };
     let Some(output_address) = wine_arg(args, 16) else { return STATUS_INVALID_PARAMETER; };
     let Ok(access) = uaccess::get_user_u32(access_address) else { return STATUS_INVALID_PARAMETER; };
+    let Ok(attributes) = uaccess::get_user_u32(attributes_address) else { return STATUS_INVALID_PARAMETER; };
     let Ok(output) = uaccess::get_user_u64(output_address) else { return STATUS_INVALID_PARAMETER; };
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     let Some(fdt) = cur.clone_fd_table() else { return STATUS_INVALID_PARAMETER; };
     let Ok(file) = fdt.get(fd as i32) else { return STATUS_INVALID_HANDLE; };
     let object = cur.thread_group.nt_handles().new_file(file);
     let Some(handle) = cur.thread_group.nt_handles().insert(object, access) else { return STATUS_INVALID_HANDLE; };
+    if cur.thread_group.nt_handles().set_flags(handle, wine_handle_flags(attributes)).is_none() {
+        let _ = cur.thread_group.nt_handles().close(handle);
+        return STATUS_INVALID_HANDLE;
+    }
     if uaccess::put_user_u32(output, handle.raw()).is_err() {
         let _ = cur.thread_group.nt_handles().close(handle);
         STATUS_INVALID_PARAMETER
@@ -695,6 +707,13 @@ mod tests {
         assert!(valid_unwind_type(1 | 2 | 4));
         assert!(!valid_unwind_type(8));
         assert!(!valid_unwind_type(u32::MAX));
+    }
+
+    #[test]
+    fn fd_to_handle_preserves_only_the_reference_inherit_attribute() {
+        assert_eq!(wine_handle_flags(0), 0);
+        assert_eq!(wine_handle_flags(WINE_OBJ_INHERIT), NT_HANDLE_INHERIT);
+        assert_eq!(wine_handle_flags(WINE_OBJ_INHERIT | 0x40), NT_HANDLE_INHERIT);
     }
 
     #[test]
