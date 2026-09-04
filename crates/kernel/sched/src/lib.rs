@@ -140,6 +140,7 @@ pub use task::{cap, securebits, ArchFpuBuf, Creds, FairPriority, GroupList, Load
     SyscallSnapshot, interruptible_work_pending, SleepWake, WaitOutcome, WaitState,
     signal_pending_state, PiBlockedOn, Task, TaskPiState, TaskState, TASK_COMM_LEN, SUID_DUMP_DISABLE,
     SUID_DUMP_ROOT, SUID_DUMP_USER, RT_QUEUE_CAP, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK};
+pub use live::NtWaitOutcome;
 
 /// Maximum size in bytes of a per-arch HAL `Context` record (per
 /// `13§5` + `14§5.2` / `14§6.2`). `Task` carries an opaque buffer

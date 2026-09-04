@@ -1044,22 +1044,27 @@ pub fn dispatch(call: NtCall) -> u64 {
                 let deadline = match wait_deadline(timeout) { Ok(deadline) => deadline, Err(status) => return status };
                 let outcome = if let Some(event) = object.event() {
                     // SAFETY: NT dispatch is process context; the object Arc keeps the predicate alive while the scheduler may sleep.
-                    unsafe { event.wait(deadline, timekeeper::monotonic_ns) }
+                    if alertable != 0 { unsafe { event.wait_alertable(deadline, timekeeper::monotonic_ns, || cur.nt_apc_queue.has_pending()) } }
+                    else { unsafe { event.wait(deadline, timekeeper::monotonic_ns) }.into() }
                 } else if let Some(semaphore) = object.semaphore() {
                     // SAFETY: NT dispatch is process context; the object Arc keeps the predicate alive while the scheduler may sleep.
-                    unsafe { semaphore.wait(deadline, timekeeper::monotonic_ns) }
+                    if alertable != 0 { unsafe { semaphore.wait_alertable(deadline, timekeeper::monotonic_ns, || cur.nt_apc_queue.has_pending()) } }
+                    else { unsafe { semaphore.wait(deadline, timekeeper::monotonic_ns) }.into() }
                 } else if let Some(mutant) = object.mutant() {
                     // SAFETY: NT dispatch is process context; the object Arc keeps the predicate alive while the scheduler may sleep.
-                    unsafe { mutant.wait(cur.tid as u64, deadline, timekeeper::monotonic_ns) }
+                    if alertable != 0 { unsafe { mutant.wait_alertable(cur.tid as u64, deadline, timekeeper::monotonic_ns, || cur.nt_apc_queue.has_pending()) } }
+                    else { unsafe { mutant.wait(cur.tid as u64, deadline, timekeeper::monotonic_ns) }.into() }
                 } else if let Some(timer) = object.timer() {
                     // Timer deadlines participate in the same interruptible
                     // wait loop as explicit NT timeout deadlines.
-                    unsafe { timer.wait(deadline, timekeeper::monotonic_ns) }
+                    if alertable != 0 { unsafe { timer.wait_alertable(deadline, timekeeper::monotonic_ns, || cur.nt_apc_queue.has_pending()) } }
+                    else { unsafe { timer.wait(deadline, timekeeper::monotonic_ns) }.into() }
                 } else { return STATUS_INVALID_HANDLE; };
                 match outcome {
-                    sched::WaitOutcome::Ready => STATUS_SUCCESS,
-                    sched::WaitOutcome::TimedOut => STATUS_TIMEOUT,
-                    sched::WaitOutcome::Interrupted => if alertable != 0 && cur.nt_apc_queue.request_delivery() { STATUS_USER_APC } else { STATUS_ALERTED },
+                    sched::NtWaitOutcome::Ready => STATUS_SUCCESS,
+                    sched::NtWaitOutcome::UserApc => { cur.nt_apc_queue.request_delivery(); STATUS_USER_APC },
+                    sched::NtWaitOutcome::TimedOut => STATUS_TIMEOUT,
+                    sched::NtWaitOutcome::Interrupted => STATUS_ALERTED,
                 }
             }
             NtObjectCall::WaitMultiple { count, handles, wait_type, alertable, timeout } => {
@@ -1100,13 +1105,17 @@ pub fn dispatch(call: NtCall) -> u64 {
                         false
                     }
                 };
-                let outcome = unsafe { sched::live::wait_event_interruptible_until(table.waiters(), wait_deadline, timekeeper::monotonic_ns, all_ready) };
-                let outcome = if matches!(outcome, sched::WaitOutcome::TimedOut) && timer_deadline <= deadline
+                let outcome = if alertable != 0 {
+                    unsafe { sched::live::wait_event_interruptible_until_user_apc(table.waiters(), wait_deadline,
+                        timekeeper::monotonic_ns, || cur.nt_apc_queue.has_pending(), all_ready) }
+                } else { unsafe { sched::live::wait_event_interruptible_until(table.waiters(), wait_deadline, timekeeper::monotonic_ns, all_ready) }.into() };
+                let outcome = if matches!(outcome, sched::NtWaitOutcome::TimedOut) && timer_deadline <= deadline
                     && waitables.iter().any(|object| object.is_signaled_at(cur.tid as u64, timekeeper::monotonic_ns())) {
-                    sched::WaitOutcome::Ready
+                    sched::NtWaitOutcome::Ready
                 } else { outcome };
                 match outcome {
-                    sched::WaitOutcome::Ready => {
+                    sched::NtWaitOutcome::UserApc => { cur.nt_apc_queue.request_delivery(); STATUS_USER_APC }
+                    sched::NtWaitOutcome::Ready => {
                         if wait_type == 0 {
                             for object in &waitables { let _ = object.try_wait_at(cur.tid as u64, timekeeper::monotonic_ns()); }
                             STATUS_SUCCESS
@@ -1118,8 +1127,8 @@ pub fn dispatch(call: NtCall) -> u64 {
                             STATUS_ALERTED
                         }
                     }
-                    sched::WaitOutcome::TimedOut => STATUS_TIMEOUT,
-                    sched::WaitOutcome::Interrupted => if alertable != 0 && cur.nt_apc_queue.request_delivery() { STATUS_USER_APC } else { STATUS_ALERTED },
+                    sched::NtWaitOutcome::TimedOut => STATUS_TIMEOUT,
+                    sched::NtWaitOutcome::Interrupted => STATUS_ALERTED,
                 }
             }
             NtObjectCall::CreateSection { handle, desired_access, size, protect, attributes, file }

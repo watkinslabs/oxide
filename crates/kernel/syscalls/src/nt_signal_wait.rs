@@ -33,17 +33,22 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if alertable != 0 && cur.nt_apc_queue.request_delivery() { return Some(STATUS_USER_APC); }
     let outcome = if let Some(event) = wait_object.event() {
         // SAFETY: the object Arc keeps the event alive across the scheduler wait.
-        unsafe { event.wait(deadline, timekeeper::monotonic_ns) }
+        if alertable != 0 { unsafe { event.wait_alertable(deadline, timekeeper::monotonic_ns, || cur.nt_apc_queue.has_pending()) } }
+        else { unsafe { event.wait(deadline, timekeeper::monotonic_ns) }.into() }
     } else if let Some(semaphore) = wait_object.semaphore() {
-        unsafe { semaphore.wait(deadline, timekeeper::monotonic_ns) }
+        if alertable != 0 { unsafe { semaphore.wait_alertable(deadline, timekeeper::monotonic_ns, || cur.nt_apc_queue.has_pending()) } }
+        else { unsafe { semaphore.wait(deadline, timekeeper::monotonic_ns) }.into() }
     } else if let Some(mutant) = wait_object.mutant() {
-        unsafe { mutant.wait(cur.tid as u64, deadline, timekeeper::monotonic_ns) }
+        if alertable != 0 { unsafe { mutant.wait_alertable(cur.tid as u64, deadline, timekeeper::monotonic_ns, || cur.nt_apc_queue.has_pending()) } }
+        else { unsafe { mutant.wait(cur.tid as u64, deadline, timekeeper::monotonic_ns) }.into() }
     } else if let Some(timer) = wait_object.timer() {
-        unsafe { timer.wait(deadline, timekeeper::monotonic_ns) }
+        if alertable != 0 { unsafe { timer.wait_alertable(deadline, timekeeper::monotonic_ns, || cur.nt_apc_queue.has_pending()) } }
+        else { unsafe { timer.wait(deadline, timekeeper::monotonic_ns) }.into() }
     } else { return Some(STATUS_INVALID_HANDLE); };
     Some(match outcome {
-        sched::WaitOutcome::Ready => STATUS_SUCCESS,
-        sched::WaitOutcome::TimedOut => STATUS_TIMEOUT,
-        sched::WaitOutcome::Interrupted => if alertable != 0 && cur.nt_apc_queue.request_delivery() { STATUS_USER_APC } else { STATUS_ALERTED },
+        sched::NtWaitOutcome::Ready => STATUS_SUCCESS,
+        sched::NtWaitOutcome::TimedOut => STATUS_TIMEOUT,
+        sched::NtWaitOutcome::UserApc => { cur.nt_apc_queue.request_delivery(); STATUS_USER_APC },
+        sched::NtWaitOutcome::Interrupted => STATUS_ALERTED,
     })
 }

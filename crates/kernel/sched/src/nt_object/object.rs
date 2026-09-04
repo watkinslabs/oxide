@@ -302,6 +302,16 @@ impl NtSemaphore {
         // SAFETY: caller supplies process context and this predicate owns no external lock.
         unsafe { crate::live::wait_event_interruptible_until(&self.waiters, deadline_ns, now, || self.try_wait()) }
     }
+
+    /// Alertable semaphore wait with a distinct native APC outcome. # C: O(N_wakeups)
+    /// # SAFETY: caller is process context and owns no semaphore/wait-list lock.
+    #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
+    pub unsafe fn wait_alertable(&self, deadline_ns: u64, now: impl Fn() -> u64,
+                                 apc: impl FnMut() -> bool) -> crate::NtWaitOutcome {
+        // SAFETY: forwarded to the scheduler alertable wait contract.
+        unsafe { crate::live::wait_event_interruptible_until_user_apc(&self.waiters,
+            deadline_ns, now, apc, || self.try_wait()) }
+    }
 }
 
 impl NtEvent {
@@ -378,6 +388,18 @@ impl NtEvent {
         // SAFETY: forwarded to the scheduler predicate loop under the same
         // process-context and lock-ordering contract.
         unsafe { crate::live::wait_event_interruptible_until(&self.waiters, deadline_ns, now,
+            || self.try_wait() || self.try_pulse_since(&mut pulse_epoch)) }
+    }
+
+    /// Alertable event wait with a distinct native APC outcome. # C: O(N_wakeups)
+    /// # SAFETY: caller is process context and owns no event/wait-list lock.
+    #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
+    pub unsafe fn wait_alertable(&self, deadline_ns: u64, now: impl Fn() -> u64,
+                                 apc: impl FnMut() -> bool) -> crate::NtWaitOutcome {
+        let mut pulse_epoch = self.pulse_epoch();
+        // SAFETY: forwarded to the scheduler alertable wait contract.
+        unsafe { crate::live::wait_event_interruptible_until_user_apc(&self.waiters,
+            deadline_ns, now, apc,
             || self.try_wait() || self.try_pulse_since(&mut pulse_epoch)) }
     }
 }
