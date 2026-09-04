@@ -84,6 +84,23 @@ pub fn allocate(as_: &AddressSpace, base: Option<UserVirtAddr>, size: usize, pro
     Ok(NtAllocation { base, size, protection: actual, reserved: !committed })
 }
 
+/// Allocate a new committed region for a null base, or commit a range inside
+/// an existing NT reservation for a supplied base. The distinction belongs to
+/// the VM owner because both paths mutate one VMA transaction.
+/// # C: O(log N_vmas)
+pub fn allocate_or_commit(as_: &AddressSpace, base: Option<UserVirtAddr>, size: usize,
+    protection: VmaProt) -> Result<NtAllocation, NtStatus> {
+    let Some(base) = base else { return allocate(as_, None, size, protection, true); };
+    if size == 0 || size % PAGE != 0 { return Err(NtStatus::InvalidParameter); }
+    let vma = as_.find_vma(base).ok_or(NtStatus::NotMapped)?;
+    if !vma.flags.contains(VmaFlags::NT_RESERVED) { return Err(NtStatus::InvalidParameter); }
+    let end = base.as_u64().checked_add(size as u64).ok_or(NtStatus::InvalidParameter)?;
+    if end > vma.end.as_u64() { return Err(NtStatus::InvalidParameter); }
+    as_.mprotect(base, size, protection).map_err(|_| NtStatus::InvalidParameter)?;
+    as_.update_flags_range(base, size, VmaFlags::empty(), VmaFlags::NT_RESERVED);
+    Ok(NtAllocation { base, size, protection, reserved: false })
+}
+
 /// Release one NT allocation extent. Compatible adjacent VMAs can be merged
 /// by the common VMM, so use the recorded extent rather than the VMA size.
 /// # C: O(log N_vmas)
@@ -226,5 +243,34 @@ mod tests {
         assert_eq!(q.protection, VmaProt::empty());
         assert_eq!(q.may_protection, VmaProt::READ | VmaProt::WRITE);
         assert_eq!(free(&as_, a), NtStatus::Success);
+    }
+
+    #[test]
+    fn null_base_commit_creates_a_committed_region() {
+        let as_ = AddressSpace::new(0x20_000).unwrap();
+        let a = allocate_or_commit(&as_, None, PAGE * 2, VmaProt::READ | VmaProt::WRITE).unwrap();
+        let q = query(&as_, a.base).unwrap();
+        assert_eq!(q.base, a.base);
+        assert_eq!(q.size, PAGE * 2);
+        assert!(q.committed);
+        assert_eq!(q.protection, VmaProt::READ | VmaProt::WRITE);
+        assert_eq!(free(&as_, a), NtStatus::Success);
+    }
+
+    #[test]
+    fn supplied_base_commit_promotes_only_the_requested_reserved_range() {
+        let as_ = AddressSpace::new(0x20_000).unwrap();
+        let reserved = allocate(&as_, Some(UserVirtAddr::new(0x4000_0000).unwrap()),
+            PAGE * 3, VmaProt::READ | VmaProt::WRITE, false).unwrap();
+        let committed = allocate_or_commit(&as_, Some(UserVirtAddr::new(0x4000_1000).unwrap()),
+            PAGE, VmaProt::READ).unwrap();
+        assert!(query(&as_, committed.base).unwrap().committed);
+        assert!(!query(&as_, reserved.base).unwrap().committed);
+        assert!(query(&as_, UserVirtAddr::new(0x4000_2000).unwrap()).unwrap().committed == false);
+        assert_eq!(free(&as_, committed), NtStatus::Success);
+        assert_eq!(free(&as_, NtAllocation { base: reserved.base, size: PAGE,
+            protection: VmaProt::empty(), reserved: true }), NtStatus::Success);
+        assert_eq!(free(&as_, NtAllocation { base: UserVirtAddr::new(0x4000_2000).unwrap(),
+            size: PAGE, protection: VmaProt::empty(), reserved: true }), NtStatus::Success);
     }
 }

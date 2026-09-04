@@ -1448,14 +1448,6 @@ pub fn dispatch(call: NtCall) -> u64 {
     let Some(mm) = (unsafe { cur.mm_ref() }).map(|mm| mm.clone()) else { return STATUS_INVALID_PARAMETER; };
     match call {
         NtMemoryCall::Allocate { base, size, allocation_type, protect, .. } => {
-            // Wine's kernelbase global tables use VirtualAlloc(NULL, size,
-            // MEM_COMMIT, ...).  Wine's NtAllocateVirtualMemory contract
-            // creates a fresh committed region when the requested base is
-            // NULL, even without an explicit MEM_RESERVE bit.  The native
-            // VMA owner represents a newly created region as one committed
-            // mapping, so preserve that contract rather than rejecting the
-            // valid MEM_COMMIT-only form.  Commit-on-an-existing-reservation
-            // remains rejected until the VMA owner exposes reservation state.
             let allocation_flags = allocation_type & !MEM_TOP_DOWN;
             let creates_region = allocation_flags == MEM_RESERVE | MEM_COMMIT
                 || allocation_flags == MEM_COMMIT
@@ -1473,17 +1465,11 @@ pub fn dispatch(call: NtCall) -> u64 {
                 Err(_) => return STATUS_INVALID_PARAMETER,
             };
             let protection = match elf_load::nt_memory::windows_protection(protect) { Ok(protection) => protection, Err(_) => return STATUS_INVALID_PARAMETER };
-            if allocation_flags == MEM_COMMIT {
-                let Some(base) = requested_base else { unreachable!() };
-                let info = match elf_load::nt_memory::query(&mm, base) { Ok(info) => info, Err(_) => return STATUS_MEMORY_NOT_ALLOCATED };
-                if info.committed || info.base != base || info.size < size { return STATUS_INVALID_PARAMETER; }
-                if mm.mprotect(base, size, protection).is_err() { return STATUS_INVALID_PARAMETER; }
-                mm.update_flags_range(base, size, vmm::VmaFlags::empty(), vmm::VmaFlags::NT_RESERVED);
-                if uaccess::put_user_u64(base.as_u64(), base.as_u64()).is_err()
-                    || uaccess::put_user_u64(size_ptr, size as u64).is_err() { return STATUS_INVALID_PARAMETER; }
-                return STATUS_SUCCESS;
-            }
-            let allocation = match elf_load::nt_memory::allocate(&mm, requested_base, size, protection, allocation_flags == (MEM_RESERVE | MEM_COMMIT)) {
+            let allocation = match if allocation_flags == MEM_COMMIT {
+                elf_load::nt_memory::allocate_or_commit(&mm, requested_base, size, protection)
+            } else {
+                elf_load::nt_memory::allocate(&mm, requested_base, size, protection, allocation_flags == (MEM_RESERVE | MEM_COMMIT))
+            } {
                 Ok(allocation) => allocation,
                 Err(elf_load::nt_memory::NtStatus::NoMemory) => return STATUS_NO_MEMORY,
                 Err(elf_load::nt_memory::NtStatus::ConflictingAddresses) => return STATUS_CONFLICTING_ADDRESSES,
