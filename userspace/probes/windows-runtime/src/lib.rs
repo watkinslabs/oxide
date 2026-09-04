@@ -25,6 +25,7 @@ pub enum BuildError {
     TooLarge,
     CatalogTooLarge,
     InvalidAddress,
+    InvalidEnvironment,
 }
 
 impl From<io::Error> for BuildError {
@@ -56,12 +57,19 @@ impl RuntimeRequest {
     /// Read a PE32+ root and every non-native DLL in `dll_dir` using the Linux personality.
     /// # C: O(root + DLL directory bytes)
     pub fn from_paths(image_path: &Path, windows_path: &[u8], dll_dir: &Path) -> Result<Self, BuildError> {
-        Self::from_paths_with_command_line(image_path, windows_path, windows_path, dll_dir)
+        Self::from_paths_with_environment(image_path, windows_path, windows_path, dll_dir, core::iter::empty())
     }
 
     /// Read a PE32+ root and build an owned handoff with an explicit command line.
     /// # C: O(root + DLL directory bytes)
     pub fn from_paths_with_command_line(image_path: &Path, windows_path: &[u8], command_line: &[u8], dll_dir: &Path) -> Result<Self, BuildError> {
+        Self::from_paths_with_environment(image_path, windows_path, command_line, dll_dir, core::iter::empty())
+    }
+
+    /// Read a PE32+ root and preserve approved launch configuration in its Windows environment.
+    /// # C: O(root + DLL directory bytes + environment bytes)
+    pub fn from_paths_with_environment<I>(image_path: &Path, windows_path: &[u8], command_line: &[u8], dll_dir: &Path, environment: I) -> Result<Self, BuildError>
+    where I: IntoIterator<Item = (String, String)> {
         if windows_path.is_empty() || windows_path.len() > u32::MAX as usize || windows_path.contains(&0) { return Err(BuildError::InvalidUtf8Path); }
         if command_line.is_empty() || command_line.len() > u32::MAX as usize || command_line.contains(&0) { return Err(BuildError::InvalidUtf8Path); }
         let image = fs::read(image_path).map_err(|error| {
@@ -107,7 +115,7 @@ impl RuntimeRequest {
         validate_import_closure(&image, &modules)?;
         let image_path = windows_path.to_vec().into_boxed_slice();
         let command_line = command_line.to_vec().into_boxed_slice();
-        let environment = environment_block();
+        let environment = environment_block(environment)?;
         let mut records = Vec::with_capacity(modules.len().max(1));
         for module in &modules {
             records.push(NtExecModule {
@@ -156,10 +164,30 @@ fn validate_size(size: u64) -> Result<(), BuildError> {
     if size == 0 || size > MAX_IMAGE_BYTES { Err(BuildError::TooLarge) } else { Ok(()) }
 }
 
-fn environment_block() -> Box<[u8]> {
-    let entries = [("SystemRoot", "C:\\Windows"), ("PROCESSOR_ARCHITECTURE", "AMD64"),
+const PROTON_ENVIRONMENT_KEYS: &[&str] = &[
+    "WINEPREFIX", "WINEARCH", "WINEDLLOVERRIDES", "WINEDEBUG", "WINEESYNC", "WINEFSYNC",
+    "STEAM_COMPAT_CLIENT_INSTALL_PATH", "STEAM_COMPAT_DATA_PATH", "STEAM_COMPAT_INSTALL_PATH",
+    "STEAM_COMPAT_TOOL_PATHS", "STEAM_COMPAT_MOUNTS", "STEAM_COMPAT_LIBRARY_PATHS",
+    "PROTON_LOG", "PROTON_DUMP_DEBUG_COMMANDS", "PROTON_USE_WINED3D",
+    "DXVK_LOG_LEVEL", "DXVK_LOG_PATH", "DXVK_CONFIG_FILE", "DXVK_ASYNC", "VKD3D_CONFIG",
+    "VKD3D_DEBUG", "VKD3D_LOG_FILE", "SteamAppId", "SteamGameId",
+];
+
+fn environment_block<I>(environment: I) -> Result<Box<[u8]>, BuildError>
+where I: IntoIterator<Item = (String, String)> {
+    let defaults = [("SystemRoot", "C:\\Windows"), ("PROCESSOR_ARCHITECTURE", "AMD64"),
         ("TEMP", "C:\\Windows\\Temp"),
         ("TMP", "C:\\Windows\\Temp"), ("PATH", "C:\\Windows\\System32;C:\\Windows")];
+    let mut entries = defaults.iter().map(|(name, value)| ((*name).to_string(), (*value).to_string())).collect::<Vec<_>>();
+    for (name, value) in environment {
+        if !is_proton_environment_key(&name) { continue; }
+        if name.is_empty() || name.contains('=') || name.contains('\0') || value.contains('\0') { return Err(BuildError::InvalidEnvironment); }
+        if let Some(existing) = entries.iter_mut().find(|(key, _)| key.eq_ignore_ascii_case(&name)) {
+            existing.1 = value;
+        } else {
+            entries.push((name, value));
+        }
+    }
     let mut units = Vec::new();
     for (name, value) in entries {
         units.extend(format!("{name}={value}").encode_utf16());
@@ -168,7 +196,12 @@ fn environment_block() -> Box<[u8]> {
     units.push(0);
     let mut bytes = Vec::with_capacity(units.len() * 2);
     for unit in units { bytes.extend_from_slice(&unit.to_le_bytes()); }
-    bytes.into_boxed_slice()
+    Ok(bytes.into_boxed_slice())
+}
+
+fn is_proton_environment_key(name: &str) -> bool {
+    PROTON_ENVIRONMENT_KEYS.iter().any(|key| name.eq_ignore_ascii_case(key))
+        || ["STEAM_COMPAT_", "PROTON_", "DXVK_", "VKD3D_"].iter().any(|prefix| name.len() > prefix.len() && name.get(..prefix.len()).is_some_and(|head| head.eq_ignore_ascii_case(prefix)))
 }
 
 fn environment_entries(block: &[u8]) -> Option<Vec<String>> {
@@ -229,6 +262,44 @@ fn validate_import_closure(root: &[u8], modules: &[ModuleBuffer]) -> Result<(), 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn environment_text(bytes: &[u8]) -> String {
+        let units = bytes.chunks_exact(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]])).collect::<Vec<_>>();
+        String::from_utf16(&units).unwrap()
+    }
+
+    #[test]
+    fn proton_launch_configuration_is_preserved_in_the_windows_block() {
+        let block = environment_block([
+            ("STEAM_COMPAT_DATA_PATH".to_string(), "/games/compatdata/123".to_string()),
+            ("WINEPREFIX".to_string(), "/games/prefix".to_string()),
+            ("DXVK_LOG_LEVEL".to_string(), "none".to_string()),
+        ]).unwrap();
+        let text = environment_text(&block);
+        assert!(text.contains("STEAM_COMPAT_DATA_PATH=/games/compatdata/123\0"));
+        assert!(text.contains("WINEPREFIX=/games/prefix\0"));
+        assert!(text.contains("DXVK_LOG_LEVEL=none\0"));
+        assert!(text.contains("SystemRoot=C:\\Windows\0"));
+    }
+
+    #[test]
+    fn launch_configuration_overrides_defaults_without_duplicate_names() {
+        let block = environment_block([
+            ("WINEPREFIX".to_string(), "/games/first".to_string()),
+            ("wineprefix".to_string(), "/games/second".to_string()),
+            ("UNRELATED_HOST_SETTING".to_string(), "must-not-cross".to_string()),
+        ]).unwrap();
+        let text = environment_text(&block);
+        assert_eq!(text.to_ascii_uppercase().matches("WINEPREFIX=").count(), 1);
+        assert!(!text.contains("UNRELATED_HOST_SETTING"));
+        assert!(text.contains("WINEPREFIX=/games/second\0"));
+    }
+
+    #[test]
+    fn malformed_launch_configuration_is_rejected_before_handoff() {
+        assert!(matches!(environment_block([(String::from("DXVK_LOG_LEVEL"), String::from("bad\0value"))]), Err(BuildError::InvalidEnvironment)));
+        assert!(matches!(environment_block([(String::from("DXVK_=NAME"), String::from("value"))]), Err(BuildError::InvalidEnvironment)));
+    }
 
     fn wine_root() -> Option<&'static Path> {
         ["/usr/lib64/wine/x86_64-windows", "/usr/lib/wine/x86_64-windows"].iter()
@@ -366,7 +437,7 @@ mod tests {
 
     #[test]
     fn x64_environment_publishes_native_processor_architecture() {
-        let block = environment_block();
+        let block = environment_block(core::iter::empty()).unwrap();
         let entries = environment_entries(&block).expect("environment must be UTF-16 and double-NUL terminated");
         assert!(entries.iter().any(|entry| entry == "PROCESSOR_ARCHITECTURE=AMD64"));
         assert!(!entries.iter().any(|entry| entry.starts_with("PROCESSOR_ARCHITEW6432=")));
