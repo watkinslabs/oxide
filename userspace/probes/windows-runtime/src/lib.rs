@@ -157,7 +157,8 @@ fn validate_size(size: u64) -> Result<(), BuildError> {
 }
 
 fn environment_block() -> Box<[u8]> {
-    let entries = [("SystemRoot", "C:\\Windows"), ("TEMP", "C:\\Windows\\Temp"),
+    let entries = [("SystemRoot", "C:\\Windows"), ("PROCESSOR_ARCHITECTURE", "AMD64"),
+        ("TEMP", "C:\\Windows\\Temp"),
         ("TMP", "C:\\Windows\\Temp"), ("PATH", "C:\\Windows\\System32;C:\\Windows")];
     let mut units = Vec::new();
     for (name, value) in entries {
@@ -168,6 +169,17 @@ fn environment_block() -> Box<[u8]> {
     let mut bytes = Vec::with_capacity(units.len() * 2);
     for unit in units { bytes.extend_from_slice(&unit.to_le_bytes()); }
     bytes.into_boxed_slice()
+}
+
+fn environment_entries(block: &[u8]) -> Option<Vec<String>> {
+    if block.len() % 2 != 0 { return None; }
+    let units = block.chunks_exact(2).map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]])).collect::<Vec<_>>();
+    if units.last().copied() != Some(0) || units.len() < 2 || units[units.len() - 2] != 0 { return None; }
+    let mut entries = Vec::new();
+    for value in units[..units.len() - 1].split(|unit| *unit == 0) {
+        entries.push(String::from_utf16(value).ok()?);
+    }
+    Some(entries)
 }
 
 fn is_dll(path: &Path) -> bool {
@@ -350,6 +362,14 @@ mod tests {
         assert_eq!(std::mem::align_of::<NtExecModule>(), 8);
         assert_eq!(std::mem::size_of::<NtExecRequest>(), 80);
         assert_eq!(std::mem::size_of::<NtExecModule>(), 32);
+    }
+
+    #[test]
+    fn x64_environment_publishes_native_processor_architecture() {
+        let block = environment_block();
+        let entries = environment_entries(&block).expect("environment must be UTF-16 and double-NUL terminated");
+        assert!(entries.iter().any(|entry| entry == "PROCESSOR_ARCHITECTURE=AMD64"));
+        assert!(!entries.iter().any(|entry| entry.starts_with("PROCESSOR_ARCHITEW6432=")));
     }
 
     #[test]
