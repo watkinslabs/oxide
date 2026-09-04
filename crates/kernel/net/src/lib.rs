@@ -34,6 +34,7 @@ pub use link_control::register as register_link_control_handler;
 pub mod page_pool;
 pub mod sysctl;
 pub mod uapi;
+pub mod windows_getaddrinfo;
 pub mod send_control;
 pub mod landlock_addr;
 pub mod landlock_glue;
