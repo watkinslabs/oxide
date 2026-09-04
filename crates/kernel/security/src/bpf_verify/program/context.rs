@@ -187,14 +187,33 @@ fn perf_event_access(offset: usize, size: usize, write: bool) -> bool {
 /// A slot is read whole or not at all, nothing past the last slot is
 /// addressable, and no slot is writable.
 ///
-/// An argument slot holds a typed kernel pointer. This verifier proves no
-/// field access through it, so a program may observe the slot's value and
-/// may never follow it; a load through the loaded value is refused as an
-/// access through a non-pointer.
+/// A task argument slot loads a concrete read-only `task_struct` pointer;
+/// the verifier admits only fields in the published BTF view. Other pointer
+/// arguments remain opaque and cannot be followed.
 /// # C: O(1)
 fn lsm_access(hook: Hook, offset: usize, size: usize, write: bool) -> bool {
     !write && size == bpf_lsm::SLOT_BYTES && offset % bpf_lsm::SLOT_BYTES == 0
         && offset < bpf_lsm::context_bytes(hook)
+}
+
+/// Whether a whole LSM context slot loads a concrete task pointer. Other
+/// pointer arguments remain opaque scalars and the trailing return slot is
+/// always scalar.
+pub(super) fn lsm_task_slot(profile: &Profile, offset: usize, size: usize) -> bool {
+    if profile.prog_type != uapi::prog_type::LSM || size != bpf_lsm::SLOT_BYTES {
+        return false;
+    }
+    let Some(hook) = profile.hook else { return false };
+    let Some(arg) = bpf_lsm::spec(hook).args.get(offset / bpf_lsm::SLOT_BYTES) else {
+        return false;
+    };
+    offset % bpf_lsm::SLOT_BYTES == 0 && arg.ty == bpf_lsm::ArgType::Task
+}
+
+/// Field access contract for the BTF `task_struct` view this kernel exposes.
+pub(super) fn task_access(offset: usize, size: usize, write: bool) -> bool {
+    use bpf_lsm::task_struct as task;
+    !write && size == task::WORD && matches!(offset, task::PID | task::TGID)
 }
 
 /// Iterator context: the meta slot and the object slot, each read whole or

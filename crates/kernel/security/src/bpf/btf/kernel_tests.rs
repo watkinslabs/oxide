@@ -1,4 +1,5 @@
 use super::*;
+use super::super::format::TypeData;
 
 /// Type id of `bpf_lsm_file_open` in the published object: `int`, then the
 /// hook's opaque argument struct, a pointer to it, the prototype, and the
@@ -58,6 +59,61 @@ const NON_STUB_IDS: [u32; 6] = [0, 1, 2, 3, 4, 6];
         assert_eq!(found.len(), 1, "hook {hook:?} stub ids {found:?}");
         assert_eq!(lsm_hook_by_btf_id(found[0]), Some(*hook));
     }
+}
+
+fn stub_id(name: &[u8]) -> u32 {
+    let btf = published().expect("kernel BTF");
+    (1..=btf.index.type_count() as u32)
+        .find(|id| btf.index.func_name(&btf.raw, *id) == Some(name))
+        .expect("published stub id")
+}
+
+fn stub_params(name: &[u8]) -> alloc::vec::Vec<u32> {
+    let btf = published().expect("kernel BTF");
+    let function = btf.index.type_by_id(stub_id(name)).expect("stub function");
+    let prototype = btf.index.type_by_id(function.size_or_type).expect("stub prototype");
+    match &prototype.data {
+        TypeData::Params(params) => params.iter().map(|param| param.type_id).collect(),
+        _ => panic!("stub has no function prototype"),
+    }
+}
+
+fn string_at(btf: &KernelBtf, off: u32) -> &[u8] {
+    let strings = &btf.raw[btf.index.string_range()];
+    let tail = &strings[off as usize..];
+    &tail[..tail.iter().position(|byte| *byte == 0).unwrap()]
+}
+
+#[test] fn task_hook_btf_uses_a_shared_task_pointer_and_scalar_nice() {
+    let nice = stub_params(b"bpf_lsm_task_setnice");
+    let scheduler = stub_params(b"bpf_lsm_task_setscheduler");
+    assert_eq!(nice.len(), 2);
+    assert_eq!(scheduler.len(), 1);
+    assert_eq!(nice[0], scheduler[0], "task_struct pointer type is canonical");
+    assert_eq!(nice[1], INT_TYPE_ID, "nice is int, not an opaque pointer");
+    let btf = published().expect("kernel BTF");
+    let pointer = btf.index.type_by_id(nice[0]).expect("task pointer");
+    assert_eq!(pointer.kind, Kind::Ptr);
+    let task = btf.index.type_by_id(pointer.size_or_type).expect("task_struct");
+    assert_eq!(task.kind, Kind::Struct);
+    assert_eq!(string_at(&btf, task.name_off), b"task_struct");
+    assert_eq!(task.size_or_type as usize, crate::bpf_lsm::task_struct::SIZE);
+}
+
+#[test] fn task_hook_btf_uses_linux_parameter_names() {
+    let btf = published().expect("kernel BTF");
+    let names = |stub: &[u8]| {
+        let function = btf.index.type_by_id(stub_id(stub)).unwrap();
+        let prototype = btf.index.type_by_id(function.size_or_type).unwrap();
+        match &prototype.data {
+            TypeData::Params(params) => params.iter()
+                .map(|param| string_at(&btf, param.name_off).to_vec())
+                .collect::<alloc::vec::Vec<_>>(),
+            _ => panic!("stub has no prototype"),
+        }
+    };
+    assert_eq!(names(b"bpf_lsm_task_setnice"), [b"p".to_vec(), b"nice".to_vec()]);
+    assert_eq!(names(b"bpf_lsm_task_setscheduler"), [b"p".to_vec()]);
 }
 
 #[test] fn the_object_is_stable_across_calls() {

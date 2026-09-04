@@ -1,7 +1,8 @@
 //! Waitable NT timer state, driven by the scheduler's monotonic clock.
 
 use core::sync::atomic::{AtomicU64, AtomicBool, Ordering};
-use super::WaitList;
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
+use crate::live::WaitList;
 
 const DISARMED: u64 = u64::MAX;
 
@@ -10,12 +11,15 @@ pub struct NtTimer {
     due_ns: AtomicU64,
     period_ns: AtomicU64,
     signaled: AtomicBool,
+    #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
     waiters: WaitList,
 }
 
 impl NtTimer {
     pub fn new(manual_reset: bool) -> Self {
-        Self { manual_reset, due_ns: AtomicU64::new(DISARMED), period_ns: AtomicU64::new(0), signaled: AtomicBool::new(false), waiters: WaitList::new() }
+        Self { manual_reset, due_ns: AtomicU64::new(DISARMED), period_ns: AtomicU64::new(0), signaled: AtomicBool::new(false),
+            #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
+            waiters: WaitList::new() }
     }
 
     /// Arm a relative timer. A zero period makes it one-shot. # C: O(1)
@@ -23,6 +27,7 @@ impl NtTimer {
         self.signaled.store(false, Ordering::Release);
         self.period_ns.store(period_ns, Ordering::Release);
         self.due_ns.store(due_ns, Ordering::Release);
+        #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
         self.waiters.wake_all();
     }
 
@@ -53,6 +58,7 @@ impl NtTimer {
     }
 
     /// Wait until the timer fires or the caller's deadline expires. # C: sleeps
+    #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
     pub unsafe fn wait(&self, deadline_ns: u64, now: impl Fn() -> u64) -> crate::WaitOutcome {
         loop {
             let current = now();

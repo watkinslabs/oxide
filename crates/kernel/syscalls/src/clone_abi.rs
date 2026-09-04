@@ -275,8 +275,8 @@ pub struct CloneRequest<'a> {
     pub child_tid: u64,
     /// `CLONE_SETTLS` payload.
     pub tls: u64,
-    /// `CLONE_INTO_CGROUP` target, already resolved from its descriptor.
-    pub into_cgroup: Option<u64>,
+    /// `CLONE_INTO_CGROUP` directory descriptor, resolved during preparation.
+    pub into_cgroup_fd: Option<i32>,
     /// `clone3` `set_tid[]`: the pid the child takes in each pid namespace,
     /// innermost first. Empty means "allocate".
     pub set_tid: &'a [u32],

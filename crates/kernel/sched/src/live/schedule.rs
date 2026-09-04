@@ -35,3 +35,5 @@ pub use lifecycle::{
 };
 pub use migrate::{pin_current_to_cpu, unpin_current_cpu};
 pub use switch::{oxide_finish_task_switch, park_yield, sched_yield, schedule, tick_yield};
+pub(crate) use switch::{change_clock_now, restart_running_after_change,
+    settle_running_for_change};

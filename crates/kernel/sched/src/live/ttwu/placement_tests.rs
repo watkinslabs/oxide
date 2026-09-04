@@ -14,6 +14,75 @@ fn wake_of_settled_local_sleeper_enqueues_once() {
     assert!(t.on_rq.load(Ordering::Acquire));
 }
 
+#[test]
+fn pi_locked_activation_reselects_an_active_cpu_and_publishes_on_rq() {
+    const INACTIVE_OWNER: u32 = 38;
+    const ACTIVE: u32 = 39;
+    let cpus = Cpus::new(&[INACTIVE_OWNER, ACTIVE]);
+    let task = Arc::new(Task::new(
+        2015,
+        "dl-leaver",
+        SchedClass::Normal { weight: 1024 },
+    ));
+    task.cpu.store(INACTIVE_OWNER as u16, Ordering::Release);
+    task.on_rq.store(false, Ordering::Release);
+    let _pi = task.pi_lock.lock_irqsave::<RqIrq>();
+
+    place_runnable_pi_locked_with_active(
+        &|cpu| cpus.get(cpu),
+        ACTIVE,
+        Arc::clone(&task),
+        &|cpu| cpu == ACTIVE,
+    );
+
+    assert_eq!(task.cpu.load(Ordering::Acquire), ACTIVE as u16);
+    assert!(task.on_rq.is_queued(Ordering::Acquire),
+        "class insertion did not publish canonical rq ownership");
+    assert!(task.on_class_rq.load(Ordering::Acquire));
+    assert_eq!(cpus.trees_holding(task.tid), 1);
+    assert_eq!(cpus.get(INACTIVE_OWNER).unwrap().inner.lock().nr_running(), 0);
+    assert_eq!(cpus.get(ACTIVE).unwrap().inner.lock().nr_running(), 1);
+}
+
+/// CPU-down may clear ACTIVE after a waker selects the local CPU. The old
+/// selector remains protected by its placement RCU read section until the
+/// destination rq commit, so teardown's grace period cannot reach its final
+/// empty proof before this enqueue becomes visible to evacuation.
+#[test]
+fn active_clear_after_selection_precedes_direct_rq_commit() {
+    use core::cell::Cell;
+
+    const ME: u32 = 35;
+    const OTHER: u32 = 36;
+    let cpus = Cpus::new(&[ME, OTHER]);
+    let t = settled_sleeper(2014, ME);
+    assert!(t.claim_wake());
+    let target_active = Cell::new(true);
+    let selected = Cell::new(false);
+    let locked = Cell::new(false);
+    let stale_empty = cpus.get(ME).unwrap().nr_running.load(Ordering::Acquire) == 0;
+    let _wake = t.pi_lock.lock_irqsave::<RqIrq>();
+
+    place_runnable_locked_with_active(&|cpu| cpus.get(cpu), ME, Arc::clone(&t), false,
+        &|cpu| cpu != ME || target_active.get(), &mut |point, cpu| match point {
+            PlacementPoint::Selected => {
+                assert_eq!(cpu, ME);
+                selected.set(true);
+                target_active.set(false);
+            }
+            PlacementPoint::DestinationLocked => {
+                assert!(!target_active.get(), "probe did not close ACTIVE in the race window");
+                assert!(cpus.get(cpu).unwrap().inner.try_lock().is_none());
+                locked.set(true);
+            }
+        });
+
+    assert!(selected.get() && locked.get());
+    assert!(stale_empty, "positive control requires the pre-publication empty sample");
+    assert_eq!(cpus.trees_holding(t.tid), 1,
+        "the pre-grace selector must commit where evacuation can observe it");
+}
+
 /// THE BUG. A `wait4` parent claimed by a child exiting on another CPU is
 /// still `on_cpu` on its own. Placement must be deferred to the owner's
 /// wake-list (Linux `ttwu_queue_wakelist` under
@@ -52,7 +121,7 @@ fn prefix_local_enqueue_makes_the_next_pick_fail_the_on_cpu_cas() {
     let caller = cpus.get(ME).expect("test cpu installed");
     {
         let mut inner = caller.inner.lock();
-        inner.enqueue(Arc::clone(&t));
+        assert!(inner.enqueue(Arc::clone(&t)));
         caller.nr_running.store(inner.nr_running(), Ordering::Release);
     }
     assert_eq!(cpus.trees_holding(2003), 1, "probe failed to see the local enqueue");
@@ -104,9 +173,68 @@ fn wake_selecting_a_remote_cpu_is_deferred_through_its_wake_list() {
     place_runnable_with(&|c| cpus.get(c), ME, Arc::clone(&t), false);
 
     assert_eq!(cpus.trees_holding(2005), 0, "a waker enqueued onto a peer's runqueue");
+    assert_eq!(t.cpu.load(Ordering::Acquire), REMOTE as u16,
+        "task CPU must name the target before wake-list publication");
     let deferred = wake_list_drain(REMOTE);
     assert_eq!(deferred.len(), 1);
     assert_eq!(deferred[0].tid, 2005);
+}
+
+#[test]
+fn deferred_publication_observes_the_new_cpu_while_task_pi_is_held() {
+    const OWNER: u32 = 58;
+    const TARGET: u32 = 59;
+    let task = settled_sleeper(2012, OWNER);
+    let _pi = task.pi_lock.lock_irqsave::<RqIrq>();
+    let mut observed = false;
+
+    let _ = publish_deferred(TARGET, Arc::clone(&task), |published| {
+        observed = true;
+        assert_eq!(published.cpu.load(Ordering::Acquire), TARGET as u16,
+            "wake-list publisher observed stale task-rq ownership");
+        false
+    });
+
+    assert!(observed);
+}
+
+/// A wake-list producer which sampled ACTIVE before CPU-down may be delayed
+/// until after the bit clears. Its enclosing placement reader must still link
+/// the node before the grace period can finish and teardown can prove empty.
+#[test]
+fn late_wake_list_publisher_remains_visible_to_post_grace_evacuation() {
+    use core::cell::Cell;
+
+    const TARGET: u32 = 48;
+    let task = settled_sleeper(2015, TARGET);
+    let active = Cell::new(true);
+    let stale_empty = wake_list_debug(TARGET).1 == 0;
+    let _placement = sync::rcu_read_lock();
+    assert!(active.get(), "publisher must sample the old active generation");
+    active.set(false);
+    task.cpu.store(TARGET as u16, Ordering::Release);
+    assert!(wake_list_push_selected(TARGET, Arc::clone(&task)));
+
+    assert!(stale_empty, "positive control requires an empty pre-publication sample");
+    assert_eq!(wake_list_debug(TARGET).1, 1,
+        "late pre-grace publication must be visible to the target drain");
+    assert_eq!(wake_list_drain(TARGET).len(), 1);
+}
+
+#[test]
+fn positive_control_list_first_publication_exposes_stale_cpu() {
+    const OWNER: u32 = 56;
+    const TARGET: u32 = 57;
+    let task = settled_sleeper(2013, OWNER);
+    task.cpus_allowed.store(cpu::CpuMask::of(TARGET as usize), Ordering::Release);
+
+    let stale = task.cpu.load(Ordering::Acquire);
+    let _ = wake_list_push_selected(TARGET, Arc::clone(&task));
+    assert_eq!(stale, OWNER as u16,
+        "positive control no longer observes old ownership before CPU publication");
+    assert_eq!(wake_list_drain(TARGET).len(), 1,
+        "positive control did not make the deferred node observable");
+    task.cpu.store(TARGET as u16, Ordering::Release);
 }
 
 /// `force_defer` (the interrupt-context contract: never touch an rq lock from
@@ -172,16 +300,60 @@ fn on_cpu_handoff_requeues_without_spinning_in_the_irq_tail() {
     let rq = cpus.get(CPU).unwrap();
     let t = parked_but_still_running(2010, CPU);
     assert!(t.claim_wake());
-    assert!(wake_list_push(CPU, Arc::clone(&t)));
+    assert!(wake_list_push_selected(CPU, Arc::clone(&t)));
     assert!(!sched_ttwu_pending(CPU, core::ptr::null_mut(), rq));
     assert!(t.on_wake_list.load(Ordering::Acquire),
         "unfinished switch ownership must remain on a wake list");
+    assert_eq!(wake_list_debug(CPU).1, 1,
+        "detached requeue dropped CPU-down ownership before activation");
     assert!(rq.inner.try_lock().is_some(),
         "IRQ-tail wake deferral must not wait while owning the runqueue");
 
     t.on_cpu.store(false, Ordering::Release);
     assert!(sched_ttwu_pending(CPU, core::ptr::null_mut(), rq));
     assert!(t.on_rq.load(Ordering::Acquire));
+    assert_eq!(wake_list_debug(CPU).1, 0);
+}
+
+#[test]
+fn duplicate_publication_retains_one_node_and_one_completion_owner() {
+    const CPU: u32 = 55;
+    let task = settled_sleeper(2016, CPU);
+    assert!(task.claim_wake());
+    assert!(wake_list_push_selected(CPU, Arc::clone(&task)));
+    assert!(!wake_list_push_selected(CPU, Arc::clone(&task)));
+    assert_eq!(wake_list_debug(CPU).1, 1);
+    let drained = wake_list_drain(CPU);
+    assert_eq!(drained.len(), 1);
+    assert_eq!(wake_list_debug(CPU).1, 0);
+}
+
+#[test]
+fn timer_and_ordinary_waker_share_one_claim_and_one_deferred_node() {
+    const CPU: u32 = 54;
+    let task = settled_sleeper(2017, CPU);
+    let start = Arc::new(std::sync::Barrier::new(3));
+    let wins = Arc::new(core::sync::atomic::AtomicU32::new(0));
+    let mut workers = alloc::vec::Vec::new();
+    for _is_timer in [false, true] {
+        let task = Arc::clone(&task);
+        let start = Arc::clone(&start);
+        let wins = Arc::clone(&wins);
+        workers.push(std::thread::spawn(move || {
+            start.wait();
+            let _pi = task.pi_lock.lock_irqsave::<RqIrq>();
+            if task.claim_wake() {
+                wins.fetch_add(1, Ordering::AcqRel);
+                task.cpu.store(CPU as u16, Ordering::Release);
+                let _ = wake_list_push_selected(CPU, Arc::clone(&task));
+            }
+        }));
+    }
+    start.wait();
+    for worker in workers { worker.join().unwrap(); }
+    assert_eq!(wins.load(Ordering::Acquire), 1);
+    assert_eq!(wake_list_debug(CPU).1, 1);
+    assert_eq!(wake_list_drain(CPU).len(), 1);
 }
 
 /// A deferred wake is deliberately shown as unlinked between the lock-free
@@ -196,7 +368,7 @@ fn drained_waking_task_is_unlinked_until_destination_activation() {
     let rq = cpus.get(CPU).expect("test cpu installed");
     let t = settled_sleeper(2009, CPU);
     assert!(t.claim_wake());
-    wake_list_push(CPU, Arc::clone(&t));
+    wake_list_push_selected(CPU, Arc::clone(&t));
     #[cfg(feature = "debug-watchdog")]
     assert_eq!(crate::task::WakeDiagPhase::from_u8(t.wake_diag_phase.load(Ordering::Acquire)),
         crate::task::WakeDiagPhase::Listed);
@@ -212,7 +384,7 @@ fn drained_waking_task_is_unlinked_until_destination_activation() {
     assert_eq!(crate::task::WakeDiagPhase::from_u8(t.wake_diag_phase.load(Ordering::Acquire)),
         crate::task::WakeDiagPhase::Drained);
 
-    wake_list_push(CPU, drained.pop().expect("one drained wake"));
+    wake_list_push_selected(CPU, drained.pop().expect("one drained wake"));
     let current = rq.current.load(Ordering::Acquire);
     assert!(sched_ttwu_pending(CPU, current, rq));
     assert_eq!(t.state(), TaskState::Runnable,
@@ -235,7 +407,7 @@ fn target_service_wrapper_activates_a_claimed_wake() {
     let t = settled_sleeper(2011, CPU);
 
     assert!(t.claim_wake());
-    wake_list_push(CPU, Arc::clone(&t));
+    wake_list_push_selected(CPU, Arc::clone(&t));
 
     assert!(service_pending_on(rq));
     assert_eq!(t.state(), TaskState::Runnable);
@@ -260,7 +432,7 @@ fn target_drain_activates_a_claimed_wake_while_producer_lock_is_held() {
     // task-side serialization lock.  A pre-fix target drain self-spins here.
     let _producer = t.pi_lock.lock_irqsave::<RqIrq>();
     assert!(t.claim_wake());
-    wake_list_push(CPU, Arc::clone(&t));
+    wake_list_push_selected(CPU, Arc::clone(&t));
 
     let current = rq.current.load(Ordering::Acquire);
     assert!(sched_ttwu_pending(CPU, current, rq),

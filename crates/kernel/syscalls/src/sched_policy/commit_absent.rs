@@ -8,7 +8,16 @@ use alloc::sync::Arc;
 
 /// No runqueue in this configuration; publish the validated task state directly.
 /// # C: O(1)
-pub fn set_class(t: &Arc<sched::Task>, c: sched::SchedClass, policy: u32,
-                 clamp: sched::SchedUclamp, reset: bool) {
-    t.set_sched_policy_controls(c, policy, clamp, reset);
+pub fn apply(t: &Arc<sched::Task>, expected: (u32, u32), update: sched::SchedUpdate)
+    -> sched::SchedUpdateResult {
+    t.apply_sched_update_checked(expected, update)
+}
+
+pub fn reset(t: &Arc<sched::Task>, expected: (u32, u32), value: bool) -> bool {
+    t.set_sched_reset_if_generation(expected, value)
+}
+
+pub fn controls(t: &Arc<sched::Task>, expected: (u32, u32),
+                clamp: sched::SchedUclamp, reset: bool) -> bool {
+    t.set_sched_controls_if_generation(expected, clamp, reset)
 }

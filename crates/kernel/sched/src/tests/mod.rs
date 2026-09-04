@@ -6,9 +6,12 @@
 // - cpu_clock_measure: VIRT/PROF/SCHED CPU-clock measures off the task + group totals.
 // - cpu_nanosleep: CPU-clock clock_nanosleep arm/resolve + accounting-tick service.
 // - interleave: deterministic two-actor step ordering for hosted race tests.
+// - loom_scheduler: depth-eight exhaustive scheduler ownership protocol models.
+// - nice_race: nice/policy mutation ordering under stable task ownership.
 // - interleave_wait: reap-vs-exit races for wait4/waitid, both orders pinned.
 // - interleave_pidfd: pidfd lifetime across namespace teardown and reap.
 // - exit_notify: exit_notify/forget_original_parent adoption order + autoreap.
+// - enqueue_reject: failed activation state restoration + idle CPU publication.
 // - net_namespace: task-owned network namespace lifetime and exit ordering.
 // - namespaces: concrete non-network owner lifetime and exit ordering.
 // - keyring_hooks: keyring exit/fsid-change hook dispatch + last-thread rule.
@@ -16,6 +19,7 @@
 // - prctl: PR_SET_NAME/PR_GET_NAME comm rename + PR_SET_DUMPABLE/GET_DUMPABLE.
 // - queues: RT/CFS/runqueue scheduling invariants and pick/remove behavior.
 // - sched_state_ownership: sole task scheduler-state declaration/access guard.
+// - task_rq_lock: stable task/runqueue lock and scheduler-change transaction model.
 // - task: Task construction, state, identity, and proc-facing task helpers.
 // - procfs: argv/cmdline, tid registry, process-group, and pid-visibility helpers.
 // - registry: tid/vpid BTreeMap index correctness, scale, and concurrency (B1429).
@@ -39,21 +43,28 @@ pub(crate) mod common;
 mod pi_boost;
 mod cpu_clock_measure;
 mod cpu_nanosleep;
+mod enqueue_reject;
 mod exit_notify;
 pub(crate) mod interleave;
 mod interleave_wait;
 mod interleave_pidfd;
+#[cfg(loom)]
+mod loom_scheduler;
+mod intrusive_queues;
 mod net_namespace;
 mod namespaces;
+mod nice_race;
 pub(crate) mod keyring_hooks;
 mod pidfd;
 mod pidns_report;
 mod prctl;
 mod ptrace_dumpable;
+pub(crate) mod queue_alloc;
 mod rt_tick_policy;
 mod procfs;
 mod queues;
 mod sched_state_ownership;
+mod task_rq_lock;
 mod registry;
 mod rlimit_cpu;
 mod rlimit_prio;

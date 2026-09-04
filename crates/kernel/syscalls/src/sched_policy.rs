@@ -193,6 +193,10 @@ pub mod dl;
 mod commit;
 pub use task::{check_same_owner, get_params, task_policy, task_rt_priority, task_slice_ns,
                uclamp_req, user_check};
+#[cfg(all(test, not(target_os = "oxide-kernel")))]
+pub(crate) use task::setpriority_check;
+#[cfg(any(target_os = "oxide-kernel", test))]
+pub(crate) use task::SetpriorityWalk;
 pub use setattr::{setattr, setscheduler, trace_admission};
 
 #[cfg(all(test, not(target_os = "oxide-kernel")))]

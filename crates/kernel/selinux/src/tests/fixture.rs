@@ -106,6 +106,12 @@ pub struct Opts {
     pub type_attr_count: u32,
     /// Bytes appended after the last section.
     pub trailing: usize,
+    /// Whether the process class declares the scheduler permission.
+    pub process_setsched: bool,
+    /// Whether user domains may exercise the scheduler permission.
+    pub allow_setsched: bool,
+    /// Whether the user domain is permissive despite global enforcement.
+    pub permissive_user: bool,
 }
 
 impl Default for Opts {
@@ -121,6 +127,9 @@ impl Default for Opts {
             bool_value: 1,
             type_attr_count: 3,
             trailing: 0,
+            process_setsched: false,
+            allow_setsched: false,
+            permissive_user: true,
         }
     }
 }
@@ -128,12 +137,22 @@ impl Default for Opts {
 /// A valid current-version image. # C: O(1)
 pub fn synth() -> Vec<u8> { build(&Opts::default()) }
 
+/// A policy image that declares `process:setsched` and optionally allows it. # C: O(1)
+pub fn scheduler(allow_setsched: bool) -> Vec<u8> {
+    build(&Opts {
+        process_setsched: true,
+        allow_setsched,
+        permissive_user: false,
+        ..Opts::default()
+    })
+}
+
 /// An image differing from the valid one exactly as `o` says. # C: O(1)
 pub fn build(o: &Opts) -> Vec<u8> {
     let mut w = W::default();
     header(&mut w, o);
     symbols(&mut w, o);
-    rules(&mut w);
+    rules(&mut w, o);
     transitions(&mut w);
     contexts(&mut w);
     for i in 0..o.type_attr_count {
@@ -152,7 +171,7 @@ fn header(w: &mut W, o: &Opts) {
     w.u32(o.sym_num);
     w.u32(o.ocon_num);
     w.ebitmap(&[0, 2]);
-    w.ebitmap(&[TYPE_USER_VAL]);
+    w.ebitmap(if o.permissive_user { &[TYPE_USER_VAL] } else { &[] });
 }
 
 fn symbols(w: &mut W, o: &Opts) {
@@ -167,8 +186,13 @@ fn symbols(w: &mut W, o: &Opts) {
     // The `file` class declares one permission and inherits two, so its
     // record's count pair differs and pins their order.
     class(w, "file", o.file_common, CLASS_FILE_VAL, 3, &[("open", 1)]);
-    class(w, "process", "", CLASS_PROCESS_VAL, 3,
-          &[("transition", 1), ("dyntransition", 2), ("fork", 3)]);
+    if o.process_setsched {
+        class(w, "process", "", CLASS_PROCESS_VAL, 4,
+              &[("transition", 1), ("dyntransition", 2), ("fork", 3), ("setsched", 4)]);
+    } else {
+        class(w, "process", "", CLASS_PROCESS_VAL, 3,
+              &[("transition", 1), ("dyntransition", 2), ("fork", 3)]);
+    }
 
     // roles: the object role plus one user role
     w.u32(2); w.u32(2);
@@ -230,11 +254,14 @@ fn ty(w: &mut W, name: &str, value: u32, attribute: bool) {
     w.u32(name.len() as u32); w.u32(value); w.u32(prop); w.u32(0); w.raw(name);
 }
 
-fn rules(w: &mut W) {
-    w.u32(3);
+fn rules(w: &mut W, o: &Opts) {
+    w.u32(if o.allow_setsched { 4 } else { 3 });
     w.av(TYPE_USER_VAL, TYPE_FILE_VAL, CLASS_FILE_VAL, 0x0001, 0x1);
     w.av(TYPE_DOMAIN_VAL, TYPE_DOMAIN_VAL, CLASS_PROCESS_VAL, 0x0001, 0x4);
     w.av(TYPE_USER_VAL, TYPE_FILE_VAL, CLASS_PROCESS_VAL, 0x0010, TYPE_USER_VAL);
+    if o.allow_setsched {
+        w.av(TYPE_USER_VAL, TYPE_USER_VAL, CLASS_PROCESS_VAL, 0x0001, 0x8);
+    }
 
     // one conditional block: `if b_on` grants write on file
     w.u32(1);

@@ -149,7 +149,9 @@ impl FileOps for CgFileFileOps {
     /// last observation.
     fn poll_open_file(&self, file: &File) -> u32 {
         let Some(d) = file.inode().private::<CgFileData>() else { return vfs::POLL_ERR; };
-        if d.file != "cgroup.events" { return vfs::POLL_IN | vfs::POLL_OUT; }
+        if !matches!(d.file.as_str(), "cgroup.events" | "pids.events" | "pids.events.local") {
+            return vfs::POLL_IN | vfs::POLL_OUT;
+        }
         let Some(poll) = file.inode().poll_subscribers() else { return vfs::POLL_ERR; };
         let now = poll.generation();
         // Zero means this description has not sampled the source yet.  Seed
@@ -243,6 +245,7 @@ pub fn make_cg_dir(cgid: u64) -> InodeRef {
 /// is synthesized fresh on every lookup, so the snapshot is live at resolution
 /// time); the read path bounds on EOF, not `i_size`. # C: O(content)
 pub fn make_cg_file(cgid: u64, file: &str) -> InodeRef {
+    if let Some(inode) = crate::node_file_object(cgid, file) { return inode; }
     let size = crate::read_file(cgid, file).map(|d| d.len()).unwrap_or(0) as u64;
     let (uid, gid) = crate::node_file_owner(cgid, file);
     let mut b = InodeBuilder::new(file_ino(cgid, file), mk_mode(FileType::Regular, file_perm(file)),
@@ -252,8 +255,7 @@ pub fn make_cg_file(cgid: u64, file: &str) -> InodeRef {
         .owner_persist(Arc::new(CgFileOwner { cgid, file: file.to_string() }))
         .size(size)
         .private(Arc::new(CgFileData { cgid, file: file.to_string() }));
-    if file == "cgroup.events" {
-        if let Some(poll) = crate::node_events_poll(cgid) { b = b.poll_subs_arc(poll); }
-    }
-    b.build()
+    if let Some(poll) = crate::node_file_poll(cgid, file) { b = b.poll_subs_arc(poll); }
+    let inode = b.build();
+    crate::publish_node_file_object(cgid, file, inode).expect("live cgroup control file")
 }

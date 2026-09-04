@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use super::controllers::{MEMORY, PIDS};
+use super::controllers::MEMORY;
 use super::types::{CpuGroup, MemoryCharge, MemoryEvent, MemoryEvents, MemoryKind, MemoryStats, ROOT, Tree};
 
 impl Tree {
@@ -30,6 +30,7 @@ impl Tree {
             if let Some(n) = self.nodes.get_mut(&cgid) { n.threads += moved_threads; }
         }
         if let Some(n) = self.nodes.get_mut(&cgid) { n.procs.insert(pid); }
+        self.update_pids_peak(cgid);
         Ok(())
     }
 
@@ -57,6 +58,16 @@ impl Tree {
         };
         self.thread_cg.insert(tid, (leader, cg));
         if let Some(n) = self.nodes.get_mut(&cg) { n.threads += 1; }
+        self.update_pids_peak(cg);
+    }
+
+    /// Charge a prepared thread to its pinned destination. # C: O(log n)
+    pub(super) fn add_thread_into(&mut self, cgid: u64, parent_pid: u64, tid: u64) {
+        if self.thread_cg.contains_key(&tid) { return; }
+        let leader = self.thread_cg.get(&parent_pid).map_or(parent_pid, |(leader, _)| *leader);
+        self.thread_cg.insert(tid, (leader, cgid));
+        self.nodes.get_mut(&cgid).unwrap().threads += 1;
+        self.update_pids_peak(cgid);
     }
 
     /// Uncharge a thread on exit.
@@ -100,6 +111,11 @@ impl Tree {
             .unwrap_or(ROOT)
     }
 
+    /// Whether canonical membership contains this process or thread. # C: O(log n)
+    pub fn contains_task(&self, tid: u64) -> bool {
+        self.proc_cg.contains_key(&tid) || self.thread_cg.contains_key(&tid)
+    }
+
     /// Move one thread only. This hierarchy currently contains domain
     /// cgroups, so Linux permits the write only when source and destination
     /// share that same domain (the no-op case). # C: O(log n)
@@ -139,23 +155,6 @@ impl Tree {
         let mut c = live_leaders + n.threads;
         for &child in n.children.values() { c += self.subtree_proc_count(child); }
         c
-    }
-
-    /// True iff a fork producing one more task in `cgid`'s subtree
-    /// would exceed any ancestor pids.max (Linux pids controller).
-    /// # C: O(depth · subtree)
-    pub fn fork_would_exceed_pids(&self, cgid: u64) -> bool {
-        let mut cur = Some(cgid);
-        while let Some(id) = cur {
-            let n = match self.nodes.get(&id) { Some(n) => n, None => break };
-            if n.avail & PIDS != 0 {
-                if let Some(max) = n.pids_max {
-                    if self.subtree_proc_count(id) + 1 > max { return true; }
-                }
-            }
-            cur = n.parent;
-        }
-        false
     }
 
     /// True iff the node's subtree has any member process.

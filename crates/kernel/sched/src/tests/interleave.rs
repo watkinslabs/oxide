@@ -20,12 +20,9 @@
 // the mirror image of a race is a second schedule rather than a second run of
 // the same test hoping for different luck.
 //
-// Not loom: loom explores interleavings of code written against `loom`'s own
-// atomics and locks. Nothing in `sched` is, and shadowing `Task`'s atomics,
-// the registry spinlocks and the zombie list to make it so is a larger and
-// less faithful change than pinning the two orders we can name. `loom` stays
-// where it already is (`net`, `network-namespace`), on data structures written
-// for it.
+// This complements the exhaustive depth-eight Loom protocol models in
+// `loom_scheduler`: Loom proves the ownership state machines, while these
+// checkpoints exercise the production objects and exact call boundaries.
 
 extern crate std;
 

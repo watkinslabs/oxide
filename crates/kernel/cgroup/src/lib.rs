@@ -21,11 +21,18 @@ pub mod policy;
 pub mod root_flags;
 pub mod state;
 pub mod tree;
+mod fork;
+mod fork_lock;
 mod membership;
 pub use fs::CGROUP2_SUPER_MAGIC;
 pub use membership::{
-    attach_into, attach_tid_into, migrate_process, migrate_thread, read_file,
+    attach_into, attach_tid_into, charge_thread, contains_task, inherit, migrate_process,
+    migrate_thread, read_file,
 };
+pub use fork::PreparedFork;
+
+/// Serialize hierarchy writers with prepared fork transactions. # C: O(body + contention)
+pub fn with_fork_writer<R>(body: impl FnOnce() -> R) -> R { fork_lock::with_write(body) }
 
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -96,12 +103,17 @@ pub fn node_file_owner(cgid: u64, file: &str) -> (u32, u32) { TREE.lock().file_o
 /// in the hierarchy so systemd's delegation survives inode re-synthesis.
 /// # C: O(log n)
 pub fn chown_dir(cgid: u64, uid: u32, gid: u32) -> KResult<()> {
-    TREE.lock().set_dir_owner(cgid, uid, gid)
+    let result = TREE.lock().set_dir_owner(cgid, uid, gid);
+    result
 }
 
 /// `chown(2)` write-through for a cgroup CONTROL-FILE inode. # C: O(log n)
 pub fn chown_file(cgid: u64, file: &str, uid: u32, gid: u32) -> KResult<()> {
-    TREE.lock().set_file_owner(cgid, file, uid, gid)
+    let result = TREE.lock().set_file_owner(cgid, file, uid, gid);
+    if result.is_ok() {
+        if let Some(inode) = node_file_object(cgid, file) { inode.refresh_owner(uid, gid); }
+    }
+    result
 }
 
 /// Ordered control-file names of cgroup `cgid` (for readdir).
@@ -114,10 +126,26 @@ pub fn node_dir_ino(cgid: u64) -> Option<vfs::Ino> { TREE.lock().dir_ino(cgid) }
 /// Hierarchy-owned inode number of a live cgroup control file. # C: O(log n)
 pub fn node_file_ino(cgid: u64, file: &str) -> KResult<vfs::Ino> { TREE.lock().file_ino(cgid, file) }
 
+/// Canonical materialized inode for a live control file. # C: O(log n)
+pub fn node_file_object(cgid: u64, file: &str) -> Option<vfs::InodeRef> {
+    TREE.lock().file_object(cgid, file)
+}
+
+/// Publish the canonical inode for a live control file. # C: O(log n)
+pub fn publish_node_file_object(cgid: u64, file: &str, inode: vfs::InodeRef)
+    -> KResult<vfs::InodeRef> {
+    TREE.lock().publish_file_object(cgid, file, inode)
+}
+
 /// Persistent readiness source for a live `cgroup.events` control file.
 /// # C: O(log n)
 pub fn node_events_poll(cgid: u64) -> Option<alloc::sync::Arc<vfs::PollSubscribers>> {
     TREE.lock().events_poll(cgid)
+}
+
+/// Persistent readiness source for an event-valued control file. # C: O(log n)
+pub fn node_file_poll(cgid: u64, file: &str) -> Option<alloc::sync::Arc<vfs::PollSubscribers>> {
+    TREE.lock().file_poll(cgid, file)
 }
 
 /// Live cgroup node addressed by an exported inode number. # C: O(nodes · files)
@@ -262,25 +290,6 @@ pub fn mkdir_child(parent_cgid: u64, name: &str, uid: u32, gid: u32) -> KResult<
 pub fn rmdir_child(parent_cgid: u64, name: &str) -> KResult<()> { hugetlb::remove_child(parent_cgid, name) }
 
 // --- sched glue ----------------------------------------------------
-
-/// True iff forking one more task in `cgid`'s subtree would exceed an
-/// ancestor `pids.max` (the kernel returns EAGAIN). Defaults to the
-/// task's current cgroup; root is unlimited.
-/// # C: O(depth · subtree)
-pub fn fork_would_exceed_pids(pid: u64) -> bool {
-    let t = TREE.lock();
-    if !t.is_mounted() { return false; }
-    let cg = t.cgroup_of(pid);
-    t.fork_would_exceed_pids(cg)
-}
-
-/// True iff one more task born directly into `cgid` would exceed pids.max.
-/// # C: O(depth · subtree)
-pub fn fork_would_exceed_cgroup(cgid: u64) -> bool {
-    let t = TREE.lock();
-    if !t.is_mounted() { return false; }
-    t.fork_would_exceed_pids(cgid)
-}
 
 /// Try to charge resident bytes to an allocating memcg. Page allocation and
 /// COW paths store this `cgid` in PageMeta and use it again on final release.
@@ -437,37 +446,20 @@ pub fn set_cpu_state(cgid: u64, throttled: bool, base_ns: u64, period_start_ns: 
     if t.is_mounted() { t.set_cpu_state(cgid, throttled, base_ns, period_start_ns); }
 }
 
-/// Child inherits the parent's cgroup on fork.
-/// # C: O(log n)
-pub fn inherit(child_pid: u64, parent_pid: u64) {
-    let mut t = TREE.lock();
-    if !t.is_mounted() { return; }
-    let cg = t.cgroup_of(parent_pid);
-    let _ = t.add_proc(cg, child_pid);
-}
-
 /// Drop one task from its cgroup on exit. Process membership remains live
 /// while any sibling thread survives, including after the leader exits.
 /// # C: O(threads)
 pub fn on_exit(tid: u64, tgid: u64) {
-    let changed = {
+    let changed = fork_lock::with_write(|| {
         let mut t = TREE.lock();
-        if !t.is_mounted() { return; }
+        if !t.is_mounted() { return None; }
         t.exit_task(tid, tgid)
-    };
+    });
     if let Some(cg) = changed {
         // Last task leaving a cgroup flips `populated` 1→0; systemd's
         // empty-cgroup handler is driven by this inotify event (`26§4.1`).
         notify_events_chain(cg);
     }
-}
-
-/// Charge a new thread (`CLONE_THREAD`) to its process's cgroup so
-/// pids.current counts it (Linux pids controller counts every task).
-/// # C: O(log n)
-pub fn charge_thread(parent_pid: u64, tid: u64) {
-    let mut t = TREE.lock();
-    if t.is_mounted() { t.add_thread(parent_pid, tid); }
 }
 
 /// Absolute unified-hierarchy path of the cgroup `pid` belongs to. Linux
@@ -479,6 +471,15 @@ pub fn cgroup_path_of(pid: u64) -> String {
     if !t.is_mounted() { return "/".to_string(); }
     let cg = t.cgroup_of(pid);
     t.path_of(cg)
+}
+
+/// Absolute unified-hierarchy path of live cgroup `cgid`.
+/// # C: O(depth)
+pub fn path_of_cgroup(cgid: u64) -> Option<String> {
+    let t = TREE.lock();
+    if !t.is_mounted() { return (cgid == ROOT_CGROUP).then(|| "/".to_string()); }
+    if !t.contains(cgid) { return None; }
+    Some(t.path_of(cgid))
 }
 
 /// `/proc/<pid>/cgroup` line — `0::<path>\n` for the unified

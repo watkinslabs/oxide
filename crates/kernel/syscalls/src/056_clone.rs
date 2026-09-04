@@ -41,7 +41,7 @@ pub(crate) use crate::clone_abi::{
 pub fn sys_clone_dispatch(req: CloneRequest<'_>) -> i64 {
     use core::sync::atomic::Ordering;
     let CloneRequest { flags, exit_signal, child_stack, parent_tid: ptid, pidfd: pidfd_ptr,
-                       child_tid: ctid, tls, into_cgroup: into_cgid, set_tid } = req;
+                       child_tid: ctid, tls, into_cgroup_fd, set_tid } = req;
     let cur = match sched::live::current() {
         Some(c) => c,
         None    => return errno(Errno::Einval),
@@ -62,20 +62,14 @@ pub fn sys_clone_dispatch(req: CloneRequest<'_>) -> i64 {
         Some(m) => m,
         None    => return errno(Errno::Einval),
     };
-    // cgroup v2 pids controller (`26§4`): a fork/clone producing one more
-    // TASK past an ancestor pids.max fails with EAGAIN (Linux
-    // pids_can_fork). The pids controller counts threads too, so this gates
-    // CLONE_THREAD as well, resolved against the process's cgroup (tgid).
-    {
-        let proc_pid = cur.tgid.load(core::sync::atomic::Ordering::Relaxed) as u64;
-        let exceeds = match into_cgid {
-            Some(cg) if (flags & CLONE_THREAD) == 0 => cgroup::fork_would_exceed_cgroup(cg),
-            _ => cgroup::fork_would_exceed_pids(proc_pid),
-        };
-        if exceeds {
-            return errno(Errno::Eagain);
-        }
-    }
+    let parent_cgroup_id = if (flags & CLONE_THREAD) != 0 {
+        cur.tgid.load(Ordering::Relaxed) as u64
+    } else { cur.tid as u64 };
+    let prepared_cgroup = match crate::clone_cgroup::prepare_new_task(
+        cur, into_cgroup_fd, parent_cgroup_id, (flags & CLONE_THREAD) != 0) {
+        Ok(prepared) => prepared,
+        Err(error) => return error,
+    };
     let share_vm = (flags & CLONE_VM) != 0;
     let child_mm: alloc::sync::Arc<vmm::AddressSpace> = if share_vm {
         // CLONE_VM: child shares parent's address space; no PT root
@@ -196,11 +190,7 @@ pub fn sys_clone_dispatch(req: CloneRequest<'_>) -> i64 {
     };
     // The child cannot run yet, so charge the concrete stack to the cgroup it
     // will enter. The Task retains this allocating owner until final release.
-    let stack_memcg = if (flags & CLONE_THREAD) != 0 {
-        cgroup::cgroup_of(cur.tgid.load(Ordering::Acquire) as u64)
-    } else {
-        into_cgid.unwrap_or_else(|| cgroup::cgroup_of(cur.tid as u64))
-    };
+    let stack_memcg = prepared_cgroup.cgid();
     if !child.try_charge_kernel_stack(stack_memcg) { return errno(Errno::Enomem); }
     child.exit_signal.store(exit_signal as u8, Ordering::Release);
     // CLONE_THREAD: the new task joins the caller's thread group.
@@ -236,15 +226,6 @@ pub fn sys_clone_dispatch(req: CloneRequest<'_>) -> i64 {
         cur.parent_tid.load(Ordering::Acquire)
     } else { cur.tid };
     child.parent_tid.store(wait_parent_tid, Ordering::Release);
-    // cgroup v2 (`26§4`): a forked process inherits the parent's cgroup
-    // (Linux cgroup_post_fork); a new thread charges the process's cgroup
-    // so pids.current counts it.
-    if (flags & CLONE_THREAD) == 0 {
-        if let Some(error) = crate::clone_cgroup::attach_new_process(into_cgid, child_tid as u64, cur.tid as u64) { return error; }
-    } else {
-        let proc_pid = cur.tgid.load(core::sync::atomic::Ordering::Relaxed) as u64;
-        cgroup::charge_thread(proc_pid, child_tid as u64);
-    }
     // Inherit parent's pgid + sid per POSIX fork(2). setpgid/setsid in
     // child override later. Without inheritance every fork would land
     // in its own pgrp and shells couldn't track job state.
@@ -299,7 +280,8 @@ pub fn sys_clone_dispatch(req: CloneRequest<'_>) -> i64 {
     // namespace numbers it, which is not the child's own number whenever this
     // call put the child in a deeper namespace. Captured now, before the
     // `child` Arc may be dropped at the end.
-    let child_vpid_ret = match namespaces::inherit_and_publish(cur, &child, flags, set_tid) {
+    let child_vpid_ret = match namespaces::inherit_and_publish(
+        cur, &child, flags, prepared_cgroup.cgid(), set_tid) {
         Ok(nr) => nr,
         Err(e) => return errno(e),
     };
@@ -472,11 +454,12 @@ pub fn sys_clone_dispatch(req: CloneRequest<'_>) -> i64 {
     // copy above — the child must already carry its events the instant it
     // becomes schedulable.
     fs::perf::inherit::on_fork(cur.tid, child_tid, (flags & CLONE_THREAD) != 0);
-    // `perf_event_fork(child)`: the side-band record that tells a consumer the
-    // new thread exists, so samples carrying its tid can be attributed.
+    publication::commit(&child, (flags & CLONE_THREAD) != 0,
+        prepared_cgroup, prepared_pidfd);
+    // The fork sideband follows infallible membership and registry publication,
+    // so consumers never receive a child record for an aborted clone.
     crate::perf_sideband::note_fork(child_tid, child.tgid.load(Ordering::Relaxed),
                                     cur.tid, cur.tgid.load(Ordering::Relaxed));
-    publication::commit(&child, (flags & CLONE_THREAD) != 0, prepared_pidfd);
 
     // Linux `_do_fork`: "forking complete and child started to run, tell
     // ptracer" — the fork/vfork/clone event stop is reported AFTER

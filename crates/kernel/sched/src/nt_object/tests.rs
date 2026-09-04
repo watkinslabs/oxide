@@ -1,5 +1,5 @@
 use super::*;
-use crate::SchedClass;
+use crate::{SchedClass, Task};
 
 const READ: u32 = 1;
 const WRITE: u32 = 2;

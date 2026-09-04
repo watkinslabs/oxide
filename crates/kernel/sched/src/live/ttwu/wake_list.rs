@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 #[cfg(any(test, feature = "hosted"))]
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
 
 use crate::Task;
 #[cfg(feature = "debug-watchdog")]
@@ -18,18 +18,21 @@ static WAKE_LISTS: [AtomicPtr<Task>; cpu::MAX_CPUS] =
 /// spinning in ICR delivery while all already-queued work remains unreachable.
 static WAKE_PENDING: [AtomicBool; cpu::MAX_CPUS] =
     [const { AtomicBool::new(false) }; cpu::MAX_CPUS];
+/// Safe diagnostic cardinality. Producers increment after winning the
+/// per-task list claim; the exclusive drainer decrements before releasing the
+/// list reference. Diagnostics never dereference concurrently reclaimed nodes.
+static WAKE_COUNT: [AtomicU32; cpu::MAX_CPUS] =
+    [const { AtomicU32::new(0) }; cpu::MAX_CPUS];
 
-/// Link `task` and report whether the caller owns the one required target
-/// reschedule notification. # C: O(1) amortized CAS.
-pub fn wake_list_push(cpu: u32, task: Arc<Task>) -> bool {
+/// Publish to a target selected active by an enclosing placement RCU reader.
+/// Caller holds TaskPi and has already published `task.cpu`; this primitive
+/// never selects or rewrites ownership. CPU-down cannot pass its placement
+/// grace period until this list insertion completes.
+pub(super) fn wake_list_push_selected(cpu: u32, task: Arc<Task>) -> bool {
     let i = cpu as usize;
     if i >= cpu::MAX_CPUS { return false; }
-    if !cpu::smp::accepts_work(cpu) {
-        let target = super::select_task_rq(&task);
-        if target != cpu { return wake_list_push(target, task); }
-        return false;
-    }
     if task.on_wake_list.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() { return false; }
+    WAKE_COUNT[i].fetch_add(1, Ordering::AcqRel);
     // Claim the batch before publishing the node.  The post-publication check
     // below closes the target's clear-between-claim-and-link race.
     let mut kick = !WAKE_PENDING[i].swap(true, Ordering::AcqRel);
@@ -52,35 +55,60 @@ pub fn wake_list_push(cpu: u32, task: Arc<Task>) -> bool {
     }
 }
 
+/// Re-publish one detached node while retaining its original wake ownership
+/// and CPU-down count. The target callback uses this when `on_cpu` has not yet
+/// cleared; no second producer claim or generation is minted.
+pub(super) fn wake_list_requeue_selected(cpu: u32, task: Arc<Task>) -> bool {
+    let i = cpu as usize;
+    hal::kassert!(i < cpu::MAX_CPUS, "wake-list requeue CPU out of range");
+    hal::kassert!(task.on_wake_list.load(Ordering::Acquire),
+        "wake-list requeue lost detached ownership");
+    let mut kick = !WAKE_PENDING[i].swap(true, Ordering::AcqRel);
+    let raw = Arc::into_raw(task) as *mut Task;
+    loop {
+        let head = WAKE_LISTS[i].load(Ordering::Acquire);
+        // SAFETY: raw retains the detached list reference until publication.
+        unsafe { (&(*raw)).wake_next.store(head, Ordering::Relaxed); }
+        if WAKE_LISTS[i].compare_exchange_weak(head, raw,
+            Ordering::AcqRel, Ordering::Acquire).is_ok() {
+            if !WAKE_PENDING[i].load(Ordering::Acquire) {
+                kick |= !WAKE_PENDING[i].swap(true, Ordering::AcqRel);
+            }
+            return kick;
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn wake_list_push_selected_for_test(cpu: u32, task: Arc<Task>) -> bool {
+    let _placement = sync::rcu_read_lock();
+    wake_list_push_selected(cpu, task)
+}
+
 pub(super) fn wake_list_take(cpu: u32) -> *mut Task {
     let i = cpu as usize;
     if i >= cpu::MAX_CPUS { return core::ptr::null_mut(); }
     WAKE_LISTS[i].swap(core::ptr::null_mut(), Ordering::AcqRel)
 }
 
-/// Longest chain a diagnostic walk will follow.  A dump runs on a machine
-/// whose invariants are already suspect, so the walk is bounded rather than
-/// trusting the list's terminator.
-const WAKE_LIST_WALK_CAP: u32 = 512;
+/// Release one node claimed from `cpu`'s detached list. # C: O(1)
+pub(super) fn wake_list_release(cpu: u32, task: &Task) {
+    let i = cpu as usize;
+    hal::kassert!(i < cpu::MAX_CPUS, "wake-list release CPU out of range");
+    hal::kassert!(task.on_wake_list.swap(false, Ordering::AcqRel),
+        "wake-list drain released an unclaimed task");
+    let before = WAKE_COUNT[i].fetch_sub(1, Ordering::AcqRel);
+    hal::kassert!(before != 0, "wake-list diagnostic count underflow");
+}
 
 /// Diagnostic snapshot of one CPU's deferred-wake state: whether the target
 /// still owes an activation batch (`ttwu_pending`) and how many tasks are
-/// linked behind it.  A non-zero count beside a cleared batch latch, or any
-/// count that does not fall, is a wake list nobody is draining.
-/// # C: O(min(linked, WAKE_LIST_WALK_CAP))
+/// claimed for it. A non-zero count beside a cleared batch latch, or any count
+/// that does not fall, is a wake list nobody is draining. # C: O(1)
 pub fn wake_list_debug(cpu: u32) -> (bool, u32) {
     let i = cpu as usize;
     if i >= cpu::MAX_CPUS { return (false, 0); }
-    let pending = WAKE_PENDING[i].load(Ordering::Acquire);
-    let mut node = WAKE_LISTS[i].load(Ordering::Acquire);
-    let mut n = 0;
-    while !node.is_null() && n < WAKE_LIST_WALK_CAP {
-        // SAFETY: wake_list_debug walks a chain whose nodes each hold a list
-        // strong reference until a drain reclaims them; this read takes none.
-        node = unsafe { (&(*node)).wake_next.load(Ordering::Relaxed) };
-        n += 1;
-    }
-    (pending, n)
+    (WAKE_PENDING[i].load(Ordering::Acquire), WAKE_COUNT[i].load(Ordering::Acquire))
 }
 
 /// Finish one target-side activation batch.  A concurrent producer which
@@ -103,7 +131,7 @@ pub fn wake_list_drain(cpu: u32) -> Vec<Arc<Task>> {
         let next = unsafe { (&(*node)).wake_next.load(Ordering::Relaxed) };
         // SAFETY: this reclaims the list reference exactly once.
         let task = unsafe { Arc::from_raw(node as *const Task) };
-        task.on_wake_list.store(false, Ordering::Release);
+        wake_list_release(cpu, &task);
         #[cfg(feature = "debug-watchdog")]
         task.wake_diag_mark(WakeDiagPhase::Drained, wake_diag_now_ns());
         out.push(task);

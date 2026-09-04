@@ -9,13 +9,13 @@ use super::{ctx_lock, damage, present};
 
 const COMMAND_CAPACITY: usize = 64;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum RuntimeCmd {
     ContextCreate { context_id: u32, context_init: u32, nlen: u32, name: [u8; 64] },
     ContextDestroy { context_id: u32 },
     ContextAttach { context_id: u32, resource_id: u32 },
     Submit3d { context_id: u32, ring_idx: u32, command_bytes: u32,
-        payload: [u8; 3968] },
+        payload: Arc<[u8; 3968]> },
     Create2d { res_id: u32, fmt: u32, w: u32, h: u32 },
     Create3d { res_id: u32, fmt: u32, w: u32, h: u32 },
     CreateBlob { res_id: u32, blob_mem: u32, blob_flags: u32, blob_id: u64, bytes: u64 },
@@ -31,12 +31,12 @@ pub(super) enum RuntimeCmd {
 }
 
 impl RuntimeCmd {
-    fn ctrl(self) -> bool {
+    fn ctrl(&self) -> bool {
         !matches!(self, Self::UpdateCursor { .. } | Self::MoveCursor { .. })
     }
 
-    fn encode_ctrl(self, buf: &mut [u8]) -> usize {
-        match self {
+    fn encode_ctrl(&self, buf: &mut [u8]) -> usize {
+        match self.clone() {
             Self::ContextCreate { context_id, context_init, nlen, name } =>
                 crate::encode_ctx_create(buf, context_id, context_init, &name[..(nlen as usize).min(64)]),
             Self::ContextDestroy { context_id } =>
@@ -64,8 +64,8 @@ impl RuntimeCmd {
         }
     }
 
-    fn encode_cursor(self, buf: &mut [u8]) -> usize {
-        match self {
+    fn encode_cursor(&self, buf: &mut [u8]) -> usize {
+        match self.clone() {
             Self::UpdateCursor { res_id, w, h, x, y, hot_x, hot_y } =>
                 crate::encode_update_cursor(buf, res_id, w, h, x, y, hot_x, hot_y),
             Self::MoveCursor { x, y } => crate::encode_move_cursor(buf, x, y),
@@ -73,8 +73,8 @@ impl RuntimeCmd {
         }
     }
 
-    fn after_ctrl(self) -> Option<Self> {
-        match self {
+    fn after_ctrl(&self) -> Option<Self> {
+        match self.clone() {
             Self::QueueCursorUpdate { res_id, w, h, x, y, hot_x, hot_y } =>
                 Some(Self::UpdateCursor { res_id, w, h, x, y, hot_x, hot_y }),
             _ => None,
@@ -95,7 +95,7 @@ struct CommandRing {
 
 impl CommandRing {
     const fn new() -> Self {
-        Self { cmds: [None; COMMAND_CAPACITY], head: 0, len: 0, running: false, bound: None }
+        Self { cmds: [const { None }; COMMAND_CAPACITY], head: 0, len: 0, running: false, bound: None }
     }
 
     fn can_push(&self, count: usize) -> bool {
@@ -105,7 +105,7 @@ impl CommandRing {
     fn push(&mut self, cmds: &[RuntimeCmd]) {
         for cmd in cmds {
             let tail = (self.head + self.len) % COMMAND_CAPACITY;
-            self.cmds[tail] = Some(*cmd);
+            self.cmds[tail] = Some(cmd.clone());
             self.len += 1;
         }
     }
@@ -133,7 +133,7 @@ impl CommandRing {
         rect: present::Rect) -> ([RuntimeCmd; present::MAX_STEPS], usize, Option<present::Binding>) {
         let next = present::Binding { res_id, w, h };
         let (steps, n) = present::plan(self.bound, next, rect, damage::BYTES_PER_PIXEL as u32);
-        let mut cmds = [RuntimeCmd::Unref { res_id: 0 }; present::MAX_STEPS];
+        let mut cmds = core::array::from_fn(|_| RuntimeCmd::Unref { res_id: 0 });
         for (out, step) in cmds.iter_mut().zip(steps.iter()).take(n) {
             *out = match *step {
                 present::Step::Transfer { rect, offset } =>
@@ -479,7 +479,7 @@ mod tests {
         let mut payload = [0u8; 3968];
         payload[..4].copy_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
         let cmd = RuntimeCmd::Submit3d { context_id: 9, ring_idx: 0,
-            command_bytes: 4, payload };
+            command_bytes: 4, payload: Arc::new(payload) };
         let mut buf = [0u8; 4096];
         assert!(cmd.ctrl());
         assert_eq!(cmd.encode_ctrl(&mut buf), 36);

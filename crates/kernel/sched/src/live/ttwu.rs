@@ -18,11 +18,23 @@ use super::runqueue::global_for;
 
 mod wake_list;
 mod cpu_target;
-mod affinity;
-pub use wake_list::{wake_list_debug, wake_list_push};
+pub(crate) mod affinity;
+pub use wake_list::wake_list_debug;
 
-use wake_list::{wake_list_finish, wake_list_take};
+use wake_list::{wake_list_finish, wake_list_push_selected, wake_list_release,
+    wake_list_requeue_selected, wake_list_take};
+#[cfg(test)]
+pub(crate) use wake_list::wake_list_push_selected_for_test;
+#[cfg(test)]
+pub(crate) use wake_list::wake_list_push_selected_for_test as wake_list_push;
 pub use cpu_target::{resched_curr, service_current_cpu};
+pub(crate) use cpu_target::resched_locked;
+pub(crate) fn resched_locked_on<'a, F>(get_rq: &F, cpu: u32)
+where F: Fn(u32) -> Option<&'a Runqueue> {
+    let Some(rq) = get_rq(cpu) else { return; };
+    let _inner = rq.inner.lock_irqsave::<RqIrq>();
+    resched_locked(rq);
+}
 pub use affinity::{relocate_for_affinity, relocate_for_affinity_with, select_task_rq,
     select_task_rq_with, update_affinity};
 use cpu_target::this_cpu;
@@ -33,7 +45,6 @@ pub use wake_list::wake_list_drain;
 
 #[cfg(feature = "debug-watchdog")]
 use cpu_target::wake_diag_now_ns;
-
 
 /// The per-task decision is made INSIDE the rq lock, immediately before the
 /// enqueue it authorises — Linux's structure exactly:
@@ -68,14 +79,8 @@ use cpu_target::wake_diag_now_ns;
 pub fn sched_ttwu_pending(cpu: u32, current: *mut Task, rq: &Runqueue) -> bool {
     let mut node = wake_list_take(cpu);
     if node.is_null() { return false; }
-    let mut requeue = [false; cpu::MAX_CPUS];
     let mut placed = false;
     let mut preempt = false;
-    // Linux acquires the target rq once and walks the claimed llist under it.
-    // In particular, do not reacquire the producer's task-side wake lock here:
-    // it protects claim/CPU selection before publication, not target-side
-    // activation after the list transfer.
-    let mut inner = rq.inner.lock_irqsave::<RqIrq>();
     while !node.is_null() {
         // SAFETY: wake_list_take claimed this chain exclusively; read the next
         // raw link before Arc::from_raw retakes this node's strong reference.
@@ -83,43 +88,27 @@ pub fn sched_ttwu_pending(cpu: u32, current: *mut Task, rq: &Runqueue) -> bool {
         // SAFETY: wake_list_push transferred exactly one strong reference into
         // each node, and this detached-chain walk consumes it exactly once.
         let task = unsafe { Arc::from_raw(node as *const Task) };
-        task.on_wake_list.store(false, Ordering::Release);
         #[cfg(feature = "debug-watchdog")]
         task.wake_diag_mark(WakeDiagPhase::Drained, wake_diag_now_ns());
-        // A task can sit on the remote wake list while an affinity writer
-        // narrows its mask. Its producer/affinity-side critical section
-        // publishes the selected target before list insertion; a later change
-        // is repaired by the affinity relocation path after this activation.
-        let allowed = task.cpus_allowed.load(Ordering::Acquire);
-        if !allowed.contains(cpu as usize) {
-            let target = select_task_rq(&task) as usize;
-            requeue[target] |= wake_list_push(target as u32, task);
-            node = next;
-            continue;
-        }
+        hal::kassert!(task.cpu.load(Ordering::Acquire) as u32 == cpu,
+            "deferred wake reached a non-owning runqueue");
+        let mut retry = None;
+        let mut inner = rq.inner.lock_irqsave::<RqIrq>();
         if core::ptr::eq(Arc::as_ptr(&task), current as *const Task) {
             rq.account_wake(&task);
             task.complete_wake();
+            wake_list_release(cpu, &task);
+            drop(inner);
             node = next;
             continue;
         }
         match task.pending_wake(current) {
-            PendingWake::Drop  => {}
+            PendingWake::Drop  => { task.complete_wake(); }
             PendingWake::Defer => {
-                // A callback can observe the outgoing task before its switch
-                // tail clears `on_cpu`. Never spin in IRQ context: the
-                // interrupted task may hold a lock needed by the CPU that must
-                // finish that handoff. Keep the wake on its canonical owner;
-                // IRQ return completes the switch, and a later drain activates
-                // it. Linux's queued wake callback runs after that same
-                // finish-task handoff rather than waiting in the interrupt.
-                let owner = task.cpu.load(Ordering::Acquire) as usize;
-                let target = if owner < cpu::MAX_CPUS
-                    && cpu::smp::online_cpumask().contains(owner)
-                    && cpu::smp::accepts_work(owner as u32) { owner } else { cpu as usize };
-                requeue[target] |= wake_list_push(target as u32, task);
-                node = next;
-                continue;
+                // Drop rq before re-entering TaskPi order. The producer's CPU
+                // selection remains authoritative; this is a delayed publish,
+                // never a target-side placement decision.
+                retry = Some(Arc::clone(&task));
             }
             PendingWake::Ready => {
                 // SAFETY: `current` is this CPU's running task, kept alive by
@@ -132,29 +121,39 @@ pub fn sched_ttwu_pending(cpu: u32, current: *mut Task, rq: &Runqueue) -> bool {
                 #[cfg(feature = "debug-watchdog")]
                 task.wake_diag_mark(WakeDiagPhase::Activating, wake_diag_now_ns());
                 task.lift_vruntime(inner.cfs.min_vruntime());
-                preempt |= curr.is_none_or(|c| wakeup_preempt(cand_of(&task), c));
+                let outranks = curr.is_none_or(|c| wakeup_preempt(cand_of(&task), c));
                 rq.account_wake(&task);
                 #[cfg(target_os = "oxide-kernel")]
                 let wake_util = task.update_util(crate::deadline::clock::now_ns(), false);
                 #[cfg(target_os = "oxide-kernel")]
                 let wake_iowait = task.take_iowait();
-                inner.enqueue(Arc::clone(&task));
+                let inserted = inner.enqueue(Arc::clone(&task));
                 #[cfg(target_os = "oxide-kernel")]
                 crate::cpufreq_hook::update_from_scheduler(
                     cpu as usize, wake_util, wake_iowait, crate::deadline::clock::now_ns());
-                placed = true;
+                if inserted {
+                    preempt |= outranks;
+                    placed = true;
+                }
             }
+        }
+        rq.publish_nr_running(inner.nr_running());
+        // Keep detached wake-list ownership through activation, then clear it
+        // while the destination rq still excludes task-rq observers. This
+        // prevents them from seeing Runnable together with on_wake_list and
+        // treating a completed wake as an unactivated handoff.
+        if retry.is_none() { wake_list_release(cpu, &task); }
+        drop(inner);
+        if let Some(task) = retry {
+            let _pi = task.pi_lock.lock_irqsave::<RqIrq>();
+            hal::kassert!(task.cpu.load(Ordering::Acquire) as u32 == cpu,
+                "deferred wake owner changed outside TaskPi");
+            let kick = wake_list_requeue_selected(cpu, Arc::clone(&task));
+            if kick { resched_curr(cpu); }
         }
         node = next;
     }
-    rq.publish_nr_running(inner.nr_running());
     let more = wake_list_finish(cpu);
-    drop(inner);
-    // Requeue wake-list work only after dropping the target rq lock. Linux's
-    // pending callback likewise never sends a reschedule IPI under rq lock.
-    for (target, queued) in requeue.into_iter().enumerate() {
-        if queued { resched_curr(target as u32); }
-    }
     if more || (placed && preempt) { resched_curr(cpu); }
     placed
 }
@@ -211,7 +210,8 @@ unsafe fn ttwu_inner(task: Arc<Task>, force_defer: bool) -> bool {
     }
     // SAFETY: ttwu_inner owns an Arc for this wake placement and has just
     // established the task is Runnable but not already executing or queued.
-    unsafe { place_runnable(Arc::clone(&task), force_defer); }
+    place_runnable_locked_with_active(&|c| unsafe { global_for(c) }, this_cpu(),
+        Arc::clone(&task), force_defer, &cpu::smp::is_active, &mut |_, _| {});
     true
 }
 
@@ -224,9 +224,39 @@ unsafe fn ttwu_inner(task: Arc<Task>, force_defer: bool) -> bool {
 /// # SAFETY: caller is a wake site and owns an `Arc<Task>` for placement.
 /// # C: O(N_cpus + log N)
 pub(crate) unsafe fn place_runnable(task: Arc<Task>, force_defer: bool) {
+    let _wake = task.pi_lock.lock_irqsave::<RqIrq>();
     // SAFETY: `global_for` is sound for any index; it yields `None` for a CPU
     // that has not completed `install_global`, which the walk skips.
-    place_runnable_with(&|c| unsafe { global_for(c) }, this_cpu(), task, force_defer);
+    place_runnable_locked_with_active(&|c| unsafe { global_for(c) }, this_cpu(),
+        Arc::clone(&task), force_defer, &cpu::smp::is_active, &mut |_, _| {});
+}
+
+/// Place runnable work when the caller already owns `task.pi_lock`.
+/// Scheduler policy transitions use this entry so the stable OffRq proof,
+/// active-CPU selection, and destination publication are one transaction.
+/// # C: O(N_cpus + log N)
+pub(crate) fn place_runnable_pi_locked(task: Arc<Task>) {
+    place_runnable_locked_with_active(
+        &|c| unsafe { global_for(c) },
+        this_cpu(),
+        task,
+        false,
+        &cpu::smp::is_active,
+        &mut |_, _| {},
+    );
+}
+
+#[cfg(test)]
+fn place_runnable_pi_locked_with_active<'a, F, A>(
+    get_rq: &F,
+    me: u32,
+    task: Arc<Task>,
+    active: &A,
+) where
+    F: Fn(u32) -> Option<&'a Runqueue>,
+    A: Fn(u32) -> bool,
+{
+    place_runnable_locked_with_active(get_rq, me, task, false, active, &mut |_, _| {});
 }
 
 /// [`place_runnable`] over an injected CPU->runqueue accessor and local CPU id.
@@ -234,19 +264,51 @@ pub(crate) unsafe fn place_runnable(task: Arc<Task>, force_defer: bool) {
 /// stated once and is hosted-testable on a real two-CPU model — see
 /// [`select_task_rq_with`] for why the accessor is injected.
 /// # C: O(N_cpus + log N)
+#[cfg(test)]
 pub(crate) fn place_runnable_with<'a, F>(get_rq: &F, me: u32, task: Arc<Task>, force_defer: bool)
 where F: Fn(u32) -> Option<&'a Runqueue> {
+    let _wake = task.pi_lock.lock_irqsave::<RqIrq>();
+    place_runnable_locked_with(get_rq, me, Arc::clone(&task), force_defer);
+}
+
+#[cfg(test)]
+fn place_runnable_locked_with<'a, F>(get_rq: &F, me: u32, task: Arc<Task>, force_defer: bool)
+where F: Fn(u32) -> Option<&'a Runqueue> {
+    place_runnable_locked_with_active(get_rq, me, task, force_defer,
+        &|cpu| get_rq(cpu).is_some(), &mut |_, _| {});
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum PlacementPoint { Selected, DestinationLocked }
+
+fn place_runnable_locked_with_active<'a, F, A, P>(get_rq: &F, me: u32,
+    task: Arc<Task>, force_defer: bool, active: &A, probe: &mut P)
+where F: Fn(u32) -> Option<&'a Runqueue>, A: Fn(u32) -> bool,
+      P: FnMut(PlacementPoint, u32) {
+    // CPU-down clears ACTIVE and then waits for this read-side section before
+    // evacuation. Therefore a target sampled active below remains a legal
+    // destination until either its rq-locked enqueue or wake-list publication
+    // has committed, even if ACTIVE clears immediately after selection.
+    let _placement = sync::rcu_read_lock();
     let owner = task.cpu.load(Ordering::Acquire) as u32;
     // Linux ttwu's `smp_load_acquire(&p->on_cpu)` (in
     // `try_to_wake_up`), pairing with `finish_task`'s
     // `smp_store_release(&prev->on_cpu, 0)`.
     let on_cpu = task.on_cpu.load(Ordering::Acquire);
-    let owner_online = owner < cpu::MAX_CPUS as u32 && get_rq(owner).is_some();
+    let owner_online = owner < cpu::MAX_CPUS as u32 && active(owner)
+        && get_rq(owner).is_some();
     let target = if on_cpu && owner_online {
         owner
     } else {
-        select_task_rq_with(get_rq, me, &task)
+        select_task_rq_with(&|cpu| {
+            if active(cpu) { get_rq(cpu) } else { None }
+        }, me, &task)
     };
+    // Selection only observed installed runqueues through an ACTIVE-filtered
+    // accessor. Do not recheck ACTIVE: an old positive sample remains valid
+    // until this reader commits, and CPU-down waits for exactly that interval.
+    hal::kassert!(get_rq(target).is_some(), "wake placement found no active runqueue");
+    probe(PlacementPoint::Selected, target);
     // Defer to the target's wake_list (Linux `ttwu_queue_wakelist`) when we must
     // not place directly: the task is still switching OFF elsewhere (`on_cpu`),
     // the target is remote, or the caller forced it (timer ISR). The target
@@ -258,10 +320,8 @@ where F: Fn(u32) -> Option<&'a Runqueue> {
     let softirq_idle_wake = crate::preempt::in_serving_softirq() && target_idle;
     if force_defer || target != me || task.on_cpu.load(Ordering::Acquire) || softirq_idle_wake {
         // Pick a real, installed CPU to own the deferred task; fall back to local.
-        let tcpu = if get_rq(target).is_some() { target }
-                   else if get_rq(me).is_some() { me }
-                   else { let _ = wake_list_push(target, task); return; };
-        let kick = wake_list_push(tcpu, task);
+        let tcpu = target;
+        let kick = publish_deferred(tcpu, task, |task| wake_list_push_selected(tcpu, task));
         // Unconditional, and NOT a preemption decision: the target drains its
         // wake list from `schedule()`, so without this the task would never
         // reach a runqueue at all. The preemption decision is made on the
@@ -275,14 +335,19 @@ where F: Fn(u32) -> Option<&'a Runqueue> {
     // is not on any rq (just claimed Runnable) so nobody can pick it / set its
     // `on_cpu` until we enqueue; the `on_cpu == false` check above therefore
     // can't race a fresh switch-on.
-    if let Some(rq) = get_rq(me) {
+    if let Some(rq) = get_rq(target) {
         let curr = rq.current.load(Ordering::Acquire);
         // SAFETY: `current` is non-null after `Runqueue::new`; the runqueue holds
         // the strong reference, so this snapshot read is sound.
         let curr = if curr.is_null() { None } else { Some(cand_of(unsafe { &*curr })) };
         let preempt;
+        let inserted;
         {
             let mut inner = rq.inner.lock_irqsave::<RqIrq>();
+            probe(PlacementPoint::DestinationLocked, target);
+            // TaskPi + destination rq publish ownership before class-tree
+            // visibility, matching deferred publication and migration.
+            task.cpu.store(target as u16, Ordering::Release);
             // Sleeper credit on wake (F211).
             task.lift_vruntime(inner.cfs.min_vruntime());
             // Linux `ttwu_do_activate` -> `wakeup_preempt`: the wake only takes
@@ -298,14 +363,22 @@ where F: Fn(u32) -> Option<&'a Runqueue> {
             let wake_util = task.update_util(crate::deadline::clock::now_ns(), false);
             #[cfg(target_os = "oxide-kernel")]
             let wake_iowait = task.take_iowait();
-            inner.enqueue(task);
+            inserted = inner.enqueue(task);
             #[cfg(target_os = "oxide-kernel")]
             crate::cpufreq_hook::update_from_scheduler(
-                me as usize, wake_util, wake_iowait, crate::deadline::clock::now_ns());
+                target as usize, wake_util, wake_iowait, crate::deadline::clock::now_ns());
             rq.publish_nr_running(inner.nr_running());
         }
-        if preempt { resched_curr(me); }
+        if inserted && preempt { resched_curr(target); }
     }
+}
+
+fn publish_deferred<F>(cpu: u32, task: Arc<Task>, publish: F) -> bool
+where F: FnOnce(Arc<Task>) -> bool {
+    // The caller holds TaskPi. Once the list node is visible, task-rq locking
+    // and affinity must already resolve to the list's target CPU.
+    task.cpu.store(cpu as u16, Ordering::Release);
+    publish(task)
 }
 
 /// Linux `try_to_wake_up`: place a Sleeping `task` Runnable on its selected

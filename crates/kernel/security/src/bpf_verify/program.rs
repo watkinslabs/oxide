@@ -154,10 +154,11 @@ fn verify_profile(
                     };
                 } else if class == 0x07 && !x && matches!(op, 0x00 | 0x10)
                     && matches!(state.regs[dst],
-                        Kind::Context(_) | Kind::Stack(_) | Kind::Value { .. }) {
+                        Kind::Context(_) | Kind::Task(_) | Kind::Stack(_) | Kind::Value { .. }) {
                     let delta = if op == 0 { insn.imm } else { insn.imm.wrapping_neg() };
                     state.regs[dst] = match state.regs[dst] {
                         Kind::Context(base) => Kind::Context(base.wrapping_add(delta)),
+                        Kind::Task(base) => Kind::Task(base.wrapping_add(delta)),
                         Kind::Stack(base) => Kind::Stack(base.wrapping_add(delta)),
                         Kind::Value { map, offset, nullable } => Kind::Value {
                             map, offset: offset.wrapping_add(delta), nullable,
@@ -256,30 +257,44 @@ fn verify_profile(
                     return Err(VerifyError::UnsupportedOpcode);
                 }
                 let size = memory_size(insn.opcode).ok_or(VerifyError::UnsupportedOpcode)?;
-                match state.regs[insn.src as usize] {
+                let loaded = match state.regs[insn.src as usize] {
                     Kind::Context(base) => {
                         let at = range(base, insn.off, size, context_bytes)
                             .map_err(|_| VerifyError::UnsafeContextAccess)?;
                         if !context::valid_context(&profile, at, size, false) {
                             return Err(VerifyError::UnsafeContextAccess);
                         }
+                        if context::lsm_task_slot(&profile, at, size) {
+                            Kind::Task(0)
+                        } else { Kind::Scalar(Scalar::unknown()) }
+                    }
+                    Kind::Task(base) => {
+                        let at = range(base, insn.off, size,
+                            crate::bpf_lsm::task_struct::SIZE)
+                            .map_err(|_| VerifyError::UnsafeContextAccess)?;
+                        if !context::task_access(at, size, false) {
+                            return Err(VerifyError::UnsafeContextAccess);
+                        }
+                        Kind::Scalar(Scalar::unknown())
                     }
                     Kind::Stack(base) => {
                         let at = range(base, insn.off, size, crate::bpf_interp::STACK_BYTES)?;
                         if !stack_ready(&state, at, size) {
                             return Err(VerifyError::UninitializedStack);
                         }
+                        Kind::Scalar(Scalar::unknown())
                     }
                     Kind::Value { map, offset, nullable: false } => {
                         value_range(maps, map, offset, insn.off, size, true, false)?;
+                        Kind::Scalar(Scalar::unknown())
                     }
                     Kind::Value { nullable: true, .. } => {
                         return Err(VerifyError::UnsafeContextAccess);
                     }
                     Kind::Uninit => return Err(VerifyError::UninitializedReg),
                     _ => return Err(VerifyError::UnsupportedOpcode),
-                }
-                state.regs[insn.dst as usize] = Kind::Scalar(Scalar::unknown());
+                };
+                state.regs[insn.dst as usize] = loaded;
                 enqueue(&mut states, &mut queue, &pseudo, pc + 1, state)?;
             }
             0x02 | 0x03 => {

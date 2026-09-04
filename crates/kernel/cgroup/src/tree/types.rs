@@ -2,7 +2,7 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use vfs::{Ino, PollSubscribers, VfsError};
+use vfs::{Ino, InodeRef, PollSubscribers, VfsError};
 use alloc::sync::Arc;
 
 use super::bpf_types::CgroupBpfState;
@@ -172,10 +172,16 @@ pub struct Node {
     /// Inode numbers owned by the control-file nodes already exposed through
     /// this directory.  Names remain the canonical control-file identity.
     pub file_inos: BTreeMap<String, Ino>,
+    /// Canonical VFS objects for control files already materialized. Keeping
+    /// the inode, not only its number, preserves ACL, xattr, LSM, and rwsem
+    /// state across lookups and direct kernel permission checks.
+    pub file_objects: BTreeMap<String, InodeRef>,
     /// Persistent `cgroup.events` notification object.  Synthesized inode
     /// wrappers borrow this one source so a
     /// cgroup population transition wakes every existing open description.
     pub events_poll: Arc<PollSubscribers>,
+    pub pids_events_poll: Arc<PollSubscribers>,
+    pub pids_events_local_poll: Arc<PollSubscribers>,
     pub name: String,
     pub parent: Option<u64>,
     pub children: BTreeMap<String, u64>,
@@ -206,6 +212,10 @@ pub struct Node {
     /// Non-leader thread count directly in this cgroup. pids.current counts
     /// every task (Linux pids controller), so threads charge here too.
     pub threads: u64,
+    /// Forks admitted by pids.max but not yet linked into membership.
+    pub(crate) pending_forks: u64,
+    /// Live fork preparations pinning this node against directory removal.
+    pub(crate) fork_pins: u64,
     /// Controllers this node delegates to children (cgroup.subtree_control).
     pub subtree_control: u8,
     /// Controllers available here = parent's subtree_control (root: ALL).
@@ -213,6 +223,12 @@ pub struct Node {
     pub frozen: bool,
     // pids controller
     pub pids_max: Option<u64>,
+    pub pids_peak: u64,
+    pub pids_events: u64,
+    pub pids_events_local: u64,
+    pub pids_forkfail_local: u64,
+    /// Monotonic generation advanced by every cgroup.kill affecting this node.
+    pub kill_seq: u64,
     // memory controller (bytes)
     pub mem_max: Option<u64>,
     pub mem_high: Option<u64>,
@@ -257,12 +273,16 @@ pub struct Node {
 impl Node {
     pub(super) fn new(cgid: u64, ino: Ino, name: String, parent: Option<u64>, avail: u8) -> Self {
         Self {
-            dir_ino: ino, file_inos: BTreeMap::new(), events_poll: Arc::new(PollSubscribers::new()),
+            dir_ino: ino, file_inos: BTreeMap::new(), file_objects: BTreeMap::new(),
+            events_poll: Arc::new(PollSubscribers::new()),
+            pids_events_poll: Arc::new(PollSubscribers::new()),
+            pids_events_local_poll: Arc::new(PollSubscribers::new()),
             name, parent, children: BTreeMap::new(), procs: BTreeSet::new(),
             uid: 0, gid: 0, file_uid: 0, file_gid: 0, file_owner: BTreeMap::new(),
-            threads: 0,
+            threads: 0, pending_forks: 0, fork_pins: 0,
             subtree_control: 0, avail, frozen: false,
-            pids_max: None,
+            pids_max: None, pids_peak: 0, pids_events: 0, pids_events_local: 0,
+            pids_forkfail_local: 0, kill_seq: 0,
             mem_max: None, mem_high: None, mem_low: 0, mem_min: 0,
             swap_max: None, mem_oom_group: false, zswap_max: None,
             memory: MemoryStats::default(), memory_events: MemoryEvents::default(),
@@ -334,6 +354,17 @@ impl Tree {
     /// Shared `cgroup.events` readiness source for one live cgroup. # C: O(log n)
     pub fn events_poll(&self, id: u64) -> Option<Arc<PollSubscribers>> {
         self.nodes.get(&id).map(|n| Arc::clone(&n.events_poll))
+    }
+
+    /// Shared readiness source for one event-valued control file. # C: O(log n)
+    pub fn file_poll(&self, id: u64, file: &str) -> Option<Arc<PollSubscribers>> {
+        let n = self.nodes.get(&id)?;
+        match file {
+            "cgroup.events" => Some(Arc::clone(&n.events_poll)),
+            "pids.events" => Some(Arc::clone(&n.pids_events_poll)),
+            "pids.events.local" => Some(Arc::clone(&n.pids_events_local_poll)),
+            _ => None,
+        }
     }
 
     /// Number of offline CSS descendants retained for charge lifetime. # C: O(N)

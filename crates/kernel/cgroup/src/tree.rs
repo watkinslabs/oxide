@@ -8,6 +8,7 @@
 // - `hugetlb_types`: huge-page granule identity, counter pair, file tables.
 // - `hugetlb`: hugetlb charge/uncharge, limits, dying CSS lifetime and files.
 // - `files`: cgroup control-file read/write handling.
+// - `fork`: clone destination validation, lifetime pins, and pids reservation.
 
 mod accounting;
 #[cfg(test)]
@@ -18,6 +19,9 @@ mod bpf_attach_tests;
 mod bpf_types;
 mod controllers;
 mod files;
+mod fork;
+#[cfg(test)]
+mod fork_tests;
 mod hierarchy;
 mod hugetlb;
 mod hugetlb_types;

@@ -17,7 +17,10 @@ impl Task {
             let next = (seen & !TaskState::LIFECYCLE_MASK) | TaskState::Waking as u8;
             match self.state.compare_exchange_weak(seen, next, Ordering::AcqRel,
                                                    Ordering::Acquire) {
-                Ok(_) => return true,
+                Ok(_) => {
+                    self.wake_seq.fetch_add(1, Ordering::AcqRel);
+                    return true;
+                }
                 Err(now) => seen = now,
             }
         }

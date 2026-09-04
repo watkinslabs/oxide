@@ -41,6 +41,11 @@ fn pending_work() -> bool {
 extern "C" fn ksoftirqd(arg: usize) -> ! {
     let my_cpu = if arg < MAX_CPUS { arg } else { 0 };
     loop {
+        if let Some(me) = super::current() {
+            // SAFETY: loop head is a process-context safe point with no lock
+            // or in-flight softirq ownership.
+            unsafe { super::kthread::park_if_requested(me); }
+        }
         // RCU callback drain (`06§3.5`) — process-context PRIMARY drainer.
         // Runs deferred frees (e.g. dentry __d_free) whose grace period has
         // elapsed. Process context, so callbacks that take sleeping-style
@@ -111,12 +116,10 @@ pub fn spawn_ksoftirqd() -> Result<(), super::SpawnError> {
         let arc = unsafe { super::spawn_kernel_thread(tid, "ksoftirqd", ksoftirqd, n) }?;
         // Pin to CPU n (Linux per-CPU ksoftirqd is bound to its CPU): set the
         // affinity mask then relocate off the spawn CPU onto n's runqueue.
-        if n < 64 {
-            super::update_affinity(&arc, Some(cpu::CpuMask::of(n as usize)), None);
-            // Linux `kthread_bind` sets PF_NO_SETAFFINITY: a per-CPU kthread's
-            // affinity is structural, so `sched_setaffinity(2)` on it is EINVAL.
-            arc.no_setaffinity.store(true, Ordering::Release);
-        }
+        super::update_affinity(&arc, Some(cpu::CpuMask::of(n as usize)), None);
+        // Linux `kthread_bind` sets PF_NO_SETAFFINITY: a per-CPU kthread's
+        // affinity is structural, so `sched_setaffinity(2)` on it is EINVAL.
+        arc.no_setaffinity.store(true, Ordering::Release);
     }
     Ok(())
 }

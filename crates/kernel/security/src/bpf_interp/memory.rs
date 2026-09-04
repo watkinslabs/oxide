@@ -38,6 +38,8 @@ pub(super) struct RunMemory<'a> {
     context: Context<'a>,
     packet: &'a [u8],
     maps: &'a [InodeRef],
+    /// Verifier-approved read-only kernel object view for typed BTF pointers.
+    kernel: Option<(u64, &'a [u8])>,
     values: Vec<ValueRef>,
     /// Present only for a reuseport selection run.
     reuseport: Option<&'a mut super::ReuseportSelection>,
@@ -54,7 +56,16 @@ impl<'a> RunMemory<'a> {
         packet: &'a [u8],
         maps: &'a [InodeRef],
     ) -> Self {
-        Self { context, packet, maps, values: Vec::new(), reuseport: None, prog: None }
+        Self {
+            context, packet, maps, kernel: None, values: Vec::new(),
+            reuseport: None, prog: None,
+        }
+    }
+
+    /// Attach one materialised typed-kernel-object view. The verifier decides
+    /// which fields can produce addresses inside it. # C: O(1)
+    pub(super) fn attach_kernel(&mut self, base: u64, bytes: &'a [u8]) {
+        self.kernel = Some((base, bytes));
     }
 
     /// Give this run the group it is selecting within, and the cell its
@@ -134,6 +145,14 @@ impl<'a> RunMemory<'a> {
         if let Some((value, offset)) = self.value_location(raw, out.len()) {
             if !value.readable { return None; }
             return value.value.read_range(offset, out);
+        }
+        if let Some((base, bytes)) = self.kernel {
+            if let Some(offset) = raw.checked_sub(base).and_then(|v| usize::try_from(v).ok()) {
+                if offset.checked_add(out.len()).is_some_and(|end| end <= bytes.len()) {
+                    out.copy_from_slice(&bytes[offset..offset + out.len()]);
+                    return Some(());
+                }
+            }
         }
         let offset = usize::try_from(addr).ok()?;
         let context = self.context.bytes();

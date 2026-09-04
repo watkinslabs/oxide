@@ -7,9 +7,15 @@
 // user-namespace id mapping, and the pid-namespace visibility test) live in
 // `priority_target`, which carries no target gate so they are hosted-testable.
 
-#![cfg(target_os = "oxide-kernel")]
+#![cfg(any(target_os = "oxide-kernel", test))]
 
 use crate::priority_target::{user_target_matches, user_target_uid, which_from_prio_base, Which};
+
+#[cfg(target_os = "oxide-kernel")]
+fn current_task() -> Option<&'static sched::Task> { sched::live::current() }
+
+#[cfg(all(test, not(target_os = "oxide-kernel")))]
+fn current_task() -> Option<&'static sched::Task> { sched::current() }
 
 /// Resolve a `which`/`who` target set (0=PROCESS, 1=PGRP, 2=USER — the
 /// getpriority(2) base) and call `f` for each task. Shared with ioprio_set/get
@@ -26,19 +32,19 @@ pub(crate) fn for_each_target(which: u64, who: u32, mut f: impl FnMut(&alloc::sy
     match which {
         Which::Process => {
             let t = if who == 0 {
-                sched::live::current().and_then(|c| sched::live::registry::lookup(c.tid))
+                current_task().and_then(|c| sched::live::registry::lookup(c.tid))
             } else { sched::live::registry::resolve_user_pid(who) };
             if let Some(t) = t { f(&t); }
         }
         Which::Pgrp => {
             let ns = sched::live::registry::reader_pid_ns();
             let pgid = if who == 0 {
-                sched::live::current().map(|c| c.pgrp().nr_in_or_tid(&ns)).unwrap_or(0)
+                current_task().map(|c| c.pgrp().nr_in_or_tid(&ns)).unwrap_or(0)
             } else { who };
             for t in sched::live::registry::tasks_in_pgrp_nr(&ns, pgid) { f(&t); }
         }
         Which::User => {
-            let Some(cur) = sched::live::current() else { return; };
+            let Some(cur) = current_task() else { return; };
             // `who` is a namespace-relative uid and is translated to the
             // internal id credentials actually store. An id the caller's user
             // namespace does not map names no task at all, so the target set
@@ -48,7 +54,10 @@ pub(crate) fn for_each_target(which: u64, who: u32, mut f: impl FnMut(&alloc::sy
             let Some(uid) = user_target_uid(who, caller_ruid, mapped) else { return; };
             // The pid-namespace visibility guard, resolved once for the walk
             // instead of per task.
+            #[cfg(target_os = "oxide-kernel")]
             let ns = sched::live::registry::caller_pid_ns();
+            #[cfg(all(test, not(target_os = "oxide-kernel")))]
+            let ns = Some(sched::live::registry::reader_pid_ns());
             for tid in sched::live::registry::live_tids() {
                 if let Some(t) = sched::live::registry::lookup(tid) {
                     let visible = match &ns {

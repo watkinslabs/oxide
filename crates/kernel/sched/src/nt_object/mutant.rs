@@ -1,5 +1,6 @@
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use super::WaitList;
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
+use crate::live::WaitList;
 
 /// Re-entrant NT mutant state. Ownership is a thread id, not a process id;
 /// this is the distinction that makes recursive waits and release validation
@@ -7,13 +8,16 @@ use super::WaitList;
 pub struct NtMutant {
     owner: AtomicU64,
     recursion: AtomicU32,
+    #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
     waiters: WaitList,
 }
 
 impl NtMutant {
     /// Construct an unnamed mutant, optionally owned by its creating thread. # C: O(1)
     pub fn new(owner: Option<u64>) -> Self {
-        Self { owner: AtomicU64::new(owner.unwrap_or(0)), recursion: AtomicU32::new(if owner.is_some() { 1 } else { 0 }), waiters: WaitList::new() }
+        Self { owner: AtomicU64::new(owner.unwrap_or(0)), recursion: AtomicU32::new(if owner.is_some() { 1 } else { 0 }),
+            #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
+            waiters: WaitList::new() }
     }
 
     /// Return whether this thread can acquire the mutant immediately. # C: O(1)
@@ -43,6 +47,7 @@ impl NtMutant {
         if count == 1 {
             self.recursion.store(0, Ordering::Release);
             self.owner.store(0, Ordering::Release);
+            #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
             self.waiters.wake_all();
         } else { self.recursion.store(count - 1, Ordering::Release); }
         Ok(previous)
@@ -56,6 +61,7 @@ impl NtMutant {
 
     /// Wait and acquire using the scheduler predicate protocol. # C: O(N_wakeups)
     /// # SAFETY: caller is process context and keeps this object alive through the wait.
+    #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
     pub unsafe fn wait(&self, tid: u64, deadline_ns: u64, now: impl Fn() -> u64) -> crate::WaitOutcome {
         // SAFETY: the predicate only accesses this live mutant and its owned wait list.
         unsafe { crate::live::wait_event_interruptible_until(&self.waiters, deadline_ns, now, || self.try_acquire(tid)) }

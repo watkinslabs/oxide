@@ -122,9 +122,19 @@ pub fn park(task: &Arc<Task>) {
     // before waking this completion list.
     unsafe {
         let _ = wait_event_uninterruptible(&PARKED_WAIT,
-            || task.kthread_parked.load(Ordering::Acquire) || has_exited(task));
+            || park_acknowledged(task) || has_exited(task));
     }
 }
+
+fn park_acknowledged(task: &Task) -> bool {
+    task.kthread_parked.load(Ordering::Acquire)
+        && !task.on_cpu.load(Ordering::Acquire)
+}
+
+/// Complete a synchronous park after the scheduler has cleared `on_cpu` for
+/// the outgoing kthread. The parked flag alone is not enough: its stack may
+/// still be executing until this switch-tail handoff. # C: O(1)
+pub(crate) fn note_schedule_out() { PARKED_WAIT.wake_all(); }
 
 /// Linux `kthread_unpark`: release a parked thread.
 /// # C: O(1) + wake
@@ -222,6 +232,38 @@ mod tests {
         unpark(&t);
         assert!(!t.kthread_park.load(Ordering::Acquire));
         assert!(!is_parked(&t), "a released thread must not still report parked");
+    }
+
+    #[test]
+    fn parked_completion_requires_real_schedule_out_before_unpark() {
+        use core::sync::atomic::AtomicBool;
+        use std::sync::Barrier;
+        use std::thread;
+
+        let t = kthread(7005);
+        t.kthread_park.store(true, Ordering::Release);
+        t.on_cpu.store(true, Ordering::Release);
+        t.kthread_parked.store(true, Ordering::Release);
+        assert!(!park_acknowledged(&t),
+            "positive control: the parked flag cannot acknowledge a still-running task");
+        let checked = Barrier::new(2);
+        let done = AtomicBool::new(false);
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                assert!(!park_acknowledged(&t));
+                checked.wait();
+                while !park_acknowledged(&t) { thread::yield_now(); }
+                done.store(true, Ordering::Release);
+            });
+            checked.wait();
+            assert!(!done.load(Ordering::Acquire));
+            t.on_cpu.store(false, Ordering::Release);
+            note_schedule_out();
+        });
+        assert!(done.load(Ordering::Acquire));
+        unpark(&t);
+        assert!(!park_acknowledged(&t));
+        assert!(!t.kthread_park.load(Ordering::Acquire));
     }
 }
 

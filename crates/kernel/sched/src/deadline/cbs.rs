@@ -89,7 +89,8 @@ pub fn replenish(p: &DlParams, s: &mut DlSched, now: u64) {
 
     while s.runtime <= 0 {
         s.deadline = s.deadline.wrapping_add(p.period);
-        s.runtime = s.runtime.saturating_add(p.runtime as i64);
+        s.runtime = s.runtime.checked_add(p.runtime as i64)
+            .expect("deadline runtime replenishment overflow");
     }
 
     // The loop above walks forward from the stored deadline; if the entity was
@@ -166,7 +167,11 @@ pub enum Charged {
 /// # C: O(1)
 pub fn charge(p: &DlParams, s: &mut DlSched, delta_ns: u64) -> Charged {
     if p.is_special() { return Charged::Running; }
-    if delta_ns > 0 { s.runtime = s.runtime.saturating_sub(delta_ns as i64); }
+    if delta_ns > 0 {
+        let delta = i64::try_from(delta_ns).expect("deadline execution delta exceeds s64");
+        s.runtime = s.runtime.checked_sub(delta)
+            .expect("deadline runtime charge overflow");
+    }
     let exceeded = runtime_exceeded(s);
     if !exceeded && !s.yielded { return Charged::Running; }
     s.throttled = true;
@@ -184,11 +189,17 @@ pub fn charge(p: &DlParams, s: &mut DlSched, delta_ns: u64) -> Charged {
 /// # C: O(1)
 pub fn grub_reclaim(delta_ns: u64, p: &DlParams, this_bw: u64, running_bw: u64,
                     max_bw: u64, extra_bw: u64, bw_ratio: u64) -> u64 {
-    let u_inact = this_bw.saturating_sub(running_bw);
-    let u_act = if u_inact.saturating_add(extra_bw) > max_bw.saturating_sub(p.bw) {
+    let u_inact = this_bw.checked_sub(running_bw)
+        .expect("deadline running bandwidth exceeds assigned bandwidth");
+    let inactive_extra = u_inact.checked_add(extra_bw)
+        .expect("deadline inactive bandwidth overflow");
+    let reserved_floor = max_bw.checked_sub(p.bw)
+        .expect("deadline entity bandwidth exceeds maximum");
+    let u_act = if inactive_extra > reserved_floor {
         p.bw
     } else {
-        max_bw - u_inact - extra_bw
+        max_bw.checked_sub(u_inact).and_then(|left| left.checked_sub(extra_bw))
+            .expect("deadline reclaim bandwidth underflow")
     };
     let u_act = (u_act as u128 * bw_ratio as u128) >> RATIO;
     ((delta_ns as u128 * u_act) >> BW_SHIFT) as u64

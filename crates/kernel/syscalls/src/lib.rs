@@ -368,7 +368,8 @@ mod exec_time;
 mod pidfd_signal_policy;
 mod kill_policy;
 mod perm_common;
-#[cfg(target_os = "oxide-kernel")]
+// Fork/native-task cgroup commit boundary stays hosted so lifecycle ordering
+// is exercised rather than hidden behind the kernel target.
 mod clone_cgroup;
 // setrlimit/getrlimit/prlimit64 (097/160/302): the `do_prlimit` errno mapping
 // plus the hosted tests for the ladder all three share.
@@ -465,4 +466,5 @@ pub mod io_uring_abi;
 #[cfg(any(target_os = "oxide-kernel", test))]
 #[path = "aio/abi/mod.rs"]
 pub mod aio_abi;
+
 include!("root_tail.rs");

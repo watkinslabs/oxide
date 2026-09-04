@@ -39,6 +39,9 @@ pub unsafe fn schedule_once(keep_irqs_disabled: bool) {
         let prev_ref = unsafe { rq.current_ref() };
         prev_ref.debug_check_canary("schedule_prev_update");
         update_curr(prev_ref, &inner, now);
+        // A dying deadline task can accrue runtime until this final switch.
+        // Only after the last charge may zero-lag release be calculated.
+        crate::live::rq_locate::finish_terminal_deadline(prev_ref);
         rq.account_blocked(prev_ref);
         if !matches!(prev_ref.sched_class(), SchedClass::Idle)
             && matches!(prev_ref.state(), TaskState::Runnable | TaskState::Waking)
@@ -58,10 +61,22 @@ pub unsafe fn schedule_once(keep_irqs_disabled: bool) {
             // it for placement by the incoming task's finish_task_switch,
             // which runs with no rq lock held and after prev's `on_cpu`
             // clears; only if parking is refused does it go back on this rq.
-            let evict = crate::live::schedule::migrate::evict_target(me_cpu, prev_ref)
-                .map(|t| crate::live::schedule::migrate::park(me_cpu, &cloned, t))
-                .unwrap_or(false);
-            if !evict { inner.put_prev_task(cloned); }
+            let evict = {
+                // ACTIVE selection remains protected until PARKED owns the
+                // retained Arc. CPU-down waits this grace before checking that
+                // holding state and cannot mistake the in-flight handoff for
+                // an empty runqueue.
+                let _placement = sync::rcu_read_lock();
+                crate::live::schedule::migrate::evict_target(me_cpu, prev_ref)
+                    .map(|t| crate::live::schedule::migrate::park(me_cpu, &cloned, t))
+                    .unwrap_or(false)
+            };
+            if evict { prev_ref.on_rq.begin_migration(); }
+            else { inner.put_prev_task(cloned); }
+        } else if !matches!(prev_ref.sched_class(), SchedClass::Idle) {
+            // A running task remains canonically queued while runnable. This
+            // is the block/exit publication that makes it truly off-rq.
+            prev_ref.on_rq.store(false, Ordering::Release);
         }
     }
     // Linux `pick_next_task` + `prepare_task(next)`: ownership is published
@@ -69,8 +84,10 @@ pub unsafe fn schedule_once(keep_irqs_disabled: bool) {
     // the pre-existing `on_cpu` — true only for a re-pick of `prev` (still
     // running here) or for the ownership violation asserted below.
     let (next_arc, already_owned) = inner.pick_next_task_claim();
-    hal::kassert!(!next_arc.on_rq.load(Ordering::Acquire),
-        "schedule picked task still marked on_rq");
+    hal::kassert!(next_arc.on_rq.is_queued(Ordering::Acquire),
+        "schedule picked task not canonically queued");
+    hal::kassert!(!next_arc.on_class_rq.load(Ordering::Acquire),
+        "schedule picked task still in class tree");
     // Start the incoming deadline task's charging window here, so its budget is
     // measured from the instant it takes the CPU rather than from the last
     // accounting tick.

@@ -16,6 +16,8 @@ pub(super) enum Kind {
     Uninit,
     Scalar(Scalar),
     Context(i32),
+    /// Read-only pointer to the concrete BTF `task_struct` view.
+    Task(i32),
     Stack(i32),
     Map(usize),
     Value { map: usize, offset: i32, nullable: bool },

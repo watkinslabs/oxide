@@ -79,7 +79,7 @@ pub const NONROOT_FILES: &[&str] = &["cgroup.kill", "cgroup.freeze"];
 pub fn controller_files(avail: u8) -> Vec<&'static str> {
     let mut v: Vec<&'static str> = Vec::new();
     if avail & PIDS != 0 {
-        v.extend(["pids.current", "pids.max", "pids.peak", "pids.events"]);
+        v.extend(["pids.current", "pids.max", "pids.peak", "pids.events", "pids.events.local"]);
     }
     if avail & MEMORY != 0 {
         v.extend(["memory.current", "memory.max", "memory.high", "memory.low",

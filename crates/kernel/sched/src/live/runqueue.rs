@@ -22,6 +22,10 @@ use crate::{RunqueueInner, Task};
 use sync::{Runqueue as RunqueueClass, Spinlock};
 use vmm::AddressSpace;
 
+#[path = "runqueue/nice.rs"]
+mod nice;
+pub use nice::set_nice;
+
 /// Architecture IRQ gate for Linux's `raw_spin_rq_lock_irqsave()` boundary.
 /// `schedule()` is the sole exception: it disables IRQs explicitly and holds
 /// the plain guard across the context switch for `finish_lock_switch()`.
@@ -335,28 +339,124 @@ pub unsafe fn uninstall_global() -> Option<Runqueue> {
     unsafe { (*GLOBALS[cpu].0.get()).take() }
 }
 
-/// Change a task's scheduling class at runtime (sched_setattr/setparam).
-/// A queued task is dequeued from the runqueue it is ACTUALLY on — which is
-/// not necessarily the caller's CPU — its class updated, then re-enqueued on
-/// that same runqueue. Idle is never re-enqueued.
-///
-/// Delegates to [`super::rq_locate::set_class_with`], which also backs the
-/// affinity walk, so there is exactly one "find the task's runqueue" routine.
-/// Using the CALLER's runqueue here (the pre-B1467 behaviour) found nothing to
-/// remove when the task sat on another CPU, yet still force-cleared `on_rq` —
-/// defeating `RunqueueInner::enqueue`'s double-enqueue guard and leaving one
-/// `Arc<Task>` in two trees for two CPUs to run at once.
-/// # C: O(N_cpus · log N)
-pub fn set_class(task: &Arc<Task>, new: crate::SchedClass) {
-    // SAFETY: `global_for` is sound for any index; it yields `None` for a CPU
-    // that has not completed `install_global`, which the walk skips.
-    super::rq_locate::set_class_with(&|cpu| unsafe { global_for(cpu) }, task, new);
+/// Settle scheduler-owned runtime and publish terminal state atomically with
+/// respect to wake, migration, and runqueue selection. # C: O(contention + log N)
+pub(crate) fn mark_terminal(task: &Task) {
+    #[cfg(not(target_os = "oxide-kernel"))]
+    if global().is_none() {
+        let _pi = task.pi_lock.lock_irqsave::<RqIrq>();
+        hal::kassert!(!task.on_rq.load(Ordering::Acquire)
+            && !task.on_cpu.load(Ordering::Acquire)
+            && !task.on_wake_list.load(Ordering::Acquire),
+            "hosted off-rq terminal task has scheduler ownership");
+        task.set_state(crate::TaskState::Zombie);
+        crate::deadline::live::leave_class(task);
+        return;
+    }
+    super::rq_locate::terminal_with(&|cpu| unsafe { global_for(cpu) }, task,
+        super::schedule::change_clock_now());
 }
 
-/// Requeue after a configured-state transaction already selected the
-/// effective class. # C: O(N_cpus · log N)
-pub fn requeue_current_class(task: &Arc<Task>) {
-    super::rq_locate::requeue_current_class_with(&|cpu| unsafe { global_for(cpu) }, task);
+/// Commit every scheduler parameter under one stable dequeue/mutate/enqueue.
+pub fn apply_update(task: &Arc<Task>, expected: (u32, u32), update: crate::SchedUpdate)
+    -> crate::SchedUpdateResult {
+    let get_rq = |cpu| unsafe { global_for(cpu) };
+    apply_update_with(&get_rq, task, expected, update)
+}
+
+/// Stable scheduler update over an injected CPU-to-runqueue map. Hosted
+/// cross-crate tests use this to model real ownership without installing or
+/// weakening the process-global runqueue invariant. # C: O(contention + log N)
+pub fn apply_update_with<'a, F>(get_rq: &F, task: &'a Arc<Task>, expected: (u32, u32),
+                                update: crate::SchedUpdate) -> crate::SchedUpdateResult
+where F: Fn(u32) -> Option<&'a Runqueue> {
+    // Timer queues retain only a weak backlink. Bind it before TaskPi/rq so
+    // zero-lag arming never needs the lower-ranked global task registry.
+    task.sched.dl.bind_owner(task);
+    let result = match super::rq_locate::task_rq_lock_with(get_rq, task) {
+        super::rq_locate::StableTaskGuard::Owned(lock) => {
+            let result = task.prepare_sched_update_unlocked(expected, update);
+            if result != crate::SchedUpdateResult::Applied { return result; }
+            let move_queued = task.sched_update_moves_queue(update);
+            let _change = super::rq_locate::SchedChange::from_lock_mode(
+                lock, task, super::schedule::change_clock_now(), move_queued);
+            task.apply_sched_update_unlocked(update);
+            crate::SchedUpdateResult::Applied
+        }
+        super::rq_locate::StableTaskGuard::OffRq(_pi) => {
+            let result = task.prepare_sched_update_unlocked(expected, update);
+            if result != crate::SchedUpdateResult::Applied { return result; }
+            let activate = task.sched_update_activates_off_rq(update);
+            task.apply_sched_update_unlocked(update);
+            if activate {
+                if task.frozen.load(Ordering::Acquire) {
+                    task.on_rq.store(false, Ordering::Release);
+                } else {
+                    super::ttwu::place_runnable_pi_locked(Arc::clone(task));
+                }
+            }
+            crate::SchedUpdateResult::Applied
+        }
+    };
+    if result == crate::SchedUpdateResult::Applied {
+        super::pi_boost::notify_waiter_change(task);
+    }
+    result
+}
+
+/// Publish reset-on-fork only if the policy generation validated by the caller
+/// is still current under the stable task/rq lock.
+pub fn set_reset_if_policy(task: &Arc<Task>, expected: (u32, u32), reset: bool) -> bool {
+    let _stable = super::rq_locate::task_rq_lock_with(
+        &|cpu| unsafe { global_for(cpu) }, task);
+    if task.sched_policy_generation() != expected { return false; }
+    task.sched.store_reset_on_fork(reset);
+    true
+}
+
+/// KEEP_PARAMS commit: clamps/reset change while policy and class remain fixed.
+pub fn set_controls_if_policy(task: &Arc<Task>, expected: (u32, u32),
+                              clamp: crate::SchedUclamp, reset: bool) -> bool {
+    let _stable = super::rq_locate::task_rq_lock_with(
+        &|cpu| unsafe { global_for(cpu) }, task);
+    if task.sched_policy_generation() != expected { return false; }
+    task.sched.store_uclamp(clamp);
+    task.sched.store_reset_on_fork(reset);
+    true
+}
+
+/// Replace configured base class without splitting PI and rq ownership.
+#[cfg(test)]
+pub(crate) fn set_normal_class(task: &Arc<Task>, class: crate::SchedClass) {
+    assert!(!matches!(class, crate::SchedClass::Deadline),
+        "PI base update cannot bypass deadline admission");
+    let policy = crate::sched_enc::policy_code_for(class);
+    super::rq_locate::mutate_with(&|cpu| unsafe { global_for(cpu) }, task,
+        |task| task.sched.store_normal_class(class, policy));
+    super::pi_boost::notify_waiter_change(task);
+}
+
+/// Recompute effective PI state while `TaskPi` and the stable owner rq are held.
+/// The closure must not acquire either lock recursively.
+#[cfg(test)]
+pub(crate) fn mutate_effective<F>(task: &Arc<Task>, mutate: F)
+where F: FnOnce(&Task) {
+    super::rq_locate::mutate_with(&|cpu| unsafe { global_for(cpu) }, task, mutate);
+}
+
+/// Mutate PI state, moving a queued entity only when its effective key changes.
+pub(crate) fn mutate_effective_if<P, M>(task: &Arc<Task>, moves_queue: P, mutate: M)
+where P: FnOnce(&Task) -> bool, M: FnOnce(&Task) {
+    match super::rq_locate::task_rq_lock_with(&|cpu| unsafe { global_for(cpu) }, task) {
+        super::rq_locate::StableTaskGuard::Owned(lock) => {
+            if moves_queue(task) {
+                let _change = super::rq_locate::SchedChange::from_lock(lock, task,
+                    super::schedule::change_clock_now());
+                mutate(task);
+            } else { mutate(task); }
+        }
+        super::rq_locate::StableTaskGuard::OffRq(_pi) => mutate(task),
+    }
 }
 
 /// Linux `task_tick_rt`'s peer test, resolved against the runqueue the task is

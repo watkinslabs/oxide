@@ -14,7 +14,6 @@ pub(crate) struct TaskNamespaces {
     pid_for_children: NamespaceRef,
     time: NamespaceRef,
     time_for_children: NamespaceRef,
-    user: NamespaceRef,
     uts: NamespaceRef,
     mount: MntNamespaceRef,
 }
@@ -42,31 +41,30 @@ impl TaskNamespaces {
             pid_for_children: namespace_identity::initial(NamespaceKind::Pid),
             time: namespace_identity::initial(NamespaceKind::Time),
             time_for_children: namespace_identity::initial(NamespaceKind::Time),
-            user: namespace_identity::initial(NamespaceKind::User),
             uts: namespace_identity::initial(NamespaceKind::Uts),
             mount: vfs::mntns::initial(),
         }
     }
 
-    fn snapshot(&self) -> TaskNamespaceSnapshot {
+    fn snapshot(&self, user: NamespaceRef) -> TaskNamespaceSnapshot {
         TaskNamespaceSnapshot {
             cgroup: self.cgroup.clone(), ipc: self.ipc.clone(),
             pid: self.pid.clone(),
             pid_for_children: self.pid_for_children.clone(),
             time: self.time.clone(),
             time_for_children: self.time_for_children.clone(),
-            user: self.user.clone(), uts: self.uts.clone(),
+            user, uts: self.uts.clone(),
             mount: Arc::clone(&self.mount),
         }
     }
 
-    fn from_snapshot(snapshot: TaskNamespaceSnapshot) -> Self {
-        Self {
+    fn from_snapshot(snapshot: TaskNamespaceSnapshot) -> (Self, NamespaceRef) {
+        (Self {
             cgroup: snapshot.cgroup, ipc: snapshot.ipc, pid: snapshot.pid,
             pid_for_children: snapshot.pid_for_children, time: snapshot.time,
             time_for_children: snapshot.time_for_children,
-            user: snapshot.user, uts: snapshot.uts, mount: snapshot.mount,
-        }
+            uts: snapshot.uts, mount: snapshot.mount,
+        }, snapshot.user)
     }
 
     fn replace(&mut self, namespace: NamespaceRef) -> Result<NamespaceRef, NamespaceRef> {
@@ -75,7 +73,7 @@ impl TaskNamespaces {
             NamespaceKind::Ipc => &mut self.ipc,
             NamespaceKind::Pid => &mut self.pid,
             NamespaceKind::Time => &mut self.time,
-            NamespaceKind::User => &mut self.user,
+            NamespaceKind::User => return Err(namespace),
             NamespaceKind::Uts => &mut self.uts,
             NamespaceKind::Mnt | NamespaceKind::Net => return Err(namespace),
         };
@@ -90,7 +88,8 @@ impl Task {
     /// # Lk: takes `Namespace` (rank 75)
     /// # Sleeps: no
     pub fn namespace_snapshot(&self) -> Option<TaskNamespaceSnapshot> {
-        self.namespaces.lock().as_ref().map(TaskNamespaces::snapshot)
+        let user = self.security.creds.user_namespace();
+        self.namespaces.lock().as_ref().map(|set| set.snapshot(user))
     }
 
     /// Replace the complete namespace set with a retained snapshot.
@@ -101,12 +100,13 @@ impl Task {
     pub fn replace_namespace_set(&self, snapshot: TaskNamespaceSnapshot)
         -> Result<(), TaskNamespaceSnapshot>
     {
-        let replacement = TaskNamespaces::from_snapshot(snapshot);
+        let (replacement, user) = TaskNamespaces::from_snapshot(snapshot);
         let old = {
             let mut slot = self.namespaces.lock();
-            if slot.is_none() { return Err(replacement.snapshot()); }
+            if slot.is_none() { return Err(replacement.snapshot(user)); }
             slot.replace(replacement)
         };
+        self.security.creds.replace_user_namespace(user);
         drop(old);
         Ok(())
     }
@@ -117,6 +117,12 @@ impl Task {
     /// # Lk: takes `Namespace` (rank 75)
     /// # Sleeps: no
     pub fn replace_namespace(&self, namespace: NamespaceRef) -> Result<(), NamespaceRef> {
+        if namespace.kind() == NamespaceKind::User {
+            if self.namespaces.lock().is_none() { return Err(namespace); }
+            let old = self.security.creds.replace_user_namespace(namespace);
+            drop(old);
+            return Ok(());
+        }
         let old = {
             let mut set = self.namespaces.lock();
             let Some(set) = set.as_mut() else { return Err(namespace); };
@@ -256,6 +262,9 @@ impl Task {
     /// Current namespace identity for `kind`.
     /// # C: O(1)
     pub fn namespace_id(&self, kind: NamespaceKind) -> Option<u64> {
+        if kind == NamespaceKind::User {
+            return Some(self.security.creds.user_namespace().id().as_u64());
+        }
         if kind == NamespaceKind::Mnt {
             return self.mount_namespace_snapshot()
                 .map(|owner| owner.namespace_identity().id().as_u64());
@@ -271,7 +280,7 @@ impl Task {
             NamespaceKind::Ipc => set.ipc.id().as_u64(),
             NamespaceKind::Pid => set.pid.id().as_u64(),
             NamespaceKind::Time => set.time.id().as_u64(),
-            NamespaceKind::User => set.user.id().as_u64(),
+            NamespaceKind::User => unreachable!(),
             NamespaceKind::Uts => set.uts.id().as_u64(),
             NamespaceKind::Mnt | NamespaceKind::Net => unreachable!(),
         })
@@ -280,13 +289,14 @@ impl Task {
     /// Retain one concrete non-mount namespace owner.
     /// # C: O(1)
     pub fn namespace_owner(&self, kind: NamespaceKind) -> Option<NamespaceRef> {
+        if kind == NamespaceKind::User { return Some(self.security.creds.user_namespace()); }
         if matches!(kind, NamespaceKind::Mnt | NamespaceKind::Net) { return None; }
         let set = self.namespaces.lock();
         let set = set.as_ref()?;
         Some(match kind {
             NamespaceKind::Cgroup => &set.cgroup, NamespaceKind::Ipc => &set.ipc,
             NamespaceKind::Pid => &set.pid, NamespaceKind::Time => &set.time,
-            NamespaceKind::User => &set.user, NamespaceKind::Uts => &set.uts,
+            NamespaceKind::User => unreachable!(), NamespaceKind::Uts => &set.uts,
             NamespaceKind::Mnt | NamespaceKind::Net => unreachable!(),
         }.clone())
     }

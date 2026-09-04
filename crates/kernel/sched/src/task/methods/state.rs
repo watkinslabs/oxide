@@ -77,6 +77,7 @@ impl Task {
     /// # C: O(1)
     pub fn complete_wake(&self) {
         let _ = self.cas_state(TaskState::Waking, TaskState::Runnable);
+        self.wake_done.store(self.wake_seq.load(Ordering::Acquire), Ordering::Release);
         #[cfg(feature = "debug-watchdog")]
         self.wake_diag_phase.store(WakeDiagPhase::None as u8, Ordering::Release);
     }

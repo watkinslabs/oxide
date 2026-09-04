@@ -1,0 +1,452 @@
+//! Sandboxed eBPF interpreter.
+//!
+//! Walks verified insns from `bpf_verify` against an 11-register
+//! file (R0..R10, R10 is the read-only frame pointer in Linux) and
+//! a 512-byte stack. Programs return R0.
+//!
+//! Opcode coverage (imm + reg variants):
+//!
+//!   ALU64 / ALU (32-bit, zero-extends): MOV ADD SUB MUL DIV MOD OR AND
+//!          XOR LSH RSH ARSH NEG END (DIV/MOD unsigned; /0→0, %0→dst)
+//!   JMP / JMP32 (compares low 32): JA JEQ JNE JSET JGT JGE JLT JLE
+//!          JSGT JSGE JSLT JSLE, EXIT
+//!   LDX:   load size B/H/W/DW from [src+off] — the 512-byte stack
+//!          (R10-relative) or the read-only ctx (R1/pkt)
+//!   STX / ST: store reg / imm size B/H/W/DW to the writable stack
+//!   LD:    LD_IMM_DW (the 16-byte wide load — slot count 2)
+//!   CALL:  helper dispatch (R1..R5 → helper, R0 = result)
+//!
+//! Programs hitting any other opcode return None so callers see
+//! "unsupported" distinct from "ran and returned". Program-type verifiers
+//! reject helper or pointer contracts that have no installed runtime owner.
+//!
+//! Step budget is 1M dispatches per call (Linux's `BPF_COMPLEXITY_
+//! LIMIT_INSNS` is also 1M); exceed it and we bail with None.
+
+use super::kfunc;
+use super::memory::{Context, RunMemory};
+
+pub const NUM_REGS: usize = 11;
+pub const STACK_BYTES: usize = 512;
+pub const STEP_BUDGET: u32 = 1_000_000;
+
+const BPF_CLASS_MASK: u8 = 0x07;
+const BPF_ALU64: u8 = 0x07;
+const BPF_JMP:   u8 = 0x05;
+const BPF_LD:    u8 = 0x00;
+const BPF_LDX:   u8 = 0x01;
+
+// BPF_LDX | BPF_MEM | <size>
+
+const BPF_CALL: u8 = 0x85;
+
+/// State shared by all programs in one cgroup effective-array run.
+///
+/// Linux's cgroup array runner carries a mutable `retval` between programs.
+/// Keeping it explicit also avoids hidden per-CPU interpreter state.
+#[derive(Default)]
+pub struct HelperState {
+    pub retval: i32,
+    pub attach_cookie: u64,
+}
+
+/// The group a selection program runs for, and the member it named.
+///
+/// Deliberately NOT part of [`HelperState`]: that state is carried by every
+/// program type, including the cgroup filters that run at the tail of a
+/// receive path an interrupt can nest on, and growing it there moved a
+/// thousand bytes onto the interrupt stack. This rides the per-run memory
+/// instead, which only a selection run builds.
+pub struct ReuseportSelection {
+    pub runner: crate::bpf::map::sockarray::RunnerState,
+    /// A run that ends without one leaves the group on its own distribution.
+    pub selected: Option<crate::bpf::map::sockarray::SockHandle>,
+}
+
+/// Helper-call descriptor: a (helper-id, fn) pair. The interpreter hands
+/// R1..R5 and the cgroup run state to `f`, then stores its return in R0.
+pub type HelperFn = fn(&mut HelperState, i64, i64, i64, i64, i64) -> i64;
+pub struct Helper { pub id: u32, pub f: HelperFn }
+
+/// Context register. Linux passes the program's context in R1 on entry.
+/// The runner models R1 as an offset into `pkt`; verified pointer copies
+/// carry that synthetic address.
+
+const BPF_SRC_X: u8 = 0x08; // bit 3 — 0=use imm, 1=use src reg
+
+const BPF_LD_IMM_DW: u8 = 0x18;
+
+// ALU op (bits 4..7), shared by BPF_ALU64 (0x07) and BPF_ALU 32-bit (0x04).
+const BPF_OP_ADD:  u8 = 0x00;
+const BPF_OP_SUB:  u8 = 0x10;
+const BPF_OP_MUL:  u8 = 0x20;
+const BPF_OP_DIV:  u8 = 0x30;
+const BPF_OP_OR:   u8 = 0x40;
+const BPF_OP_AND:  u8 = 0x50;
+const BPF_OP_LSH:  u8 = 0x60;
+const BPF_OP_RSH:  u8 = 0x70;
+const BPF_OP_NEG:  u8 = 0x80;
+const BPF_OP_MOD:  u8 = 0x90;
+const BPF_OP_XOR:  u8 = 0xa0;
+const BPF_OP_MOV:  u8 = 0xb0;
+const BPF_OP_ARSH: u8 = 0xc0;
+const BPF_OP_END:  u8 = 0xd0;
+
+// JMP op (bits 4..7), shared by BPF_JMP (0x05) and BPF_JMP32 (0x06).
+const BPF_OP_JA:   u8 = 0x00;
+const BPF_OP_JEQ:  u8 = 0x10;
+const BPF_OP_JGT:  u8 = 0x20;
+const BPF_OP_JGE:  u8 = 0x30;
+const BPF_OP_JSET: u8 = 0x40;
+const BPF_OP_JNE:  u8 = 0x50;
+const BPF_OP_JSGT: u8 = 0x60;
+const BPF_OP_JSGE: u8 = 0x70;
+const BPF_OP_JLT:  u8 = 0xa0;
+const BPF_OP_JLE:  u8 = 0xb0;
+const BPF_OP_JSLT: u8 = 0xc0;
+const BPF_OP_JSLE: u8 = 0xd0;
+const BPF_OP_EXIT_RAW: u8 = 0x90; // opcode = JMP | EXIT_op = 0x05 | 0x90 = 0x95
+
+const BPF_ALU:   u8 = 0x04; // 32-bit ALU class
+const BPF_JMP32: u8 = 0x06; // 32-bit JMP class
+const BPF_ST:    u8 = 0x02; // store immediate to memory
+const BPF_STX:   u8 = 0x03; // store register to memory
+
+/// 512-byte BPF stack mapped at a distinct high address range so memory ops
+/// route to it vs the read-only ctx (pkt). R10 = STACK_BASE + STACK_SIZE.
+const STACK_SIZE: usize = 512;
+
+/// Access size of a MEM opcode (bits 3..4): W=4, H=2, B=1, DW=8.
+fn mem_size(opcode: u8) -> Option<usize> {
+    if opcode & 0xe0 != 0x60 { return None; } // must be BPF_MEM mode
+    Some(match (opcode >> 3) & 0x03 { 0 => 4, 1 => 2, 2 => 1, 3 => 8, _ => return None })
+}
+
+/// Apply an ALU op. `is64` false → 32-bit (operate on low 32, zero-extend).
+/// DIV/MOD are UNSIGNED (eBPF); div-by-0 → 0, mod-by-0 → dst (Linux). NEG is
+/// unary. # C: O(1)
+fn alu(op: u8, dst: i64, rhs: i64, is64: bool) -> Option<i64> {
+    if is64 {
+        let (a, b) = (dst, rhs);
+        let r = match op {
+            BPF_OP_ADD => a.wrapping_add(b),
+            BPF_OP_SUB => a.wrapping_sub(b),
+            BPF_OP_MUL => a.wrapping_mul(b),
+            BPF_OP_DIV => if b == 0 { 0 } else { ((a as u64) / (b as u64)) as i64 },
+            BPF_OP_MOD => if b == 0 { a } else { ((a as u64) % (b as u64)) as i64 },
+            BPF_OP_OR  => a | b,
+            BPF_OP_AND => a & b,
+            BPF_OP_XOR => a ^ b,
+            BPF_OP_LSH => ((a as u64) << ((b as u64) & 63)) as i64,
+            BPF_OP_RSH => ((a as u64) >> ((b as u64) & 63)) as i64,
+            BPF_OP_ARSH => a >> ((b as u64) & 63),
+            BPF_OP_NEG => a.wrapping_neg(),
+            BPF_OP_MOV => b,
+            _ => return None,
+        };
+        Some(r)
+    } else {
+        let (a, b) = (dst as u32, rhs as u32);
+        let r: u32 = match op {
+            BPF_OP_ADD => a.wrapping_add(b),
+            BPF_OP_SUB => a.wrapping_sub(b),
+            BPF_OP_MUL => a.wrapping_mul(b),
+            BPF_OP_DIV => if b == 0 { 0 } else { a / b },
+            BPF_OP_MOD => if b == 0 { a } else { a % b },
+            BPF_OP_OR  => a | b,
+            BPF_OP_AND => a & b,
+            BPF_OP_XOR => a ^ b,
+            BPF_OP_LSH => a << (b & 31),
+            BPF_OP_RSH => a >> (b & 31),
+            BPF_OP_ARSH => ((a as i32) >> (b & 31)) as u32,
+            BPF_OP_NEG => a.wrapping_neg(),
+            BPF_OP_MOV => b,
+            _ => return None,
+        };
+        Some(r as i64) // 32-bit results are zero-extended to 64
+    }
+}
+
+/// Constant-folding hook shared with the verifier. This never executes a
+/// program; it only avoids discarding scalar constants unnecessarily.
+/// # C: O(1)
+pub(crate) fn verify_alu(op: u8, dst: i64, rhs: i64, is64: bool) -> Option<i64> {
+    alu(op, dst, rhs, is64)
+}
+
+/// BPF_END converts the low 16/32/64 bits to the byte order selected by the
+/// opcode source bit, then zero-extends sub-64-bit results. # C: O(1)
+fn endian(dst: i64, width: i32, to_be: bool) -> Option<i64> {
+    Some(match width {
+        16 => {
+            let v = dst as u16;
+            (if to_be { v.to_be() } else { v.to_le() }) as i64
+        }
+        32 => {
+            let v = dst as u32;
+            (if to_be { v.to_be() } else { v.to_le() }) as i64
+        }
+        64 => {
+            let v = dst as u64;
+            (if to_be { v.to_be() } else { v.to_le() }) as i64
+        }
+        _ => return None,
+    })
+}
+
+/// Evaluate a conditional-jump predicate. `is64` false → compare low 32 bits.
+/// # C: O(1)
+fn jmp_take(op: u8, lhs: i64, rhs: i64, is64: bool) -> Option<bool> {
+    let take = if is64 {
+        let (lu, ru) = (lhs as u64, rhs as u64);
+        match op {
+            BPF_OP_JA   => true,
+            BPF_OP_JEQ  => lhs == rhs,
+            BPF_OP_JNE  => lhs != rhs,
+            BPF_OP_JSET => (lhs & rhs) != 0,
+            BPF_OP_JGT  => lu > ru,
+            BPF_OP_JGE  => lu >= ru,
+            BPF_OP_JLT  => lu < ru,
+            BPF_OP_JLE  => lu <= ru,
+            BPF_OP_JSGT => lhs > rhs,
+            BPF_OP_JSGE => lhs >= rhs,
+            BPF_OP_JSLT => lhs < rhs,
+            BPF_OP_JSLE => lhs <= rhs,
+            _ => return None,
+        }
+    } else {
+        let (ls, rs) = (lhs as i32, rhs as i32);
+        let (lu, ru) = (lhs as u32, rhs as u32);
+        match op {
+            BPF_OP_JA   => true,
+            BPF_OP_JEQ  => lu == ru,
+            BPF_OP_JNE  => lu != ru,
+            BPF_OP_JSET => (lu & ru) != 0,
+            BPF_OP_JGT  => lu > ru,
+            BPF_OP_JGE  => lu >= ru,
+            BPF_OP_JLT  => lu < ru,
+            BPF_OP_JLE  => lu <= ru,
+            BPF_OP_JSGT => ls > rs,
+            BPF_OP_JSGE => ls >= rs,
+            BPF_OP_JSLT => ls < rs,
+            BPF_OP_JSLE => ls <= rs,
+            _ => return None,
+        }
+    };
+    Some(take)
+}
+
+/// Preserve exact scalar branch feasibility for verifier path states. # C: O(1)
+pub(crate) fn verify_jump(op: u8, lhs: i64, rhs: i64, is64: bool) -> Option<bool> {
+    jmp_take(op, lhs, rhs, is64)
+}
+
+#[derive(Copy, Clone)]
+struct Insn { opcode: u8, dst: u8, src: u8, off: i16, imm: i32 }
+
+fn decode(bytes: &[u8]) -> Insn {
+    Insn {
+        opcode: bytes[0],
+        dst:    bytes[1] & 0x0f,
+        src:    (bytes[1] >> 4) & 0x0f,
+        off:    i16::from_le_bytes([bytes[2], bytes[3]]),
+        imm:    i32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
+    }
+}
+
+fn coarse_monotonic_ns() -> i64 {
+    #[cfg(target_os = "oxide-kernel")]
+    { sched::live::timer_list::now_ns() as i64 }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    { 0 }
+}
+
+/// Run an eBPF program. Returns `Some(r0)` on EXIT, `None` on
+/// unsupported opcode, step-budget exhaustion, out-of-bounds pc,
+/// or an out-of-bounds packet load. R1 is initialized to 0 and
+/// LDX_MEM with src=R1 reads pkt[r1+off..r1+off+size] (bounds-
+/// checked). Each program-type verifier determines which source registers
+/// retain context provenance before this runner executes the program.
+/// # C: O(insn count × step budget)
+pub fn run(insns: &[u8], pkt: &[u8]) -> Option<i64> {
+    run_with_helpers(insns, pkt, &[])
+}
+
+/// Variant of `run` that admits helper-call dispatch. Programs
+/// that issue BPF_CALL with an unknown helper id return None.
+/// # C: O(insn count × step budget)
+pub fn run_with_helpers(insns: &[u8], pkt: &[u8], helpers: &[Helper]) -> Option<i64> {
+    run_with_helpers_and_state(insns, pkt, helpers, &mut HelperState::default())
+}
+
+/// Run a socket filter: a read-only program context in R1 and the frame itself
+/// reachable only through the packet-load helper.
+///
+/// `maps` and `selection` are what a reuseport selection program needs and no
+/// other filter has — the map set its relocated instructions index into, and
+/// the cell the member it names is recorded in. Every other caller passes an
+/// empty set and no cell, and this stays the ONE entry point for a filter run
+/// over a read-only context.
+/// # C: O(insn count × step budget)
+pub fn run_socket_filter(
+    insns: &[u8],
+    context: &[u8],
+    packet: &[u8],
+    maps: &[vfs::InodeRef],
+    selection: Option<&mut ReuseportSelection>,
+) -> Option<i64> {
+    let mut memory = RunMemory::new(Context::ReadOnly(context), packet, maps);
+    if let Some(selection) = selection { memory.attach_reuseport(selection); }
+    run_inner(insns, &[], &mut HelperState::default(), memory)
+}
+
+/// Stateful helper variant used by cgroup effective arrays. The caller owns
+/// the state and may reuse it for each program in attachment order.
+/// # C: O(insn count × step budget)
+pub fn run_with_helpers_and_state(
+    insns: &[u8],
+    pkt: &[u8],
+    helpers: &[Helper],
+    helper_state: &mut HelperState,
+) -> Option<i64> {
+    let memory = RunMemory::new(Context::ReadOnly(pkt), pkt, &[]);
+    run_inner(insns, helpers, helper_state, memory)
+}
+
+pub(super) fn run_inner(
+    insns: &[u8],
+    helpers: &[Helper],
+    helper_state: &mut HelperState,
+    mut memory: RunMemory<'_>,
+) -> Option<i64> {
+    if insns.is_empty() || insns.len() % 8 != 0 { return None; }
+    let n = insns.len() / 8;
+
+    let mut regs = [0i64; NUM_REGS];
+    // R10 = frame pointer at the TOP of a 512-byte stack (Linux: programs
+    // address locals as [R10 + negative off]). The stack lives in a distinct
+    // high address range so mem ops route to it vs the read-only ctx (pkt).
+    let mut stack = [0u8; STACK_SIZE];
+    regs[10] = (crate::bpf_layout::STACK_BASE + STACK_SIZE as u64) as i64;
+    let mut pc: usize = 0;
+    let mut budget = STEP_BUDGET;
+
+    while pc < n {
+        if budget == 0 { return None; }
+        budget -= 1;
+        let i = decode(&insns[pc * 8 .. pc * 8 + 8]);
+        // Opcode dispatch on (class, op, src). EXIT is special
+        // because it's not class-derived sensibly via tables.
+        if i.opcode == 0x95 {
+            return Some(regs[0]);
+        }
+        if i.opcode == BPF_CALL {
+            let id = i.imm as u32;
+            regs[0] = if i.src == crate::bpf::uapi::pseudo::KFUNC_CALL {
+                kfunc::call(id, &memory, &stack, &regs)?
+            } else { match id {
+                crate::bpf::uapi::func_id::MAP_LOOKUP_ELEM => {
+                    memory.map_lookup(regs[1], regs[2], &stack)
+                }
+                crate::bpf::uapi::func_id::SKB_LOAD_BYTES => {
+                    memory.skb_load_bytes(regs[2], regs[3], regs[4], &mut stack)
+                }
+                crate::bpf::uapi::func_id::SK_SELECT_REUSEPORT => {
+                    memory.sk_select_reuseport(regs[2], regs[3], regs[4], &stack)
+                }
+                crate::bpf::uapi::func_id::KTIME_GET_COARSE_NS => coarse_monotonic_ns(),
+                crate::bpf::uapi::func_id::GET_ATTACH_COOKIE => helper_state.attach_cookie as i64,
+                _ => {
+                    let h = helpers.iter().find(|h| h.id == id)?;
+                    (h.f)(helper_state, regs[1], regs[2], regs[3], regs[4], regs[5])
+                }
+            }};
+            regs[1..=5].fill(0);
+            pc += 1;
+            continue;
+        }
+        let class = i.opcode & BPF_CLASS_MASK;
+        match class {
+            BPF_ALU64 | BPF_ALU => {
+                let is64 = class == BPF_ALU64;
+                let op  = i.opcode & 0xf0;
+                let src_is_reg = (i.opcode & BPF_SRC_X) != 0;
+                let dst = i.dst as usize;
+                if class == BPF_ALU && op == BPF_OP_END {
+                    regs[dst] = endian(regs[dst], i.imm, src_is_reg)?;
+                    pc += 1;
+                    continue;
+                }
+                // NEG is unary (no source operand); others take imm or src reg.
+                let rhs: i64 = if op == BPF_OP_NEG { 0 }
+                               else if src_is_reg { regs[i.src as usize] }
+                               else { i.imm as i64 };
+                regs[dst] = alu(op, regs[dst], rhs, is64)?;
+                pc += 1;
+            }
+            BPF_JMP | BPF_JMP32 => {
+                let op = i.opcode & 0xf0;
+                if op == BPF_OP_EXIT_RAW { return Some(regs[0]); } // double-guard
+                let is64 = class == BPF_JMP;
+                let src_is_reg = (i.opcode & BPF_SRC_X) != 0;
+                let lhs = regs[i.dst as usize];
+                let rhs: i64 = if src_is_reg { regs[i.src as usize] } else { i.imm as i64 };
+                if jmp_take(op, lhs, rhs, is64)? {
+                    let tgt = (pc as i64) + 1 + i.off as i64;
+                    if tgt < 0 || tgt >= n as i64 { return None; }
+                    pc = tgt as usize;
+                } else {
+                    pc += 1;
+                }
+            }
+            BPF_LDX => {
+                // Load size bytes from [src_reg + off] — stack (R10-relative)
+                // or read-only ctx (R1/pkt) per the address range.
+                let size = mem_size(i.opcode)?;
+                let addr = regs[i.src as usize].wrapping_add(i.off as i64);
+                regs[i.dst as usize] = memory.read(addr, size, &stack)?;
+                pc += 1;
+            }
+            BPF_STX => {
+                let addr = regs[i.dst as usize].wrapping_add(i.off as i64);
+                if i.opcode & 0xe0 == 0xc0 {
+                    let size = match (i.opcode >> 3) & 3 {
+                        0 => 4,
+                        3 => 8,
+                        _ => return None,
+                    };
+                    if i.imm != 0 { return None; }
+                    memory.atomic_add(addr, size, regs[i.src as usize])?;
+                } else {
+                    let size = mem_size(i.opcode)?;
+                    memory.write(addr, size, regs[i.src as usize], &mut stack)?;
+                }
+                pc += 1;
+            }
+            BPF_ST => {
+                // Store imm to [dst_reg + off] (writable stack only).
+                let size = mem_size(i.opcode)?;
+                let addr = regs[i.dst as usize].wrapping_add(i.off as i64);
+                memory.write(addr, size, i.imm as i64, &mut stack)?;
+                pc += 1;
+            }
+            BPF_LD => {
+                if i.opcode != BPF_LD_IMM_DW { return None; }
+                if pc + 1 >= n { return None; }
+                let nxt = decode(&insns[(pc + 1) * 8 .. (pc + 2) * 8]);
+                regs[i.dst as usize] = if i.src == 0 {
+                    let lo = i.imm as u32 as u64;
+                    let hi = nxt.imm as u32 as u64;
+                    ((hi << 32) | lo) as i64
+                } else {
+                    memory.pseudo(i.src, i.imm, nxt.imm)?
+                };
+                pc += 2;
+            }
+            _ => return None,
+        }
+    }
+    // Fell off the end without EXIT — verifier should have caught
+    // this, but the interpreter refuses to assume.
+    None
+}

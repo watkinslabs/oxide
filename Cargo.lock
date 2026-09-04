@@ -339,6 +339,7 @@ version = "0.1.0"
 dependencies = [
  "hal",
  "klog",
+ "loom",
  "sync",
 ]
 
@@ -2376,6 +2377,7 @@ dependencies = [
  "hal-x86_64",
  "klog",
  "landlock",
+ "loom",
  "namespace-identity",
  "network-namespace",
  "pe",
@@ -2439,8 +2441,11 @@ dependencies = [
  "klog",
  "lsm",
  "namespace-identity",
+ "nscg",
  "pmm",
  "sched",
+ "selinux",
+ "selinux-runtime",
  "sync",
  "syscall",
  "uaccess",

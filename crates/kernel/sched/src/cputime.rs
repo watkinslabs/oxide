@@ -34,14 +34,14 @@ pub fn vruntime_delta(delta_exec_ns: u64, load: u64) -> u64 {
     scaled.min(u64::MAX as u128) as u64
 }
 
-/// Clamp a raw `now - exec_start` delta. A backwards or implausibly
-/// large jump (clock skew, first-run sentinel, migration) is treated as
-/// a single tick's worth so accounting can't spike. `max_tick_ns` is the
-/// scheduler tick period (the largest sane single-charge).
+/// Return the complete positive `now - exec_start` interval.
+/// Equal stamps carry no elapsed time; a backwards stamp is rejected instead
+/// of wrapping. The scheduler stamps a task when it starts running, so a
+/// zeroed pair is the uninitialised case and also returns zero.
 /// # C: O(1)
-pub fn clamp_delta(now_ns: u64, exec_start_ns: u64, max_tick_ns: u64) -> u64 {
-    if now_ns <= exec_start_ns { return 0; }
-    (now_ns - exec_start_ns).min(max_tick_ns)
+pub fn runtime_delta(now_ns: u64, exec_start_ns: u64) -> u64 {
+    if exec_start_ns == 0 { return 0; }
+    now_ns.checked_sub(exec_start_ns).unwrap_or(0)
 }
 
 /// Whether a class charges scheduler runtime for the time its tasks run.
@@ -124,12 +124,13 @@ mod tests {
     }
 
     #[test]
-    fn clamp_delta_handles_skew() {
-        let tick = 10_000_000u64;
-        assert_eq!(clamp_delta(100, 100, tick), 0);   // no progress
-        assert_eq!(clamp_delta(50, 100, tick), 0);    // backwards
-        assert_eq!(clamp_delta(105, 100, tick), 5);   // normal
-        assert_eq!(clamp_delta(1 << 40, 0, tick), tick); // huge → one tick
+    fn runtime_delta_keeps_every_positive_nanosecond() {
+        assert_eq!(runtime_delta(0, 0), 0);
+        assert_eq!(runtime_delta(100, 100), 0);
+        assert_eq!(runtime_delta(50, 100), 0);
+        assert_eq!(runtime_delta(105, 100), 5);
+        assert_eq!(runtime_delta(1 << 40, 0), 0);
+        assert_eq!(runtime_delta((1 << 40) + 1, 1), 1 << 40);
     }
 
     /// Restricting the charge to the fair class froze every SCHED_FIFO /

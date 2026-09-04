@@ -34,14 +34,21 @@ pub struct TaskCore {
     /// Serializes the Sleeping→Runnable claim with affinity changes through
     /// the subsequent CPU-selection/enqueue decision. This is the task wake
     /// serialization boundary; it is acquired before a runqueue lock.
-    pub pi_lock: Spinlock<(), sync::TaskPi>,
+    pub pi_lock: Spinlock<super::TaskPiState, sync::TaskPi>,
     /// Diagnostic-only phase/timestamp for a claimed wake.  Absent outside
     /// watchdog builds so it cannot alter the scheduler's steady-state layout.
     #[cfg(feature = "debug-watchdog")]
     pub wake_diag_phase: AtomicU8,
     #[cfg(feature = "debug-watchdog")]
     pub wake_diag_ns: AtomicU64,
-    pub on_rq:    AtomicBool,
+    /// Linux integer `task_struct::on_rq`, including `TASK_ON_RQ_MIGRATING`.
+    pub on_rq:    TaskOnRq,
+    /// Oxide class-tree membership. A running runnable task remains
+    /// `on_rq == QUEUED` while its class entity is outside the pick tree.
+    pub on_class_rq: AtomicBool,
+    /// Stable identity of the class queue owning the embedded ready node.
+    /// Zero means detached; a different queue cannot unlink this task.
+    pub(crate) class_rq_owner: AtomicU64,
     /// SMP `on_cpu` (Linux): true while executing on a CPU; set on switch-to,
     /// cleared in finish_task_switch after register save; remote ttwu spins on it.
     pub on_cpu:   AtomicBool,
@@ -131,6 +138,11 @@ pub struct TaskCore {
     /// twice while still linked would overwrite its own `wake_next` and cycle
     /// the list.
     pub on_wake_list: AtomicBool,
+    /// Monotonic deferred-wake ownership generation and completed generation.
+    /// Affinity changes wait on one exact publication, never on open-ended
+    /// lifecycle-state polling.
+    pub wake_seq: AtomicU64,
+    pub wake_done: AtomicU64,
     pub cpu:      AtomicU16,
     /// Set while this task is parked waiting for a device completion. The
     /// wake path consumes it to raise schedutil's iowait boost exactly once.

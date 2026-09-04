@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use namespace_identity::NamespaceKind;
-use sync::{Spinlock, TaskList as TaskListClass};
+use namespace_identity::{NamespaceKind, NamespaceRef};
+use sync::{Namespace as NamespaceLock, Spinlock, TaskList as TaskListClass};
 
 use super::Task;
 
@@ -76,6 +76,8 @@ pub mod securebits {
 }
 
 pub struct Creds {
+    /// Capability/keyring namespace retained until final credential release.
+    user_ns: Spinlock<NamespaceRef, NamespaceLock>,
     pub ruid:  AtomicU32,
     pub euid:  AtomicU32,
     pub suid:  AtomicU32,
@@ -111,8 +113,9 @@ impl Creds {
 
     /// Initial creds for a fresh task — root, no supplementary groups.
     /// # C: O(1)
-    pub const fn root() -> Self {
+    pub fn root() -> Self {
         Self {
+            user_ns: Spinlock::new(namespace_identity::initial(NamespaceKind::User)),
             ruid: AtomicU32::new(0), euid: AtomicU32::new(0),
             suid: AtomicU32::new(0), fsuid: AtomicU32::new(0),
             rgid: AtomicU32::new(0), egid: AtomicU32::new(0),
@@ -143,6 +146,7 @@ impl Creds {
     pub unsafe fn snapshot(&self) -> Self {
         use core::sync::atomic::Ordering::Relaxed;
         let out = Self {
+            user_ns: Spinlock::new(self.user_namespace()),
             ruid:  AtomicU32::new(self.ruid.load(Relaxed)),
             euid:  AtomicU32::new(self.euid.load(Relaxed)),
             suid:  AtomicU32::new(self.suid.load(Relaxed)),
@@ -160,6 +164,14 @@ impl Creds {
             securebits:      AtomicU32::new(self.securebits.load(Relaxed)),
         };
         out
+    }
+
+    /// Retain the credential namespace capabilities are interpreted in. # C: O(1)
+    pub fn user_namespace(&self) -> NamespaceRef { self.user_ns.lock().clone() }
+
+    /// Install the namespace of a newly committed credential transition. # C: O(1)
+    pub(crate) fn replace_user_namespace(&self, namespace: NamespaceRef) -> NamespaceRef {
+        core::mem::replace(&mut *self.user_ns.lock(), namespace)
     }
 
     /// Share the current supplementary group list (Linux `get_group_info`).
@@ -296,8 +308,7 @@ impl Task {
         // caller-specific add-on.  The reference gives the LSM the task's
         // subject credentials and distinguishes the initial user namespace's
         // `capability` class from a nested namespace's `cap_userns` class.
-        let init_namespace = self.namespace_owner(NamespaceKind::User)
-            .is_some_and(|namespace| namespace.is_initial());
+        let init_namespace = self.security.creds.user_namespace().is_initial();
         if selinux_runtime::check::capability(self.security.selinux_label.lock().sid, cap,
             init_namespace).is_err() { return false; }
         self.used_superpriv.store(true, core::sync::atomic::Ordering::Relaxed);

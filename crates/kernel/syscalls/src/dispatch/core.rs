@@ -201,9 +201,9 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
     // sentinel like -ERESTARTSYS) — the ignored-restart check below and
     // dispatch_pending() need the raw sentinel. normalize_user_return()
     // runs once, at the final return, per docs/38 restart ABI.
-    if !is_nt_entry {
     #[cfg(feature = "debug-syscall-return")]
     let return_task = sched::live::current();
+    if !is_nt_entry {
     #[cfg(feature = "debug-syscall-return")]
     if let Some(task) = return_task {
         sched::diag::syscall_return_stage(task, sched::diag::SYSCALL_RETURN_STAGE_AFTER_DISPATCH);

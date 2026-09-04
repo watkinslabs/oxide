@@ -8,11 +8,13 @@
 // handler has RUN, and a sender's completion test cannot pass before that.
 
 extern crate std;
+use core::cell::Cell;
 use std::vec::Vec;
 use std::cell::RefCell;
 
 use super::mask::*;
-use super::queue::{CallQueues, SlotState};
+use super::queue::{deliver_published, retry_delivery, wait_callable_resolution,
+    CallQueues, SlotState};
 
 fn mask(word: u64) -> crate::CpuMask { crate::CpuMask::from_words(&[word]) }
 
@@ -52,6 +54,18 @@ fn an_out_of_range_caller_id_removes_nothing_and_panics_nothing() {
 }
 
 #[test]
+#[should_panic(expected = "ONLINE CPU missing hardware ID")]
+fn online_target_without_hardware_identity_is_an_invariant_failure() {
+    let _ = online_hardware_id(true, None);
+}
+
+#[test]
+fn offline_target_needs_no_hardware_identity() {
+    assert_eq!(online_hardware_id(false, None), None);
+    assert_eq!(online_hardware_id(true, Some(0x1234)), Some(0x1234));
+}
+
+#[test]
 fn drop_unreachable_clears_only_that_cpu() {
     assert_eq!(drop_unreachable(mask(0b1011), 1), mask(0b1001));
     assert_eq!(drop_unreachable(mask(0b1011), 2), mask(0b1011));
@@ -87,6 +101,7 @@ fn a_fresh_queue_has_every_slot_idle_and_drains_nothing() {
     let mut ran = 0;
     q.drain(T, |_, _| ran += 1);
     assert_eq!(ran, 0);
+    assert!(q.target_empty(T));
 }
 
 #[test]
@@ -221,9 +236,11 @@ fn a_push_made_during_a_drain_is_not_lost() {
         q.lock_slot(B, T, || {});
         *need_ipi.borrow_mut() = Some(q.push(B, T, 2, 22));
     });
+    assert!(!q.target_empty(T));
     assert_eq!(*need_ipi.borrow(), Some(true), "late push must request its own IPI");
     let seen = RefCell::new(Vec::new());
     q.drain(T, |k, a| seen.borrow_mut().push((k, a)));
+    assert!(q.target_empty(T));
     assert_eq!(&seen.borrow()[..], &[(2u32, 22u64)]);
 }
 
@@ -234,6 +251,93 @@ fn abandoning_an_undelivered_slot_frees_the_sender() {
     assert!(!q.is_complete(A, T));
     q.abandon_unpushed(A, T);
     assert!(q.is_complete(A, T));
+}
+
+#[test]
+fn published_call_retries_delivery_without_poisoning_its_slot() {
+    let q = q();
+    q.lock_slot(A, T, || {});
+    assert!(q.push(A, T, 7, 77));
+    let attempts = Cell::new(0u32);
+    retry_delivery(|| {
+        let n = attempts.get() + 1;
+        attempts.set(n);
+        n == 3
+    }, || {});
+    assert_eq!(attempts.get(), 3);
+    assert!(!q.is_complete(A, T), "retry must retain published ownership");
+    q.drain(T, |kind, arg| assert_eq!((kind, arg), (7, 77)));
+    assert!(q.is_complete(A, T));
+}
+
+#[test]
+fn publication_guard_survives_pause_after_push_until_delivery() {
+    struct Guard<'a>(&'a Cell<bool>);
+    impl Drop for Guard<'_> { fn drop(&mut self) { self.0.set(true); } }
+
+    let dropped = Cell::new(false);
+    let attempts = Cell::new(0u32);
+    deliver_published(Guard(&dropped), true, || false, || {
+        assert!(!dropped.get(),
+            "terminal grace became visible after push but before successful send");
+        let next = attempts.get() + 1;
+        attempts.set(next);
+        next == 2
+    }, || {
+        assert!(!dropped.get(), "retry pause must remain inside publication guard");
+    });
+    assert_eq!(attempts.get(), 2);
+    assert!(dropped.get(), "guard retires only after successful delivery");
+}
+
+#[test]
+fn completed_descriptor_ends_a_failed_delivery_retry() {
+    let complete = Cell::new(false);
+    let sends = Cell::new(0u32);
+    deliver_published((), true, || complete.get(), || {
+        sends.set(sends.get() + 1);
+        false
+    }, || complete.set(true));
+    assert_eq!(sends.get(), 1);
+    assert!(complete.get(), "target-side service is stronger than a later IPI retry");
+}
+
+#[test]
+fn post_close_call_waits_until_offline_before_omitting_target() {
+    let online = Cell::new(true);
+    let callable = Cell::new(false);
+    let progress = Cell::new(0u32);
+    let publish = wait_callable_resolution(|| online.get(), || callable.get(), || {
+        let pass = progress.get() + 1;
+        progress.set(pass);
+        assert!(online.get(), "call returned while closed target still executed");
+        if pass == 3 { online.set(false); }
+    });
+    assert!(!publish, "offline publication, not CALLABLE close, authorizes omission");
+    assert_eq!(progress.get(), 3, "post-close caller had to wait for transition resolution");
+}
+
+#[test]
+fn post_close_call_publishes_when_cancellation_reopens_target() {
+    let callable = Cell::new(false);
+    let progress = Cell::new(0u32);
+    let publish = wait_callable_resolution(|| true, || callable.get(), || {
+        progress.set(progress.get() + 1);
+        if progress.get() == 2 { callable.set(true); }
+    });
+    assert!(publish);
+    assert_eq!(progress.get(), 2);
+}
+
+#[test]
+fn positive_control_drop_before_send_exposes_the_terminal_race() {
+    struct Guard<'a>(&'a Cell<bool>);
+    impl Drop for Guard<'_> { fn drop(&mut self) { self.0.set(true); } }
+    let dropped = Cell::new(false);
+    drop(Guard(&dropped));
+    let send_saw_closed_publication = dropped.get();
+    assert!(send_saw_closed_publication,
+        "positive control models shutdown grace passing before delayed send");
 }
 
 #[test]

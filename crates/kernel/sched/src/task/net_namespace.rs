@@ -3,7 +3,7 @@ use core::sync::atomic::Ordering;
 
 use network_namespace::{NetworkNamespaceId, NetworkNamespaceRef};
 
-use super::{Task, TaskState};
+use super::Task;
 
 impl Task {
     /// Clone the task's current network namespace owner atomically.
@@ -56,8 +56,8 @@ impl Task {
 
     /// Release namespace membership before publishing terminal task state.
     /// # C: O(1) + final-owner drop
-    /// # Ctx: caller holds no lock ranked `Namespace` or higher
-    /// # Lk: takes `Namespace` (rank 75)
+    /// # Ctx: caller holds no `TaskPi` or runqueue lock
+    /// # Lk: takes `Namespace` (rank 75), then `TaskPi` (rank 105)
     /// # Sleeps: no
     pub fn mark_done(&self) {
         // Linux `exe_file_allow_write_access` when the mm goes away. Without
@@ -71,17 +71,23 @@ impl Task {
         crate::ucounts::uncharge_task(self);
         self.release_network_namespace();
         self.release_namespaces();
-        // A dying `SCHED_DEADLINE` task stops contending for good, so its
-        // admitted bandwidth is released here. Leaving it booked would make the
-        // machine permanently less admissible with every deadline task that has
-        // ever exited.
-        crate::deadline::live::leave_class(self);
         // Linux `do_task_dead()` publishes PF_NOFREEZE before the terminal
         // schedule. A Zombie can remain in the task table until its parent
         // reaps it, but it has no execution path left on which to acknowledge
         // a later freezer request and therefore must not count as outstanding.
         self.nofreeze.store(true, Ordering::Release);
-        self.set_state(TaskState::Zombie);
+        #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
+        crate::live::runqueue::mark_terminal(self);
+        #[cfg(not(any(target_os = "oxide-kernel", test, feature = "hosted")))]
+        {
+            let _pi = self.pi_lock.lock();
+            hal::kassert!(!self.on_rq.load(Ordering::Acquire)
+                && !self.on_cpu.load(Ordering::Acquire)
+                && !self.on_wake_list.load(Ordering::Acquire),
+                "non-live terminal task has scheduler ownership");
+            self.set_state(super::TaskState::Zombie);
+            crate::deadline::live::leave_class(self);
+        }
         crate::registry::publish_pidfd_exit(self);
     }
 }

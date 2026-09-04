@@ -86,6 +86,8 @@ pub(crate) use fd::{install_fd, install_fd_access};
 pub(crate) use btf::{StreamKfunc, stream_kfunc_by_btf_id};
 #[cfg(test)]
 pub(crate) use btf::stream_vprintk_btf_id;
+#[cfg(test)]
+pub(crate) use btf::lsm_hook_btf_id;
 
 /// `bpf_prog_get(ufd)`: the program one descriptor holds, together with the
 /// facts an attach site decides on. An empty descriptor is `-EBADF`; one

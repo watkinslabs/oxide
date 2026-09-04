@@ -88,7 +88,8 @@ pub fn submit_3d_for_key(key: virtio::VirtioChildDeviceKey, context_id: u32,
         cmds.push(RuntimeCmd::ContextAttach { context_id, resource_id: *resource_id });
     }
     cmds.push(RuntimeCmd::Submit3d {
-        context_id, ring_idx, command_bytes: command.len() as u32, payload,
+        context_id, ring_idx, command_bytes: command.len() as u32,
+        payload: alloc::sync::Arc::new(payload),
     });
     runtime_queue::enqueue_ctrl(key, &cmds)
 }

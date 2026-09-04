@@ -34,6 +34,37 @@ use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use crate::MAX_CPUS;
 
+/// Retry delivery for an already-published queue head. Once linked, a call
+/// descriptor cannot be abandoned without unlinking it; transient controller
+/// refusal therefore keeps retrying while allowing local progress. # C: O(retries)
+pub fn retry_delivery(mut send: impl FnMut() -> bool, mut relax: impl FnMut()) {
+    while !send() { relax(); }
+}
+
+/// Keep a publication-side exclusion token alive until a newly linked queue
+/// head has actually been delivered. CPU-down's grace period may not pass
+/// between link and send, or it could stop the target while the sender later
+/// retries forever. # C: O(retries)
+pub fn deliver_published<G>(publication: G, need_ipi: bool,
+    mut complete: impl FnMut() -> bool, mut send: impl FnMut() -> bool,
+    mut relax: impl FnMut()) {
+    while need_ipi && !complete() && !send() { relax(); }
+    drop(publication);
+}
+
+/// Resolve a CPU-hotplug publication gate. An online-but-closed target is in
+/// transition and must not be silently omitted: wait until cancellation
+/// reopens it or final offline publication makes omission valid.
+/// # C: O(hotplug transition)
+pub fn wait_callable_resolution(mut online: impl FnMut() -> bool,
+    mut callable: impl FnMut() -> bool, mut progress: impl FnMut()) -> bool {
+    loop {
+        if !online() { return false; }
+        if callable() { return true; }
+        progress();
+    }
+}
+
 /// Slot-index encoding in a queue head / `next` link: `index + 1`, so `0`
 /// can mean "end of list" without stealing a real index.
 const EMPTY: u32 = 0;
@@ -121,6 +152,13 @@ impl CallQueues {
     #[inline]
     pub fn is_complete(&self, sender: usize, target: usize) -> bool {
         self.state(sender, target) == SlotState::Idle
+    }
+
+    /// Whether `target` has no published call-function work. CPU-down uses
+    /// this only after removing the target from selection and waiting the
+    /// shared publication grace. # C: O(1)
+    pub fn target_empty(&self, target: usize) -> bool {
+        self.heads[target.min(MAX_CPUS - 1)].load(Ordering::Acquire) == EMPTY
     }
 
     /// Claim the sender's slot for `target`, running `relax` while a previous

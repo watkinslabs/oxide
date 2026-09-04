@@ -128,6 +128,17 @@ fn task_lift_vruntime_respects_floor() {
 }
 
 #[test]
+fn task_lift_vruntime_uses_signed_order_across_wrap() {
+    let t = Task::new(4, "wrapped", SchedClass::Normal { weight: 1024 });
+    t.sched.se.vruntime.store(u64::MAX - 2, Ordering::Release);
+    t.lift_vruntime(3);
+    assert_eq!(t.sched.se.vruntime.load(Ordering::Acquire), 3);
+    t.lift_vruntime(u64::MAX - 2);
+    assert_eq!(t.sched.se.vruntime.load(Ordering::Acquire), 3,
+        "an older pre-wrap floor must not rewind post-wrap vruntime");
+}
+
+#[test]
 fn wake_placement_preserves_accumulated_cpu_debt() {
     let t = Task::new(2, "debtor", SchedClass::Normal { weight: 1024 });
     t.sched.se.vruntime.store(1_000, Ordering::Release);
@@ -151,7 +162,7 @@ fn repeated_coordinator_wakes_cannot_jump_a_queued_victim() {
     victim.sched.se.vruntime.store(500, Ordering::Release);
     let coordinator = Arc::new(Task::new(10, "coordinator", SchedClass::Normal { weight: 1024 }));
     coordinator.sched.se.vruntime.store(1_000, Ordering::Release);
-    let mut q = crate::CfsRunqueue::new();
+    let mut q = crate::cfs::CfsRunqueue::new();
     q.enqueue(Arc::clone(&victim));
     for _ in 0..8 { coordinator.lift_vruntime(q.min_vruntime()); }
     q.enqueue(coordinator);

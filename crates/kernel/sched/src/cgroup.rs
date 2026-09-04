@@ -13,6 +13,42 @@ use core::sync::atomic::Ordering;
 
 use crate::{Task, TaskState};
 
+/// Serialize canonical membership against fork, migration, and task exit.
+/// # C: O(body + contention)
+/// # Sleeps: yes, in process context while another writer owns the transaction
+pub fn with_group_writer<R>(body: impl FnOnce() -> R) -> R {
+    cgroup::with_fork_writer(body)
+}
+
+/// Commit one unpublished task's canonical membership while fork, migration,
+/// and exit are mutually excluded. # C: O(threads)
+pub fn commit_new_task(cgid: Option<u64>, child_tid: u64, parent_tid: u64,
+    thread: bool) -> vfs::KResult<()> {
+    with_group_writer(|| {
+        if thread {
+            cgroup::charge_thread(parent_tid, child_tid);
+            Ok(())
+        } else if let Some(cgid) = cgid {
+            cgroup::attach_tid_into(cgid, child_tid)
+        } else {
+            cgroup::inherit(child_tid, parent_tid);
+            Ok(())
+        }
+    })
+}
+
+/// Give an NT-native task canonical membership before registry publication.
+/// POSIX clone has already committed membership and remains unchanged. # C: O(log n)
+pub(crate) fn commit_untracked_nt_task(task: &Task) {
+    if !task.is_nt_personality() || cgroup::contains_task(task.tid as u64) { return; }
+    let tgid = task.tgid.load(CgOrd::Acquire) as u64;
+    let (parent, thread) = if tgid == task.tid as u64 {
+        (task.parent_tid.load(CgOrd::Acquire) as u64, false)
+    } else { (tgid, true) };
+    let result = commit_new_task(None, task.tid as u64, parent, thread);
+    debug_assert!(result.is_ok());
+}
+
 fn lookup_init_pid(pid: u32) -> Option<alloc::sync::Arc<crate::Task>> {
     let namespace = namespace_identity::initial(namespace_identity::NamespaceKind::Pid);
     crate::registry::lookup_in_namespace(&namespace, pid)
@@ -139,6 +175,30 @@ pub fn tid_display_hook(tid: u64) -> u64 {
     crate::live::registry::display_vtid(tid as u32)
 }
 
+fn exiting(task: &Task) -> bool {
+    task.exiting.load(CgOrd::Acquire)
+        || task.reaped.load(CgOrd::Acquire)
+        || task.state() == TaskState::Zombie
+}
+
+fn migrate_resolved_with<F>(task: &Task, cgid: u64, thread: bool, before_writer: F)
+    -> vfs::KResult<u64>
+where F: FnOnce() {
+    if exiting(task) { return Ok(cgid); }
+    before_writer();
+    with_group_writer(|| {
+        // Exit publishes liveness before taking this writer. A migration that
+        // resolved the task first must revalidate here before canonical state
+        // can be committed; otherwise it can recreate membership after exit.
+        if exiting(task) { return Ok(cgid); }
+        if thread {
+            cgroup::migrate_thread(cgid, task.tid as u64)
+        } else {
+            cgroup::migrate_process(cgid, task.tgid.load(CgOrd::Acquire) as u64)
+        }
+    })
+}
+
 /// Resolve and migrate one process or thread while excluding task exit.
 /// # C: O(tasks + cgroup members)
 pub fn migrate_hook(vpid: u64, cgid: u64, thread: bool) -> vfs::KResult<u64> {
@@ -152,50 +212,19 @@ pub fn migrate_hook(vpid: u64, cgid: u64, thread: bool) -> vfs::KResult<u64> {
         crate::registry::resolve_user_pid(vpid as u32)
             .or_else(|| crate::live::registry::lookup_by_vpid(vpid as u32))
     }.ok_or(vfs::VfsError::Esrch)?;
-    // A task on its way out is SKIPPED, not refused. The reference decides this
-    // in `cgroup_migrate_add_task`, which returns without doing anything:
-    //
-    //     /* @task either already exited or can't exit until the end */
-    //     if (task->flags & PF_EXITING)
-    //             return;
-    //
-    // and `cgroup_procs_write_start` — the part that CAN fail — rejects only a
-    // pid that resolves to nothing (ESRCH) or a kthread pinned by
-    // `PF_NO_SETAFFINITY` (EINVAL). It never turns an exiting task into an
-    // error, because the write asked for a state the task is about to reach
-    // anyway: nothing to move, nothing to report.
-    //
-    // Returning ESRCH here instead made a `cgroup.procs` write fail whenever
-    // the resolved task happened to be leaving, and the service manager takes
-    // that at its word: `Failed to create /init.scope control group: No such
-    // process`, then `Freezing execution.` The destination is returned as the
-    // source so the caller sees a move from where it already is — no movement,
-    // no notification.
-    if task.exiting.load(CgOrd::Acquire)
-        || task.reaped.load(CgOrd::Acquire)
-        || task.state() == TaskState::Zombie {
-        return Ok(cgid);
-    }
-    if thread {
-        cgroup::migrate_thread(cgid, task.tid as u64)
-    } else {
-        cgroup::migrate_process(cgid, task.tgid.load(CgOrd::Acquire) as u64)
-    }
+    // Exiting tasks are skipped successfully. Canonical membership and the
+    // lifecycle writer are the only state consulted by this transaction.
+    migrate_resolved_with(&task, cgid, thread, || {})
 }
 
 /// Publish exit before removing canonical cgroup membership, excluding a
 /// concurrent cgroup.procs/threads migration that could resurrect the task.
 /// # C: O(exited tasks + threads)
 pub fn exit_task(task: &Task) {
-    // Mark the task itself, then tear its membership down. A migration that
-    // arrives in between sees the flag and refuses, which is the race the old
-    // side table existed to close — without a second place for the answer to
-    // live.
+    // Publish exit first. A migration that already resolved this task must
+    // revalidate after acquiring the same writer before changing membership.
     task.exiting.store(true, CgOrd::Release);
-    cgroup::on_exit(
-        task.tid as u64,
-        task.tgid.load(CgOrd::Acquire) as u64,
-    );
+    cgroup::on_exit(task.tid as u64, task.tgid.load(CgOrd::Acquire) as u64);
 }
 
 /// Register the scheduler's cgroup controllers with the cgroup crate.
@@ -228,6 +257,7 @@ mod freezer_tests {
         task.nofreeze.store(false, CgOrd::Release);
         task.security.vtgid.store(606, CgOrd::Release);
         task.security.vtid.store(606, CgOrd::Release);
+        task.set_state(TaskState::Sleeping);
         crate::registry::insert(&task);
         install();
         assert_eq!(cgroup::inode::make_cg_file(cgid, "cgroup.procs").write(0, b"606").unwrap(), 3);
@@ -253,6 +283,8 @@ mod freezer_tests {
         let thread = Arc::new(Task::new_user(
             97_008, "freeze-thread", crate::SchedClass::Normal { weight: 1024 },
             mm));
+        leader.set_state(TaskState::Sleeping);
+        thread.set_state(TaskState::Sleeping);
         thread.tgid.store(leader.tid, CgOrd::Release);
         crate::registry::insert(&leader);
         crate::registry::insert(&thread);
@@ -273,3 +305,7 @@ mod freezer_tests {
         cgroup::rmdir_child(cgroup::ROOT_CGROUP, name).unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "cgroup/tests.rs"]
+mod lifecycle_tests;

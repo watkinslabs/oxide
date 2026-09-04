@@ -17,6 +17,15 @@ pub fn targets_for(requested: crate::CpuMask, online: crate::CpuMask, this_cpu: 
     requested.intersect(online).without(crate::CpuMask::of(this_cpu))
 }
 
+/// Resolve transport identity for a CPU selected from ONLINE. Missing
+/// identity is topology corruption, not an unreachable target that a caller
+/// may silently omit. # C: O(1)
+pub fn online_hardware_id(online: bool, id: Option<u64>) -> Option<u64> {
+    if !online { return None; }
+    hal::kassert!(id.is_some(), "ONLINE CPU missing hardware ID");
+    id
+}
+
 /// Drop a target that could not be reached (its logical id has no hardware
 /// id) from the pending set. It was never told to do anything, so waiting on
 /// it is a hang for an acknowledgement that cannot arrive; and it cannot

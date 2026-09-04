@@ -175,27 +175,27 @@ fn donor_is_retained_while_a_stronger_normal_priority_temporarily_wins() {
 }
 
 #[test]
-fn nice_change_recomputes_effective_priority_against_retained_fair_donor() {
+fn nice_change_has_no_retained_fair_donor() {
     let task = Task::new(11, "nice-donor", SchedClass::Normal { weight: 1_024 });
     task.set_sched_class(SchedClass::Normal { weight: 3_121 });
     task.set_nice_value(-10);
     let raised = task.priority_snapshot();
     assert_eq!(raised.normal_prio, SchedPriority::fair(-10).unwrap());
     assert_eq!(raised.prio, raised.normal_prio);
-    assert!(raised.has_donor);
+    assert!(!raised.has_donor);
     task.set_nice_value(10);
-    assert_eq!(task.priority_snapshot().prio, SchedPriority::fair(-5).unwrap());
+    assert_eq!(task.priority_snapshot().prio, SchedPriority::fair(10).unwrap());
 }
 
 #[test]
-fn sched_idle_keeps_idle_load_while_a_fair_donor_survives_nice_changes() {
+fn sched_idle_ignores_an_ordinary_fair_donor() {
     let task = Task::new(12, "idle-donor", SchedClass::Normal {
         weight: super::super::sched_entity::WEIGHT_IDLEPRIO,
     });
     task.set_sched_class(SchedClass::Normal { weight: 15 });
     task.set_nice_value(-20);
     assert_eq!(task.normal_sched_class(), SchedClass::Normal { weight: 3 });
-    assert_eq!(task.sched_class(), SchedClass::Normal { weight: 15 });
+    assert_eq!(task.sched_class(), SchedClass::Normal { weight: 3 });
     assert_eq!(task.priority_snapshot().load, LoadWeight::idle());
     task.restore_normal_sched_class();
     assert_eq!(task.sched_class(), SchedClass::Normal { weight: 3 });
@@ -204,10 +204,10 @@ fn sched_idle_keeps_idle_load_while_a_fair_donor_survives_nice_changes() {
 }
 
 #[test]
-fn fair_donation_changes_effective_descriptor_without_configured_load() {
+fn fair_donation_does_not_change_effective_descriptor_or_configured_load() {
     let task = Task::new(10, "fair-donor", SchedClass::Normal { weight: 15 });
     task.set_sched_class(SchedClass::Normal { weight: 88_761 });
-    assert_eq!(task.sched_class(), SchedClass::Normal { weight: 88_761 });
+    assert_eq!(task.sched_class(), SchedClass::Normal { weight: 15 });
     assert_eq!(task.normal_sched_class(), SchedClass::Normal { weight: 15 });
     assert_eq!(task.priority_snapshot().load, LoadWeight::for_nice(19).unwrap());
 }

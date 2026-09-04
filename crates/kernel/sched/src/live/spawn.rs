@@ -25,8 +25,6 @@ use crate::{SchedClass, Task};
 use crate::task::dup;
 use vmm::AddressSpace;
 
-use super::runqueue::RqIrq;
-
 pub(super) mod inherit;
 
 #[inline]
@@ -117,10 +115,7 @@ pub unsafe fn spawn_kernel_thread(
     entry: extern "C" fn(usize) -> !,
     arg: usize,
 ) -> Result<Arc<Task>, SpawnError> {
-    let rq = match super::runqueue::global() {
-        Some(r) => r,
-        None    => return Err(SpawnError::NoRunqueue),
-    };
+    if super::runqueue::global().is_none() { return Err(SpawnError::NoRunqueue); }
 
     // 1. Build the Task carrier (no stack, default vruntime) inside its Arc.
     let class = SchedClass::Normal { weight: DEFAULT_WEIGHT };
@@ -142,16 +137,12 @@ pub unsafe fn spawn_kernel_thread(
         core::ptr::write(p, ArchCtx::new_kernel_with_irq_frame(stack_top, entry, arg));
     }
 
-    // 4. Enqueue, return.
+    // 4. Publish through the same active-aware placement owner as fork/wake.
     let start_boottime_ns = monotonic_ns();
     task.start_boottime_ns = start_boottime_ns;
     arc.spawn_ns.store(start_boottime_ns, Ordering::Release);
     super::registry::insert(&arc);
-    {
-        let mut inner = rq.inner.lock_irqsave::<RqIrq>();
-        inner.enqueue(Arc::clone(&arc));
-        rq.publish_nr_running(inner.nr_running());
-    }
+    wake_new_task(&arc);
     // Per `13§9` wake→resched: a freshly-runnable task may
     // outrank the current; flag a reschedule so the next
     // preempt-enable / syscall-return point picks it up.
@@ -211,10 +202,7 @@ pub unsafe fn spawn_user_thread_with_vpid(
     user_sp: u64,
     mm: Arc<AddressSpace>,
 ) -> Result<Arc<Task>, SpawnError> {
-    let rq = match super::runqueue::global() {
-        Some(r) => r,
-        None    => return Err(SpawnError::NoRunqueue),
-    };
+    if super::runqueue::global().is_none() { return Err(SpawnError::NoRunqueue); }
 
     let class = SchedClass::Normal { weight: DEFAULT_WEIGHT };
     let mut arc = dup::new_user_arc(tid, name, class, mm);
@@ -249,11 +237,7 @@ pub unsafe fn spawn_user_thread_with_vpid(
     task.start_boottime_ns = start_boottime_ns;
     arc.spawn_ns.store(start_boottime_ns, Ordering::Release);
     super::registry::insert(&arc);
-    {
-        let mut inner = rq.inner.lock_irqsave::<RqIrq>();
-        inner.enqueue(Arc::clone(&arc));
-        rq.publish_nr_running(inner.nr_running());
-    }
+    wake_new_task(&arc);
     // Per `13§9` wake→resched: same rule for user-thread spawn.
     crate::preempt::set_need_resched();
     Ok(arc)
@@ -415,7 +399,10 @@ pub unsafe fn spawn_user_thread_for_fork(
 }
 
 /// Publish a fully initialized clone in the task/PID registry. # C: O(N_tasks)
-pub fn publish_new_task(task: &Arc<Task>) { super::registry::insert(task); }
+pub fn publish_new_task(task: &Arc<Task>) {
+    crate::cgroup::commit_untracked_nt_task(task);
+    super::registry::insert(task);
+}
 
 /// Linux `wake_up_new_task`: make a freshly-built task (registered but not yet
 /// runnable) schedulable. Call ONLY after every field a running child could

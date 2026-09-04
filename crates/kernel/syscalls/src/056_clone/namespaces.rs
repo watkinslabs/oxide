@@ -8,7 +8,7 @@ use syscall::errno::Errno;
 /// the caller's namespace, not the child's.
 /// # C: O(snapshotted mount entries + pid-ns depth)
 pub(super) fn inherit_and_publish(parent: &sched::Task, child: &sched::Task, flags: u64,
-    set_tid: &[u32])
+    cgid: u64, set_tid: &[u32])
     -> Result<u32, Errno>
 {
     let snapshot = parent.namespace_snapshot().ok_or(Errno::Esrch)?;
@@ -17,6 +17,7 @@ pub(super) fn inherit_and_publish(parent: &sched::Task, child: &sched::Task, fla
     crate::s272_unshare::apply_new_namespaces(child, snapshot, Some(net_namespace), bits, false,
         crate::s272_unshare::NamespaceChange::CloneChild {
             share_vm: (flags & super::CLONE_VM) != 0,
+            cgid,
         })?;
 
     // `clone3` `set_tid[]` names the child's pid at each level, innermost

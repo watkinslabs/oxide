@@ -6,9 +6,24 @@
 // guarantee at all — and the arithmetic is a fixed-point sum whose shifts are
 // exactly the kind of thing that regresses silently.
 
-use core::sync::atomic::{AtomicU64, Ordering};
-
 use super::params::{to_ratio, BW_UNIT};
+use super::entity::InactiveReservation;
+
+/// Root-domain deadline-bandwidth serialization. Nested inside the owning
+/// runqueue lock; never nested with the replenishment queue.
+struct DlBandwidth;
+const DL_BW_LOCK_RANK: u16 = 112;
+impl sync::LockClass for DlBandwidth {
+    fn rank() -> u16 { DL_BW_LOCK_RANK }
+    fn name() -> &'static str { "DlBandwidth" }
+}
+
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+type DlBwIrq = hal_x86_64::X86IrqGate;
+#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+type DlBwIrq = hal_aarch64::ArmIrqGate;
+#[cfg(not(target_os = "oxide-kernel"))]
+type DlBwIrq = sync::NoopIrq;
 
 /// Capacity of one CPU, in the same scale the capacity sum uses.
 pub const CAPACITY_SCALE: u64 = 1024;
@@ -48,7 +63,10 @@ pub fn capacity_of(n: u64) -> u64 { n << CAPACITY_SHIFT }
 /// # C: O(1)
 pub fn dl_overflow(bw: u64, cap: u64, total_bw: u64, old_bw: u64, new_bw: u64) -> bool {
     if bw == BW_DISABLED { return false; }
-    cap_scale(bw, cap) < total_bw.saturating_sub(old_bw).saturating_add(new_bw)
+    let prospective = total_bw.checked_sub(old_bw)
+        .and_then(|base| base.checked_add(new_bw))
+        .expect("deadline bandwidth prospective total overflow");
+    cap_scale(bw, cap) < prospective
 }
 
 /// The transition an admission request represents.
@@ -68,6 +86,18 @@ pub enum BwChange {
     Leaving,
 }
 
+/// Proof that the ledger already serialized and committed an admission.
+pub struct Admission {
+    pending: PendingUse,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub(super) enum PendingUse { None, Reused, Expired }
+
+impl Admission {
+    pub(super) fn pending_use(&self) -> PendingUse { self.pending }
+}
+
 /// Decide the accounting effect of a policy request, or report that it does
 /// not fit.
 ///
@@ -76,26 +106,48 @@ pub enum BwChange {
 /// # C: O(1)
 pub fn plan(bw: u64, cap: u64, total_bw: u64, want_dl: bool, is_dl: bool,
             cur_bw: u64, new_bw: u64, special: bool) -> Result<BwChange, ()> {
-    if special { return Ok(BwChange::None); }
-    if want_dl && is_dl && new_bw == cur_bw { return Ok(BwChange::None); }
-    if want_dl && !is_dl {
+    plan_transition(bw, cap, total_bw, want_dl, is_dl, cur_bw, new_bw,
+                    special, special)
+}
+
+/// Plan a transition where the current and requested entities can differ in
+/// whether they are outside ordinary admission accounting. # C: O(1)
+pub fn plan_transition(bw: u64, cap: u64, total_bw: u64, want_dl: bool, is_dl: bool,
+            cur_bw: u64, new_bw: u64, cur_special: bool,
+            new_special: bool) -> Result<BwChange, ()> {
+    let has_booking = is_dl && !cur_special;
+    let wants_booking = want_dl && !new_special;
+    if wants_booking && has_booking && new_bw == cur_bw { return Ok(BwChange::None); }
+    if wants_booking && !has_booking {
         if dl_overflow(bw, cap, total_bw, 0, new_bw) { return Err(()); }
         return Ok(BwChange::Add { new: new_bw });
     }
-    if want_dl && is_dl {
+    if wants_booking && has_booking {
         if dl_overflow(bw, cap, total_bw, cur_bw, new_bw) { return Err(()); }
         return Ok(BwChange::Replace { old: cur_bw, new: new_bw });
     }
-    if is_dl { return Ok(BwChange::Leaving); }
+    if has_booking { return Ok(BwChange::Leaving); }
     Ok(BwChange::None)
 }
 
 /// Global admitted-bandwidth accounting for the deadline class.
 pub struct DlBw {
+    state: sync::Spinlock<DlBwState, DlBandwidth>,
+    topology: Option<TopologyOps>,
+}
+
+#[derive(Copy, Clone)]
+struct TopologyOps {
+    online_cpus: fn() -> u64,
+    cpu_online: fn(u32) -> bool,
+    mark_offline: unsafe fn(u32) -> bool,
+}
+
+struct DlBwState {
     /// Per-CPU cap in `BW_SHIFT` fixed point, or [`BW_DISABLED`].
-    bw: AtomicU64,
+    bw: u64,
     /// Sum of every admitted entity's `dl_bw`, undivided.
-    total_bw: AtomicU64,
+    total_bw: u64,
 }
 
 impl DlBw {
@@ -105,7 +157,18 @@ impl DlBw {
     /// while looking like a capacity answer.
     /// # C: O(1)
     pub const fn new() -> DlBw {
-        DlBw { bw: AtomicU64::new(DEFAULT_BW), total_bw: AtomicU64::new(0) }
+        DlBw {
+            state: sync::Spinlock::new(DlBwState { bw: DEFAULT_BW, total_bw: 0 }),
+            topology: None,
+        }
+    }
+
+    const fn with_topology(online_cpus: fn() -> u64, cpu_online: fn(u32) -> bool,
+                           mark_offline: unsafe fn(u32) -> bool) -> DlBw {
+        DlBw {
+            state: sync::Spinlock::new(DlBwState { bw: DEFAULT_BW, total_bw: 0 }),
+            topology: Some(TopologyOps { online_cpus, cpu_online, mark_offline }),
+        }
     }
 
     /// Re-seed the per-CPU cap from a global real-time period/runtime pair.
@@ -116,38 +179,108 @@ impl DlBw {
     /// # C: O(1)
     pub fn init(&self, period_ns: u64, runtime_ns: u64) {
         let bw = if runtime_ns == u64::MAX { BW_DISABLED } else { to_ratio(period_ns, runtime_ns) };
-        self.bw.store(bw, Ordering::Release);
+        self.state.lock_irqsave::<DlBwIrq>().bw = bw;
     }
 
     /// # C: O(1)
-    pub fn bw(&self) -> u64 { self.bw.load(Ordering::Acquire) }
+    pub fn bw(&self) -> u64 { self.state.lock_irqsave::<DlBwIrq>().bw }
     /// # C: O(1)
-    pub fn total_bw(&self) -> u64 { self.total_bw.load(Ordering::Acquire) }
+    pub fn total_bw(&self) -> u64 { self.state.lock_irqsave::<DlBwIrq>().total_bw }
 
     /// Aggregate capacity of the CPUs the class currently schedules over.
     /// # C: O(1)
-    pub fn capacity(&self) -> u64 { capacity_of(super::span().count_ones() as u64) }
+    pub fn capacity(&self) -> u64 {
+        capacity_of(self.topology.map_or_else(
+            || super::span().count_ones() as u64,
+            |ops| (ops.online_cpus)()))
+    }
 
-    /// Apply an admission plan. Separate from [`plan`] so the decision stays a
-    /// pure function and only the commit touches shared state.
+    /// Check and commit one reservation while holding the root-domain ledger.
+    /// The returned change describes the already-committed transition. Keeping
+    /// the pure [`plan`] helper separate preserves deterministic arithmetic tests
+    /// without exposing a split production check/commit API.
     /// # C: O(1)
-    pub fn apply(&self, change: BwChange) {
-        match change {
-            BwChange::None | BwChange::Leaving => {}
-            BwChange::Add { new } => { self.total_bw.fetch_add(new, Ordering::AcqRel); }
-            BwChange::Replace { old, new } => {
-                self.total_bw.fetch_sub(old, Ordering::AcqRel);
-                self.total_bw.fetch_add(new, Ordering::AcqRel);
-            }
-        }
+    pub fn admit(&self, cap: u64, want_dl: bool, is_dl: bool, cur_bw: u64,
+                 new_bw: u64, special: bool) -> Result<Admission, ()> {
+        self.admit_pending(cap, want_dl, is_dl, cur_bw, new_bw,
+                           special, special, None)
+    }
+
+    /// Check and commit a policy transition that may carry an ordinary
+    /// booking retained from an earlier deadline policy. The pending token is
+    /// claimed under this same ledger lock, so expiry and re-entry cannot both
+    /// subtract it or charge the replacement as an additional reservation.
+    /// # C: O(1)
+    pub(super) fn admit_pending(&self, cap: u64, want_dl: bool, is_dl: bool,
+                 cur_bw: u64, new_bw: u64, cur_special: bool,
+                 new_special: bool, pending: Option<&InactiveReservation>)
+        -> Result<Admission, ()> {
+        let mut state = self.state.lock_irqsave::<DlBwIrq>();
+        let cap = self.topology.map_or(cap, |ops| capacity_of((ops.online_cpus)()));
+        let pending_active = pending.is_some_and(InactiveReservation::active);
+        let (has_dl, old_bw, old_special) = if pending_active {
+            (true, pending.expect("active pending reservation").bw(), false)
+        } else {
+            (is_dl, cur_bw, cur_special)
+        };
+        let change = plan_transition(state.bw, cap, state.total_bw, want_dl, has_dl,
+                          old_bw, new_bw, old_special, new_special)?;
+        state.total_bw = changed_total(state.total_bw, change);
+        let pending = if let Some(held) = pending {
+            if pending_active && want_dl && !new_special {
+                debug_assert!(held.claim());
+                PendingUse::Reused
+            } else if pending_active && want_dl && new_special {
+                // The inactive callback takes this same lock before claiming.
+                // Publish preservation before it can release the old booking.
+                held.preserve_current();
+                PendingUse::None
+            } else if !pending_active { PendingUse::Expired }
+            else { PendingUse::None }
+        } else { PendingUse::None };
+        Ok(Admission { pending })
+    }
+
+    /// Remove one online CPU only when the remaining active capacity can
+    /// serve every live reservation. Capacity validation and online-set
+    /// publication share this ledger lock with [`DlBw::admit`].
+    /// # SAFETY: caller owns `cpu`'s hotplug transition and has stopped new
+    /// scheduler placement on it.
+    /// # C: O(1)
+    pub unsafe fn try_mark_offline(&self, cpu: u32) -> bool {
+        let ops = match self.topology { Some(ops) => ops, None => return false };
+        let state = self.state.lock_irqsave::<DlBwIrq>();
+        if !(ops.cpu_online)(cpu) { return false; }
+        let online = (ops.online_cpus)();
+        if online == 0 { return false; }
+        let remaining = online - 1;
+        if state.total_bw != 0 && (remaining == 0
+            || dl_overflow(state.bw, capacity_of(remaining), state.total_bw, 0, 0))
+        { return false; }
+        // SAFETY: caller owns the target hotplug transition; invoking the
+        // configured topology publisher while the bandwidth lock is held is
+        // what makes capacity loss atomic against admission.
+        unsafe { (ops.mark_offline)(cpu) }
     }
 
     /// Release a reservation whose owner has genuinely stopped contending —
     /// left the deadline class, or exited.
     /// # C: O(1)
     pub fn release(&self, bw: u64) {
-        let _ = self.total_bw.fetch_update(Ordering::AcqRel, Ordering::Acquire,
-            |t| Some(t.saturating_sub(bw)));
+        let mut state = self.state.lock_irqsave::<DlBwIrq>();
+        hal::kassert!(state.total_bw >= bw, "deadline bandwidth double release");
+        state.total_bw -= bw;
+    }
+
+    /// Timer-owned release of one zero-lag booking. Claim and subtraction are
+    /// serialized with admission, so a re-entry that reused the token wins
+    /// wholly or the timer wins wholly. # C: O(1)
+    pub(super) fn release_inactive(&self, held: &InactiveReservation) -> bool {
+        let mut state = self.state.lock_irqsave::<DlBwIrq>();
+        if !held.claim() { return false; }
+        hal::kassert!(state.total_bw >= held.bw(), "inactive bandwidth double release");
+        state.total_bw -= held.bw();
+        true
     }
 
     /// Would the admitted total still be servable by `cap` worth of CPU?
@@ -158,10 +291,21 @@ impl DlBw {
     /// leave.
     /// # C: O(1)
     pub fn fits(&self, cap: u64, remaining_cpus: u64) -> bool {
-        let total = self.total_bw();
-        if total == 0 { return true; }
+        let state = self.state.lock_irqsave::<DlBwIrq>();
+        if state.total_bw == 0 { return true; }
         if remaining_cpus == 0 { return false; }
-        !dl_overflow(self.bw(), cap, total, 0, 0)
+        !dl_overflow(state.bw, cap, state.total_bw, 0, 0)
+    }
+}
+
+fn changed_total(total: u64, change: BwChange) -> u64 {
+    match change {
+        BwChange::None | BwChange::Leaving => total,
+        BwChange::Add { new } => total.checked_add(new)
+            .expect("deadline bandwidth addition overflow"),
+        BwChange::Replace { old, new } => total.checked_sub(old)
+            .and_then(|base| base.checked_add(new))
+            .expect("deadline bandwidth replacement overflow"),
     }
 }
 
@@ -171,7 +315,33 @@ impl Default for DlBw {
 
 /// The one admitted-bandwidth ledger. Single root domain: every CPU serves
 /// every deadline task, so there is exactly one sum and one cap.
+#[cfg(target_os = "oxide-kernel")]
+fn online_cpu_count() -> u64 { cpu::smp::capacity_cpumask().count_ones() as u64 }
+#[cfg(target_os = "oxide-kernel")]
+fn cpu_is_online(cpu: u32) -> bool { cpu::smp::capacity_cpumask().contains(cpu as usize) }
+
+#[cfg(target_os = "oxide-kernel")]
+unsafe fn mark_cpu_offline(cpu: u32) -> bool {
+    // SAFETY: forwarded from `try_mark_cpu_offline`, whose caller owns the
+    // target CPU's scheduler-quiesced hotplug transition.
+    unsafe { cpu::smp::mark_offline(cpu) }
+}
+
+#[cfg(target_os = "oxide-kernel")]
+pub static DL_BW: DlBw = DlBw::with_topology(online_cpu_count, cpu_is_online, mark_cpu_offline);
+#[cfg(not(target_os = "oxide-kernel"))]
 pub static DL_BW: DlBw = DlBw::new();
+
+/// Atomically validate deadline capacity and remove one scheduler-quiesced
+/// CPU from the online set.
+/// # SAFETY: caller owns `cpu`'s hotplug transition and has stopped new
+/// scheduler placement on it.
+/// # C: O(1)
+pub unsafe fn try_mark_cpu_offline(cpu: u32) -> bool {
+    // SAFETY: the caller supplies the ownership required by the ledger's
+    // topology transition contract.
+    unsafe { DL_BW.try_mark_offline(cpu) }
+}
 
 /// Reset [`DL_BW`] to the default global real-time period/runtime. The boot
 /// path does NOT call this — [`DlBw::new`] already carries the default — so it

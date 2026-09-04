@@ -37,8 +37,10 @@ pub(super) fn prepare_pidfd(
 pub(super) fn commit(
     child: &Arc<sched::Task>,
     thread: bool,
+    cgroup: cgroup::PreparedFork,
     pidfd: Option<pidfd::Prepared>,
 ) {
+    crate::clone_cgroup::commit_new_task(cgroup, child.tid as u64);
     if thread { child.thread_group.commit_member(); }
     sched::live::publish_new_task(child);
     if let Some(prepared) = pidfd { prepared.commit(); }

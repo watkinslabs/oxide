@@ -17,8 +17,9 @@
 pub mod mask;
 pub mod queue;
 
-pub use mask::{drop_unreachable, escalation_due, escalation_gap, targets_for};
-pub use queue::{CallQueues, SlotState};
+pub use mask::{drop_unreachable, escalation_due, escalation_gap, online_hardware_id, targets_for};
+pub use queue::{deliver_published, retry_delivery, wait_callable_resolution,
+    CallQueues, SlotState};
 
 #[cfg(test)]
 mod tests;
