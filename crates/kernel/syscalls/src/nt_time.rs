@@ -3,6 +3,7 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use syscall::nt::{NtCall, NtService};
+use crate::nt_time_common::NT_EPOCH_100NS;
 
 const STATUS_SUCCESS: u64 = 0;
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
@@ -12,7 +13,6 @@ const STATUS_NOT_SUPPORTED: u64 = 0xc000_00bb;
 const STATUS_ALERTED: u64 = 0x0000_0101;
 const STATUS_USER_APC: u64 = 0x0000_00c0;
 const QPC_FREQUENCY: u64 = 10_000_000;
-const NT_EPOCH_100NS: u64 = 116_444_736_000_000_000;
 const FALSE: u64 = 0;
 const TRUE: u64 = 1;
 const TICKS_PER_MILLISECOND: i64 = 10_000;
