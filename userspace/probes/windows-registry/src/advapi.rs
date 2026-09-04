@@ -68,6 +68,19 @@ impl Advapi {
         match self.client.set_utf16(KeyHandle(key), name, Value { kind, data: data[..count as usize].to_vec() }) { Ok(Response::Success) => ERROR_SUCCESS, Ok(Response::Failure(error)) => status_handle(error), Ok(_) | Err(_) => ERROR_GEN_FAILURE }
     }
 
+    /// Implement `RegDeleteValueW`, including the unnamed default value. # C: O(name length)
+    pub fn reg_delete_value_w(&mut self, key: u64, name: Option<&[u16]>) -> u32 {
+        let name = match name {
+            None => &[][..],
+            Some(name) => match terminated_utf16(name) { Ok(name) => name, Err(error) => return error },
+        };
+        match self.client.delete_utf16(KeyHandle(key), name) {
+            Ok(Response::Success) => ERROR_SUCCESS,
+            Ok(Response::Failure(error)) => status_handle(error),
+            Ok(_) | Err(_) => ERROR_GEN_FAILURE,
+        }
+    }
+
     /// Implement `RegCloseKey`; predefined root handles remain open. # C: O(log N)
     pub fn reg_close_key(&mut self, key: u64) -> u32 {
         match self.client.execute(crate::Request::Close { key: KeyHandle(key) }) { Ok(Response::Success) => ERROR_SUCCESS, Ok(Response::Failure(error)) => status_handle(error), Ok(_) | Err(_) => ERROR_GEN_FAILURE }
@@ -147,6 +160,10 @@ fn copy_name(value: &str, buffer: &mut [u16], length: &mut u32) -> u32 {
     buffer[..encoded.len()].copy_from_slice(&encoded); buffer[encoded.len()] = 0; *length = encoded.len() as u32; ERROR_SUCCESS
 }
 
+fn terminated_utf16(value: &[u16]) -> Result<&[u16], u32> {
+    if value.last() == Some(&0) && !value[..value.len() - 1].contains(&0) { Ok(&value[..value.len() - 1]) } else { Err(ERROR_INVALID_PARAMETER) }
+}
+
 trait AdapterValueType { fn decode_for_adapter(raw: u32) -> Option<ValueType>; }
 impl AdapterValueType for ValueType { fn decode_for_adapter(raw: u32) -> Option<ValueType> { match raw { 0 => Some(ValueType::None), 1 => Some(ValueType::String), 2 => Some(ValueType::ExpandString), 3 => Some(ValueType::Binary), 4 => Some(ValueType::Dword), 7 => Some(ValueType::MultiString), 11 => Some(ValueType::Qword), _ => None } } }
 
@@ -165,6 +182,27 @@ mod tests {
     fn adapter_type_decoder_accepts_only_supported_value_types() {
         assert_eq!(ValueType::decode_for_adapter(4), Some(ValueType::Dword));
         assert_eq!(ValueType::decode_for_adapter(6), None);
+    }
+
+    #[test]
+    fn delete_value_matches_win32_default_and_missing_value_contract() {
+        use std::os::unix::net::UnixListener;
+        use std::thread;
+        let base = std::env::temp_dir(); let id = std::process::id();
+        let socket = base.join(format!("oxide-advapi-delete-{id}.sock")); let database = base.join(format!("oxide-advapi-delete-{id}.db"));
+        let _ = std::fs::remove_file(&socket); let _ = std::fs::remove_file(&database);
+        let listener = UnixListener::bind(&socket).unwrap(); let server_database = database.clone();
+        let server = thread::spawn(move || { let (mut stream, _) = listener.accept().unwrap(); let mut store = crate::RegistryStore::open(&server_database).unwrap(); crate::serve_connection(&mut stream, &mut store).unwrap(); });
+        let mut api = Advapi::connect(&socket).unwrap();
+        let (_, key) = api.reg_create_key_ex_w(HKEY_CURRENT_USER, Some(&"Software\\Oxide".encode_utf16().chain([0]).collect::<Vec<_>>()), 0, 0, 0); let key = key.unwrap();
+        assert_eq!(api.reg_set_value_ex_w(key, None, 0, ValueType::String as u32, Some(b"default"), 7), ERROR_SUCCESS);
+        assert_eq!(api.reg_delete_value_w(key, None), ERROR_SUCCESS);
+        let mut kind = None; let mut count = 0; assert_eq!(api.reg_query_value_ex_w(key, None, 0, &mut kind, None, &mut count), ERROR_FILE_NOT_FOUND);
+        assert_eq!(api.reg_delete_value_w(key, None), ERROR_FILE_NOT_FOUND);
+        assert_eq!(api.reg_delete_value_w(key, Some(&[b'x' as u16, 0])), ERROR_FILE_NOT_FOUND);
+        assert_eq!(api.reg_delete_value_w(key, Some(&[b'x' as u16])), ERROR_INVALID_PARAMETER);
+        assert_eq!(api.reg_delete_value_w(0xdead, None), ERROR_INVALID_HANDLE);
+        drop(api); server.join().unwrap(); let _ = std::fs::remove_file(socket); let _ = std::fs::remove_file(database);
     }
 
     #[test]
