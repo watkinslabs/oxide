@@ -65,6 +65,22 @@ pub fn route_hardware_key(key: u16, pressed: bool, repeat: bool) -> bool {
     }
 }
 
+/// Route one accepted relative pointer transition to the desktop foreground
+/// window through its canonical message queue. # C: O(N_nt_processes + N_windows)
+pub fn route_hardware_rel(code: u16, value: i32) -> bool {
+    let mut entries = GUI.lock();
+    entries.retain(|entry| entry.group.upgrade().is_some());
+    let Some(entry) = entries.iter_mut().find(|entry| entry.foreground) else { return false; };
+    match entry.state.post_focused_mouse(code, value) {
+        Ok(()) => { entry.wait.wake_all(); true }
+        Err(ipc::win32_window::WindowError::QueueFull) => {
+            klog::kwarn!("nt input: foreground window queue full");
+            true
+        }
+        Err(_) => false,
+    }
+}
+
 /// Dispatch one GUI call against the current NT process. `None` means this is
 /// not a window service and lets the main NT dispatcher continue its ladder.
 /// # C: O(N_process_gui_states + N_windows + N_wakeups)
@@ -73,6 +89,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     let cur = sched::live::current()?;
     if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
     input::set_native_key_hook(Some(route_hardware_key));
+    input::set_native_rel_hook(Some(route_hardware_rel));
     let group = Arc::clone(&cur.thread_group);
     loop {
         let (result, wake, sleep) = {
