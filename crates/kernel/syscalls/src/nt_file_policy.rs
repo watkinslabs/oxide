@@ -18,6 +18,7 @@ const STATUS_OBJECT_NAME_NOT_FOUND: u64 = 0xc000_0034;
 const STATUS_OBJECT_NAME_COLLISION: u64 = 0xc000_0035;
 const STATUS_ACCESS_DENIED: u64 = 0xc000_0022;
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
+
 const FILE_READ_DATA: u32 = 0x0001;
 const FILE_WRITE_DATA: u32 = 0x0002;
 const FILE_APPEND_DATA: u32 = 0x0004;
@@ -31,6 +32,14 @@ const FILE_FULL_DIRECTORY_INFORMATION: u32 = 2;
 const FILE_BOTH_DIRECTORY_INFORMATION: u32 = 3;
 const FILE_NAMES_INFORMATION: u32 = 12;
 const FILE_ID_BOTH_DIRECTORY_INFORMATION: u32 = 37;
+
+/// Translate `FILE_ATTRIBUTE_READONLY` on a newly-created NT node into the
+/// mode passed to the canonical VFS create owner. # C: O(1)
+pub(crate) const fn creation_mode(file_attributes: u32, directory: bool) -> u32 {
+    if directory {
+        if file_attributes & FILE_ATTRIBUTE_READONLY != 0 { 0o555 } else { 0o777 }
+    } else if file_attributes & FILE_ATTRIBUTE_READONLY != 0 { 0o444 } else { 0o666 }
+}
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(crate) struct DirectoryInfoLayout {
@@ -170,4 +179,13 @@ mod tests {
         assert_eq!(layout.file_id, Some(96));
         assert_eq!(directory_info_layout(36), None);
     }
+
+    #[test]
+    fn readonly_creation_removes_all_write_bits() {
+        assert_eq!(creation_mode(FILE_ATTRIBUTE_READONLY, false), 0o444);
+        assert_eq!(creation_mode(FILE_ATTRIBUTE_READONLY, true), 0o555);
+        assert_eq!(creation_mode(0, false), 0o666);
+        assert_eq!(creation_mode(0, true), 0o777);
+    }
+
 }
