@@ -92,22 +92,47 @@ fn grouped(tid: u32, group: u64, shares: u32) -> Arc<Task> {
     task
 }
 
+struct InstalledGlobal;
+
+impl InstalledGlobal {
+    fn new() -> Self {
+        let idle = Arc::new(Task::new(10_000, "idle", SchedClass::Idle));
+        // SAFETY: hosted_global_test_lock serializes the sole hosted global runqueue slot.
+        unsafe { crate::live::runqueue::install_global(Runqueue::new(0, idle)); }
+        Self
+    }
+}
+
+impl Drop for InstalledGlobal {
+    fn drop(&mut self) {
+        // SAFETY: the fixture owns hosted_global_test_lock until after this teardown.
+        let _ = unsafe { crate::live::runqueue::uninstall_global() };
+    }
+}
+
+fn enqueue_global(task: Arc<Task>) {
+    let rq = crate::live::runqueue::global().unwrap();
+    let mut inner = rq.inner.lock();
+    assert!(inner.enqueue(task));
+    rq.publish_nr_running(inner.nr_running());
+}
+
 #[test]
 fn queued_group_mutation_refreshes_the_real_cfs_group_key() {
-    let cpus = Cpus::new(&[REMOTE_CPU]);
+    let _serial = crate::tests::common::hosted_global_test_lock();
+    let _installed = InstalledGlobal::new();
     let changed = grouped(96, 10, 1024);
     let peer = grouped(97, 20, 512);
-    enqueue_on(&cpus, REMOTE_CPU, Arc::clone(&changed));
-    enqueue_on(&cpus, REMOTE_CPU, Arc::clone(&peer));
+    enqueue_global(Arc::clone(&changed));
+    enqueue_global(Arc::clone(&peer));
 
-    crate::live::runqueue::set_group_shares_with(
-        &|cpu| cpus.get(cpu), &changed, 10, 256);
+    crate::live::runqueue::set_group_shares(&changed, 10, 256);
 
     assert_eq!(changed.sched.group_shares(), 256);
-    assert_eq!(changed.cpu.load(Ordering::Acquire), REMOTE_CPU as u16);
+    assert_eq!(changed.cpu.load(Ordering::Acquire), 0);
     assert!(changed.on_rq.is_queued(Ordering::Acquire));
     assert!(changed.on_class_rq.load(Ordering::Acquire));
-    let mut inner = cpus.get(REMOTE_CPU).unwrap().inner.lock();
+    let mut inner = crate::live::runqueue::global().unwrap().inner.lock();
     assert_eq!(inner.nr_running(), 2);
     assert_eq!(inner.pick_next_task().tid, peer.tid,
         "group mutation left the parent-facing CFS key at its old shares");
@@ -116,15 +141,16 @@ fn queued_group_mutation_refreshes_the_real_cfs_group_key() {
 
 #[test]
 fn positive_control_direct_group_store_leaves_a_stale_cfs_group_key() {
-    let cpus = Cpus::new(&[REMOTE_CPU]);
+    let _serial = crate::tests::common::hosted_global_test_lock();
+    let _installed = InstalledGlobal::new();
     let changed = grouped(98, 10, 1024);
     let peer = grouped(99, 20, 512);
-    enqueue_on(&cpus, REMOTE_CPU, Arc::clone(&changed));
-    enqueue_on(&cpus, REMOTE_CPU, peer);
+    enqueue_global(Arc::clone(&changed));
+    enqueue_global(peer);
 
     changed.sched.store_group_shares(256);
 
-    let mut inner = cpus.get(REMOTE_CPU).unwrap().inner.lock();
+    let mut inner = crate::live::runqueue::global().unwrap().inner.lock();
     assert_eq!(inner.pick_next_task().tid, changed.tid,
         "positive control no longer reproduces a stale runqueue group key");
 }
