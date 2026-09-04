@@ -397,12 +397,14 @@
         let unwind = resolve_nt_runtime_export(runtime.base.as_u64(), b"RtlUnwindEx").unwrap();
         let test_alert = resolve_nt_runtime_export(runtime.base.as_u64(), b"NtTestAlert").unwrap();
         let continue_ = resolve_nt_runtime_export(runtime.base.as_u64(), b"NtContinue").unwrap();
+        let denormalize = resolve_nt_runtime_export(runtime.base.as_u64(), b"RtlDeNormalizeProcessParams").unwrap();
         let find = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"RtlFindExportedRoutineByName" }).unwrap();
         assert_eq!(close, runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"NtClose" }).unwrap());
         assert_eq!(unwind, runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"RtlUnwindEx" }).unwrap());
         assert!(find >= runtime.base.as_u64() && find < runtime.base.as_u64() + runtime.bytes as u64);
         assert!(test_alert >= runtime.base.as_u64() && test_alert < runtime.base.as_u64() + runtime.bytes as u64);
         assert!(continue_ >= runtime.base.as_u64() && continue_ < runtime.base.as_u64() + runtime.bytes as u64);
+        assert!(denormalize >= runtime.base.as_u64() && denormalize < runtime.base.as_u64() + runtime.bytes as u64);
         assert!(resolve_nt_runtime_export(runtime.base.as_u64(), b"missing_export").is_none());
     }
 
@@ -422,6 +424,7 @@
             u64::from_le_bytes(data[start + 26..start + 34].try_into().unwrap())
         };
         assert_eq!(selector(b"RtlInitializeCriticalSectionEx"), syscall::nt::NtService::RtlInitializeCriticalSectionEx.entry());
+        assert_eq!(selector(b"RtlDeNormalizeProcessParams"), syscall::nt::NtService::RtlDeNormalizeProcessParams.entry());
         assert_eq!(selector(b"RtlSetIoCompletionCallback"), syscall::nt::NtService::RtlSetIoCompletionCallback.entry());
         assert_ne!(selector(b"RtlInitializeCriticalSectionEx"), selector(b"RtlSetIoCompletionCallback"));
     }

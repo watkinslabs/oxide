@@ -24,6 +24,16 @@ pub fn parse_environment(units: &[u16]) -> Option<Vec<(String, String)>> {
     Some(result)
 }
 
+/// Convert normalized process-parameter pointers back to offsets from the record.
+/// # C: O(1)
+pub fn denormalize_pointer_offsets(base: u64, pointers: [u64; 8]) -> Option<[u64; 8]> {
+    let mut result = [0; 8];
+    for (index, pointer) in pointers.into_iter().enumerate() {
+        result[index] = if pointer == 0 { 0 } else { pointer.checked_sub(base)? };
+    }
+    Some(result)
+}
+
 #[cfg(test)]
 #[path = "tests/nt_process_parameters.rs"]
 mod tests;
