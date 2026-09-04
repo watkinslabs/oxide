@@ -39,6 +39,15 @@ pub const ERROR_SUCCESS: u32 = 0;
 pub const ERROR_BAD_ARGUMENTS: u32 = 160;
 pub const ERROR_DEVICE_NOT_CONNECTED: u32 = 1167;
 
+/// Advance the packet identity for one complete native input report. Zero is
+/// reserved for the disconnected state, so a wrapping identity restarts at
+/// one exactly as the Windows controller owner requires.
+/// # C: O(1)
+pub const fn next_packet_number(packet_number: u32) -> u32 {
+    let next = packet_number.wrapping_add(1);
+    if next == 0 { 1 } else { next }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum XInputRequestError { BadArguments, DeviceNotConnected }
 
@@ -92,5 +101,13 @@ mod tests {
         assert_eq!(validate_request(0, false), Err(XInputRequestError::BadArguments));
         assert_eq!(result_code(None), ERROR_SUCCESS);
         assert_eq!(result_code(Some(XInputRequestError::DeviceNotConnected)), ERROR_DEVICE_NOT_CONNECTED);
+    }
+
+    #[test]
+    fn packet_identity_advances_and_reserves_zero_for_disconnect() {
+        assert_eq!(next_packet_number(0), 1);
+        assert_eq!(next_packet_number(1), 2);
+        assert_eq!(next_packet_number(u32::MAX - 1), u32::MAX);
+        assert_eq!(next_packet_number(u32::MAX), 1);
     }
 }
