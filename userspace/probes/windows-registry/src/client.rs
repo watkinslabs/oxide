@@ -102,6 +102,8 @@ fn encode_request(request: &Request) -> Result<Vec<u8>, Error> {
         Request::Export { key } => { out.push(registry_wire::EXPORT); put_u64(&mut out, key.raw()); }
         Request::Import { key, bytes } => { out.push(registry_wire::IMPORT); put_u64(&mut out, key.raw()); put_bytes(&mut out, bytes)?; }
         Request::QueryPath { key } => { out.push(registry_wire::QUERY_PATH); put_u64(&mut out, key.raw()); }
+        Request::Subscribe { key, filter, subtree } => { out.push(registry_wire::SUBSCRIBE); put_u64(&mut out, key.raw()); put_u64(&mut out, *filter); out.push(*subtree as u8); }
+        Request::PollSubscription { subscription } => { out.push(registry_wire::POLL_SUBSCRIPTION); put_u64(&mut out, *subscription); }
     } Ok(out)
 }
 
@@ -117,6 +119,8 @@ fn decode_response(frame: &[u8]) -> Result<Response, Error> {
         registry_wire::RESPONSE_KEY_INFO => { let mut at = 1; let name = String::from_utf8(take_bytes(frame, &mut at)?.to_vec()).map_err(|_| Error::InvalidFile)?; let subkeys = take_u32(frame, &mut at).ok_or(Error::InvalidFile)?; let max_subkey = take_u32(frame, &mut at).ok_or(Error::InvalidFile)?; let values = take_u32(frame, &mut at).ok_or(Error::InvalidFile)?; let max_value_name = take_u32(frame, &mut at).ok_or(Error::InvalidFile)?; let max_value_data = take_u32(frame, &mut at).ok_or(Error::InvalidFile)?; if at != frame.len() { return Err(Error::InvalidFile); } Response::KeyInfo(KeyInfo { name, subkeys, max_subkey, values, max_value_name, max_value_data }) },
         registry_wire::RESPONSE_BYTES => { let mut at = 1; let bytes = take_bytes(frame, &mut at)?.to_vec(); if at != frame.len() { return Err(Error::InvalidFile); } Response::Bytes(bytes) },
         registry_wire::RESPONSE_TEXT => { let mut at = 1; let text = String::from_utf8(take_bytes(frame, &mut at)?.to_vec()).map_err(|_| Error::InvalidFile)?; if at != frame.len() { return Err(Error::InvalidFile); } Response::Text(text) },
+        registry_wire::RESPONSE_SUBSCRIPTION if frame.len() == 9 => Response::Subscription(u64::from_le_bytes(frame[1..9].try_into().unwrap())),
+        registry_wire::RESPONSE_NOTIFICATION if frame.len() == 1 => Response::Notification,
         _ => return Err(Error::InvalidFile),
     };
     Ok(response)

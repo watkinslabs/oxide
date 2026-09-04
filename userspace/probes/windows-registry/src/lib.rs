@@ -68,7 +68,10 @@ impl From<io::Error> for Error { fn from(error: io::Error) -> Self { Self::Io(er
 pub struct Registry { keys: BTreeMap<String, Key>, handles: BTreeMap<KeyHandle, String>, deleted: BTreeSet<KeyHandle>, next_handle: u64 }
 
 /// One runtime/user registry session backed by one Linux file.
-pub struct RegistryStore { registry: Registry, path: PathBuf, _lock: File, dirty: bool }
+pub struct RegistryStore { registry: Registry, path: PathBuf, _lock: File, dirty: bool, subscriptions: BTreeMap<u64, Subscription>, next_subscription: u64 }
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct Subscription { key: KeyHandle, filter: u64, pending: bool }
 
 #[derive(Debug)]
 pub enum Request {
@@ -89,10 +92,12 @@ pub enum Request {
     Export { key: KeyHandle },
     Import { key: KeyHandle, bytes: Vec<u8> },
     QueryPath { key: KeyHandle },
+    Subscribe { key: KeyHandle, filter: u64, subtree: bool },
+    PollSubscription { subscription: u64 },
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub enum Response { Handle(KeyHandle), Value(Value), Keys(Vec<String>), Values(Vec<(String, Value)>), KeyInfo(KeyInfo), Bytes(Vec<u8>), Text(String), Success, Failure(Error) }
+pub enum Response { Handle(KeyHandle), Value(Value), Keys(Vec<String>), Values(Vec<(String, Value)>), KeyInfo(KeyInfo), Bytes(Vec<u8>), Text(String), Subscription(u64), Notification, Success, Failure(Error) }
 
 impl RegistryStore {
     /// Load an existing per-user database or create a new one when absent. # C: O(file bytes)
@@ -104,7 +109,7 @@ impl RegistryStore {
         // SAFETY: the descriptor belongs to the live sidecar File and remains open for the session.
         if unsafe { libc::flock(fd, libc::LOCK_EX) } != 0 { return Err(io::Error::last_os_error().into()); }
         let registry = if path.exists() { Registry::load(path)? } else { Registry::new() };
-        Ok(Self { registry, path: path.to_path_buf(), _lock: lock, dirty: false })
+        Ok(Self { registry, path: path.to_path_buf(), _lock: lock, dirty: false, subscriptions: BTreeMap::new(), next_subscription: 1 })
     }
 
     /// Borrow the live canonical registry session. # C: O(1)
@@ -129,14 +134,14 @@ impl RegistryStore {
             Request::OpenRelative { key, subkey } => self.registry.open_relative_handle(key, &subkey).map_or_else(Response::Failure, Response::Handle),
             Request::CreateRelative { key, subkey } => self.registry.create_relative_handle(key, &subkey).map_or_else(Response::Failure, |handle| { self.dirty = true; Response::Handle(handle) }),
             Request::Rename { key, name } => self.registry.rename_key_handle(key, &name).map_or_else(Response::Failure, |_| { self.dirty = true; Response::Success }),
-            Request::Set { key, name, value } => self.registry.set_value_handle(key, &name, value).map_or_else(Response::Failure, |_| { self.dirty = true; Response::Success }),
-            Request::DeleteValue { key, name } => self.registry.delete_value_handle(key, &name).map_or_else(Response::Failure, |_| { self.dirty = true; Response::Success }),
+            Request::Set { key, name, value } => self.registry.set_value_handle(key, &name, value).map_or_else(Response::Failure, |_| { self.dirty = true; self.mark_changed(key); Response::Success }),
+            Request::DeleteValue { key, name } => self.registry.delete_value_handle(key, &name).map_or_else(Response::Failure, |_| { self.dirty = true; self.mark_changed(key); Response::Success }),
             Request::DeleteKey { key } => self.registry.delete_key_handle(key).map_or_else(Response::Failure, |_| { self.dirty = true; Response::Success }),
             Request::Query { key, name } => self.registry.query_value_handle(key, &name).map_or_else(Response::Failure, Response::Value),
             Request::EnumKeys { key } => self.registry.subkeys_handle(key).map_or_else(Response::Failure, Response::Keys),
             Request::EnumValues { key } => self.registry.values_handle(key).map_or_else(Response::Failure, Response::Values),
             Request::QueryKey { key } => self.registry.query_key_handle(key).map_or_else(Response::Failure, Response::KeyInfo),
-            Request::Close { key } => self.registry.close_handle(key).map_or_else(Response::Failure, |_| Response::Success),
+            Request::Close { key } => self.registry.close_handle(key).map_or_else(Response::Failure, |_| { self.subscriptions.retain(|_, state| state.key != key); Response::Success }),
             Request::Flush { key } => {
                 if !self.registry.handles.contains_key(&key) { return Response::Failure(Error::MissingKey); }
                 self.flush().map_or_else(|error| Response::Failure(error), |_| Response::Success)
@@ -151,9 +156,25 @@ impl RegistryStore {
                 })
             }
             Request::QueryPath { key } => self.registry.path_for_handle(key).map_or_else(Response::Failure, Response::Text),
+            Request::Subscribe { key, filter, subtree } => {
+                if subtree || filter != crate::REG_NOTIFY_CHANGE_LAST_SET || self.registry.path_for_handle(key).is_err() { return Response::Failure(Error::InvalidPath); }
+                let id = self.next_subscription; self.next_subscription = self.next_subscription.saturating_add(1);
+                self.subscriptions.insert(id, Subscription { key, filter, pending: false }); Response::Subscription(id)
+            }
+            Request::PollSubscription { subscription } => match self.subscriptions.get_mut(&subscription) {
+                Some(state) if state.pending => { state.pending = false; Response::Notification }
+                Some(_) => Response::Success,
+                None => Response::Failure(Error::MissingKey),
+            },
         }
     }
+
+    fn mark_changed(&mut self, key: KeyHandle) {
+        for state in self.subscriptions.values_mut() { if state.key == key && state.filter & REG_NOTIFY_CHANGE_LAST_SET != 0 { state.pending = true; } }
+    }
 }
+
+pub const REG_NOTIFY_CHANGE_LAST_SET: u64 = 0x0000_0004;
 
 /// Serve framed registry requests over one native Linux stream. The caller
 /// owns listener lifetime and chooses the per-user store.
@@ -191,6 +212,8 @@ fn decode_request(frame: &[u8]) -> Result<Request, Error> {
         registry_wire::EXPORT => Request::Export { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?) },
         registry_wire::IMPORT => Request::Import { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?), bytes: take_bytes(frame, &mut at)?.to_vec() },
         registry_wire::QUERY_PATH => Request::QueryPath { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?) },
+        registry_wire::SUBSCRIBE => Request::Subscribe { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?), filter: take_u64(frame, &mut at).ok_or(Error::InvalidFile)?, subtree: take_u8(frame, &mut at).ok_or(Error::InvalidFile)? != 0 },
+        registry_wire::POLL_SUBSCRIPTION => Request::PollSubscription { subscription: take_u64(frame, &mut at).ok_or(Error::InvalidFile)? },
         _ => return Err(Error::InvalidFile),
     };
     if at == frame.len() { Ok(request) } else { Err(Error::InvalidFile) }
@@ -207,6 +230,8 @@ fn encode_response(response: &Response) -> Result<Vec<u8>, Error> {
         Response::KeyInfo(info) => { out.push(registry_wire::RESPONSE_KEY_INFO); put_text(&mut out, &info.name)?; put_u32(&mut out, info.subkeys); put_u32(&mut out, info.max_subkey); put_u32(&mut out, info.values); put_u32(&mut out, info.max_value_name); put_u32(&mut out, info.max_value_data); },
         Response::Bytes(bytes) => { out.push(registry_wire::RESPONSE_BYTES); put_bytes(&mut out, bytes)?; },
         Response::Text(text) => { out.push(registry_wire::RESPONSE_TEXT); put_text(&mut out, text)?; },
+        Response::Subscription(id) => { out.push(registry_wire::RESPONSE_SUBSCRIPTION); put_u64(&mut out, *id); },
+        Response::Notification => out.push(registry_wire::RESPONSE_NOTIFICATION),
         Response::Failure(error) => { out.push(registry_wire::RESPONSE_FAILURE); out.push(error_code(error)); },
     }
     Ok(out)
@@ -765,6 +790,22 @@ mod tests {
         let mut oversized = std::io::Cursor::new((MAX_FRAME as u32 + 1).to_le_bytes().to_vec());
         assert_eq!(serve_connection(&mut oversized, &mut store).unwrap_err().kind(), std::io::ErrorKind::InvalidData);
         assert!(!store.is_dirty());
+        fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn canonical_owner_queues_only_exact_key_last_set_notifications() {
+        let path = std::env::temp_dir().join(format!("oxide-registry-notify-{}", std::process::id())); let _ = fs::remove_file(&path);
+        let mut store = RegistryStore::open(&path).unwrap();
+        let key = match store.execute(Request::Create { root: Root::CurrentUser, subkey: "Software\\Notify".into() }) { Response::Handle(key) => key, response => panic!("unexpected response: {response:?}") };
+        let child = match store.execute(Request::CreateRelative { key, subkey: "Child".into() }) { Response::Handle(child) => child, response => panic!("unexpected response: {response:?}") };
+        let subscription = match store.execute(Request::Subscribe { key, filter: REG_NOTIFY_CHANGE_LAST_SET, subtree: false }) { Response::Subscription(id) => id, response => panic!("unexpected response: {response:?}") };
+        assert_eq!(store.execute(Request::PollSubscription { subscription }), Response::Success);
+        assert_eq!(store.execute(Request::Set { key: child, name: "ignored".into(), value: Value { kind: ValueType::Dword, data: vec![1, 0, 0, 0] } }), Response::Success);
+        assert_eq!(store.execute(Request::PollSubscription { subscription }), Response::Success);
+        assert_eq!(store.execute(Request::Set { key, name: "changed".into(), value: Value { kind: ValueType::Dword, data: vec![2, 0, 0, 0] } }), Response::Success);
+        assert_eq!(store.execute(Request::PollSubscription { subscription }), Response::Notification);
+        assert_eq!(store.execute(Request::Subscribe { key, filter: REG_NOTIFY_CHANGE_LAST_SET, subtree: true }), Response::Failure(Error::InvalidPath));
         fs::remove_file(path).ok();
     }
 

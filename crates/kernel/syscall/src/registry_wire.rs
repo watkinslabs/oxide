@@ -19,6 +19,8 @@ pub const DELETE_VALUE: u8 = 13;
 pub const EXPORT: u8 = 15;
 pub const IMPORT: u8 = 16;
 pub const QUERY_PATH: u8 = 17;
+pub const SUBSCRIBE: u8 = 18;
+pub const POLL_SUBSCRIPTION: u8 = 19;
 
 pub const RESPONSE_SUCCESS: u8 = 0;
 pub const RESPONSE_HANDLE: u8 = 1;
@@ -29,6 +31,8 @@ pub const RESPONSE_VALUES: u8 = 5;
 pub const RESPONSE_KEY_INFO: u8 = 6;
 pub const RESPONSE_BYTES: u8 = 7;
 pub const RESPONSE_TEXT: u8 = 8;
+pub const RESPONSE_SUBSCRIPTION: u8 = 9;
+pub const RESPONSE_NOTIFICATION: u8 = 10;
 
 pub const ERROR_INVALID_PATH: u8 = 1;
 pub const ERROR_MISSING_KEY: u8 = 2;

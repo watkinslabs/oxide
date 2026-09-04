@@ -668,13 +668,6 @@ pub fn dispatch(call: NtCall) -> u64 {
     if call.service == syscall::nt::NtService::NtNotifyChangeDirectoryFile {
         return crate::nt_directory_notify::dispatch(call);
     }
-    if call.service == syscall::nt::NtService::NtNotifyChangeKey {
-        let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
-        if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
-        // Registry change delivery needs an NT async/event registration owner
-        // over the userspace registry service; do not fake completion.
-        return STATUS_NOT_IMPLEMENTED;
-    }
     if call.service == syscall::nt::NtService::NtOpenEvent {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
         if !cur.is_nt_personality() || call.args.a0 == 0 || call.args.a2 == 0 { return STATUS_INVALID_PARAMETER; }
