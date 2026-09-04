@@ -1033,6 +1033,15 @@ fn user_client_pfn_services_round_trip_through_the_nt_namespace() {
     }
 
     #[test]
+    fn volume_information_native_service_is_not_a_request_record() {
+        let call = decode(306, SyscallArgs { a0: 0xfeed, a1: 0x1000, a2: 0x2000, a3: 96, a4: 14, ..args() }).unwrap();
+        assert_eq!(call.service, NtService::NtQueryVolumeInformationFile);
+        assert!(matches!(decode_file(call), Ok(NtFileCall::QueryVolumeInformation {
+            handle: 0xfeed, length: 96, information_class: 14, ..
+        })));
+    }
+
+    #[test]
     fn file_request_records_keep_the_x64_wire_layout() {
         assert_eq!(core::mem::size_of::<NtCreateFileRequest>(), 48);
         assert_eq!(core::mem::size_of::<NtOpenFileRequest>(), 32);

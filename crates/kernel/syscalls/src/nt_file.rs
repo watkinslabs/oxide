@@ -114,6 +114,10 @@ pub fn dispatch_native(call: NtCall) -> Option<u64> {
         NtService::ReadFile => Some(native_io(call, false)),
         NtService::WriteFile => Some(native_io(call, true)),
         NtService::QueryInformationFile => Some(native_query_information(call)),
+        NtService::NtQueryVolumeInformationFile => Some(crate::nt_file_volume::query(
+            sched::live::current()?, call.args.a0 as u32, call.args.a1, call.args.a2,
+            call.args.a3 as u32, call.args.a4 as u32,
+        )),
         NtService::SetInformationFile => Some(native_set_information(call)),
         NtService::QueryDirectoryFile => Some(native_query_directory(call)),
         _ => None,

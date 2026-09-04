@@ -116,6 +116,17 @@ mod tests {
     }
 
     #[test]
+    fn size_information_reports_caller_available_units_and_sector_shape() {
+        let stat = SbStatFs { f_bsize: 1024, f_blocks: 4096, f_bfree: 3072, f_bavail: 2048, ..Default::default() };
+        let (out, required) = encode(&stat, FILE_FS_SIZE_INFORMATION).unwrap();
+        assert_eq!(required, 24);
+        assert_eq!(u64::from_le_bytes(out[0..8].try_into().unwrap()), 2048);
+        assert_eq!(u64::from_le_bytes(out[8..16].try_into().unwrap()), 1024);
+        assert_eq!(u32::from_le_bytes(out[16..20].try_into().unwrap()), 2);
+        assert_eq!(u32::from_le_bytes(out[20..24].try_into().unwrap()), 512);
+    }
+
+    #[test]
     fn unsupported_information_class_is_not_silent_success() {
         assert_eq!(encode(&SbStatFs::default(), 99), Err(STATUS_INVALID_INFO_CLASS));
     }
