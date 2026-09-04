@@ -30,6 +30,9 @@ owner. The adapter does not maintain a second GDI object table.
   the display driver owns scanout clipping and transfer/flush ordering.
 - `PresentGdiWindow` resolves the visible HWND's canonical screen rectangle and
   presents its process-local DC without a second geometry registry.
+- `EndPaint` submits only the consumed dirty client rectangle through the same
+  window/DC/display owners; non-paint presentation retains whole-surface
+  semantics.
 - `DeleteObject` removes device contexts and fonts and clears deleted fonts
   from every context in the process.
 - Tagged NT selectors carry the ABI; Linux syscall numbers are not used for
@@ -52,6 +55,8 @@ owner. The adapter does not maintain a second GDI object table.
   present.
 - Window scanout remains separate display-driver work; GDI owns the raster
   surface and its drawing operations.
+- A paint submission with an empty, malformed, or out-of-surface region fails
+  before the display owner is called.
 
 ## 3
 

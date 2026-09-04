@@ -91,6 +91,11 @@ impl Gdi {
         invoke(NtService::PresentGdiWindow, [hwnd, dc, 0, 0, 0, 0]).map(|_| ())
     }
 
+    /// Present one dirty client rectangle at the window's canonical screen position. # C: O(region_pixels) plus kernel service
+    pub fn present_window_region(&self, hwnd: u64, dc: u64, rect: Rect) -> Result<(), GdiError> {
+        invoke(NtService::PresentGdiWindowRegion, [hwnd, dc, rect.left as u64, rect.top as u64, rect.right as u64, rect.bottom as u64]).map(|_| ())
+    }
+
     /// Submit only the intersection of a raster tile and an `ETO_CLIPPED` rectangle. # C: O(width*height) plus kernel service
     pub fn draw_raster_clipped(&self, dc: u64, x: i32, y: i32, surface: &crate::RasterSurface, clip: Rect) -> Result<(), GdiError> {
         let left = clip.left.max(x).min(x.saturating_add(surface.width as i32));

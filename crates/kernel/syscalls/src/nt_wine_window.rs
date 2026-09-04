@@ -145,6 +145,17 @@ fn read_user_u16(address: u64) -> Option<u16> {
     Some(u16::from_le_bytes(bytes))
 }
 
+#[cfg(target_os = "oxide-kernel")]
+fn read_paint_rect(base: u64) -> Option<[i32; 4]> {
+    let address = paintstruct_field(base, PAINTSTRUCT_RECT_OFFSET)?;
+    let mut rect = [0i32; 4];
+    for (index, value) in rect.iter_mut().enumerate() {
+        let field = address.checked_add((index * 4) as u64)?;
+        *value = uaccess::get_user_u32(field).ok()? as i32;
+    }
+    Some(rect)
+}
+
 /// Translate one Wine ordinal into the existing native window-state owner.
 /// # C: O(1) dispatch plus bounded usercopy
 #[cfg(target_os = "oxide-kernel")]
@@ -566,7 +577,10 @@ where F: Fn(NtService, SyscallArgs) -> u64, G: Fn(NtService, SyscallArgs) -> u64
 fn end_paint<F, G>(args: &[u64; 17], native: F, gdi: G) -> u64
 where F: Fn(NtService, SyscallArgs) -> u64, G: Fn(NtService, SyscallArgs) -> u64 {
     let Ok(hdc) = uaccess::get_user_u64(args[1]) else { return STATUS_INVALID_PARAMETER; };
-    let present = if hdc != 0 { gdi(NtService::PresentGdiWindow, SyscallArgs { a0: args[0], a1: hdc, a2: 0, a3: 0, a4: 0, a5: 0 }) } else { STATUS_INVALID_PARAMETER };
+    let present = if hdc != 0 {
+        let Some([left, top, right, bottom]) = read_paint_rect(args[1]) else { return STATUS_INVALID_PARAMETER; };
+        gdi(NtService::PresentGdiWindowRegion, SyscallArgs { a0: args[0], a1: hdc, a2: left as u64, a3: top as u64, a4: right as u64, a5: bottom as u64 })
+    } else { STATUS_INVALID_PARAMETER };
     let result = native(NtService::EndWindowPaint, SyscallArgs { a0: args[0], a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 });
     if hdc != 0 { let _ = gdi(NtService::DeleteGdiObject, SyscallArgs { a0: hdc, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 }); }
     win_bool(if result == STATUS_SUCCESS { present } else { result })

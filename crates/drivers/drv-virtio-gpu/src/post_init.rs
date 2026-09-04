@@ -201,7 +201,7 @@ use scanout::install_scanout_ctx;
 mod runtime;
 mod runtime_queue;
 mod window_present;
-pub use window_present::present_window_pixels;
+pub use window_present::{present_window_pixels, present_window_pixels_region};
 pub use runtime::{
     boot_scanout_res_id_for_key,
     create_scanout_from_pa_for_key,
