@@ -250,7 +250,7 @@ fn follows_x64_chained_runtime_function_and_rejects_a_chain_cycle() {
     let parsed = parse(&b).unwrap(); let function = parsed.exception_function_for(0x1040).unwrap().unwrap();
     assert_eq!(function.unwind_rva, 0x11f0);
     assert_eq!(parsed.unwind_stack_allocation(function).unwrap(), 24);
-    let context = UnwindContext { regs: [0; 16], rip: 0x1040, rsp: 0x8000 };
+    let context = UnwindContext { regs: [0; 16], xmm: [[0; 2]; 16], rip: 0x1040, rsp: 0x8000 };
     let result = parsed.unwind_x64(Some(function), 0x1040, context, |address| if address == 0x8018 { Ok(0x2222) } else { Err(Error::Einval) }).unwrap();
     assert_eq!(result.rip, 0x2222); assert_eq!(result.rsp, 0x8020);
 
@@ -274,7 +274,7 @@ fn unwinds_x64_saved_register_and_return_address_through_reader() {
     // The unwind stream reverses: allocate 32 bytes, then pop the saved RBP.
     b[0x5f0..0x5f4].copy_from_slice(&[1, 2, 2, 0]); b[0x5f4..0x5f8].copy_from_slice(&[1, 0x32, 2, 0x50]);
     let parsed = parse(&b).unwrap(); let function = parsed.exception_function_for(0x1040).unwrap();
-    let context = UnwindContext { regs: [0; 16], rip: 0x1040, rsp: 0x8000 };
+    let context = UnwindContext { regs: [0; 16], xmm: [[0; 2]; 16], rip: 0x1040, rsp: 0x8000 };
     let result = parsed.unwind_x64(function, 0x1040, context, |address| match address {
         0x8020 => Ok(0x1111), 0x8028 => Ok(0x2222), _ => Err(Error::Einval),
     }).unwrap();
@@ -283,17 +283,23 @@ fn unwinds_x64_saved_register_and_return_address_through_reader() {
 }
 
 #[test]
-fn leaf_unwind_reads_return_address_and_rejects_xmm_restore_until_context_exists() {
+fn leaf_unwind_reads_return_address_and_restores_saved_xmm_registers() {
     let blob = image(); let parsed = parse(&blob).unwrap();
-    let context = UnwindContext { regs: [0; 16], rip: 7, rsp: 0x9000 };
+    let context = UnwindContext { regs: [0; 16], xmm: [[0; 2]; 16], rip: 7, rsp: 0x9000 };
     let result = parsed.unwind_x64(None, 0, context, |address| if address == 0x9000 { Ok(0x1234) } else { Err(Error::Einval) }).unwrap();
     assert_eq!(result.rip, 0x1234); assert_eq!(result.rsp, 0x9008);
     let mut b = image(); let dir = OPT + 112 + IMAGE_DIRECTORY_ENTRY_EXCEPTION * 8;
     b[dir..dir + 4].copy_from_slice(&0x1100u32.to_le_bytes()); b[dir + 4..dir + 8].copy_from_slice(&12u32.to_le_bytes());
     b[0x500..0x504].copy_from_slice(&0x1000u32.to_le_bytes()); b[0x504..0x508].copy_from_slice(&0x1060u32.to_le_bytes()); b[0x508..0x50c].copy_from_slice(&0x11f0u32.to_le_bytes());
-    b[0x5f0..0x5f4].copy_from_slice(&[1, 1, 1, 0]); b[0x5f4..0x5f6].copy_from_slice(&[1, 8]);
+    b[0x5f0..0x5f4].copy_from_slice(&[1, 1, 6, 0]);
+    b[0x5f4..0x600].copy_from_slice(&[1, 0x32, 1, 0x68, 1, 0, 1, 0x79, 0x30, 0, 0, 0]);
     let parsed = parse(&b).unwrap(); let function = parsed.exception_function_for(0x1040).unwrap();
-    assert_eq!(parsed.unwind_x64(function, 0x1040, context, |_| Ok(0)), Err(Error::Unsupported));
+    assert_eq!(parsed.unwind_info(function.unwrap()).unwrap().codes[1], UnwindCode { code_offset: 1, unwind_op: 8, op_info: 6 });
+    let context = UnwindContext { rsp: 0x8000, rip: 0x1040, ..context };
+    let result = parsed.unwind_x64(function, 0x1040, context, |address| Ok(address)).unwrap();
+    assert_eq!(result.xmm[6], [0x8010, 0x8018]);
+    assert_eq!(result.xmm[7], [0x8030, 0x8038]);
+    assert_eq!(result.rip, 0x8020); assert_eq!(result.rsp, 0x8028);
 }
 
 #[test]
