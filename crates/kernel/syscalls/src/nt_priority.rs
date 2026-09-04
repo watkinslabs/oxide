@@ -92,9 +92,11 @@ fn set_thread(call: NtCall) -> u64 {
         let want = cpu::CpuMask::from_words(&[raw]);
         let active = cpu::smp::online_cpumask();
         let active = if active.is_empty() { cpu::CpuMask::of(0) } else { active };
+        let process = target.thread_group.leader_task()
+            .map_or_else(|| target.cpus_allowed.load(core::sync::atomic::Ordering::Acquire),
+                |leader| leader.cpus_allowed.load(core::sync::atomic::Ordering::Acquire));
         if crate::nt_thread_info_policy::affinity(
-            want, target.cpuset_cpus_allowed.load(core::sync::atomic::Ordering::Acquire),
-            active, target.no_setaffinity.load(core::sync::atomic::Ordering::Acquire)).is_err() {
+            want, process, active, target.no_setaffinity.load(core::sync::atomic::Ordering::Acquire)).is_err() {
             return STATUS_INVALID_PARAMETER;
         }
         sched::live::update_affinity(&target, Some(want), None);
