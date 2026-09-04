@@ -686,8 +686,10 @@ unimplemented.
 target address-space ownership and safe partial-copy reporting remain
 unimplemented.
 `NtYieldExecution` now routes through the canonical scheduler-yield owner for
-the NT personality; the precise `STATUS_NO_YIELD_PERFORMED` distinction is not
-yet surfaced.
+the NT personality and compares the task's canonical voluntary/involuntary
+context-switch counters, returning `STATUS_NO_YIELD_PERFORMED` when the
+Linux-shaped scheduler immediately selects the caller again. Focused policy
+tests include a positive control; x86_64 and aarch64 target checks pass.
 `RtlActivateActivationContext` validates the native flags, opaque context, and
 cookie-pointer boundary; per-thread activation-context stack and cookie
 ownership remain unimplemented.

@@ -485,8 +485,16 @@ pub fn dispatch(call: NtCall) -> u64 {
     if call.service == syscall::nt::NtService::NtYieldExecution {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
         if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+        let before = (
+            cur.nvcsw.load(core::sync::atomic::Ordering::Acquire),
+            cur.nivcsw.load(core::sync::atomic::Ordering::Acquire),
+        );
         let _ = crate::s024_sched_yield::sys_sched_yield(&SyscallArgs { a0: 0, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 });
-        return STATUS_SUCCESS;
+        let after = (
+            cur.nvcsw.load(core::sync::atomic::Ordering::Acquire),
+            cur.nivcsw.load(core::sync::atomic::Ordering::Acquire),
+        );
+        return crate::nt_yield::status(before, after);
     }
     if call.service == syscall::nt::NtService::NtSetInformationVirtualMemory {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
