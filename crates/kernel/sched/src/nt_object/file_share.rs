@@ -12,6 +12,8 @@ const DELETE: u32 = 0x0001_0000;
 const GENERIC_READ: u32 = 0x8000_0000;
 const GENERIC_WRITE: u32 = 0x4000_0000;
 const GENERIC_ALL: u32 = 0x1000_0000;
+const SHARE_RELEVANT_ACCESS: u32 = READ_DATA | WRITE_DATA | DELETE
+    | GENERIC_READ | GENERIC_WRITE | GENERIC_ALL;
 const SHARE_READ: u32 = 0x1;
 const SHARE_WRITE: u32 = 0x2;
 const SHARE_DELETE: u32 = 0x4;
@@ -41,6 +43,10 @@ impl Drop for NtFileShare {
 }
 
 fn conflicts(desired: u32, sharing: u32, active: ActiveClaim) -> bool {
+    // Wine's server ignores a new open's share mask when that open requests
+    // no read, write, or delete access. Metadata-only handles therefore do
+    // not turn an existing deny mode into a sharing violation.
+    if desired & SHARE_RELEVANT_ACCESS == 0 { return false; }
     let read = desired & (READ_DATA | GENERIC_READ | GENERIC_ALL) != 0;
     let write = desired & (WRITE_DATA | GENERIC_WRITE | GENERIC_ALL) != 0;
     let delete = desired & (DELETE | GENERIC_ALL) != 0;
@@ -87,6 +93,12 @@ mod tests {
         assert!(pair(READ_DATA, 0, GENERIC_READ, SHARE_READ));
         assert!(pair(GENERIC_WRITE, 0, WRITE_DATA, SHARE_WRITE));
         assert!(pair(GENERIC_ALL, SHARE_READ | SHARE_WRITE | SHARE_DELETE, DELETE, SHARE_DELETE));
+    }
+    #[test]
+    fn metadata_only_open_ignores_its_requested_deny_mode() {
+        assert!(!pair(READ_DATA, 0, 0, 0));
+        assert!(!pair(WRITE_DATA, 0, 0, SHARE_READ));
+        assert!(!pair(DELETE, 0, 0, SHARE_WRITE));
     }
     #[test]
     fn a_released_claim_allows_the_next_open() {
