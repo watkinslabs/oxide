@@ -34,6 +34,7 @@ pub(crate) mod nt_file_policy;
 mod nt_file_scatter_policy;
 mod nt_file_gather_policy;
 mod nt_file_volume_abi;
+mod nt_loader_dir_policy;
 pub(crate) mod nt_file_lock_policy;
 pub(crate) mod nt_registry_policy;
 pub(crate) mod nt_directory_notify_policy;

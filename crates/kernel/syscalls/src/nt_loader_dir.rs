@@ -32,13 +32,11 @@ const MAX_MODULE_SCAN: usize = 64;
 const LDR_ADDREF_DLL_PIN: u32 = 1;
 const LDR_GET_HANDLE_UNCHANGED_REFCOUNT: u32 = 1;
 const LDR_GET_HANDLE_PIN: u32 = 2;
-const LOAD_LIBRARY_SEARCH_APPLICATION_DIR: u32 = 0x0000_0200;
-const LOAD_LIBRARY_SEARCH_USER_DIRS: u32 = 0x0000_0400;
-const LOAD_LIBRARY_SEARCH_SYSTEM32: u32 = 0x0000_0800;
-const LOAD_LIBRARY_SEARCH_DEFAULT_DIRS: u32 = 0x0000_1000;
-const LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR: u32 = 0x0000_0100;
-const LOAD_WITH_ALTERED_SEARCH_PATH: u32 = 0x0000_0008;
-const DEFAULT_DLL_SEARCH_FLAGS: u32 = LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_USER_DIRS | LOAD_LIBRARY_SEARCH_SYSTEM32 | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS;
+use crate::nt_loader_dir_policy::{self,
+    LOAD_LIBRARY_SEARCH_APPLICATION_DIR, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR,
+    LOAD_LIBRARY_SEARCH_DEFAULT_DIRS, LOAD_LIBRARY_SEARCH_SYSTEM32,
+    LOAD_LIBRARY_SEARCH_USER_DIRS,
+    LOAD_WITH_ALTERED_SEARCH_PATH};
 
 mod dynamic;
 
@@ -168,11 +166,10 @@ fn get_path(module: u64, flags: u32, path_output: u64, unknown_output: u64) -> u
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
     let Some(module_name) = read_wide_z(module) else { return STATUS_INVALID_PARAMETER; };
-    let valid_flags = LOAD_WITH_ALTERED_SEARCH_PATH | LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | DEFAULT_DLL_SEARCH_FLAGS;
-    if flags & !valid_flags != 0 || flags & LOAD_WITH_ALTERED_SEARCH_PATH != 0 && flags & DEFAULT_DLL_SEARCH_FLAGS != 0 { return STATUS_INVALID_PARAMETER; }
-    let search_flags = if flags & (LOAD_WITH_ALTERED_SEARCH_PATH | DEFAULT_DLL_SEARCH_FLAGS) == 0 {
-        cur.thread_group.nt_default_dll_search_flags.load(Ordering::Acquire)
-    } else { flags };
+    if !nt_loader_dir_policy::request_flags_valid(flags) { return STATUS_INVALID_PARAMETER; }
+    let search_flags = nt_loader_dir_policy::expand_default_flags(
+        nt_loader_dir_policy::effective_flags(flags,
+            cur.thread_group.nt_default_dll_search_flags.load(Ordering::Acquire)));
     let mut path = Vec::new();
     if flags & LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR != 0 || flags & LOAD_WITH_ALTERED_SEARCH_PATH != 0 {
         append_directory(&mut path, directory_of(&module_name));
@@ -188,6 +185,8 @@ fn get_path(module: u64, flags: u32, path_output: u64, unknown_output: u64) -> u
     if search_flags & LOAD_LIBRARY_SEARCH_USER_DIRS != 0 {
         let dirs = cur.thread_group.nt_dll_directories.lock();
         for (_, directory) in dirs.iter() { append_directory(&mut path, directory); }
+        let override_dir = cur.thread_group.nt_dll_directory.lock();
+        append_directory(&mut path, &override_dir);
     }
     if search_flags & (LOAD_LIBRARY_SEARCH_SYSTEM32 | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS) != 0 {
         append_directory(&mut path, &utf16_bytes_const(b"C:\\Windows\\System32"));
@@ -240,7 +239,7 @@ fn free_user_buffer(buffer: u64) {
 }
 
 fn set_default_dll_directories(flags: u32) -> u64 {
-    if flags == 0 || flags & !DEFAULT_DLL_SEARCH_FLAGS != 0 { return STATUS_INVALID_PARAMETER; }
+    if !nt_loader_dir_policy::default_flags_valid(flags) { return STATUS_INVALID_PARAMETER; }
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
     cur.thread_group.nt_default_dll_search_flags.store(flags, Ordering::Release);
