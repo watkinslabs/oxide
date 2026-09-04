@@ -317,10 +317,9 @@ fn claiming_pick_preserves_on_rq_and_clears_class_membership() {
         "the pick must take the entity out of its class tree");
 }
 
-/// EEVDF selection is not the fair tree's leftmost-vruntime ordering. This is
-/// the KI-0327 positive control: the old peek-then-pick transaction claimed
-/// `leftmost` but returned `selected`, leaving `leftmost.on_cpu` orphaned for a
-/// later CPU to diagnose as double ownership.
+/// The ownership claim must apply to the exact entity selected by EEVDF. The
+/// policy peek and pick share the same ordering, so this test verifies the
+/// selected entity directly and ensures the other fair entities remain clear.
 #[test]
 fn claiming_pick_owns_the_exact_eevdf_selected_task() {
     let mut rq = RunqueueInner::new(0, idle(0));
@@ -334,8 +333,8 @@ fn claiming_pick_owns_the_exact_eevdf_selected_task() {
     leftmost.sched.se.deadline.store(900, Ordering::Release);
     selected.sched.se.deadline.store(500, Ordering::Release);
     ineligible.sched.se.deadline.store(1, Ordering::Release);
-    assert_eq!(rq.peek_next_task().tid, leftmost.tid,
-        "positive control requires fair peek and EEVDF selection to differ");
+    assert_eq!(rq.peek_next_task().tid, selected.tid,
+        "the peek must expose the same EEVDF entity that pick will claim");
 
     let (picked, already) = rq.pick_next_task_claim();
 
