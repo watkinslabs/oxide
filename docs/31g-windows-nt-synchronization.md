@@ -19,8 +19,11 @@ FROZEN 2026-08-31. Dep:`01`,`02`,`06`,`13`,`31f`,`52`,`53`. Provides: event stat
 - Waitable NT timers use the scheduler monotonic clock, support notification
   and synchronization modes, one-shot and periodic relative deadlines, and
   are disarmed explicitly by `NtCancelTimer`.
-- `NtSignalAndWaitForSingleObject` signals an event and then waits through the
-  same native NT wait path, preserving alertable and timeout results.
+- `NtSignalAndWaitForSingleObject` validates both operands and the timeout,
+  applies one signal operation to an event, semaphore, or mutant, then waits
+  through the same native NT wait path. A signal failure leaves the wait
+  operand untouched. An already-ready wait outranks an alertable APC; an APC
+  outranks an interrupt or timeout after the wait predicate is rechecked.
 - `NtPulseEvent` temporarily signals an event, wakes the eligible waiter(s),
   and leaves the event nonsignaled; synchronization events have one pulse
   consumer while notification events allow all current observers to consume it.
@@ -35,7 +38,7 @@ FROZEN 2026-08-31. Dep:`01`,`02`,`06`,`13`,`31f`,`52`,`53`. Provides: event stat
 | nonblocking consume | `sched::nt_object::NtEvent::try_wait` |
 | blocking wait | NT syscall adapter over `sched::WaitList` |
 | create/arm/cancel timer | `sched::nt_object::NtTimer` |
-| signal and wait | native NT adapter over event and scheduler wait primitives |
+| signal and wait | native NT adapter over scheduler-owned event, semaphore, mutant, and wait primitives |
 
 ## 3 Tests
 
@@ -47,7 +50,8 @@ FROZEN 2026-08-31. Dep:`01`,`02`,`06`,`13`,`31f`,`52`,`53`. Provides: event stat
   one-consumer rule for synchronization events;
 - relative zero, negative relative, positive absolute, and minimum signed
   timeout values are decoded deterministically;
-- stale handles, insufficient rights, timeout, and alertable interruption are
-  mapped before event state is changed.
+- stale handles, insufficient rights, invalid object types, timeout faults, and
+  signal-specific failures are mapped before the signal object changes;
+  successful signal state is committed before the wait predicate runs.
 - one-shot timers fire once, periodic timers rearm, and cancellation clears
   readiness without affecting event objects.

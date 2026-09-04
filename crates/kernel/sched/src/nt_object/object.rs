@@ -233,6 +233,24 @@ impl NtObject {
     /// Return the thread-owned mutant primitive. # C: O(1)
     pub fn mutant(&self) -> Option<Arc<NtMutant>> { self.mutant.clone() }
 
+    /// Apply the signal operation used by signal-and-wait. # C: O(1)
+    pub fn signal_for_wait(&self, tid: u64) -> Result<(), NtSignalError> {
+        match self.kind {
+            NtObjectType::Event => self.event.as_ref().ok_or(NtSignalError::Unsupported)?.set(),
+            NtObjectType::Semaphore => {
+                if self.semaphore.as_ref().ok_or(NtSignalError::Unsupported)?.release(1).is_none() {
+                    return Err(NtSignalError::LimitExceeded);
+                }
+            }
+            NtObjectType::Mutant => {
+                self.mutant.as_ref().ok_or(NtSignalError::Unsupported)?.release(tid)
+                    .map_err(|_| NtSignalError::NotOwner)?;
+            }
+            _ => return Err(NtSignalError::Unsupported),
+        }
+        Ok(())
+    }
+
     /// Return the timer primitive carried by a timer object. # C: O(1)
     pub fn timer(&self) -> Option<Arc<NtTimer>> { self.timer.clone() }
     pub fn job(&self) -> Option<Arc<NtJob>> { self.job.clone() }
@@ -316,6 +334,10 @@ impl NtObject {
     /// Return the scheduler task carried by a process or thread object. # C: O(1)
     pub fn task(&self) -> Option<Arc<Task>> { self.task.clone() }
 }
+
+/// Failure classes for the signal half of a native signal-and-wait operation.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum NtSignalError { Unsupported, LimitExceeded, NotOwner }
 /// Native event state backed by the scheduler's wait primitive.
 pub struct NtEvent {
     manual_reset: bool,
