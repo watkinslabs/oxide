@@ -210,7 +210,8 @@ fn pi_waiter_promotion_rekeys_real_rq_and_preempts_current() {
     enqueue_on(&cpus, REMOTE_CPU, Arc::clone(&owner));
     let donor = Arc::new(Task::new(105, "donor", rt(70)));
     donor.set_state(crate::TaskState::Sleeping);
-    let key = crate::pi_prio::PiDonorKey { class: rt(70), deadline: 0, special: false };
+    let key = crate::pi_prio::PiDonorKey { class: rt(70), deadline: 0, special: false,
+        ..crate::pi_prio::PiDonorKey::default() };
     let mut node = Box::pin(crate::pi_prio::PiTreeNode::new(&donor, key, 1, 1, 1));
 
     assert!(crate::live::pi_boost::update_owner_waiters_with(

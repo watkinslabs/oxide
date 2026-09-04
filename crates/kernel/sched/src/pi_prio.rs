@@ -8,7 +8,8 @@ mod policy;
 #[path = "pi_prio/tree.rs"]
 mod tree;
 
-pub use policy::{base_class, class_with_key, donor_key_outranks, is_boosted, outranks, PiDonorKey};
+pub use policy::{base_class, class_with_key, donor_key_outranks, is_boosted, outranks,
+    PiDlParams, PiDonorKey};
 #[cfg(test)]
 pub use policy::boost_class;
 pub use tree::{PiTreeNode, PiWaiterTree};

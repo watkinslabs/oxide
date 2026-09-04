@@ -75,10 +75,14 @@ pub(crate) fn set_next_task_dl(t: &Task, now: u64) {
 /// # C: O(1)
 pub(crate) fn update_curr_dl(t: &Task, now: u64) -> Charged {
     if !matches!(t.sched_class(), SchedClass::Deadline) { return Charged::Running; }
-    let (p, mut s) = t.sched.dl.snapshot();
+    let p = t.effective_dl_params();
+    let mut s = t.sched.dl.sched();
     let delta = t.sched.dl.take_delta(now);
     if delta != 0 { crate::cputime::charge_exec_runtime(t, delta); }
     let out = cbs::charge(&p, &mut s, delta);
+    if out == Charged::Throttle && t.uses_borrowed_dl() {
+        replenish_pi_state(t, &p, &mut s, now);
+    }
     t.sched.dl.store_sched(&s);
     out
 }
@@ -114,7 +118,17 @@ pub(crate) fn yield_dl(t: &Task) {
 pub(crate) fn on_wakeup_enqueue(t: &Arc<Task>) -> bool {
     if !matches!(t.sched_class(), SchedClass::Deadline) { return true; }
     let now = now_ns();
-    let (p, mut s) = t.sched.dl.snapshot();
+    let p = t.effective_dl_params();
+    let mut s = t.sched.dl.sched();
+    if t.uses_borrowed_dl() {
+        if s.throttled { replenish_pi(t, now); }
+        else if cbs::dl_time_before(s.deadline, now)
+            || cbs::dl_entity_overflow(&p, &s, now) {
+            cbs::replenish_new_period(&p, &mut s, now);
+            t.sched.dl.store_sched(&s);
+        }
+        return true;
+    }
     if s.throttled {
         t.sched.dl.store_sched(&s);
         return arm_replenish(t, &p, &s);
@@ -133,8 +147,37 @@ pub(crate) fn on_wakeup_enqueue(t: &Arc<Task>) -> bool {
 pub(crate) fn on_requeue(t: &Arc<Task>) -> bool {
     if !matches!(t.sched_class(), SchedClass::Deadline) { return true; }
     if !t.sched.dl.is_throttled() { return true; }
-    let (p, s) = t.sched.dl.snapshot();
+    if t.uses_borrowed_dl() {
+        replenish_pi(t, now_ns());
+        return true;
+    }
+    let p = t.effective_dl_params();
+    let s = t.sched.dl.sched();
     arm_replenish(t, &p, &s)
+}
+
+/// Apply inherited parameters to the owner's CBS entity and override stale throttle. # C: O(N)
+pub(crate) fn replenish_pi(t: &Task, now: u64) {
+    if !t.uses_borrowed_dl() { return; }
+    replenish::disarm(t);
+    let p = t.effective_dl_params();
+    let mut s = t.sched.dl.sched();
+    replenish_pi_state(t, &p, &mut s, now);
+    t.sched.dl.store_sched(&s);
+}
+
+fn replenish_pi_state(t: &Task, p: &super::params::DlParams, s: &mut DlSched, now: u64) {
+    if p.is_special() {
+        s.throttled = false;
+        s.yielded = false;
+        return;
+    }
+    if matches!(t.normal_sched_class(), SchedClass::Deadline) { cbs::replenish(p, s, now); }
+    else {
+        cbs::replenish_new_period(p, s, now);
+        s.throttled = false;
+        s.yielded = false;
+    }
 }
 
 /// Park a throttled entity until its next instance begins, and report whether
@@ -204,11 +247,13 @@ pub(super) fn replenish_claimed(due: &replenish::DueReplenishment, now: u64) -> 
     if !due.claim.current()
         || due.task.sched.dl.replenish_at() != due.claim.at()
         || !matches!(due.task.sched_class(), SchedClass::Deadline)
+        || due.task.uses_borrowed_dl()
         || !due.task.sched.dl.is_throttled() {
         if due.claim.current() { let _ = due.claim.finish(); }
         return false;
     }
-    let (p, mut s) = due.task.sched.dl.snapshot();
+    let p = due.task.effective_dl_params();
+    let mut s = due.task.sched.dl.sched();
     cbs::replenish(&p, &mut s, now);
     due.task.sched.dl.store_sched(&s);
     due.claim.finish()

@@ -16,6 +16,7 @@
 // - namespaces: concrete non-network owner lifetime and exit ordering.
 // - keyring_hooks: keyring exit/fsid-change hook dispatch + last-thread rule.
 // - pidfd: exact identity acquisition, reap ordering, reuse, and readiness.
+// - pi_deadline: borrowed reservation with owner-local CBS/EDF runtime state.
 // - prctl: PR_SET_NAME/PR_GET_NAME comm rename + PR_SET_DUMPABLE/GET_DUMPABLE.
 // - queues: RT/CFS/runqueue scheduling invariants and pick/remove behavior.
 // - sched_state_ownership: sole task scheduler-state declaration/access guard.
@@ -41,6 +42,7 @@ mod affinity;
 mod child_rusage;
 pub(crate) mod common;
 mod pi_boost;
+mod pi_deadline;
 mod cpu_clock_measure;
 mod cpu_nanosleep;
 mod enqueue_reject;

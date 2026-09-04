@@ -53,8 +53,8 @@ fn no_waiters_means_no_boost() {
 
 #[test]
 fn every_non_rt_non_dl_waiter_has_one_default_key() {
-    let fair_key = PiDonorKey { class: fair(1), deadline: 0, special: false };
-    let idle_key = PiDonorKey { class: SchedClass::Idle, deadline: 0, special: false };
+    let fair_key = PiDonorKey { class: fair(1), ..PiDonorKey::default() };
+    let idle_key = PiDonorKey::default();
     assert!(!donor_key_outranks(fair_key, idle_key));
     assert!(!donor_key_outranks(idle_key, fair_key));
     assert_eq!(boost_class(SchedClass::Idle, &[fair(1)]), None);
@@ -63,9 +63,9 @@ fn every_non_rt_non_dl_waiter_has_one_default_key() {
 
 #[test]
 fn nt_fixed_waiters_order_strictly_by_level() {
-    let low = PiDonorKey { class: nt(5), deadline: 0, special: false };
-    let high = PiDonorKey { class: nt(24), deadline: 0, special: false };
-    let equal = PiDonorKey { class: nt(24), deadline: 0, special: false };
+    let low = PiDonorKey { class: nt(5), ..PiDonorKey::default() };
+    let high = PiDonorKey { class: nt(24), ..PiDonorKey::default() };
+    let equal = PiDonorKey { class: nt(24), ..PiDonorKey::default() };
     assert!(donor_key_outranks(high, low));
     assert!(!donor_key_outranks(low, high));
     assert!(!donor_key_outranks(high, equal));
@@ -73,9 +73,9 @@ fn nt_fixed_waiters_order_strictly_by_level() {
 
 #[test]
 fn nt_fixed_pi_rank_is_below_rt_and_above_fair() {
-    let rt_key = PiDonorKey { class: rt(1), deadline: 0, special: false };
-    let nt_key = PiDonorKey { class: nt(31), deadline: 0, special: false };
-    let fair_key = PiDonorKey { class: fair(88_761), deadline: 0, special: false };
+    let rt_key = PiDonorKey { class: rt(1), ..PiDonorKey::default() };
+    let nt_key = PiDonorKey { class: nt(31), ..PiDonorKey::default() };
+    let fair_key = PiDonorKey { class: fair(88_761), ..PiDonorKey::default() };
     assert!(donor_key_outranks(rt_key, nt_key));
     assert!(!donor_key_outranks(nt_key, rt_key));
     assert!(donor_key_outranks(nt_key, fair_key));
