@@ -21,7 +21,7 @@ FROZEN 2026-08-31. Dep:`01`,`03`,`29a`,`31ab`,`52`,`53`. Provides: one userspace
 - Hive transactions use a bounded, versioned export/import envelope owned by
   the same service. Export records are subtree-scoped; import validates and
   stages the decoded snapshot before committing it to the target key.
-- The userspace `Advapi` adapter exposes the initial `RegOpenKeyExW`, `RegCreateKeyExW`, `RegQueryValueExW`, `RegSetValueExW`, `RegEnumKeyExW`, `RegEnumValueW`, and `RegCloseKey` behavior over the client; it preserves query-size probes, short-buffer `ERROR_MORE_DATA`, default values, no-more-item results, and reserved-argument validation.
+- The userspace `Advapi` adapter exposes the initial `RegOpenKeyExW`, `RegCreateKeyExW`, `RegQueryValueExW`, `RegSetValueExW`, `RegEnumKeyExW`, `RegEnumValueW`, and `RegCloseKey` behavior over the client; it preserves query-size probes, short-buffer `ERROR_MORE_DATA`, default values, no-more-item results, and reserved-argument validation. `RegQueryInfoKeyW` maps the same canonical key metadata to Windows character and byte units.
 - `registryd` exposes that interface over a bounded length-prefixed Unix stream and flushes the same store after each client connection; framing errors never become registry success.
 - The native Notepad smoke starts one `registryd` instance for the runtime
   session and exposes its endpoint as `OXIDE_REGISTRY_SOCKET`; the database path
@@ -34,6 +34,7 @@ FROZEN 2026-08-31. Dep:`01`,`03`,`29a`,`31ab`,`52`,`53`. Provides: one userspace
 - typed value byte preservation;
 - stable key and value enumeration through the framed service;
 - Win32 adapter nested-key and query-buffer behavior;
+- Win32 adapter key metadata counts, length units, and argument validation;
 - persistence round-trip;
 - malformed-file rejection;
 - normal `windows-compat-test` execution.
