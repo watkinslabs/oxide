@@ -170,8 +170,13 @@ fn get_path(module: u64, flags: u32, path_output: u64, unknown_output: u64) -> u
     let search_flags = nt_loader_dir_policy::expand_default_flags(
         nt_loader_dir_policy::effective_flags(flags,
             cur.thread_group.nt_default_dll_search_flags.load(Ordering::Acquire)));
+    if search_flags & LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR != 0
+        && !nt_loader_dir_policy::dll_load_directory_path_valid(&module_name) {
+        return STATUS_INVALID_PARAMETER;
+    }
     let mut path = Vec::new();
-    if flags & LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR != 0 || flags & LOAD_WITH_ALTERED_SEARCH_PATH != 0 {
+    if search_flags & LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR != 0
+        || flags & LOAD_WITH_ALTERED_SEARCH_PATH != 0 {
         append_directory(&mut path, directory_of(&module_name));
     }
     if search_flags & LOAD_LIBRARY_SEARCH_APPLICATION_DIR != 0 {

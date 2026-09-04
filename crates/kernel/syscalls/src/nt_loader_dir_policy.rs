@@ -10,6 +10,8 @@ pub const LOAD_WITH_ALTERED_SEARCH_PATH: u32 = 0x0000_0008;
 pub const DEFAULT_DIRECTORY_FLAGS: u32 = LOAD_LIBRARY_SEARCH_APPLICATION_DIR
     | LOAD_LIBRARY_SEARCH_USER_DIRS | LOAD_LIBRARY_SEARCH_SYSTEM32
     | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS;
+pub const SEARCH_DIRECTORY_FLAGS: u32 = LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR
+    | DEFAULT_DIRECTORY_FLAGS;
 
 /// Validate the flag mask accepted by `LdrSetDefaultDllDirectories`. # C: O(1)
 pub const fn default_flags_valid(flags: u32) -> bool {
@@ -28,20 +30,29 @@ pub const fn expand_default_flags(flags: u32) -> u32 {
 
 /// Validate the mutually exclusive `LdrGetDllPath` search modes. # C: O(1)
 pub const fn request_flags_valid(flags: u32) -> bool {
-    let valid = LOAD_WITH_ALTERED_SEARCH_PATH | LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR
-        | DEFAULT_DIRECTORY_FLAGS;
+    let valid = LOAD_WITH_ALTERED_SEARCH_PATH | SEARCH_DIRECTORY_FLAGS;
     flags & !valid == 0
         && !(flags & LOAD_WITH_ALTERED_SEARCH_PATH != 0
-            && flags & DEFAULT_DIRECTORY_FLAGS != 0)
+            && flags & SEARCH_DIRECTORY_FLAGS != 0)
 }
 
 /// Select explicit request flags, or the process defaults when no mode was supplied. # C: O(1)
 pub const fn effective_flags(request: u32, defaults: u32) -> u32 {
-    if request & (LOAD_WITH_ALTERED_SEARCH_PATH | DEFAULT_DIRECTORY_FLAGS) == 0 {
-        defaults
+    if request & LOAD_WITH_ALTERED_SEARCH_PATH != 0 {
+        if defaults == 0 { LOAD_WITH_ALTERED_SEARCH_PATH }
+        else { expand_default_flags(defaults | LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR) }
+    } else if request & SEARCH_DIRECTORY_FLAGS != 0 {
+        expand_default_flags(request)
     } else {
-        request
+        expand_default_flags(defaults)
     }
+}
+
+/// Accept the path classes Wine permits for `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR`. # C: O(N)
+pub fn dll_load_directory_path_valid(path: &[u8]) -> bool {
+    if path.len() >= 2 && path[0] == b'\\' && path[1] == 0 { return true; }
+    if path.len() < 6 || path[1] != 0 || path[2] != b':' || path[3] != 0 { return false; }
+    (path[4] == b'\\' || path[4] == b'/') && path[5] == 0
 }
 
 #[cfg(test)]
@@ -75,5 +86,31 @@ mod tests {
         assert!(!request_flags_valid(LOAD_WITH_ALTERED_SEARCH_PATH
             | LOAD_LIBRARY_SEARCH_SYSTEM32));
         assert!(request_flags_valid(LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR));
+    }
+
+    #[test]
+    fn dll_load_directory_is_not_lost_when_it_is_the_explicit_mode() {
+        assert_eq!(effective_flags(LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR,
+            LOAD_LIBRARY_SEARCH_SYSTEM32), LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR);
+    }
+
+    #[test]
+    fn altered_mode_inherits_defaults_and_adds_module_directory() {
+        assert_eq!(effective_flags(LOAD_WITH_ALTERED_SEARCH_PATH,
+            LOAD_LIBRARY_SEARCH_SYSTEM32), LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR
+                | LOAD_LIBRARY_SEARCH_SYSTEM32);
+    }
+
+    #[test]
+    fn dll_load_directory_rejects_drive_relative_names() {
+        fn u16_bytes(value: &[u8]) -> alloc::vec::Vec<u8> {
+            let mut result = alloc::vec::Vec::new();
+            for byte in value { result.extend_from_slice(&[*byte, 0]); }
+            result
+        }
+        assert!(dll_load_directory_path_valid(&u16_bytes(b"C:\\dir\\x.dll")));
+        assert!(dll_load_directory_path_valid(&u16_bytes(b"\\\\host\\share\\x.dll")));
+        assert!(!dll_load_directory_path_valid(&u16_bytes(b"C:x.dll")));
+        assert!(!dll_load_directory_path_valid(&u16_bytes(b"x.dll")));
     }
 }
