@@ -382,6 +382,7 @@ impl AddressSpace {
             pkeys: super::super::pkeys::PkeyContext::forked(&self.pkeys),
             accounting,
             ldt,
+            write_watch: super::super::write_watch::WriteWatchLock::new(super::super::write_watch::WriteWatchState::new()),
         });
         // A child that never joins these directories is invisible to every
         // owner that routes by page-table root: its page-table frames are

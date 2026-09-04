@@ -112,6 +112,8 @@ mod membarrier;
 mod mlock;
 mod mmfields;
 mod saved_auxv;
+#[path = "write_watch.rs"]
+mod write_watch;
 mod ops;
 mod rwsem;
 pub mod uffd;
@@ -262,6 +264,7 @@ pub struct AddressSpace {
     /// Table. Owned by the mm so `CLONE_VM` siblings share one table and a
     /// `fork` child gets a private copy; freed with the mm. See `crate::ldt`.
     ldt: crate::ldt::LdtState,
+    pub(crate) write_watch: write_watch::WriteWatchLock,
 }
 
 impl AddressSpace {
@@ -328,6 +331,7 @@ impl AddressSpace {
             mdwe: mdwe::MdweState::new(),
             pkeys: pkeys::PkeyContext::new(),
             ldt: crate::ldt::LdtState::new(),
+            write_watch: write_watch::WriteWatchLock::new(write_watch::WriteWatchState::new()),
         });
         accounting::register_page_table_owner(root_pa, &as_.accounting);
         register_live_address_space(root_pa, Arc::downgrade(&as_));
@@ -383,6 +387,22 @@ impl AddressSpace {
     pub fn brk_max(&self) -> u64 {
         self.brk_max.load(core::sync::atomic::Ordering::Acquire)
     }
+
+    /// Register one NT MEM_WRITE_WATCH range in this mm's canonical VMM owner.
+    /// # C: O(number of pages)
+    pub fn register_write_watch(&self, base: u64, size: usize) -> KResult<()> { write_watch::register(&self.write_watch, base, size) }
+
+    /// Remove one unmapped NT MEM_WRITE_WATCH range.
+    /// # C: O(number of pages)
+    pub fn unregister_write_watch(&self, base: u64, size: usize) { write_watch::unregister(&self.write_watch, base, size); }
+
+    /// Record a write fault against the canonical watched-page owner.
+    /// # C: O(log N)
+    pub(crate) fn mark_write_watch(&self, va: u64) { write_watch::mark(&self.write_watch, va); }
+
+    /// Query and optionally reset watched pages for the NT ABI.
+    /// # C: O(dirty pages + range pages)
+    pub fn query_write_watch(&self, base: u64, size: usize, cap: usize, reset: bool) -> KResult<alloc::vec::Vec<u64>> { write_watch::query(&self.write_watch, base, size, cap, reset) }
 
     /// Try to set `brk` to `new`. Returns the post-operation brk
     /// value (matching glibc's `brk(2)` ABI: success ⇒ `new`,

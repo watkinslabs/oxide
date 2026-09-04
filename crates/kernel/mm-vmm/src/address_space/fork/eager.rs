@@ -108,6 +108,7 @@ impl AddressSpace {
             pkeys: super::super::pkeys::PkeyContext::forked(&self.pkeys),
             accounting,
             ldt,
+            write_watch: super::super::write_watch::WriteWatchLock::new(super::super::write_watch::WriteWatchState::new()),
         });
         super::super::accounting::register_page_table_owner(new_root_pa, &child.accounting);
         super::super::register_live_address_space(new_root_pa, Arc::downgrade(&child));
