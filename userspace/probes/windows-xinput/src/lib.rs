@@ -48,6 +48,90 @@ pub const fn next_packet_number(packet_number: u32) -> u32 {
     if next == 0 { 1 } else { next }
 }
 
+/// One Linux EV_ABS-style sample, including the range advertised by the
+/// native input device.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NativeAxis {
+    pub value: i32,
+    pub min: i32,
+    pub max: i32,
+}
+
+/// One complete native controller report. Button usages are already translated
+/// to the XInput button mask; axes retain their native input ranges.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NativeGamepadReport {
+    pub buttons: u16,
+    pub left_trigger: NativeAxis,
+    pub right_trigger: NativeAxis,
+    pub thumb_lx: NativeAxis,
+    pub thumb_ly: NativeAxis,
+    pub thumb_rx: NativeAxis,
+    pub thumb_ry: NativeAxis,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum XInputAxis { LeftTrigger, RightTrigger, ThumbLx, ThumbLy, ThumbRx, ThumbRy }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum XInputNormalizationError { InvalidButtons, InvalidAxis(XInputAxis) }
+
+/// Own the cached XInput state for one native controller.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct XInputStateTracker { state: XInputState }
+
+impl XInputStateTracker {
+    /// Apply one complete native report, or clear the state on disconnect.
+    /// Invalid reports leave the previous state and packet number untouched.
+    /// # C: O(1)
+    pub fn update(&mut self, report: Option<NativeGamepadReport>) -> Result<(), XInputNormalizationError> {
+        let Some(report) = report else {
+            self.state = XInputState::default();
+            return Ok(());
+        };
+        if report.buttons & !known_buttons() != 0 { return Err(XInputNormalizationError::InvalidButtons); }
+        let gamepad = XInputGamepad {
+            buttons: report.buttons,
+            left_trigger: normalize_trigger(report.left_trigger).ok_or(XInputNormalizationError::InvalidAxis(XInputAxis::LeftTrigger))?,
+            right_trigger: normalize_trigger(report.right_trigger).ok_or(XInputNormalizationError::InvalidAxis(XInputAxis::RightTrigger))?,
+            thumb_lx: normalize_thumb(report.thumb_lx).ok_or(XInputNormalizationError::InvalidAxis(XInputAxis::ThumbLx))?,
+            thumb_ly: normalize_thumb(report.thumb_ly).ok_or(XInputNormalizationError::InvalidAxis(XInputAxis::ThumbLy))?,
+            thumb_rx: normalize_thumb(report.thumb_rx).ok_or(XInputNormalizationError::InvalidAxis(XInputAxis::ThumbRx))?,
+            thumb_ry: normalize_thumb(report.thumb_ry).ok_or(XInputNormalizationError::InvalidAxis(XInputAxis::ThumbRy))?,
+        };
+        self.state = XInputState { packet_number: next_packet_number(self.state.packet_number), gamepad };
+        Ok(())
+    }
+
+    /// Return the cached ABI state. Packet zero is the disconnected sentinel.
+    /// # C: O(1)
+    pub const fn state(&self) -> XInputState { self.state }
+
+    /// Return whether the cached controller state is connected.
+    /// # C: O(1)
+    pub const fn is_connected(&self) -> bool { self.state.packet_number != 0 }
+}
+
+const fn known_buttons() -> u16 {
+    GAMEPAD_DPAD_UP | GAMEPAD_DPAD_DOWN | GAMEPAD_DPAD_LEFT | GAMEPAD_DPAD_RIGHT
+        | GAMEPAD_START | GAMEPAD_BACK | GAMEPAD_LEFT_THUMB | GAMEPAD_RIGHT_THUMB
+        | GAMEPAD_LEFT_SHOULDER | GAMEPAD_RIGHT_SHOULDER | GAMEPAD_A | GAMEPAD_B | GAMEPAD_X | GAMEPAD_Y
+}
+
+fn normalize_trigger(axis: NativeAxis) -> Option<u8> {
+    let offset = i64::from(axis.value) - i64::from(axis.min);
+    let span = i64::from(axis.max) - i64::from(axis.min);
+    if span <= 0 || offset < 0 || offset > span { return None; }
+    Some(((offset * 255 + span / 2) / span) as u8)
+}
+
+fn normalize_thumb(axis: NativeAxis) -> Option<i16> {
+    let offset = i64::from(axis.value) - i64::from(axis.min);
+    let span = i64::from(axis.max) - i64::from(axis.min);
+    if span <= 0 || offset < 0 || offset > span { return None; }
+    Some((((offset * 65_535 + span / 2) / span) - 32_768) as i16)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum XInputRequestError { BadArguments, DeviceNotConnected }
 
@@ -67,10 +151,7 @@ pub const fn result_code(error: Option<XInputRequestError>) -> u32 {
 /// no impossible button bits. Analog values are signed full-range controls.
 /// # C: O(1)
 pub fn validate_state(state: &XInputState) -> bool {
-    let known = GAMEPAD_DPAD_UP | GAMEPAD_DPAD_DOWN | GAMEPAD_DPAD_LEFT | GAMEPAD_DPAD_RIGHT
-        | GAMEPAD_START | GAMEPAD_BACK | GAMEPAD_LEFT_THUMB | GAMEPAD_RIGHT_THUMB
-        | GAMEPAD_LEFT_SHOULDER | GAMEPAD_RIGHT_SHOULDER | GAMEPAD_A | GAMEPAD_B | GAMEPAD_X | GAMEPAD_Y;
-    state.gamepad.buttons & !known == 0
+    state.gamepad.buttons & !known_buttons() == 0
 }
 
 #[cfg(test)]
@@ -109,5 +190,45 @@ mod tests {
         assert_eq!(next_packet_number(1), 2);
         assert_eq!(next_packet_number(u32::MAX - 1), u32::MAX);
         assert_eq!(next_packet_number(u32::MAX), 1);
+    }
+
+    fn axis(value: i32) -> NativeAxis { NativeAxis { value, min: -100, max: 100 } }
+
+    fn report() -> NativeGamepadReport {
+        NativeGamepadReport {
+            buttons: GAMEPAD_A, left_trigger: NativeAxis { value: 0, min: 0, max: 1023 },
+            right_trigger: NativeAxis { value: 1023, min: 0, max: 1023 },
+            thumb_lx: axis(-100), thumb_ly: axis(0), thumb_rx: axis(100), thumb_ry: axis(0),
+        }
+    }
+
+    #[test]
+    fn native_ranges_normalize_to_xinput_widths_and_advance_once_per_report() {
+        let mut tracker = XInputStateTracker::default();
+        tracker.update(Some(report())).unwrap();
+        assert_eq!(tracker.state().packet_number, 1);
+        assert_eq!(tracker.state().gamepad.left_trigger, 0);
+        assert_eq!(tracker.state().gamepad.right_trigger, 255);
+        assert_eq!(tracker.state().gamepad.thumb_lx, i16::MIN);
+        assert_eq!(tracker.state().gamepad.thumb_ly, 0);
+        assert_eq!(tracker.state().gamepad.thumb_rx, i16::MAX);
+        tracker.update(Some(report())).unwrap();
+        assert_eq!(tracker.state().packet_number, 2);
+    }
+
+    #[test]
+    fn malformed_report_is_transactional_and_disconnect_clears_cached_state() {
+        let mut tracker = XInputStateTracker::default();
+        tracker.update(Some(report())).unwrap();
+        let previous = tracker.state();
+        let mut invalid = report();
+        invalid.thumb_lx = NativeAxis { value: 0, min: 1, max: 1 };
+        assert_eq!(tracker.update(Some(invalid)), Err(XInputNormalizationError::InvalidAxis(XInputAxis::ThumbLx)));
+        assert_eq!(tracker.state(), previous);
+        tracker.update(None).unwrap();
+        assert!(!tracker.is_connected());
+        assert_eq!(tracker.state(), XInputState::default());
+        tracker.update(Some(report())).unwrap();
+        assert_eq!(tracker.state().packet_number, 1);
     }
 }
