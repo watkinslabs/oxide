@@ -2,8 +2,9 @@ use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 
 use crate::Task;
-use super::{boost, tick, unwait, NtAdjustReason, NtPriorityClass, NtQuantumPolicy,
-    NtSchedSnapshot, NtTickOutcome};
+use super::{NtPriorityClass, NtQuantumPolicy, NtSchedSnapshot};
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
+use super::{boost, tick, unwait, NtAdjustReason, NtTickOutcome};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NtProcessSchedConfig {
@@ -68,8 +69,10 @@ pub enum NtThreadSchedRequest {
     Unwait { increment: u8, kernel_apc: bool },
 }
 
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 enum ProcessChange { Priority { old: u8 }, Boost, Quantum }
 
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub fn apply_nt_process(group: &crate::thread_group::ThreadGroup,
                         request: NtProcessSchedRequest) -> Result<(), NtSchedError> {
     group.with_nt_sched(|state| {
@@ -93,6 +96,7 @@ pub fn apply_nt_process(group: &crate::thread_group::ThreadGroup,
     })
 }
 
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 fn validate_process_request(mut config: NtProcessSchedConfig, request: NtProcessSchedRequest)
     -> Result<(NtProcessSchedConfig, ProcessChange), NtSchedError> {
     let change = match request {
@@ -135,6 +139,7 @@ fn validate_process_request(mut config: NtProcessSchedConfig, request: NtProcess
     Ok((config, change))
 }
 
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 fn process_priority(mut task: NtSchedSnapshot, old_process_base: u8,
                     config: NtProcessSchedConfig) -> NtSchedSnapshot {
     let delta = config.base_priority as i16 - old_process_base as i16;
@@ -149,12 +154,14 @@ fn process_priority(mut task: NtSchedSnapshot, old_process_base: u8,
     task
 }
 
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 fn requantum(mut task: NtSchedSnapshot, config: NtProcessSchedConfig) -> NtSchedSnapshot {
     task.quantum_reset = config.quantum(task.base_priority);
     task.quantum_remaining = task.quantum_reset;
     task
 }
 
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub fn apply_nt_thread(task: &Arc<Task>, request: NtThreadSchedRequest)
     -> Result<(), NtSchedError> {
     let config = task.thread_group.nt_sched_config();
@@ -164,6 +171,7 @@ pub fn apply_nt_thread(task: &Arc<Task>, request: NtThreadSchedRequest)
     Ok(())
 }
 
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 fn validate_thread_request(mut state: NtSchedSnapshot, config: NtProcessSchedConfig,
                            request: NtThreadSchedRequest) -> Result<NtSchedSnapshot, NtSchedError> {
     match request {
@@ -201,12 +209,14 @@ fn validate_thread_request(mut state: NtSchedSnapshot, config: NtProcessSchedCon
     Ok(state)
 }
 
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 fn valid_relative(relative: i8, realtime: bool) -> bool {
     relative == -15 || relative == 15 || if realtime {
         (-7..=6).contains(&relative)
     } else { (-2..=2).contains(&relative) }
 }
 
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 fn derive_thread_base(process_base: u8, relative: i8, realtime: bool) -> (u8, bool) {
     if relative == -15 { return (if realtime { 16 } else { 1 }, true); }
     if relative == 15 { return (if realtime { 31 } else { 15 }, true); }
@@ -224,6 +234,7 @@ pub fn initialize_new_thread(task: &Task) {
 }
 
 /// Move the running task into its process's native scheduler configuration.
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub fn initialize_current_process(task: &Task) {
     let rq = crate::live::runqueue::global().expect("native exec requires an installed runqueue");
     // SAFETY: exec runs preempt-disabled on the current task.
@@ -238,6 +249,7 @@ pub fn initialize_current_process(task: &Task) {
         |task| task.sched.store_nt_unlocked(state));
 }
 
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub(crate) fn tick_unlocked(task: &Task) -> NtTickOutcome {
     let (state, outcome) = tick(task.sched.nt_snapshot());
     task.sched.store_nt_unlocked(state);

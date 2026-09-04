@@ -10,12 +10,16 @@ mod runqueue;
 pub use entity::{NtAdjustReason, NtSchedSnapshot};
 pub use policy::{class_relative_priority, NtPriorityClass, NtQuantumPolicy,
     NtRelativePriority};
-pub use process::{apply_nt_process, apply_nt_thread, initialize_current_process,
-    initialize_new_thread,
-    NtProcessSchedConfig, NtProcessSchedRequest, NtSchedError, NtThreadSchedRequest};
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
+pub use process::{apply_nt_process, apply_nt_thread, initialize_current_process};
+pub use process::{initialize_new_thread, NtProcessSchedConfig,
+    NtProcessSchedRequest, NtSchedError, NtThreadSchedRequest};
 pub(crate) use entity::NtEntityState;
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub(crate) use policy::{boost, tick, unwait, NtTickOutcome};
-pub(crate) use process::{tick_unlocked, NtProcessState};
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
+pub(crate) use process::tick_unlocked;
+pub(crate) use process::NtProcessState;
 pub(crate) use runqueue::NtRunqueue;
 
 #[cfg(test)]
