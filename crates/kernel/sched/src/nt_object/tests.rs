@@ -188,6 +188,20 @@ fn handle_flags_are_owned_by_the_handle_and_protect_close() {
 }
 
 #[test]
+fn duplicate_close_source_preserves_a_protected_source() {
+    let table = NtHandleTable::new();
+    let source = table.insert(table.new_object(NtObjectType::Event), READ).unwrap();
+    assert_eq!(table.set_flags(source, 2), Some(()));
+    let duplicate = table.duplicate(source, READ).unwrap();
+    assert!(!table.close_duplicate_source(source));
+    assert!(table.contains(source));
+    assert!(table.get(duplicate, READ).is_some());
+    assert_eq!(table.set_flags(source, 0), Some(()));
+    assert!(table.close(source));
+    assert!(table.close(duplicate));
+}
+
+#[test]
 fn mutant_is_reentrant_and_release_requires_owner() {
     let mutant = NtObject::new_mutant(7, None).mutant().unwrap();
     assert!(mutant.try_acquire(41)); assert!(mutant.try_acquire(41));
