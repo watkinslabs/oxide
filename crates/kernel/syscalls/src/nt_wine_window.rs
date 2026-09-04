@@ -76,6 +76,24 @@ const WM_NCACTIVATE: u64 = 0x0086;
 fn paintstruct_field(base: u64, offset: u64) -> Option<u64> { base.checked_add(offset) }
 fn message_field(base: u64, offset: u64) -> Option<u64> { base.checked_add(offset) }
 
+/// Keep the raw ordinal admission decision independent of the kernel entry
+/// body so hosted tests exercise the same claim boundary.
+/// # C: O(1)
+fn raw_ordinal_claimed(ordinal: u64) -> bool {
+    matches!(ordinal,
+        WINE_GET_MESSAGE | WINE_DESTROY_WINDOW | WINE_PEEK_MESSAGE |
+        WINE_POST_MESSAGE | WINE_SHOW_WINDOW | WINE_BEGIN_PAINT | WINE_END_PAINT |
+        WINE_GET_DC | WINE_GET_DC_EX | WINE_INVALIDATE_RECT | WINE_RELEASE_DC |
+        WINE_SET_WINDOW_POS |
+        WINE_NTUSER_INITIALIZE_CLIENT_PFN_ARRAYS |
+        WINE_NTUSER_GET_SYSTEM_DPI_FOR_PROCESS | WINE_GET_WINDOW_PLACEMENT | WINE_CALL_NO_PARAM |
+        WINE_CHECK_MENU_ITEM | WINE_CREATE_MENU | WINE_CREATE_POPUP_MENU | WINE_DELETE_MENU |
+        WINE_REMOVE_MENU | WINE_GET_MENU_BAR_INFO | WINE_GET_MENU_ITEM_RECT | WINE_DRAW_MENU_BAR |
+        WINE_DRAW_MENU_BAR_TEMP | WINE_SET_ACTIVE_WINDOW | WINE_SET_FOCUS | WINE_TRANSLATE_MESSAGE |
+        WINE_DESTROY_MENU | WINE_ENABLE_MENU_ITEM | WINE_SET_MENU | WINE_THUNKED_MENU_ITEM_INFO |
+        WINE_CALL_ONE_PARAM)
+}
+
 #[cfg(target_os = "oxide-kernel")]
 fn read_args(pointer: u64) -> Option<[u64; 17]> {
     let mut args = [0u64; 17];
@@ -346,6 +364,34 @@ fn get_class_info_ex(args: &[u64; 17]) -> u64 {
 /// # C: O(NTUSER_NB_PROCS + NTUSER_NB_WORKERS)
 #[cfg(target_os = "oxide-kernel")]
 pub fn dispatch_raw(ordinal: u64, args: SyscallArgs) -> Option<u64> {
+    if !raw_ordinal_claimed(ordinal) { return None; }
+    let native = |service: NtService, call_args: SyscallArgs| crate::nt_window::dispatch(NtCall { service, args: call_args }).unwrap_or(STATUS_INVALID_PARAMETER);
+    let gdi = |service: NtService, call_args: SyscallArgs| crate::nt_gdi::dispatch(NtCall { service, args: call_args }).unwrap_or(STATUS_INVALID_PARAMETER);
+    if ordinal == WINE_DESTROY_WINDOW { return Some(win_bool(native(NtService::DestroyWindow, SyscallArgs { a0: args.a0, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 }))); }
+    if ordinal == WINE_POST_MESSAGE { return Some(win_bool(native(NtService::PostMessage, SyscallArgs { a0: args.a0, a1: args.a1, a2: args.a2, a3: args.a3, a4: 0, a5: 0 }))); }
+    if ordinal == WINE_PEEK_MESSAGE { return Some(win_bool(native(NtService::PeekMessage, SyscallArgs { a0: args.a0, a1: args.a1, a2: args.a2, a3: args.a3, a4: args.a4, a5: 0 }))); }
+    if ordinal == WINE_GET_MESSAGE { return Some(win_bool(native(NtService::GetMessage, SyscallArgs { a0: args.a0, a1: args.a1, a2: args.a2, a3: args.a3, a4: 0, a5: 0 }))); }
+    if ordinal == WINE_SHOW_WINDOW { return Some(native(NtService::ShowWindow, SyscallArgs { a0: args.a0, a1: args.a1, a2: 0, a3: 0, a4: 0, a5: 0 })); }
+    if ordinal == WINE_INVALIDATE_RECT { return Some(win_bool(native(NtService::InvalidateWindow, SyscallArgs { a0: args.a0, a1: args.a1, a2: args.a2, a3: 0, a4: 0, a5: 0 }))); }
+    if ordinal == WINE_BEGIN_PAINT {
+        let packed = [args.a0, args.a1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        return Some(begin_paint(&packed, native, gdi));
+    }
+    if ordinal == WINE_END_PAINT {
+        let packed = [args.a0, args.a1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        return Some(end_paint(&packed, native, gdi));
+    }
+    if ordinal == WINE_GET_DC { return Some(create_window_dc(args.a0, 0, gdi)); }
+    if ordinal == WINE_GET_DC_EX { return Some(create_window_dc(args.a0, args.a2, gdi)); }
+    if ordinal == WINE_RELEASE_DC { return Some(win_bool(gdi(NtService::DeleteGdiObject, SyscallArgs { a0: args.a1, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 }))); }
+    if ordinal == WINE_SET_WINDOW_POS {
+        let right = (args.a2 as i32).checked_add(args.a4 as i32);
+        let bottom = (args.a3 as i32).checked_add(args.a5 as i32);
+        return Some(match (right, bottom) {
+            (Some(right), Some(bottom)) => win_bool(native(NtService::SetWindowRectValues, SyscallArgs { a0: args.a0, a1: args.a2, a2: args.a3, a3: right as u64, a4: bottom as u64, a5: 0 })),
+            _ => STATUS_INVALID_PARAMETER,
+        });
+    }
     if ordinal == WINE_GET_MENU_ITEM_RECT {
         let Some(rect) = crate::nt_window::menu_item_rect_for_current(args.a0, args.a1, args.a2) else { return Some(0); };
         let bytes = [rect.left.to_le_bytes(), rect.top.to_le_bytes(), rect.right.to_le_bytes(), rect.bottom.to_le_bytes()];
@@ -525,6 +571,14 @@ mod tests {
         assert_eq![(WINE_CREATE_WINDOW_EX, 0x136b), (WINE_DESTROY_WINDOW, 0x1384), (WINE_GET_MESSAGE, 0x141b), (WINE_PEEK_MESSAGE, 0x14ca), (WINE_POST_MESSAGE, 0x14d0), (WINE_SHOW_WINDOW, 0x15bd), (WINE_BEGIN_PAINT, 0x1327), (WINE_END_PAINT, 0x13bc), (WINE_GET_DC, 0x13eb), (WINE_GET_DC_EX, 0x13ec), (WINE_INVALIDATE_RECT, 0x148c), (WINE_RELEASE_DC, 0x1509), (WINE_SET_WINDOW_POS, 0x15a7), (WINE_GET_TEXT_METRICS, 0x1229), (WINE_GET_TEXT_EXTENT_EX, 0x1227), (WINE_REGISTER_CLASS_EX, 0x14eb), (WINE_DISPATCH_MESSAGE, 0x138b), (WINE_MESSAGE_CALL, 0x14b5), (WINE_GET_CLASS_NAME, 0x13d9), (WINE_GET_CLASS_INFO_EX, 0x13d8), (WINE_UNREGISTER_CLASS, 0x15df), (WINE_NTUSER_INITIALIZE_CLIENT_PFN_ARRAYS, 0x147a), (WINE_NTUSER_GET_SYSTEM_DPI_FOR_PROCESS, 0x144b), (WINE_GET_WINDOW_PLACEMENT, 0x1463), (WINE_CALL_NO_PARAM, 0x133c), (WINE_CALL_ONE_PARAM, 0x133d), (WINE_CREATE_MENU, 0x1366), (WINE_CREATE_POPUP_MENU, 0x1368), (WINE_DELETE_MENU, 0x1378), (WINE_REMOVE_MENU, 0x151d), (WINE_DRAW_MENU_BAR, 0x139b), (WINE_DRAW_MENU_BAR_TEMP, 0x139c), (WINE_SET_ACTIVE_WINDOW, 0x1532), (WINE_SET_FOCUS, 0x1557), (WINE_TRANSLATE_MESSAGE, 0x15d8), (WINE_THUNKED_MENU_ITEM_INFO, 0x15d0)] .iter().for_each(|(actual, expected)| assert_eq!(*actual, *expected));
         assert_eq!(WINE_DEF_WINDOW_PROC, 0x029e);
         assert_eq!(WINE_CALL_WINDOW_PROC, 0x02ab);
+    }
+
+    #[test]
+    fn raw_ordinal_admission_has_positive_and_negative_controls() {
+        assert!(raw_ordinal_claimed(WINE_GET_MESSAGE));
+        assert!(raw_ordinal_claimed(WINE_BEGIN_PAINT));
+        assert!(!raw_ordinal_claimed(0x131b));
+        assert!(!raw_ordinal_claimed(u64::MAX));
     }
 
     #[test]
