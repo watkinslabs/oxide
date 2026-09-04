@@ -78,6 +78,7 @@ mod nt_signal_wait;
 mod nt_token;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_priority;
+mod nt_thread_info_policy;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_registry;
 #[cfg(target_os = "oxide-kernel")]

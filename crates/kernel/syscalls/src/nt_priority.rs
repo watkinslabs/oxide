@@ -17,7 +17,9 @@ const PROCESS_PRIORITY_CLASS: u64 = 18;
 const PROCESS_PRIORITY_BOOST: u64 = 22;
 const THREAD_PRIORITY: u64 = 2;
 const THREAD_BASE_PRIORITY: u64 = 3;
+const THREAD_AFFINITY_MASK: u64 = 5;
 const THREAD_PRIORITY_BOOST: u64 = 14;
+const THREAD_AFFINITY_MASK_BYTES: u64 = 8;
 
 pub(crate) fn dispatch(call: NtCall) -> Option<u64> {
     match call.service {
@@ -67,7 +69,6 @@ fn set_process(call: NtCall) -> u64 {
 fn set_thread(call: NtCall) -> u64 {
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
-    if call.args.a3 != 4 { return STATUS_INFO_LENGTH_MISMATCH; }
     let table = cur.thread_group.nt_handles();
     let target = if call.args.a0 == CURRENT_THREAD {
         match sched::registry::lookup(cur.tid) {
@@ -85,6 +86,21 @@ fn set_thread(call: NtCall) -> u64 {
         let Some(task) = object.task() else { return STATUS_INVALID_HANDLE; };
         task
     };
+    if call.args.a1 == THREAD_AFFINITY_MASK {
+        if call.args.a3 != THREAD_AFFINITY_MASK_BYTES { return STATUS_INFO_LENGTH_MISMATCH; }
+        let Ok(raw) = uaccess::get_user_u64(call.args.a2) else { return STATUS_INVALID_PARAMETER; };
+        let want = cpu::CpuMask::from_words(&[raw]);
+        let active = cpu::smp::online_cpumask();
+        let active = if active.is_empty() { cpu::CpuMask::of(0) } else { active };
+        if crate::nt_thread_info_policy::affinity(
+            want, target.cpuset_cpus_allowed.load(core::sync::atomic::Ordering::Acquire),
+            active, target.no_setaffinity.load(core::sync::atomic::Ordering::Acquire)).is_err() {
+            return STATUS_INVALID_PARAMETER;
+        }
+        sched::live::update_affinity(&target, Some(want), None);
+        return crate::nt_thread_info_policy::success();
+    }
+    if call.args.a3 != 4 { return STATUS_INFO_LENGTH_MISMATCH; }
     let Ok(raw) = uaccess::get_user_u32(call.args.a2) else { return STATUS_INVALID_PARAMETER; };
     let value = raw as i32;
     let request = match call.args.a1 {
