@@ -192,12 +192,26 @@ fn server_select(args: u64) -> u64 {
     let (Some(flags_address), Some(timeout_address)) = (wine_arg(args, 12), wine_arg(args, SERVER_SELECT_TIMEOUT)) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
     let Ok(flags) = uaccess::get_user_u32(flags_address) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
     let Ok(timeout) = uaccess::get_user_u64(timeout_address) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
-    let timeout_ptr = if timeout == SERVER_TIMEOUT_INFINITE { 0 } else { timeout_address };
+    let mut restore_timeout = None;
+    let timeout_ptr = match crate::nt_wine_timeout::to_nt_timeout(timeout, timekeeper::monotonic_ns(), SERVER_TIMEOUT_INFINITE) {
+        Ok(None) => 0,
+        Ok(Some(converted)) => {
+            if converted as u64 != timeout {
+                if uaccess::put_user_u64(timeout_address, converted as u64).is_err() { return server_reply(args, STATUS_INVALID_PARAMETER); }
+                restore_timeout = Some(timeout);
+            }
+            timeout_address
+        }
+        Err(()) => return server_reply(args, STATUS_INVALID_PARAMETER),
+    };
     let result = crate::nt_dispatch::dispatch(NtCall {
         service: NtService::WaitForMultipleObjects,
         args: syscall::SyscallArgs { a0: count as u64, a1: wine_arg(data_ptr, 4).unwrap_or(0), a2: wait_type as u64,
             a3: (flags & SERVER_SELECT_ALERTABLE) as u64, a4: timeout_ptr, a5: 0 },
     });
+    if let Some(original) = restore_timeout {
+        if uaccess::put_user_u64(timeout_address, original).is_err() { return server_reply(args, STATUS_INVALID_PARAMETER); }
+    }
     let Some(signaled_address) = wine_arg(args, SERVER_SELECT_REPLY_SIGNALED) else { return STATUS_INVALID_PARAMETER; };
     if uaccess::put_user_u32(signaled_address, (result < SERVER_SELECT_MAX_HANDLES as u64) as u32).is_err() { STATUS_INVALID_PARAMETER } else { result }
 }
