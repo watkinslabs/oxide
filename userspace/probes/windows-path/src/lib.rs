@@ -45,13 +45,16 @@ impl WindowsPath {
         value
     }
 
-    /// Comparison key for case-insensitive Windows lookup.
+    /// Comparison key for Unicode case-insensitive Windows lookup.
+    ///
+    /// The key is separate from `host_path()` so the VFS adapter can resolve
+    /// an existing name without changing the spelling retained for display.
     /// # C: O(path length)
     pub fn lookup_key(&self) -> String {
         let mut value = format!("{}:", self.drive as char);
         for component in &self.components {
             value.push('/');
-            value.push_str(&component.to_ascii_lowercase());
+            value.extend(component.chars().flat_map(char::to_lowercase));
         }
         value
     }
@@ -75,6 +78,13 @@ mod tests {
         let path = WindowsPath::parse(r"d:\Users\Alice\Save.DAT").unwrap();
         assert_eq!(path.host_path(), "windows/d/Users/Alice/Save.DAT");
         assert_eq!(path.lookup_key(), "d:/users/alice/save.dat");
+    }
+
+    #[test]
+    fn lookup_folds_unicode_without_destroying_display_case() {
+        let path = WindowsPath::parse("C:\\Données\\Résumé.txt").unwrap();
+        assert_eq!(path.host_path(), "windows/c/Données/Résumé.txt");
+        assert_eq!(path.lookup_key(), "c:/données/résumé.txt");
     }
 
     #[test]
