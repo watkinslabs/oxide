@@ -2,7 +2,6 @@
 //! contract.  Keeping this policy separate makes its boundary testable on the
 //! host while the delivery owner remains target-specific.
 
-pub const REG_NOTIFY_CHANGE_NAME: u64 = 0x0000_0001;
 pub const REG_NOTIFY_CHANGE_LAST_SET: u64 = 0x0000_0004;
 
 /// Whether the ABI shape can be owned by the current synchronous NT bridge.

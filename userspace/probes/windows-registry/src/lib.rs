@@ -141,7 +141,7 @@ impl RegistryStore {
             Request::EnumKeys { key } => self.registry.subkeys_handle(key).map_or_else(Response::Failure, Response::Keys),
             Request::EnumValues { key } => self.registry.values_handle(key).map_or_else(Response::Failure, Response::Values),
             Request::QueryKey { key } => self.registry.query_key_handle(key).map_or_else(Response::Failure, Response::KeyInfo),
-            Request::Close { key } => self.registry.close_handle(key).map_or_else(Response::Failure, |_| Response::Success),
+            Request::Close { key } => self.registry.close_handle(key).map_or_else(Response::Failure, |_| { self.subscriptions.retain(|_, state| state.key != key); Response::Success }),
             Request::Flush { key } => {
                 if !self.registry.handles.contains_key(&key) { return Response::Failure(Error::MissingKey); }
                 self.flush().map_or_else(|error| Response::Failure(error), |_| Response::Success)
@@ -800,11 +800,11 @@ mod tests {
         let key = match store.execute(Request::Create { root: Root::CurrentUser, subkey: "Software\\Notify".into() }) { Response::Handle(key) => key, response => panic!("unexpected response: {response:?}") };
         let child = match store.execute(Request::CreateRelative { key, subkey: "Child".into() }) { Response::Handle(child) => child, response => panic!("unexpected response: {response:?}") };
         let subscription = match store.execute(Request::Subscribe { key, filter: REG_NOTIFY_CHANGE_LAST_SET, subtree: false }) { Response::Subscription(id) => id, response => panic!("unexpected response: {response:?}") };
-        assert_eq!(store.execute(Request::PollSubscription { subscription }), Response::Notification);
+        assert_eq!(store.execute(Request::PollSubscription { subscription }), Response::Success);
         assert_eq!(store.execute(Request::Set { key: child, name: "ignored".into(), value: Value { kind: ValueType::Dword, data: vec![1, 0, 0, 0] } }), Response::Success);
         assert_eq!(store.execute(Request::PollSubscription { subscription }), Response::Success);
         assert_eq!(store.execute(Request::Set { key, name: "changed".into(), value: Value { kind: ValueType::Dword, data: vec![2, 0, 0, 0] } }), Response::Success);
-        assert_eq!(store.execute(Request::PollSubscription { subscription }), Response::Success);
+        assert_eq!(store.execute(Request::PollSubscription { subscription }), Response::Notification);
         assert_eq!(store.execute(Request::Subscribe { key, filter: REG_NOTIFY_CHANGE_LAST_SET, subtree: true }), Response::Failure(Error::InvalidPath));
         fs::remove_file(path).ok();
     }
