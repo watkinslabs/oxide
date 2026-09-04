@@ -10,6 +10,9 @@ use sync::{Spinlock, TaskList as TaskListClass};
 
 pub const EXCEPTION_RECORD_BYTES: usize = 0x98;
 pub const CONTEXT_BYTES: usize = 0x4d0;
+const EXCEPTION_CODE_OFFSET: usize = 0;
+const EXCEPTION_BREAKPOINT: u32 = 0x8000_0003;
+const CONTEXT_RIP_OFFSET: usize = 0xf8;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Pending {
@@ -44,6 +47,17 @@ impl Default for State {
     fn default() -> Self { Self::new() }
 }
 
+/// Apply the x86-64 dispatcher correction to one scheduler-owned exception
+/// context before it crosses into the user exception frame. # C: O(1)
+pub fn prepare_dispatch_context(record: &[u8; EXCEPTION_RECORD_BYTES], context: &mut [u8; CONTEXT_BYTES]) -> bool {
+    let code = u32::from_le_bytes(record[EXCEPTION_CODE_OFFSET..EXCEPTION_CODE_OFFSET + 4].try_into().unwrap());
+    if code != EXCEPTION_BREAKPOINT { return true; }
+    let rip = u64::from_le_bytes(context[CONTEXT_RIP_OFFSET..CONTEXT_RIP_OFFSET + 8].try_into().unwrap());
+    let Some(rip) = rip.checked_sub(1) else { return false; };
+    context[CONTEXT_RIP_OFFSET..CONTEXT_RIP_OFFSET + 8].copy_from_slice(&rip.to_le_bytes());
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -61,5 +75,24 @@ mod tests {
         assert_eq!(state.publish(sample(false)), Err(sample(false)));
         assert_eq!(state.take(), Some(pending));
         assert!(!state.is_pending());
+    }
+
+    #[test]
+    fn breakpoint_dispatch_resumes_at_the_instruction_before_trap() {
+        let mut record = [0u8; EXCEPTION_RECORD_BYTES];
+        record[EXCEPTION_CODE_OFFSET..EXCEPTION_CODE_OFFSET + 4].copy_from_slice(&EXCEPTION_BREAKPOINT.to_le_bytes());
+        let mut context = [0u8; CONTEXT_BYTES];
+        context[CONTEXT_RIP_OFFSET..CONTEXT_RIP_OFFSET + 8].copy_from_slice(&0x401001u64.to_le_bytes());
+        assert!(prepare_dispatch_context(&record, &mut context));
+        assert_eq!(u64::from_le_bytes(context[CONTEXT_RIP_OFFSET..CONTEXT_RIP_OFFSET + 8].try_into().unwrap()), 0x401000);
+    }
+
+    #[test]
+    fn breakpoint_at_zero_is_rejected_without_mutating_context() {
+        let mut record = [0u8; EXCEPTION_RECORD_BYTES];
+        record[EXCEPTION_CODE_OFFSET..EXCEPTION_CODE_OFFSET + 4].copy_from_slice(&EXCEPTION_BREAKPOINT.to_le_bytes());
+        let mut context = [0u8; CONTEXT_BYTES];
+        assert!(!prepare_dispatch_context(&record, &mut context));
+        assert_eq!(&context[CONTEXT_RIP_OFFSET..CONTEXT_RIP_OFFSET + 8], &[0; 8]);
     }
 }

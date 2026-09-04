@@ -9,6 +9,7 @@ use syscall::nt::{NtCall, NtService};
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 const STATUS_SUCCESS: u64 = 0;
 const STATUS_UNSUCCESSFUL: u64 = 0xc000_0001;
+const STATUS_NOT_SUPPORTED: u64 = 0xc000_00bb;
 const EXCEPTION_NONCONTINUABLE: u32 = 1;
 const EXCEPTION_CODE_OFFSET: usize = 0;
 const EXCEPTION_FLAGS_OFFSET: usize = 4;
@@ -37,7 +38,8 @@ fn capture_context() -> Option<[u8; CONTEXT_BYTES]> {
 #[cfg(not(target_arch = "x86_64"))]
 fn capture_context() -> Option<[u8; CONTEXT_BYTES]> { None }
 
-fn publish(current: &sched::Task, record: [u8; EXCEPTION_RECORD_BYTES], context: [u8; CONTEXT_BYTES], first_chance: bool) -> u64 {
+fn publish(current: &sched::Task, record: [u8; EXCEPTION_RECORD_BYTES], mut context: [u8; CONTEXT_BYTES], first_chance: bool) -> u64 {
+    if !sched::nt_exception::prepare_dispatch_context(&record, &mut context) { return STATUS_INVALID_PARAMETER; }
     current.nt_exception.publish(Pending { record, context, first_chance }).map_or(STATUS_UNSUCCESSFUL, |_| STATUS_SUCCESS)
 }
 
@@ -50,11 +52,23 @@ fn exception_dispatcher(current: &sched::Task) -> Option<u64> {
 #[cfg(not(target_arch = "x86_64"))]
 fn exception_dispatcher(_current: &sched::Task) -> Option<u64> { None }
 
+#[cfg(target_arch = "x86_64")]
 fn raise_from_user(current: &sched::Task, record: u64, context: u64, first_chance: u64) -> u64 {
     if record == 0 || context == 0 || hal::UserVirtAddr::new(record).is_none() || hal::UserVirtAddr::new(context).is_none() || first_chance > 1 { return STATUS_INVALID_PARAMETER; }
     let mut record_bytes = [0u8; EXCEPTION_RECORD_BYTES];
     let mut context_bytes = [0u8; CONTEXT_BYTES];
     if uaccess::copy_from_user(&mut record_bytes, record).is_err() || uaccess::copy_from_user(&mut context_bytes, context).is_err() { return STATUS_INVALID_PARAMETER; }
+    let image = match crate::nt_context_image::decode(&context_bytes) {
+        Ok(image) => image,
+        Err(crate::nt_context_image::Error::Invalid) => return STATUS_INVALID_PARAMETER,
+        Err(crate::nt_context_image::Error::Unsupported) => return STATUS_NOT_SUPPORTED,
+    };
+    let rip = image.registers[crate::nt_context_image::RestoreImage::RIP];
+    let rsp = image.registers[crate::nt_context_image::RestoreImage::RSP];
+    if hal::UserVirtAddr::new(rip).is_none() || hal::UserVirtAddr::new(rsp).is_none()
+        || image.rflags & 0x2 == 0 || image.rflags & 0x3000 != 0 {
+        return STATUS_INVALID_PARAMETER;
+    }
     publish(current, record_bytes, context_bytes, first_chance != 0)
 }
 
@@ -92,8 +106,13 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::NtRaiseException {
         let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
         if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
-        if exception_dispatcher(&cur).is_none() { return Some(STATUS_UNSUCCESSFUL); }
-        return Some(raise_from_user(&cur, call.args.a0, call.args.a1, call.args.a2));
+        #[cfg(target_arch = "aarch64")]
+        { return Some(STATUS_NOT_SUPPORTED); }
+        #[cfg(target_arch = "x86_64")]
+        {
+            if exception_dispatcher(&cur).is_none() { return Some(STATUS_UNSUCCESSFUL); }
+            return Some(raise_from_user(&cur, call.args.a0, call.args.a1, call.args.a2));
+        }
     }
     if call.service != NtService::RtlSetUnhandledExceptionFilter { return None; }
     let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
