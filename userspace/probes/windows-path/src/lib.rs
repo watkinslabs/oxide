@@ -11,9 +11,15 @@ pub struct WindowsPath {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PathError { Empty, MissingDrive, InvalidDrive, AbsoluteRequired, EscapeRoot, EmptyComponent }
+pub enum PathError { Empty, InvalidUtf8, MissingDrive, InvalidDrive, AbsoluteRequired, EscapeRoot, EmptyComponent }
 
 impl WindowsPath {
+    /// Parse the byte form crossing the Unix-facing Windows boundary.
+    /// # C: O(path length)
+    pub fn parse_bytes(path: &[u8]) -> Result<Self, PathError> {
+        Self::parse(core::str::from_utf8(path).map_err(|_| PathError::InvalidUtf8)?)
+    }
+
     /// Parse an absolute `C:\...` path, accepting `/` as Wine does at the
     /// Unix-facing boundary while emitting only canonical components.
     /// # C: O(path length)
@@ -54,9 +60,24 @@ impl WindowsPath {
         let mut value = format!("{}:", self.drive as char);
         for component in &self.components {
             value.push('/');
-            value.extend(component.chars().flat_map(char::to_lowercase));
+            value.push_str(&unicode_casefold(component));
         }
         value
+    }
+}
+
+fn unicode_casefold(value: &str) -> String {
+    let encoding = utf8::Encoding::from_charset("utf8")
+        .expect("the compiled Unicode table must provide utf8");
+    let mut capacity = value.len().saturating_mul(4).saturating_add(4);
+    loop {
+        let mut folded = vec![0u8; capacity];
+        match utf8::casefold_into(&encoding, value.as_bytes(), &mut folded) {
+            Ok(length) => return String::from_utf8(folded[..length].to_vec())
+                .expect("Unicode casefold output is UTF-8"),
+            Err(utf8::FoldError::NoSpace) => capacity = capacity.saturating_mul(2),
+            Err(utf8::FoldError::Invalid) => unreachable!("WindowsPath stores valid UTF-8"),
+        }
     }
 }
 
@@ -84,7 +105,22 @@ mod tests {
     fn lookup_folds_unicode_without_destroying_display_case() {
         let path = WindowsPath::parse("C:\\Données\\Résumé.txt").unwrap();
         assert_eq!(path.host_path(), "windows/c/Données/Résumé.txt");
-        assert_eq!(path.lookup_key(), "c:/données/résumé.txt");
+        assert_eq!(path.lookup_key(), "c:/donne\u{301}es/re\u{301}sume\u{301}.txt");
+    }
+
+    #[test]
+    fn lookup_uses_full_casefold_and_canonical_decomposition() {
+        let stored = WindowsPath::parse("C:\\Straße\\Café.txt").unwrap();
+        let query = WindowsPath::parse("c:\\STRASSE\\CAFE\u{301}.TXT").unwrap();
+        assert_eq!(stored.lookup_key(), query.lookup_key());
+        assert_ne!(stored.host_path(), query.host_path());
+        assert_ne!(stored.components[0].to_ascii_lowercase(), "strasse");
+    }
+
+    #[test]
+    fn malformed_utf8_is_rejected_at_the_byte_boundary() {
+        assert_eq!(WindowsPath::parse_bytes(b"C:\\ok\\bad\xff"), Err(PathError::InvalidUtf8));
+        assert_eq!(WindowsPath::parse_bytes(b"C:\\bad\xc3"), Err(PathError::InvalidUtf8));
     }
 
     #[test]

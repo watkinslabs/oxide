@@ -182,6 +182,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "utf8"
+version = "0.1.0"
+
+[[package]]
 name = "v4l2_capture_probe"
 version = "0.1.0"
 dependencies = [
@@ -212,6 +216,9 @@ dependencies = [
 [[package]]
 name = "windows-path"
 version = "0.1.0"
+dependencies = [
+ "utf8",
+]
 
 [[package]]
 name = "windows-registry"

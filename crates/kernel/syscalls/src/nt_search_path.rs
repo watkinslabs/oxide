@@ -48,14 +48,14 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
 
 fn read_wide(address: u64) -> Option<String> {
     if address == 0 { return None; }
-    let mut output = String::new();
+    let mut units = Vec::new();
     for index in 0..MAX_PATH_UNITS {
         let address = address.checked_add((index * 2) as u64)?;
         let mut bytes = [0u8; 2];
         uaccess::copy_from_user(&mut bytes, address).ok()?;
         let unit = u16::from_le_bytes(bytes);
-        if unit == 0 { return Some(output); }
-        output.push(core::char::from_u32(unit as u32)?);
+        if unit == 0 { return crate::nt_path::decode_utf16(&units); }
+        units.push(unit);
     }
     None
 }

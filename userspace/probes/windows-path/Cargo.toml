@@ -8,3 +8,4 @@ publish.workspace = true
 path = "src/lib.rs"
 
 [dependencies]
+utf8 = { path = "../../../crates/shared/utf8" }
