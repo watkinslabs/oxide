@@ -3,6 +3,7 @@
 // - ownership: stable task/rq ownership and class-change coverage.
 // - deadline: EDF rekey and CBS preservation coverage.
 // - locking: migration interleaving and TaskPi lock coverage.
+// - transaction: rejected/unwound mutation, group, migration, and PI coverage.
 
 use super::*;
 
@@ -14,3 +15,5 @@ mod ownership;
 mod deadline;
 #[path = "tests/locking.rs"]
 mod locking;
+#[path = "tests/transaction.rs"]
+mod transaction;
