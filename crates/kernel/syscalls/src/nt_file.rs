@@ -42,10 +42,6 @@ const FILE_END_OF_FILE_INFORMATION: u32 = 20;
 const FILE_RENAME_INFORMATION: u32 = 10;
 const FILE_DISPOSITION_INFORMATION: u32 = 13;
 const DELETE_ACCESS: u32 = 0x0001_0000;
-const FILE_NAMES_INFORMATION: u32 = 12;
-const FILE_DIRECTORY_INFORMATION: u32 = 1;
-const FILE_FULL_DIRECTORY_INFORMATION: u32 = 2;
-const FILE_BOTH_DIRECTORY_INFORMATION: u32 = 3;
 const FILE_INTERNAL_INFORMATION: u32 = 6;
 const FILE_EA_INFORMATION: u32 = 7;
 const FILE_ACCESS_INFORMATION: u32 = 8;
@@ -886,7 +882,7 @@ fn query_directory_values(cur: &sched::Task, handle: u32, io_status: u64, inform
     if io_status == 0 || information == 0 {
         return STATUS_INVALID_PARAMETER;
     }
-    let Some(layout) = directory_layout(class) else { return STATUS_INVALID_INFO_CLASS; };
+    let Some(layout) = crate::nt_file_policy::directory_info_layout(class) else { return STATUS_INVALID_INFO_CLASS; };
     // FILE_NAMES_INFORMATION has a fixed 12-byte header.  NT validates the
     // caller's buffer contract before touching the directory cursor; doing
     // this here also prevents a zero-sized emitter from being mistaken for an
@@ -933,30 +929,17 @@ struct NameEmitter {
     capacity: usize,
     last: Option<usize>,
     attempted: bool,
-    layout: DirectoryLayout,
-}
-
-#[derive(Copy, Clone)]
-struct DirectoryLayout { header: usize, name_length: usize, name: usize, attributes: Option<usize>, ea_size: Option<usize> }
-
-fn directory_layout(class: u32) -> Option<DirectoryLayout> {
-    match class {
-        FILE_DIRECTORY_INFORMATION => Some(DirectoryLayout { header: 64, name_length: 60, name: 64, attributes: Some(56), ea_size: None }),
-        FILE_FULL_DIRECTORY_INFORMATION => Some(DirectoryLayout { header: 68, name_length: 60, name: 68, attributes: Some(56), ea_size: Some(64) }),
-        FILE_BOTH_DIRECTORY_INFORMATION => Some(DirectoryLayout { header: 94, name_length: 60, name: 94, attributes: Some(56), ea_size: Some(64) }),
-        FILE_NAMES_INFORMATION => Some(DirectoryLayout { header: 12, name_length: 8, name: 12, attributes: None, ea_size: None }),
-        _ => None,
-    }
+    layout: crate::nt_file_policy::DirectoryInfoLayout,
 }
 
 impl NameEmitter {
-    fn new(capacity: usize, layout: DirectoryLayout) -> Self {
+    fn new(capacity: usize, layout: crate::nt_file_policy::DirectoryInfoLayout) -> Self {
         Self { bytes: alloc::vec::Vec::new(), capacity, last: None, attempted: false, layout }
     }
 }
 
 impl vfs::DirEmit for NameEmitter {
-    fn emit(&mut self, name: &str, _ino: u64, kind: vfs::FileType, _next_pos: u64) -> bool {
+    fn emit(&mut self, name: &str, ino: u64, kind: vfs::FileType, _next_pos: u64) -> bool {
         self.attempted = true;
         let utf16: alloc::vec::Vec<u16> = name.encode_utf16().collect();
         let Some(name_bytes) = utf16.len().checked_mul(2) else { return false; };
@@ -982,6 +965,9 @@ impl vfs::DirEmit for NameEmitter {
         }
         if let Some(field) = self.layout.ea_size {
             self.bytes[offset + field..offset + field + 4].copy_from_slice(&0u32.to_ne_bytes());
+        }
+        if let Some(field) = self.layout.file_id {
+            self.bytes[offset + field..offset + field + 8].copy_from_slice(&ino.to_ne_bytes());
         }
         for (index, unit) in utf16.iter().enumerate() {
             let start = offset + self.layout.name + index * 2;
