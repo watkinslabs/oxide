@@ -13,22 +13,29 @@ fn vma_accounting_tracks_commit_fixed_replace_unmap_and_mlock() {
     mm.mmap(Some(va), PAGE * 2, VmaProt::READ | VmaProt::WRITE,
         flags, VmaBacking::Anonymous, true).unwrap();
     let s = mm.accounting_snapshot();
+    assert_eq!(s.virtual_bytes, (PAGE * 2) as u64);
+    assert_eq!(s.peak_virtual_bytes, (PAGE * 2) as u64);
     assert_eq!(s.committed_virtual_bytes, (PAGE * 2) as u64);
     assert_eq!(s.locked_virtual_bytes, 0);
     assert_eq!(s.root_page_table_frames, 1);
 
     mm.update_flags_range(va, PAGE * 2, VmaFlags::LOCKED, VmaFlags::empty());
     let s = mm.accounting_snapshot();
+    assert_eq!(s.virtual_bytes, (PAGE * 2) as u64);
+    assert_eq!(s.peak_virtual_bytes, (PAGE * 2) as u64);
     assert_eq!(s.locked_virtual_bytes, (PAGE * 2) as u64);
     assert_eq!(s.mlock_transitions, 1);
 
     mm.mmap(Some(va), PAGE, VmaProt::READ, flags | VmaFlags::LOCKED, VmaBacking::Anonymous, true).unwrap();
     let s = mm.accounting_snapshot();
+    assert_eq!(s.virtual_bytes, (PAGE * 2) as u64);
     assert_eq!(s.committed_virtual_bytes, (PAGE * 2) as u64);
     assert_eq!(s.locked_virtual_bytes, (PAGE * 2) as u64);
 
     mm.munmap(va, PAGE).unwrap();
     let s = mm.accounting_snapshot();
+    assert_eq!(s.virtual_bytes, PAGE_SIZE_BYTES);
+    assert_eq!(s.peak_virtual_bytes, (PAGE * 2) as u64);
     assert_eq!(s.committed_virtual_bytes, PAGE_SIZE_BYTES);
     assert_eq!(s.locked_virtual_bytes, PAGE_SIZE_BYTES);
 }

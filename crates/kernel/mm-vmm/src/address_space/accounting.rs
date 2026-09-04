@@ -16,6 +16,10 @@ use super::rss::{class_of, RssClass, RssTally};
 /// second source of truth.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct VmAccountingSnapshot {
+    /// Bytes covered by every VMA in this mm, including shared mappings.
+    pub virtual_bytes: u64,
+    /// Largest `virtual_bytes` observed while this mm was live.
+    pub peak_virtual_bytes: u64,
     pub committed_virtual_bytes: u64,
     pub locked_virtual_bytes: u64,
     pub anon_pte_mappings: u64,
@@ -62,6 +66,8 @@ impl VmAccountingSnapshot {
 }
 
 pub(super) struct VmAccounting {
+    virtual_bytes: AtomicU64,
+    peak_virtual_bytes: AtomicU64,
     committed_virtual_bytes: AtomicU64,
     locked_virtual_bytes: AtomicU64,
     anon_pte_mappings: AtomicU64,
@@ -100,6 +106,7 @@ fn dec_by(c: &AtomicU64, n: u64) {
 impl VmAccounting {
     pub(super) fn new(root_pa: u64) -> Self {
         Self {
+            virtual_bytes: AtomicU64::new(0), peak_virtual_bytes: AtomicU64::new(0),
             committed_virtual_bytes: AtomicU64::new(0), locked_virtual_bytes: AtomicU64::new(0),
             anon_pte_mappings: AtomicU64::new(0), file_pte_mappings: AtomicU64::new(0), swap_pte_mappings: AtomicU64::new(0),
             kernel_pte_mappings: AtomicU64::new(0), device_pte_mappings: AtomicU64::new(0),
@@ -127,6 +134,8 @@ impl VmAccounting {
 
     fn raw_snapshot(&self) -> VmAccountingSnapshot {
         VmAccountingSnapshot {
+            virtual_bytes: self.virtual_bytes.load(Ordering::Acquire),
+            peak_virtual_bytes: self.peak_virtual_bytes.load(Ordering::Acquire),
             hiwater_rss_pages: 0,
             committed_virtual_bytes: self.committed_virtual_bytes.load(Ordering::Acquire),
             locked_virtual_bytes: self.locked_virtual_bytes.load(Ordering::Acquire),
@@ -152,11 +161,14 @@ impl VmAccounting {
     }
     pub(super) fn add_vma(&self, vma: &Vma) {
         let n = Self::bytes(vma);
+        let current = self.virtual_bytes.fetch_add(n, Ordering::AcqRel).saturating_add(n);
+        self.peak_virtual_bytes.fetch_max(current, Ordering::AcqRel);
         if Self::committed(vma) { self.committed_virtual_bytes.fetch_add(n, Ordering::AcqRel); }
         if vma.flags.contains(VmaFlags::LOCKED) { self.locked_virtual_bytes.fetch_add(n, Ordering::AcqRel); }
     }
     pub(super) fn remove_vma(&self, vma: &Vma) {
         let n = Self::bytes(vma);
+        self.virtual_bytes.fetch_sub(n, Ordering::AcqRel);
         if Self::committed(vma) { self.committed_virtual_bytes.fetch_sub(n, Ordering::AcqRel); }
         if vma.flags.contains(VmaFlags::LOCKED) { self.locked_virtual_bytes.fetch_sub(n, Ordering::AcqRel); }
     }
@@ -273,6 +285,8 @@ pub fn global_accounting_snapshot() -> VmAccountingSnapshot {
         // AddressSpace::Drop unregisters only after teardown; holding the
         // directory lock prevents removal while this observation dereferences it.
         let next = unsafe { (&*(ptr as *const VmAccounting)).snapshot() };
+        out.virtual_bytes = out.virtual_bytes.saturating_add(next.virtual_bytes);
+        out.peak_virtual_bytes = out.peak_virtual_bytes.saturating_add(next.peak_virtual_bytes);
         out.committed_virtual_bytes = out.committed_virtual_bytes.saturating_add(next.committed_virtual_bytes);
         out.locked_virtual_bytes = out.locked_virtual_bytes.saturating_add(next.locked_virtual_bytes);
         out.anon_pte_mappings = out.anon_pte_mappings.saturating_add(next.anon_pte_mappings);
