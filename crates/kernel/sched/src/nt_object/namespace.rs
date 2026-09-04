@@ -19,6 +19,13 @@ struct Namespace {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum NamedObjectState { Created, Existing, TypeMismatch, ParentMissing }
 
+/// Maximum number of native object symbolic-link substitutions in one walk.
+pub const MAX_SYMBOLIC_LINK_DEPTH: usize = 32;
+
+/// Failure classes for native object-directory symbolic-link traversal.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum SymbolicLinkResolutionError { InvalidPath, Loop, Depth }
+
 static OBJECT_NAMESPACE: Spinlock<Namespace, TaskListClass> = Spinlock::new(Namespace {
     objects: Vec::new(), next_id: AtomicU64::new(1),
 });
@@ -35,6 +42,91 @@ fn parent(path: &str) -> Option<&str> {
 }
 
 fn leaf(path: &str) -> &str { path.rsplit('\\').next().unwrap_or(path) }
+
+fn path_components(path: &str) -> Result<Vec<&str>, SymbolicLinkResolutionError> {
+    if path.is_empty() || !path.starts_with('\\') || path.contains('/') || path.contains('\0') {
+        return Err(SymbolicLinkResolutionError::InvalidPath);
+    }
+    if path == "\\" { return Ok(Vec::new()); }
+    let mut components = Vec::new();
+    for component in path.split('\\').skip(1) {
+        if component.is_empty() || component == "." || component == ".." {
+            return Err(SymbolicLinkResolutionError::InvalidPath);
+        }
+        components.push(component);
+    }
+    Ok(components)
+}
+
+fn relative_components(path: &str) -> Result<Vec<&str>, SymbolicLinkResolutionError> {
+    if path.is_empty() || path.contains('/') || path.contains('\0') {
+        return Err(SymbolicLinkResolutionError::InvalidPath);
+    }
+    let mut components = Vec::new();
+    for component in path.split('\\') {
+        if component.is_empty() || component == "." || component == ".." {
+            return Err(SymbolicLinkResolutionError::InvalidPath);
+        }
+        components.push(component);
+    }
+    Ok(components)
+}
+
+fn make_path(components: &[String]) -> String {
+    let mut path = String::from("\\");
+    for component in components {
+        if path.len() != 1 { path.push('\\'); }
+        path.push_str(component);
+    }
+    path
+}
+
+/// Follow native object-directory links while retaining one namespace owner.
+/// # C: O(depth × N_namespace)
+pub fn resolve_symbolic_links(path: &str) -> Result<String, SymbolicLinkResolutionError> {
+    let initial = path_components(path)?;
+    let mut components: Vec<String> = initial.into_iter().map(String::from).collect();
+    let mut seen = Vec::new();
+    let mut depth = 0;
+    loop {
+        let mut namespace = OBJECT_NAMESPACE.lock();
+        seed(&mut namespace);
+        let mut replacement = None;
+        let mut prefix = String::from("\\");
+        for index in 0..components.len() {
+            if prefix.len() != 1 { prefix.push('\\'); }
+            prefix.push_str(&components[index]);
+            let Some(entry) = namespace.objects.iter().find(|entry| equal(&entry.path, &prefix)) else { continue; };
+            if entry.object.kind() != NtObjectType::SymbolicLink { continue; }
+            if seen.iter().any(|id| *id == entry.object.id()) {
+                return Err(SymbolicLinkResolutionError::Loop);
+            }
+            if depth >= MAX_SYMBOLIC_LINK_DEPTH {
+                return Err(SymbolicLinkResolutionError::Depth);
+            }
+            let Some(link) = entry.object.symbolic_link() else {
+                return Err(SymbolicLinkResolutionError::InvalidPath);
+            };
+            let target = link.target();
+            let target_components = if target.is_empty() { Vec::new() }
+                else if target.starts_with('\\') { path_components(target)? }
+                else { relative_components(target)? };
+            let target_components = target_components.into_iter().map(String::from).collect::<Vec<_>>();
+            let mut next = if target.starts_with('\\') { Vec::new() } else {
+                components[..index].to_vec()
+            };
+            next.extend(target_components);
+            next.extend_from_slice(&components[index + 1..]);
+            seen.push(entry.object.id());
+            components = next;
+            depth += 1;
+            replacement = Some(());
+            break;
+        }
+        drop(namespace);
+        if replacement.is_none() { return Ok(make_path(&components)); }
+    }
+}
 
 fn seed(namespace: &mut Namespace) {
     if !namespace.objects.is_empty() { return; }
@@ -423,5 +515,40 @@ mod tests {
         assert_eq!(published.symbolic_link().unwrap().target(), "\\Device\\HarddiskVolume1");
         assert!(directory_entries(&lookup_directory("\\DosDevices").unwrap())
             .iter().any(|(name, kind)| name == "f1456_link" && kind == "SymbolicLink"));
+    }
+
+    #[test]
+    fn symbolic_link_walk_replaces_link_and_retains_suffix_case_insensitively() {
+        let target = NtObject::new_symbolic_link(9401, "\\Device\\HarddiskVolume1".into());
+        let (_, state) = publish_symbolic_link("\\DosDevices\\walk_link", target);
+        assert_eq!(state, NamedObjectState::Created);
+        assert_eq!(resolve_symbolic_links("\\DosDevices\\WALK_LINK\\Windows\\x").unwrap(),
+            "\\Device\\HarddiskVolume1\\Windows\\x");
+    }
+
+    #[test]
+    fn symbolic_link_walk_rejects_cycles_and_bounded_chains() {
+        let first = NtObject::new_symbolic_link(9402, "\\DosDevices\\walk_b".into());
+        let second = NtObject::new_symbolic_link(9403, "\\DosDevices\\walk_a".into());
+        assert_eq!(publish_symbolic_link("\\DosDevices\\walk_a", first).1, NamedObjectState::Created);
+        assert_eq!(publish_symbolic_link("\\DosDevices\\walk_b", second).1, NamedObjectState::Created);
+        assert_eq!(resolve_symbolic_links("\\DosDevices\\walk_a\\leaf"), Err(SymbolicLinkResolutionError::Loop));
+
+        for index in 0..=MAX_SYMBOLIC_LINK_DEPTH {
+            let name = alloc::format!("\\DosDevices\\walk_depth_{index}");
+            let target = if index == MAX_SYMBOLIC_LINK_DEPTH {
+                "\\Device\\depth_terminal".into()
+            } else { alloc::format!("\\DosDevices\\walk_depth_{}", index + 1) };
+            assert_eq!(publish_symbolic_link(&name, NtObject::new_symbolic_link(9500 + index as u64, target)).1,
+                NamedObjectState::Created);
+        }
+        assert_eq!(resolve_symbolic_links("\\DosDevices\\walk_depth_0"), Err(SymbolicLinkResolutionError::Depth));
+    }
+
+    #[test]
+    fn symbolic_link_walk_does_not_follow_the_link_when_target_is_not_in_path() {
+        let link = NtObject::new_symbolic_link(9404, "\\Device\\Target".into());
+        assert_eq!(publish_symbolic_link("\\DosDevices\\walk_leaf", link).1, NamedObjectState::Created);
+        assert_eq!(resolve_symbolic_links("\\DosDevices\\walk_leaf").unwrap(), "\\Device\\Target");
     }
 }

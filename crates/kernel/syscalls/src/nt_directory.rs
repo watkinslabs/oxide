@@ -98,6 +98,15 @@ fn put_unicode(bytes: &mut [u8], offset: usize, length: u16, buffer: u64) {
 }
 
 pub(crate) fn resolve_object_path(attributes: u64, table: &sched::nt_object::NtHandleTable) -> Option<alloc::string::String> {
+    resolve_object_path_mode(attributes, table, true)
+}
+
+pub(crate) fn resolve_object_path_no_follow(attributes: u64, table: &sched::nt_object::NtHandleTable) -> Option<alloc::string::String> {
+    resolve_object_path_mode(attributes, table, false)
+}
+
+fn resolve_object_path_mode(attributes: u64, table: &sched::nt_object::NtHandleTable,
+                            follow_links: bool) -> Option<alloc::string::String> {
     if attributes == 0 || uaccess::get_user_u32(attributes).ok()? < 48 { return None; }
     let root = uaccess::get_user_u64(attributes + 8).ok()?;
     let name_ptr = uaccess::get_user_u64(attributes + 16).ok()?;
@@ -107,7 +116,8 @@ pub(crate) fn resolve_object_path(attributes: u64, table: &sched::nt_object::NtH
         let object = table.get(sched::nt_object::NtHandle::from_raw(root as u32), DIRECTORY_TRAVERSE)?;
         sched::nt_object::directory_path(&object)
     };
-    crate::nt_directory_abi::join_path(root_path.as_deref(), &name)
+    let path = crate::nt_directory_abi::join_path(root_path.as_deref(), &name)?;
+    if follow_links { sched::nt_object::resolve_symbolic_links(&path).ok() } else { Some(path) }
 }
 
 pub(crate) fn read_name(pointer: u64) -> Option<alloc::string::String> {
@@ -139,5 +149,6 @@ pub(crate) fn resolve_wine_object_path(data: u64, size: u32, table: &sched::nt_o
     uaccess::copy_from_user(&mut bytes, name_addr).ok()?;
     let units = bytes.chunks_exact(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]])).collect::<alloc::vec::Vec<_>>();
     let name = crate::nt_process_parameters::decode_utf16(&units)?;
-    crate::nt_directory_abi::join_path(Some(&root_path), &name)
+    let path = crate::nt_directory_abi::join_path(Some(&root_path), &name)?;
+    sched::nt_object::resolve_symbolic_links(&path).ok()
 }

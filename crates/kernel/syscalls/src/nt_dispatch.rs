@@ -744,7 +744,7 @@ pub fn dispatch(call: NtCall) -> u64 {
         if !cur.is_nt_personality() || call.args.a0 == 0 || call.args.a2 == 0 || call.args.a3 == 0 { return STATUS_INVALID_PARAMETER; }
         const SYMBOLIC_LINK_ALL_ACCESS: u32 = 0x001f_0001;
         if call.args.a1 as u32 & !SYMBOLIC_LINK_ALL_ACCESS != 0 { return STATUS_INVALID_PARAMETER; }
-        let Some(path) = crate::nt_directory::resolve_object_path(call.args.a2, &cur.thread_group.nt_handles()) else { return STATUS_INVALID_PARAMETER; };
+        let Some(path) = crate::nt_directory::resolve_object_path_no_follow(call.args.a2, &cur.thread_group.nt_handles()) else { return STATUS_INVALID_PARAMETER; };
         let Some(target) = crate::nt_directory::read_name(call.args.a3) else { return STATUS_INVALID_PARAMETER; };
         let table = cur.thread_group.nt_handles();
         let object = table.new_symbolic_link(target);
@@ -761,7 +761,7 @@ pub fn dispatch(call: NtCall) -> u64 {
         const SYMBOLIC_LINK_ALL_ACCESS: u32 = 0x001f_0001;
         if call.args.a1 as u32 & !SYMBOLIC_LINK_ALL_ACCESS != 0 { return STATUS_INVALID_PARAMETER; }
         let table = cur.thread_group.nt_handles();
-        let Some(path) = crate::nt_directory::resolve_object_path(call.args.a2, &table) else { return STATUS_INVALID_PARAMETER; };
+        let Some(path) = crate::nt_directory::resolve_object_path_no_follow(call.args.a2, &table) else { return STATUS_INVALID_PARAMETER; };
         let Some(object) = sched::nt_object::lookup_object(&path, sched::nt_object::NtObjectType::SymbolicLink) else { return STATUS_OBJECT_NAME_NOT_FOUND; };
         let Some(handle) = table.insert(object, call.args.a1 as u32) else { return STATUS_NO_MEMORY; };
         if uaccess::put_user_u32(call.args.a0, handle.raw()).is_err() { let _ = table.close(handle); return STATUS_INVALID_PARAMETER; }
