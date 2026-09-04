@@ -73,13 +73,33 @@ fn lookup_function_entry(pc: u64, base: u64) -> u64 {
     if exception_end > module.size as u64 || module.exception_size % 12 != 0 { return 0; }
     let Some(table) = module.base.checked_add(module.exception_rva as u64) else { return 0; };
     let count = module.exception_size / 12;
+    // The PE directory is a sorted array of records, but the mapped image is
+    // untrusted input. Validate every record before returning any pointer so a
+    // malformed row cannot make the runtime walk outside the image later.
     for index in 0..count {
         let Some(entry) = table.checked_add(index as u64 * 12) else { return 0; };
         let mut bytes = [0u8; 12];
         if uaccess::copy_from_user(&mut bytes, entry).is_err() { return 0; }
+        let begin = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
+        let end = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+        let unwind = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+        if !pe_modules::runtime_function_valid(begin, end, unwind, module.size) { return 0; }
+    }
+    // Linux's unwind lookup also treats the registered table as the canonical
+    // module-owned index. Binary search preserves the PE table's ordering and
+    // avoids making a second metadata registry for the same image.
+    let mut low = 0u32;
+    let mut high = count;
+    while low < high {
+        let mid = low + (high - low) / 2;
+        let Some(entry) = table.checked_add(mid as u64 * 12) else { return 0; };
+        let mut bytes = [0u8; 12];
+        if uaccess::copy_from_user(&mut bytes, entry).is_err() { return 0; }
         let begin = u32::from_le_bytes(bytes[0..4].try_into().unwrap()) as u64;
         let end = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as u64;
-        if begin <= rva && rva < end { return entry; }
+        if rva < begin { high = mid; }
+        else if rva >= end { low = mid + 1; }
+        else { return entry; }
     }
     0
 }

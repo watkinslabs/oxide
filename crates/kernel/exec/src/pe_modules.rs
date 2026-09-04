@@ -11,6 +11,18 @@ pub struct PeRuntimeModule {
     pub exception_size: u32,
 }
 
+/// Validate one PE32+ runtime-function record against its mapped image. # C: O(1)
+pub fn runtime_function_valid(begin: u32, end: u32, unwind_data: u32, image_size: u32) -> bool {
+    if begin >= end || end > image_size { return false; }
+    let target = unwind_data & !1;
+    if target & 3 != 0 { return false; }
+    if unwind_data & 1 != 0 {
+        target.checked_add(12).map_or(false, |last| last <= image_size)
+    } else {
+        target.checked_add(4).map_or(false, |last| last <= image_size)
+    }
+}
+
 static MODULES: Spinlock<BTreeMap<u64, Vec<PeRuntimeModule>>, Modules> = Spinlock::new(BTreeMap::new());
 static EXPORTS: Spinlock<BTreeMap<u64, BTreeMap<u64, Vec<u32>>>, Modules> = Spinlock::new(BTreeMap::new());
 
@@ -62,5 +74,15 @@ mod tests {
         assert_eq!(original_export(as_.root_pa(), 0x1800_0000, 1), Some(0x1800_6fcc));
         assert_eq!(original_export(as_.root_pa(), 0x1800_0000, 2), None);
         clear(as_.root_pa());
+    }
+
+    #[test]
+    fn runtime_function_validation_rejects_ranges_and_unwind_targets_outside_image() {
+        assert!(runtime_function_valid(0x100, 0x180, 0x200, 0x1000));
+        assert!(!runtime_function_valid(0x180, 0x180, 0x200, 0x1000));
+        assert!(!runtime_function_valid(0x100, 0x1001, 0x200, 0x1000));
+        assert!(!runtime_function_valid(0x100, 0x180, 0x1001, 0x1000));
+        assert!(!runtime_function_valid(0x100, 0x180, 0xffd, 0x1000));
+        assert!(runtime_function_valid(0x100, 0x180, 0x3fd, 0x1000));
     }
 }
