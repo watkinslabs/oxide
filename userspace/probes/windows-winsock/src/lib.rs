@@ -7,10 +7,16 @@
 extern crate alloc;
 
 mod select;
+mod readiness;
 
 pub use select::{project_select, SelectProjection, SocketReadiness};
 pub use select::{READY_ACCEPT, READY_CONNECT_ERROR, READY_ERROR, READY_HUP, READY_OOB,
     READY_READ, READY_RESET, READY_WRITE};
+pub use readiness::{AsyncPollFd, AsyncPollRequest, AsyncPollResult, AsyncPollResultFd,
+    NativeClose, NativeReadiness, MAX_ASYNC_POLL_FDS, NATIVE_POLLERR, NATIVE_POLLHUP,
+    NATIVE_POLLIN, NATIVE_POLLNVAL, NATIVE_POLLPRI, NATIVE_POLLOUT, WSA_POLLERR,
+    WSA_POLLHUP, WSA_POLLNVAL, WSA_POLLRDBAND, WSA_POLLRDNORM, WSA_POLLWRBAND,
+    WSA_POLLWRNORM};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
