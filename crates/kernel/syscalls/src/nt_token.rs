@@ -180,7 +180,8 @@ fn privilege_check(call: NtCall) -> u64 {
 }
 
 fn adjust_groups(call: NtCall) -> u64 {
-    if call.args.a0 > u32::MAX as u64 || call.args.a1 > 1 || call.args.a4 != 0 || call.args.a5 != 0 { return STATUS_INVALID_PARAMETER; }
+    if call.args.a0 > u32::MAX as u64 || call.args.a1 > 1 { return STATUS_INVALID_PARAMETER; }
+    if call.args.a4 != 0 && call.args.a5 == 0 { return STATUS_INVALID_PARAMETER; }
     if call.args.a1 == 0 && (call.args.a2 == 0 || call.args.a3 < 8) { return STATUS_INVALID_PARAMETER; }
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
@@ -188,11 +189,20 @@ fn adjust_groups(call: NtCall) -> u64 {
     let handle = sched::nt_object::NtHandle::from_raw(call.args.a0 as u32);
     let Some(object) = table.get(handle, TOKEN_ADJUST_GROUPS) else { return if table.contains(handle) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE }; };
     let Some(token) = object.token() else { return STATUS_INVALID_HANDLE; };
-    if call.args.a1 != 0 { token.replace_groups(default_groups(token.gid())); }
-    else {
+    if call.args.a4 != 0 && table.get(handle, TOKEN_QUERY).is_none() { return STATUS_ACCESS_DENIED; }
+    let groups = if call.args.a1 != 0 { Vec::new() } else {
         let Some(groups) = read_groups(call.args.a2, call.args.a3) else { return STATUS_INVALID_PARAMETER; };
-        token.replace_groups(groups);
+        groups
+    };
+    let previous = token.groups();
+    let required = 8u64.checked_add(previous.len().checked_mul(16).unwrap_or(usize::MAX) as u64).unwrap_or(u64::MAX);
+    if call.args.a4 != 0 && (call.args.a3 < required || call.args.a3 > u32::MAX as u64) { return STATUS_BUFFER_TOO_SMALL; }
+    if call.args.a4 != 0 {
+        let Some(bytes) = sched::nt_object::NtToken::groups_bytes(&previous, call.args.a4) else { return STATUS_INVALID_PARAMETER; };
+        if uaccess::copy_to_user(call.args.a4, &bytes).is_err() { return STATUS_ACCESS_VIOLATION; }
+        if uaccess::put_user_u32(call.args.a5, required as u32).is_err() { return STATUS_ACCESS_VIOLATION; }
     }
+    token.adjust_groups(call.args.a1 != 0, groups);
     STATUS_SUCCESS
 }
 
@@ -209,13 +219,6 @@ fn read_groups(address: u64, length: u64) -> Option<Vec<sched::nt_object::NtToke
         groups.push(sched::nt_object::NtTokenGroup { sid, attributes });
     }
     Some(groups)
-}
-
-fn default_groups(gid: u32) -> Vec<sched::nt_object::NtTokenGroup> {
-    let mut sid = [0u8; 16]; sid[0] = 1; sid[1] = 2;
-    let authority = 5u64.to_be_bytes();
-    sid[2..8].copy_from_slice(&authority[2..]); sid[8..12].copy_from_slice(&21u32.to_le_bytes()); sid[12..16].copy_from_slice(&gid.to_le_bytes());
-    alloc::vec![sched::nt_object::NtTokenGroup { sid, attributes: 4 }]
 }
 
 fn adjust_privileges(call: NtCall) -> u64 {
