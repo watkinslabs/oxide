@@ -690,9 +690,11 @@ remain unimplemented.
 `NtWriteFileGather` validates its native I/O-status and segment-array pointer
 shape; scatter/gather segment copying and file-owner integration remain
 unimplemented.
-`NtWriteVirtualMemory` validates native process/source/count/output pointers;
-target address-space ownership and safe partial-copy reporting remain
-unimplemented.
+`NtWriteVirtualMemory` routes current-process writes through the canonical
+`elf-load::nt_memory` owner, probes the readable source and writable target in
+Wine's order, and reports the completed prefix as `STATUS_PARTIAL_COPY`;
+cross-address-space copying remains unsupported until an address-space-aware
+owner exists.
 `NtYieldExecution` now routes through the canonical scheduler-yield owner for
 the NT personality and compares the task's canonical voluntary/involuntary
 context-switch counters, returning `STATUS_NO_YIELD_PERFORMED` when the
