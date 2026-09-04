@@ -25,7 +25,7 @@ pub(super) static VOLUNTARY: AtomicU32 = AtomicU32::new(0);
 /// the same slot once full process scheduling lands; the boot-
 /// anchor flavor is sufficient for v1's smoke-driven runqueue.
 fn build_idle_task(cpu: u16) -> Arc<Task> {
-    Arc::new(Task::new(cpu as u32 * 0x1_0000, "idle", SchedClass::Idle))
+    crate::task::dup::new_kthread_arc(cpu as u32 * 0x1_0000, "idle", SchedClass::Idle)
 }
 
 /// Install the per-CPU runqueue and its idle task. Must run before

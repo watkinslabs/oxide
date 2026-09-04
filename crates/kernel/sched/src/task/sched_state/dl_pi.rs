@@ -1,5 +1,6 @@
 //! Deadline PI parameter publication and donor identity.
 
+use alloc::boxed::Box;
 use alloc::sync::{Arc, Weak};
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -12,6 +13,13 @@ use super::{class_id, load_priority, priority_for_class, SchedClassId, TaskSched
 
 /// Immutable deadline reservation selected by PI; live CBS state remains task-owned.
 pub(super) struct DlPiState {
+    // Task construction still happens in a fixed kernel-stack frame. Keep the
+    // uncommon borrowed reservation out of line instead of inflating every
+    // constructor frame with another full deadline entity.
+    inner: Box<DlPiStorage>,
+}
+
+struct DlPiStorage {
     seq: AtomicU64,
     used: AtomicBool,
     absolute: AtomicU64,
@@ -30,26 +38,39 @@ unsafe impl Sync for DlPiState {}
 
 impl DlPiState {
     pub(super) fn new() -> Self {
-        Self { seq: AtomicU64::new(0), used: AtomicBool::new(false),
-            absolute: AtomicU64::new(0), runtime: AtomicU64::new(0),
-            deadline: AtomicU64::new(0), period: AtomicU64::new(0),
-            bw: AtomicU64::new(0), density: AtomicU64::new(0),
-            flags: AtomicU64::new(0), top: UnsafeCell::new(None) }
+        let mut slot = Box::<DlPiStorage>::new_uninit();
+        let storage = slot.as_mut_ptr();
+        // SAFETY: every field of the fresh allocation is written exactly once
+        // before assume_init, and no reference to the storage exists yet.
+        let inner = unsafe {
+            core::ptr::addr_of_mut!((*storage).seq).write(AtomicU64::new(0));
+            core::ptr::addr_of_mut!((*storage).used).write(AtomicBool::new(false));
+            core::ptr::addr_of_mut!((*storage).absolute).write(AtomicU64::new(0));
+            core::ptr::addr_of_mut!((*storage).runtime).write(AtomicU64::new(0));
+            core::ptr::addr_of_mut!((*storage).deadline).write(AtomicU64::new(0));
+            core::ptr::addr_of_mut!((*storage).period).write(AtomicU64::new(0));
+            core::ptr::addr_of_mut!((*storage).bw).write(AtomicU64::new(0));
+            core::ptr::addr_of_mut!((*storage).density).write(AtomicU64::new(0));
+            core::ptr::addr_of_mut!((*storage).flags).write(AtomicU64::new(0));
+            core::ptr::addr_of_mut!((*storage).top).write(UnsafeCell::new(None));
+            slot.assume_init()
+        };
+        Self { inner }
     }
 
     /// Publish one effective parameter entity while TaskPi and owner rq are held. # C: O(1)
     pub(super) fn store(&self, donor: Option<&Arc<Task>>, key: PiDonorKey, used: bool) {
         self.write_begin();
         // SAFETY: TaskPi plus stable owner rq excludes every donor-link writer.
-        unsafe { *self.top.get() = donor.map(Arc::downgrade); }
-        self.absolute.store(key.deadline, Ordering::Relaxed);
-        self.runtime.store(key.dl_params.runtime, Ordering::Relaxed);
-        self.deadline.store(key.dl_params.deadline, Ordering::Relaxed);
-        self.period.store(key.dl_params.period, Ordering::Relaxed);
-        self.bw.store(key.dl_params.bw, Ordering::Relaxed);
-        self.density.store(key.dl_params.density, Ordering::Relaxed);
-        self.flags.store(key.dl_params.flags, Ordering::Relaxed);
-        self.used.store(used, Ordering::Relaxed);
+        unsafe { *self.inner.top.get() = donor.map(Arc::downgrade); }
+        self.inner.absolute.store(key.deadline, Ordering::Relaxed);
+        self.inner.runtime.store(key.dl_params.runtime, Ordering::Relaxed);
+        self.inner.deadline.store(key.dl_params.deadline, Ordering::Relaxed);
+        self.inner.period.store(key.dl_params.period, Ordering::Relaxed);
+        self.inner.bw.store(key.dl_params.bw, Ordering::Relaxed);
+        self.inner.density.store(key.dl_params.density, Ordering::Relaxed);
+        self.inner.flags.store(key.dl_params.flags, Ordering::Relaxed);
+        self.inner.used.store(used, Ordering::Relaxed);
         self.write_end();
     }
 
@@ -59,40 +80,40 @@ impl DlPiState {
 
     pub(super) fn set_used(&self, used: bool) {
         self.write_begin();
-        self.used.store(used, Ordering::Relaxed);
+        self.inner.used.store(used, Ordering::Relaxed);
         self.write_end();
     }
 
     /// Effective borrowed entity snapshot. # C: O(1) expected
     pub(super) fn snapshot(&self) -> (bool, u64, DlParams) {
         loop {
-            let seq = self.seq.load(Ordering::Acquire);
+            let seq = self.inner.seq.load(Ordering::Acquire);
             if seq & 1 != 0 { core::hint::spin_loop(); continue; }
-            let used = self.used.load(Ordering::Relaxed);
-            let absolute = self.absolute.load(Ordering::Relaxed);
-            let params = DlParams { runtime: self.runtime.load(Ordering::Relaxed),
-                deadline: self.deadline.load(Ordering::Relaxed),
-                period: self.period.load(Ordering::Relaxed),
-                bw: self.bw.load(Ordering::Relaxed),
-                density: self.density.load(Ordering::Relaxed),
-                flags: self.flags.load(Ordering::Relaxed) };
-            if self.seq.load(Ordering::Acquire) == seq { return (used, absolute, params); }
+            let used = self.inner.used.load(Ordering::Relaxed);
+            let absolute = self.inner.absolute.load(Ordering::Relaxed);
+            let params = DlParams { runtime: self.inner.runtime.load(Ordering::Relaxed),
+                deadline: self.inner.deadline.load(Ordering::Relaxed),
+                period: self.inner.period.load(Ordering::Relaxed),
+                bw: self.inner.bw.load(Ordering::Relaxed),
+                density: self.inner.density.load(Ordering::Relaxed),
+                flags: self.inner.flags.load(Ordering::Relaxed) };
+            if self.inner.seq.load(Ordering::Acquire) == seq { return (used, absolute, params); }
         }
     }
 
     #[cfg(test)]
     pub(super) fn top(&self) -> Option<Arc<Task>> {
         // SAFETY: caller holds TaskPi or stable owner rq against donor replacement.
-        unsafe { (&*self.top.get()).as_ref().and_then(Weak::upgrade) }
+        unsafe { (&*self.inner.top.get()).as_ref().and_then(Weak::upgrade) }
     }
 
     fn write_begin(&self) {
-        let seq = self.seq.fetch_add(1, Ordering::AcqRel);
+        let seq = self.inner.seq.fetch_add(1, Ordering::AcqRel);
         hal::kassert!(seq & 1 == 0, "concurrent deadline PI writers");
     }
 
     fn write_end(&self) {
-        let seq = self.seq.fetch_add(1, Ordering::Release);
+        let seq = self.inner.seq.fetch_add(1, Ordering::Release);
         hal::kassert!(seq & 1 != 0, "deadline PI write ended without owner");
     }
 }
