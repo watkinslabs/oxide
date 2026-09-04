@@ -18,6 +18,8 @@ const STATUS_NO_MEMORY: u64 = 0xc000_0017;
 const STATUS_OBJECT_NAME_COLLISION: u64 = 0xc000_0035;
 const STATUS_OBJECT_NAME_NOT_FOUND: u64 = 0xc000_0034;
 const STATUS_OBJECT_TYPE_MISMATCH: u64 = 0xc000_0024;
+const STATUS_CONFLICTING_ADDRESSES: u64 = 0xc000_0018;
+const STATUS_MEMORY_NOT_ALLOCATED: u64 = 0xc000_00a0;
 const MAX_WINE_DEBUG_WRITE: usize = 1 << 20;
 
 const UNW_FLAG_MASK: u32 = 0x7;
@@ -57,6 +59,9 @@ const SERVER_REPLY_VALUE: u64 = 8;
 const SERVER_REPLY_VALUE_TWO: u64 = 12;
 const SERVER_REPLY_VALUE_THREE: u64 = 16;
 const SERVER_REQ_SELECT: u32 = 23;
+const SERVER_REQ_CREATE_MAPPING: u32 = 62;
+const SERVER_REQ_MAP_VIEW: u32 = 65;
+const SERVER_REQ_UNMAP_VIEW: u32 = 68;
 const SERVER_SELECT_WAIT: u32 = 1;
 const SERVER_SELECT_WAIT_ALL: u32 = 2;
 const SERVER_SELECT_ALERTABLE: u32 = 1;
@@ -70,11 +75,13 @@ const SERVER_APC_RESULT_BYTES: u32 = 40;
 const SERVER_SELECT_TIMEOUT: u64 = 24;
 const SERVER_SELECT_REPLY_SIGNALED: u64 = 12;
 const SERVER_TIMEOUT_INFINITE: u64 = 0x7fff_ffff_ffff_ffff;
+const SERVER_MAPPING_ACCESS_WRITE: u32 = 0x0002;
+const SERVER_MAPPING_MAX_BYTES: u64 = 1 << 36;
 
 fn wine_arg(base: u64, offset: u64) -> Option<u64> { base.checked_add(offset) }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-enum ServerRequest { CloseHandle, CreateEvent, EventOp, QueryEvent, Select, CreateMutex, ReleaseMutex, QueryMutex, CreateSemaphore, ReleaseSemaphore, QuerySemaphore }
+enum ServerRequest { CloseHandle, CreateEvent, EventOp, QueryEvent, Select, CreateMutex, ReleaseMutex, QueryMutex, CreateSemaphore, ReleaseSemaphore, QuerySemaphore, CreateMapping, MapView, UnmapView }
 
 fn select_opcode_kind(op: u32) -> Option<u32> {
     match op { SERVER_SELECT_WAIT => Some(0), SERVER_SELECT_WAIT_ALL => Some(1), _ => None }
@@ -93,6 +100,9 @@ fn server_request_kind(request: u32) -> Option<ServerRequest> {
         SERVER_REQ_CREATE_SEMAPHORE => Some(ServerRequest::CreateSemaphore),
         SERVER_REQ_RELEASE_SEMAPHORE => Some(ServerRequest::ReleaseSemaphore),
         SERVER_REQ_QUERY_SEMAPHORE => Some(ServerRequest::QuerySemaphore),
+        SERVER_REQ_CREATE_MAPPING => Some(ServerRequest::CreateMapping),
+        SERVER_REQ_MAP_VIEW => Some(ServerRequest::MapView),
+        SERVER_REQ_UNMAP_VIEW => Some(ServerRequest::UnmapView),
         _ => None,
     }
 }
@@ -181,6 +191,84 @@ fn server_select(args: u64) -> u64 {
 fn server_select(_args: u64) -> u64 { STATUS_INVALID_PARAMETER }
 
 #[cfg(target_os = "oxide-kernel")]
+fn server_create_mapping(args: u64, request_size: u32, table: &sched::nt_object::NtHandleTable) -> u64 {
+    let (Some(access_address), Some(size_address), Some(file_address)) = (wine_arg(args, 12), wine_arg(args, 24), wine_arg(args, 32)) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+    let Ok(access) = uaccess::get_user_u32(access_address) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+    let Ok(requested_size) = uaccess::get_user_u64(size_address) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+    let Ok(file_raw) = uaccess::get_user_u32(file_address) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+    if request_size != 0 || access == 0 { return server_reply(args, STATUS_INVALID_PARAMETER); }
+    let object = if file_raw == 0 {
+        if requested_size == 0 || requested_size > SERVER_MAPPING_MAX_BYTES { return server_reply(args, STATUS_INVALID_PARAMETER); }
+        let Some(object) = table.new_section(round_mapping_size(requested_size)) else { return server_reply(args, STATUS_NO_MEMORY); };
+        object
+    } else {
+        let file_handle = sched::nt_object::NtHandle::from_raw(file_raw);
+        let Some(file_object) = table.get(file_handle, 0) else { return server_reply(args, STATUS_INVALID_HANDLE); };
+        if file_object.kind() != sched::nt_object::NtObjectType::File { return server_reply(args, STATUS_INVALID_HANDLE); }
+        let Some(file) = file_object.file() else { return server_reply(args, STATUS_INVALID_HANDLE); };
+        let file_size = vfs::generic_fillattr(file.inode(), &vfs::IDENTITY).size;
+        let size = if requested_size == 0 { file_size } else { requested_size };
+        if size == 0 || size < file_size || size > SERVER_MAPPING_MAX_BYTES { return server_reply(args, STATUS_INVALID_PARAMETER); }
+        table.new_file_section(file, round_mapping_size(size))
+    };
+    let Some(handle) = table.insert(object, access) else { return server_reply(args, STATUS_NO_MEMORY); };
+    let Some(reply_address) = wine_arg(args, SERVER_REPLY_HANDLE) else { let _ = table.close(handle); return server_reply(args, STATUS_INVALID_PARAMETER); };
+    if uaccess::put_user_u32(reply_address, handle.raw()).is_err() { let _ = table.close(handle); return server_reply(args, STATUS_INVALID_PARAMETER); }
+    server_reply(args, STATUS_SUCCESS)
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn round_mapping_size(size: u64) -> usize {
+    size.saturating_add(hal::PAGE_SIZE_BYTES - 1).min(usize::MAX as u64) as usize & !(hal::PAGE_SIZE_BYTES - 1) as usize
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn server_map_view(args: u64, table: &sched::nt_object::NtHandleTable) -> u64 {
+    let (Some(mapping_address), Some(access_address), Some(base_address), Some(size_address), Some(start_address)) =
+        (wine_arg(args, 12), wine_arg(args, 16), wine_arg(args, 24), wine_arg(args, 32), wine_arg(args, 40)) else { return STATUS_INVALID_PARAMETER; };
+    let (Ok(raw), Ok(access), Ok(base), Ok(size), Ok(start)) = (uaccess::get_user_u32(mapping_address), uaccess::get_user_u32(access_address), uaccess::get_user_u64(base_address), uaccess::get_user_u64(size_address), uaccess::get_user_u64(start_address)) else { return STATUS_INVALID_PARAMETER; };
+    if size == 0 || start % hal::PAGE_SIZE_BYTES != 0 { return STATUS_INVALID_PARAMETER; }
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    let Some(mm) = (unsafe { cur.mm_ref() }).map(|mm| mm.clone()) else { return STATUS_INVALID_PARAMETER; };
+    let required = if access & SERVER_MAPPING_ACCESS_WRITE != 0 { 0x0002 } else { 0x0004 };
+    let handle = sched::nt_object::NtHandle::from_raw(raw);
+    let Some(object) = table.get(handle, required) else { return if table.contains(handle) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE }; };
+    let Some(section) = object.section() else { return STATUS_INVALID_HANDLE; };
+    if start >= section.size() as u64 || size > section.size() as u64 - start || size > SERVER_MAPPING_MAX_BYTES { return STATUS_INVALID_PARAMETER; }
+    let protection = if access & SERVER_MAPPING_ACCESS_WRITE != 0 { vmm::VmaProt::READ | vmm::VmaProt::WRITE } else { vmm::VmaProt::READ };
+    let backing = if let Some(file) = section.file() {
+        vmm::VmaBacking::File { backing: crate::mmap_file::InodeFileBacking::new(file.inode().clone()), off: start }
+    } else {
+        vmm::VmaBacking::KernelBytes { data: section.bytes(), off: start as usize }
+    };
+    let placement = match base { 0 => vmm::MmapPlacement::Advisory(None), value => { let Some(address) = hal::UserVirtAddr::new(value) else { return STATUS_INVALID_PARAMETER; }; vmm::MmapPlacement::FixedNoReplace(address) } };
+    match mm.mmap_with_may_at(placement, round_mapping_size(size), protection, protection, vmm::VmaFlags::PRIVATE, backing) {
+        Ok(_) => STATUS_SUCCESS,
+        Err(vmm::MmapError::Exists) => STATUS_CONFLICTING_ADDRESSES,
+        Err(vmm::MmapError::Vmm(_)) => STATUS_NO_MEMORY,
+    }
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn server_unmap_view(args: u64) -> u64 {
+    let Some(base_address) = wine_arg(args, 24) else { return STATUS_INVALID_PARAMETER; };
+    let Ok(base_raw) = uaccess::get_user_u64(base_address) else { return STATUS_INVALID_PARAMETER; };
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    let Some(mm) = (unsafe { cur.mm_ref() }).map(|mm| mm.clone()) else { return STATUS_INVALID_PARAMETER; };
+    let Some(base) = hal::UserVirtAddr::new(base_raw) else { return STATUS_INVALID_PARAMETER; };
+    let Some(vma) = mm.find_vma(base) else { return STATUS_MEMORY_NOT_ALLOCATED; };
+    if vma.start != base { return STATUS_INVALID_PARAMETER; }
+    if mm.munmap(vma.start, (vma.end.as_u64() - vma.start.as_u64()) as usize).is_ok() { STATUS_SUCCESS } else { STATUS_MEMORY_NOT_ALLOCATED }
+}
+
+#[cfg(not(target_os = "oxide-kernel"))]
+fn server_create_mapping(_args: u64, _request_size: u32, _table: &sched::nt_object::NtHandleTable) -> u64 { STATUS_INVALID_PARAMETER }
+#[cfg(not(target_os = "oxide-kernel"))]
+fn server_map_view(_args: u64, _table: &sched::nt_object::NtHandleTable) -> u64 { STATUS_INVALID_PARAMETER }
+#[cfg(not(target_os = "oxide-kernel"))]
+fn server_unmap_view(_args: u64) -> u64 { STATUS_INVALID_PARAMETER }
+
+#[cfg(target_os = "oxide-kernel")]
 fn wine_object_path(args: u64, request_size: u32, table: &sched::nt_object::NtHandleTable) -> Result<Option<alloc::string::String>, u64> {
     if request_size == 0 { return Ok(None); }
     let data_count = uaccess::get_user_u32(wine_arg(args, SERVER_DATA_COUNT).ok_or(STATUS_INVALID_PARAMETER)?).map_err(|_| STATUS_INVALID_PARAMETER)?;
@@ -207,6 +295,9 @@ fn server_call(args: u64) -> u64 {
     if matches!(request, ServerRequest::Select) { return server_select(args); }
     let Some(cur) = sched::live::current() else { return server_reply(args, STATUS_INVALID_PARAMETER); };
     let table = cur.thread_group.nt_handles();
+    if matches!(request, ServerRequest::CreateMapping) { return server_create_mapping(args, request_size, &table); }
+    if matches!(request, ServerRequest::MapView) { return server_reply(args, server_map_view(args, &table)); }
+    if matches!(request, ServerRequest::UnmapView) { return server_reply(args, server_unmap_view(args)); }
     let status = match request {
         ServerRequest::CloseHandle => {
             let Some(handle_address) = wine_arg(args, SERVER_HANDLE) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
@@ -335,7 +426,7 @@ fn server_call(args: u64) -> u64 {
             let (Some(current_address), Some(maximum_address)) = (wine_arg(args, SERVER_REPLY_VALUE), wine_arg(args, SERVER_REPLY_VALUE_TWO)) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
             if uaccess::put_user_u32(current_address, current).is_err() || uaccess::put_user_u32(maximum_address, maximum).is_err() { STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
         }
-        ServerRequest::Select => STATUS_INVALID_PARAMETER,
+        ServerRequest::Select | ServerRequest::CreateMapping | ServerRequest::MapView | ServerRequest::UnmapView => STATUS_INVALID_PARAMETER,
     };
     server_reply(args, status)
 }
@@ -475,6 +566,9 @@ mod tests {
         assert_eq!(server_request_kind(40), Some(ServerRequest::CreateSemaphore));
         assert_eq!(server_request_kind(41), Some(ServerRequest::ReleaseSemaphore));
         assert_eq!(server_request_kind(42), Some(ServerRequest::QuerySemaphore));
+        assert_eq!(server_request_kind(62), Some(ServerRequest::CreateMapping));
+        assert_eq!(server_request_kind(65), Some(ServerRequest::MapView));
+        assert_eq!(server_request_kind(68), Some(ServerRequest::UnmapView));
         assert_eq!(select_opcode_kind(1), Some(0));
         assert_eq!(select_opcode_kind(2), Some(1));
         assert_eq!(select_opcode_kind(3), None);
