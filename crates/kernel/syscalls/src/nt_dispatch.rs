@@ -141,6 +141,8 @@ const STATUS_NOT_MAPPED_DATA: u64 = 0xc000_001d;
 #[cfg(target_os = "oxide-kernel")]
 const STATUS_NOT_IMPLEMENTED: u64 = 0xc000_0002;
 #[cfg(target_os = "oxide-kernel")]
+const STATUS_NOT_SUPPORTED: u64 = 0xc000_00bb;
+#[cfg(target_os = "oxide-kernel")]
 const STATUS_ACCESS_VIOLATION: u64 = 0xc000_0005;
 #[cfg(target_os = "oxide-kernel")]
 const NT_CONTEXT_AMD64: u32 = 0x0010_0000;
@@ -438,14 +440,18 @@ pub fn dispatch(call: NtCall) -> u64 {
                 // The seventh word is read only after the tagged entry has
                 // selected the NT path and the first six words are present.
                 let Some(argument3) = stack_argument(6) else { return STATUS_INVALID_PARAMETER; };
-                if call.args.a1 != 0 {
-                    let reserve = sched::nt_object::NtHandle::from_raw(call.args.a1 as u32);
-                    if call.args.a1 > u32::MAX as u64 || table.get(reserve, 0).is_none() {
-                        return STATUS_INVALID_HANDLE;
-                    }
-                }
+                // No native reserve-object owner exists yet. An arbitrary
+                // live handle must not be accepted as an APC reserve object.
+                if call.args.a1 != 0 { return STATUS_NOT_SUPPORTED; }
                 (call.args.a0, call.args.a3, call.args.a4, call.args.a5, argument3, call.args.a2 as u32)
             };
+        if call.service == syscall::nt::NtService::NtQueueApcThreadEx2 {
+            match sched::nt_apc::validate_queue_flags(flags) {
+                Ok(()) => {}
+                Err(sched::nt_apc::QueueFlagsError::Unknown) => return STATUS_INVALID_PARAMETER,
+                Err(sched::nt_apc::QueueFlagsError::CallbackDataContext) => return STATUS_NOT_SUPPORTED,
+            }
+        }
         if routine == 0 { return STATUS_INVALID_PARAMETER; }
         let target = match resolve_thread_target(&cur, thread, &table, THREAD_SET_CONTEXT) {
             Ok(target) => target, Err(status) => return status,

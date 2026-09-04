@@ -12,6 +12,22 @@ use sync::{Spinlock, TaskList as TaskListClass};
 
 const MAX_QUEUED: usize = 4096;
 
+/// Windows `NtQueueApcThreadEx2` flag values owned by the native APC path.
+pub const QUEUE_USER_APC_FLAGS_SPECIAL_USER_APC: u32 = 0x0000_0001;
+pub const QUEUE_USER_APC_CALLBACK_DATA_CONTEXT: u32 = 0x0001_0000;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum QueueFlagsError { Unknown, CallbackDataContext }
+
+/// Admit only flag forms whose callback frame is owned by the native return
+/// path; callback-data delivery needs a distinct Windows frame layout.
+pub fn validate_queue_flags(flags: u32) -> Result<(), QueueFlagsError> {
+    let known = QUEUE_USER_APC_FLAGS_SPECIAL_USER_APC | QUEUE_USER_APC_CALLBACK_DATA_CONTEXT;
+    if flags & !known != 0 { return Err(QueueFlagsError::Unknown); }
+    if flags & QUEUE_USER_APC_CALLBACK_DATA_CONTEXT != 0 { return Err(QueueFlagsError::CallbackDataContext); }
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Apc {
     pub routine: u64,
@@ -132,5 +148,14 @@ mod tests {
         assert!(queue.request_delivery());
         assert_eq!(queue.peek_deliverable(), Some(apc));
         assert_eq!(queue.len(), 1, "only the return dispatcher may dequeue");
+    }
+
+    #[test]
+    fn queue_flags_reject_unowned_callback_frame_and_unknown_bits() {
+        assert!(validate_queue_flags(0).is_ok());
+        assert!(validate_queue_flags(QUEUE_USER_APC_FLAGS_SPECIAL_USER_APC).is_ok());
+        assert_eq!(validate_queue_flags(QUEUE_USER_APC_CALLBACK_DATA_CONTEXT),
+            Err(QueueFlagsError::CallbackDataContext));
+        assert_eq!(validate_queue_flags(0x8000_0000), Err(QueueFlagsError::Unknown));
     }
 }
