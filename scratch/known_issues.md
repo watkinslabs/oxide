@@ -1,6 +1,6 @@
 # Known issues
 
-**Live issue count: 295** — 293 `OPEN`, 2 `IN-PROGRESS`.
+**Live issue count: 296** — 293 `OPEN`, 3 `IN-PROGRESS`.
 
 | Id | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|---|
@@ -299,6 +299,7 @@
 | KI-0319 | OPEN | INFRA | high | feature-gate is red on main itself: a debug-feature block in syscalls dispatch/core.rs uses return_task outside its scope (E0425 x2 at lines 264/272; binding declared at 199 in a different scope), so make feature-gate-x86 fails and every push needs SKIP_FEATURE_GATE=1. | C320 push at origin/main e01678b2b: make feature-gate-x86 -> E0425 in crates/kernel/syscalls/src/dispatch/core.rs; branch touches no crate. Plain xtask kernel --check is green, so the break is only in the debug-feature build. | unowned |
 | KI-0324 | OPEN | INFRA | high | Spec manifest omits the tracked 31fy named-pipe document on pristine main | cargo run --quiet -p spec-lint -- manifest on origin/main 6e0b4b2b reports docs/31fy-windows-nt-named-pipe.md manifest/missing-row; the file also has a noncanonical IN PROGRESS status and must be repaired by its owning Windows lane. | unowned |
 | KI-0325 | OPEN | INFRA | high | Spec xref cannot resolve the existing 52 to 64 section reference on pristine main | cargo run --quiet -p spec-lint -- xref on origin/main 6e0b4b2b reports docs/52-repo-structure-and-ownership.md:155 64§10 -> doc 64 not found; R135 does not add this reference. | unowned |
+| KI-0326 | IN-PROGRESS B3321-deadline-pi-entity | DEFECT | critical | [CLAIMED B3321-deadline-pi-entity 2026-09-04] [CLAIMED B3321-deadline-pi-entity 2026-09-04] Deadline PI borrows only scalar deadline identity while CBS runtime, throttling, replenishment, and ready-node ownership remain on the mutex owner inert deadline entity | Audit of origin/main 98af43a51 against pinned Linux 7.2.0-rc4: Linux sched_dl_entity.pi_se redirects deadline behavior to the donor effective entity. Oxide TaskSched stores borrowed_dl_deadline/borrowed_dl_special, but deadline/live.rs charges task.sched.dl and dl.rs queues the owner ready_node. A fair or RT mutex owner promoted by a deadline waiter therefore advertises the donor deadline while executing against zero/unrelated owner budget. KI-0321 was closed without this residual. | B3321-deadline-pi-entity |
 
 ## Ext4 master program
 
