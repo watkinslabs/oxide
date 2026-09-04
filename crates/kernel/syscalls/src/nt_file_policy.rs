@@ -26,6 +26,38 @@ const FILE_ATTRIBUTE_READONLY: u32 = 0x0000_0001;
 const FILE_ATTRIBUTE_ARCHIVE: u32 = 0x0000_0020;
 const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x1000_0000;
 const POSIX_WRITE_BITS: u32 = 0o222;
+const FILE_DIRECTORY_INFORMATION: u32 = 1;
+const FILE_FULL_DIRECTORY_INFORMATION: u32 = 2;
+const FILE_BOTH_DIRECTORY_INFORMATION: u32 = 3;
+const FILE_NAMES_INFORMATION: u32 = 12;
+const FILE_ID_BOTH_DIRECTORY_INFORMATION: u32 = 37;
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub(crate) struct DirectoryInfoLayout {
+    pub(crate) header: usize,
+    pub(crate) name_length: usize,
+    pub(crate) name: usize,
+    pub(crate) attributes: Option<usize>,
+    pub(crate) ea_size: Option<usize>,
+    pub(crate) file_id: Option<usize>,
+}
+
+/// Select the NT directory record layout consumed by the VFS emitter. # C: O(1)
+pub(crate) const fn directory_info_layout(class: u32) -> Option<DirectoryInfoLayout> {
+    match class {
+        FILE_DIRECTORY_INFORMATION => Some(DirectoryInfoLayout { header: 64, name_length: 60, name: 64,
+            attributes: Some(56), ea_size: None, file_id: None }),
+        FILE_FULL_DIRECTORY_INFORMATION => Some(DirectoryInfoLayout { header: 68, name_length: 60, name: 68,
+            attributes: Some(56), ea_size: Some(64), file_id: None }),
+        FILE_BOTH_DIRECTORY_INFORMATION => Some(DirectoryInfoLayout { header: 94, name_length: 60, name: 94,
+            attributes: Some(56), ea_size: Some(64), file_id: None }),
+        FILE_NAMES_INFORMATION => Some(DirectoryInfoLayout { header: 12, name_length: 8, name: 12,
+            attributes: None, ea_size: None, file_id: None }),
+        FILE_ID_BOTH_DIRECTORY_INFORMATION => Some(DirectoryInfoLayout { header: 104, name_length: 60, name: 104,
+            attributes: Some(56), ea_size: Some(64), file_id: Some(96) }),
+        _ => None,
+    }
+}
 
 /// Translate the canonical VFS mode into the DOS attributes exposed by NT.
 /// Directories keep their directory bit; read-only is meaningful for files
@@ -128,5 +160,14 @@ mod tests {
         assert_eq!(file_attributes(0o100_644, false), FILE_ATTRIBUTE_ARCHIVE);
         assert_eq!(file_attributes(0o040_555, true), FILE_ATTRIBUTE_DIRECTORY);
         assert_eq!(creation_time(&stat), vfs::Timespec64::from_secs(22));
+    }
+
+    #[test]
+    fn directory_layout_exposes_file_id_both_record() {
+        let layout = directory_info_layout(FILE_ID_BOTH_DIRECTORY_INFORMATION).unwrap();
+        assert_eq!(layout.header, 104);
+        assert_eq!(layout.name, 104);
+        assert_eq!(layout.file_id, Some(96));
+        assert_eq!(directory_info_layout(36), None);
     }
 }
