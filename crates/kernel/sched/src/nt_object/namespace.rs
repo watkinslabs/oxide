@@ -295,6 +295,15 @@ pub fn make_temporary(object: &NtObject) {
     namespace.objects[index].permanent = false;
 }
 
+/// Retain a named object's namespace reference after its handles close. # C: O(N_namespace)
+pub fn make_permanent(object: &NtObject) {
+    let mut namespace = OBJECT_NAMESPACE.lock();
+    seed(&mut namespace);
+    let Some(index) = namespace.objects.iter().position(|entry|
+        core::ptr::eq(entry.object.as_ref(), object)) else { return; };
+    namespace.objects[index].permanent = true;
+}
+
 /// Remove a temporary object's name after its final handle reference closes. # C: O(N_namespace)
 pub fn release_temporary(object: &Arc<NtObject>, has_live_handle: bool) {
     let mut namespace = OBJECT_NAMESPACE.lock();
@@ -453,6 +462,24 @@ mod tests {
         assert!(table.close(first));
         assert!(lookup_object(path, NtObjectType::Event).is_some());
         assert!(table.close(second));
+        assert!(lookup_object(path, NtObjectType::Event).is_none());
+    }
+
+    #[test]
+    fn permanent_named_object_survives_final_handle_until_made_temporary() {
+        let path = "\\BaseNamedObjects\\f1477_permanent";
+        let (object, state) = create_event(path, false, false);
+        assert_eq!(state, NamedObjectState::Created);
+        let table = super::super::NtHandleTable::new();
+        let handle = table.insert(object, 0x0001_0000).unwrap();
+        let retained = lookup_object(path, NtObjectType::Event).unwrap();
+        make_permanent(&retained);
+        assert!(table.close(handle));
+        assert!(lookup_object(path, NtObjectType::Event).is_some());
+        let reopened = lookup_object(path, NtObjectType::Event).unwrap();
+        let handle = table.insert(reopened.clone(), 0x0001_0000).unwrap();
+        make_temporary(&reopened);
+        assert!(table.close(handle));
         assert!(lookup_object(path, NtObjectType::Event).is_none());
     }
 

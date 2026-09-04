@@ -181,6 +181,7 @@ fn user_client_pfn_services_round_trip_through_the_nt_namespace() {
     assert_eq!(decode(278, input).unwrap().service, NtService::NtLoadKey);
     assert_eq!(decode(279, input).unwrap().service, NtService::NtLockVirtualMemory);
     assert_eq!(decode(280, input).unwrap().service, NtService::NtMakeTemporaryObject);
+    assert_eq!(decode(543, input).unwrap().service, NtService::NtMakePermanentObject);
     assert_eq!(decode(281, input).unwrap().service, NtService::NtMapViewOfSectionEx);
     assert_eq!(decode(282, input).unwrap().service, NtService::NtNotifyChangeDirectoryFile);
     assert_eq!(decode(283, input).unwrap().service, NtService::NtNotifyChangeKey);

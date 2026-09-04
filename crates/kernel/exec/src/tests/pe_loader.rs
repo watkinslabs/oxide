@@ -232,6 +232,8 @@
         assert!(multiple >= runtime.base.as_u64() && multiple < runtime.base.as_u64() + runtime.bytes as u64);
         let process_query = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"NtQueryInformationProcess" }).unwrap();
         assert!(process_query >= runtime.base.as_u64() && process_query < runtime.base.as_u64() + runtime.bytes as u64);
+        let make_permanent = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"NtMakePermanentObject" }).unwrap();
+        assert!(make_permanent >= runtime.base.as_u64() && make_permanent < runtime.base.as_u64() + runtime.bytes as u64);
         let create_thread = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"NtCreateThreadEx" }).unwrap();
         assert!(create_thread >= runtime.base.as_u64() && create_thread < runtime.base.as_u64() + runtime.bytes as u64);
         for name in [b"NtTerminateThread".as_slice(), b"NtQueryInformationThread".as_slice()] {
