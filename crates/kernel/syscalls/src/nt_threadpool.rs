@@ -58,20 +58,10 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         return Some(STATUS_NOT_IMPLEMENTED);
     }
     if call.service == NtService::TpAllocWait {
-        let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
-        if !cur.is_nt_personality() || call.args.a0 == 0 { return Some(STATUS_INVALID_PARAMETER); }
-        // Wait objects own callback state, pool membership, and wait-queue
-        // lifetime; no user-visible wait pointer is published before that
-        // native ownership boundary exists.
-        return Some(STATUS_NOT_IMPLEMENTED);
+        return Some(allocate_callback(call, false));
     }
     if call.service == NtService::TpAllocTimer {
-        let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
-        if !cur.is_nt_personality() || call.args.a0 == 0 { return Some(STATUS_INVALID_PARAMETER); }
-        // Timer objects own callback state, pool membership, and timer-queue
-        // lifetime; no user-visible timer pointer is published before that
-        // native ownership boundary exists.
-        return Some(STATUS_NOT_IMPLEMENTED);
+        return Some(allocate_callback(call, true));
     }
     if call.service == NtService::TpAllocPool {
         let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
@@ -128,8 +118,11 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         return Some(STATUS_NOT_IMPLEMENTED);
     }
     if call.service == NtService::RtlDeleteTimer {
-        if call.args.a0 == 0 || call.args.a1 == 0 { return Some(STATUS_INVALID_PARAMETER); }
-        return Some(STATUS_NOT_IMPLEMENTED);
+        let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
+        if !cur.is_nt_personality() || call.args.a0 == 0 || call.args.a1 == 0 { return Some(STATUS_INVALID_PARAMETER); }
+        let mut waits = cur.thread_group.nt_waits.lock();
+        let Some(index) = waits.iter().position(|wait| wait.0 == call.args.a1) else { return Some(STATUS_INVALID_HANDLE); };
+        waits.swap_remove(index); return Some(0);
     }
     if call.service == NtService::RtlDeleteTimerQueueEx {
         if call.args.a0 == 0 { return Some(STATUS_INVALID_HANDLE); }
@@ -143,13 +136,30 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         return Some(STATUS_NOT_IMPLEMENTED);
     }
     if call.service != NtService::RtlCreateTimer { return None; }
-    if call.args.a0 == 0 || call.args.a1 == 0 || call.args.a2 == 0 {
+    let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
+    if !cur.is_nt_personality() || call.args.a0 == 0 || call.args.a1 == 0 || call.args.a2 == 0 {
         return Some(STATUS_INVALID_PARAMETER);
     }
-    // Native waitable timers already use the scheduler timer owner. A timer
-    // queue additionally owns callback dispatch, cancellation, and callback
-    // completion; that userspace callback contract is not present yet.
-    Some(STATUS_NOT_IMPLEMENTED)
+    let token = cur.thread_group.nt_wait_next.fetch_add(1, core::sync::atomic::Ordering::Relaxed)
+        .checked_add(0x4000_0000_0000_0000).unwrap_or(0);
+    if token == 0 { return Some(STATUS_INVALID_PARAMETER); }
+    cur.thread_group.nt_waits.lock().push((token, 0, call.args.a2, call.args.a3,
+        call.args.a4 as u32, call.args.a5 as u32));
+    if uaccess::put_user_u64(call.args.a1, token).is_err() {
+        cur.thread_group.nt_waits.lock().retain(|entry| entry.0 != token);
+        return Some(STATUS_INVALID_PARAMETER);
+    }
+    // A zero due time is the one dispatch that can be completed without a
+    // background timer monitor. Future and periodic timer delivery stays an
+    // explicit unsupported boundary until it has a scheduler-owned timer.
+    if call.args.a4 == 0 {
+        if cur.nt_apc_queue.push(sched::nt_apc::Apc { routine: call.args.a2,
+            argument1: call.args.a3, argument2: 0, argument3: 0, flags: 0 }).is_err() {
+            return Some(STATUS_INVALID_PARAMETER);
+        }
+        cur.nt_apc_queue.request_delivery();
+    }
+    Some(0)
 }
 
 fn register(call: NtCall) -> u64 {
@@ -168,5 +178,32 @@ fn register(call: NtCall) -> u64 {
     let Some(token) = sequence.checked_add(0x8000_0000_0000_0000) else { return STATUS_INVALID_PARAMETER; };
     cur.thread_group.nt_waits.lock().push((token, call.args.a1, call.args.a2, call.args.a3, call.args.a4 as u32, call.args.a5 as u32));
     if uaccess::put_user_u64(call.args.a0, token).is_err() { let mut waits = cur.thread_group.nt_waits.lock(); waits.retain(|wait| wait.0 != token); return STATUS_INVALID_PARAMETER; }
+    if object.is_signaled_at(cur.tid as u64, timekeeper::monotonic_ns())
+        && object.try_wait_at(cur.tid as u64, timekeeper::monotonic_ns()) {
+        if cur.nt_apc_queue.push(sched::nt_apc::Apc { routine: call.args.a2,
+            argument1: call.args.a3, argument2: 0, argument3: 0, flags: 0 }).is_err() {
+            cur.thread_group.nt_waits.lock().retain(|wait| wait.0 != token);
+            return STATUS_INVALID_PARAMETER;
+        }
+        cur.nt_apc_queue.request_delivery();
+    }
+    0
+}
+
+fn allocate_callback(call: NtCall, timer: bool) -> u64 {
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() || call.args.a0 == 0 || call.args.a1 == 0 { return STATUS_INVALID_PARAMETER; }
+    if !uaccess::access_ok(call.args.a1, 1) { return STATUS_INVALID_PARAMETER; }
+    let token = cur.thread_group.nt_wait_next.fetch_add(1, core::sync::atomic::Ordering::Relaxed)
+        .checked_add(if timer { 0x4000_0000_0000_0000 } else { 0x2000_0000_0000_0000 }).unwrap_or(0);
+    if token == 0 { return STATUS_INVALID_PARAMETER; }
+    // The process thread-group owns the opaque object until a corresponding
+    // release operation exists. It is not a success-only pointer: callback
+    // code/context are retained for the later wait/timer dispatch path.
+    cur.thread_group.nt_waits.lock().push((token, 0, call.args.a1, call.args.a2, 0, 0));
+    if uaccess::put_user_u64(call.args.a0, token).is_err() {
+        cur.thread_group.nt_waits.lock().retain(|entry| entry.0 != token);
+        return STATUS_INVALID_PARAMETER;
+    }
     0
 }
