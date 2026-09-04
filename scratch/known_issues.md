@@ -1,6 +1,6 @@
 # Known issues
 
-**Live issue count: 302** — 294 `OPEN`, 8 `IN-PROGRESS`.
+**Live issue count: 303** — 295 `OPEN`, 8 `IN-PROGRESS`.
 
 | Id | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|---|
@@ -306,6 +306,7 @@
 | KI-0340 | IN-PROGRESS P1543-windows-phase7-sharing-delete | MISSING | med | [CLAIMED P1543-windows-phase7-sharing-delete 2026-09-04] Phase 7 NT opens reject zero DesiredAccess even though metadata-only Windows opens are valid | Current nt_file::open_path rejects an open when no read/write bits are present. The Wine server sharing path explicitly permits access mode 0 and ignores sharing for that open; the resulting handle is not granted data access. Add a canonical admission predicate and focused regression coverage. | windows-vfs |
 | KI-0341 | IN-PROGRESS T1546-nt-handle-protected-duplicate | DEFECT | med | [CLAIMED T1546-nt-handle-protected-duplicate 2026-09-04] DUPLICATE_CLOSE_SOURCE bypasses protect-from-close and closes a protected source handle | Current sched::nt_object::close_duplicate_source bypasses the canonical protected-close check. Wine validates the per-handle close-protection bit before removal; add a hosted regression proving protected source remains live while duplicate succeeds, then route source close through the normal close path. | NT |
 | KI-0342 | IN-PROGRESS U1546-windows-peb-teb-stack | MISSING | med | [CLAIMED U1546-windows-peb-teb-stack 2026-09-04] Phase 2 native PE launch does not publish the main user stack bounds in the x64 TEB NT_TIB, leaving StackBase, StackLimit, and DeallocationStack zero despite an allocated PE stack. | Current PE preparation allocates a canonical stack VMA but the process environment builder receives only stack_top and writes no NT_TIB stack fields; Wine initializes these fields from the actual stack allocation and Linux exec commits the new mm and initial stack together. Hosted regression inspects all three TEB pointers and requires the exact stack VMA bounds. | U1546-windows-peb-teb-stack |
+| KI-0346 | OPEN | MISSING | med | File-backed NT sections did not enter the canonical file-share claim set, so writable/image mappings could bypass FILE_SHARE_WRITE and later opens could bypass an existing mapping claim. | Current nt_dispatch CreateSection and nt_wine_unix server_create_mapping constructed file-backed NtSection without a claim. Local Wine mapping_init derives FILE_MAPPING_ACCESS plus FILE_MAPPING_WRITE/IMAGE and fd check_sharing tests those claims against inode opens; fix wires an Arc claim into NtSection lifetime. | B3402-windows-nt-file-share-delete |
 
 ## Ext4 master program
 

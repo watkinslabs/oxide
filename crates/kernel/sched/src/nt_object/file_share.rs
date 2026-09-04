@@ -17,6 +17,16 @@ const SHARE_RELEVANT_ACCESS: u32 = READ_DATA | WRITE_DATA | DELETE
 const SHARE_READ: u32 = 0x1;
 const SHARE_WRITE: u32 = 0x2;
 const SHARE_DELETE: u32 = 0x4;
+const WINE_MAPPING_IMAGE: u32 = 0x8000_0000;
+const WINE_MAPPING_WRITE: u32 = 0x4000_0000;
+const WINE_MAPPING_ACCESS: u32 = 0x2000_0000;
+// Keep Wine's mapping markers out of the Windows access-mask namespace. The
+// native claim record is shared with ordinary opens, whose GENERIC_* bits use
+// the same high bits as Wine's private mapping markers.
+const MAPPING_IMAGE: u32 = 1 << 28;
+const MAPPING_WRITE: u32 = 1 << 27;
+const MAPPING_ACCESS: u32 = 1 << 26;
+const MAPPING_RELEVANT_ACCESS: u32 = MAPPING_IMAGE | MAPPING_WRITE | MAPPING_ACCESS;
 
 #[derive(Copy, Clone, Eq, PartialEq)]
 struct ActiveClaim { key: (u64, u64), desired: u32, sharing: u32, token: u64 }
@@ -33,6 +43,18 @@ impl NtFileShare {
     pub fn claim(file: &vfs::File, desired: u32, sharing: u32) -> Option<Arc<Self>> {
         claim(file, desired, sharing)
     }
+
+    /// Claim a file-backed section's mapping access for its object lifetime.
+    /// # C: O(N_claims)
+    pub fn claim_mapping(file: &vfs::File, access: u32) -> Option<Arc<Self>> {
+        if access & !(WINE_MAPPING_IMAGE | WINE_MAPPING_WRITE | WINE_MAPPING_ACCESS) != 0
+            || access & WINE_MAPPING_ACCESS == 0 { return None; }
+        let desired = MAPPING_ACCESS
+            | if access & WINE_MAPPING_IMAGE != 0 { MAPPING_IMAGE } else { 0 }
+            | if access & WINE_MAPPING_WRITE != 0 { MAPPING_WRITE } else { 0 };
+        let key = (file.mnt_id(), file.inode().ino());
+        claim_key(key, desired, SHARE_READ | SHARE_WRITE | SHARE_DELETE)
+    }
 }
 
 impl Drop for NtFileShare {
@@ -46,16 +68,22 @@ fn conflicts(desired: u32, sharing: u32, active: ActiveClaim) -> bool {
     // Wine's server ignores a new open's share mask when that open requests
     // no read, write, or delete access. Metadata-only handles therefore do
     // not turn an existing deny mode into a sharing violation.
-    if desired & SHARE_RELEVANT_ACCESS == 0 { return false; }
+    if desired & (SHARE_RELEVANT_ACCESS | MAPPING_RELEVANT_ACCESS) == 0 { return false; }
     let read = desired & (READ_DATA | GENERIC_READ | GENERIC_ALL) != 0;
     let write = desired & (WRITE_DATA | GENERIC_WRITE | GENERIC_ALL) != 0;
     let delete = desired & (DELETE | GENERIC_ALL) != 0;
     let old_read = active.desired & (READ_DATA | GENERIC_READ | GENERIC_ALL) != 0;
     let old_write = active.desired & (WRITE_DATA | GENERIC_WRITE | GENERIC_ALL) != 0;
     let old_delete = active.desired & (DELETE | GENERIC_ALL) != 0;
+    let mapping_write = desired & MAPPING_WRITE != 0;
+    let old_mapping_write = active.desired & MAPPING_WRITE != 0;
+    let old_mapping_image = active.desired & MAPPING_IMAGE != 0;
     (read && active.sharing & SHARE_READ == 0) || (old_read && sharing & SHARE_READ == 0)
         || (write && active.sharing & SHARE_WRITE == 0) || (old_write && sharing & SHARE_WRITE == 0)
         || (delete && active.sharing & SHARE_DELETE == 0) || (old_delete && sharing & SHARE_DELETE == 0)
+        || (mapping_write && active.sharing & SHARE_WRITE == 0)
+        || (old_mapping_write && sharing & SHARE_WRITE == 0)
+        || (old_mapping_image && (write || delete))
 }
 
 fn claim(file: &vfs::File, desired: u32, sharing: u32) -> Option<Arc<NtFileShare>> {
@@ -107,5 +135,22 @@ mod tests {
         drop(first);
         let second = claim_key((9, 9), WRITE_DATA, SHARE_WRITE).unwrap();
         drop(second);
+    }
+
+    #[test]
+    fn writable_mapping_obeys_existing_write_share_claim() {
+        let first = claim_key((10, 10), READ_DATA | WRITE_DATA, SHARE_READ).unwrap();
+        assert!(claim_key((10, 10), MAPPING_ACCESS | MAPPING_WRITE, SHARE_READ | SHARE_WRITE | SHARE_DELETE).is_none());
+        drop(first);
+        let mapping = claim_key((10, 10), MAPPING_ACCESS | MAPPING_WRITE, SHARE_READ | SHARE_WRITE | SHARE_DELETE).unwrap();
+        drop(mapping);
+    }
+
+    #[test]
+    fn existing_writable_mapping_obeys_new_open_share_write() {
+        let mapping = claim_key((11, 11), MAPPING_ACCESS | MAPPING_WRITE, SHARE_READ | SHARE_WRITE | SHARE_DELETE).unwrap();
+        assert!(claim_key((11, 11), READ_DATA, SHARE_READ).is_none());
+        assert!(claim_key((11, 11), READ_DATA, SHARE_READ | SHARE_WRITE).is_some());
+        drop(mapping);
     }
 }

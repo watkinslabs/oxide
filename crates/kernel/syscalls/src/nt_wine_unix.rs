@@ -19,6 +19,7 @@ const STATUS_NO_MEMORY: u64 = 0xc000_0017;
 const STATUS_OBJECT_NAME_COLLISION: u64 = 0xc000_0035;
 const STATUS_OBJECT_NAME_NOT_FOUND: u64 = 0xc000_0034;
 const STATUS_OBJECT_TYPE_MISMATCH: u64 = 0xc000_0024;
+const STATUS_SHARING_VIOLATION: u64 = 0xc000_0043;
 const STATUS_CONFLICTING_ADDRESSES: u64 = 0xc000_0018;
 const STATUS_MEMORY_NOT_ALLOCATED: u64 = 0xc000_00a0;
 const STATUS_INVALID_ADDRESS: u64 = 0xc000_0141;
@@ -256,7 +257,8 @@ fn server_create_mapping(args: u64, request_size: u32, table: &sched::nt_object:
         let file_size = vfs::generic_fillattr(file.inode(), &vfs::IDENTITY).size;
         let size = if requested_size == 0 { file_size } else { requested_size };
         if size == 0 || size < file_size || size > SERVER_MAPPING_MAX_BYTES { return server_reply(args, STATUS_INVALID_PARAMETER); }
-        table.new_file_section_with_flags(file, round_mapping_size(size), flags)
+        let Some(share) = sched::nt_object::NtFileShare::claim_mapping(&file, access) else { return server_reply(args, STATUS_SHARING_VIOLATION); };
+        table.new_file_section_with_share(file, round_mapping_size(size), flags, share)
     };
     let (object, state) = match path {
         Some(path) => sched::nt_object::publish_section(&path, object),

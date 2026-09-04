@@ -118,6 +118,7 @@ pub struct NtSection {
     size: usize,
     file: Option<Arc<vfs::File>>,
     flags: u32,
+    file_share: Option<Arc<NtFileShare>>,
 }
 /// Target text carried by one NT symbolic-link object. # C: O(1)
 pub struct NtSymbolicLink { target: String }
@@ -137,7 +138,7 @@ impl NtSection {
         let mut bytes = Vec::new();
         bytes.try_reserve_exact(size).ok()?;
         bytes.resize(size, 0);
-        Some(Arc::new(Self { bytes: bytes.into(), size, file: None, flags }))
+        Some(Arc::new(Self { bytes: bytes.into(), size, file: None, flags, file_share: None }))
     }
     /// Construct a file-backed section retaining the VFS open description. # C: O(1)
     pub fn from_file(file: Arc<vfs::File>, size: usize) -> Arc<Self> {
@@ -145,7 +146,11 @@ impl NtSection {
     }
     /// Construct file-backed section backing with protocol-visible flags. # C: O(1)
     pub fn from_file_with_flags(file: Arc<vfs::File>, size: usize, flags: u32) -> Arc<Self> {
-        Arc::new(Self { bytes: Arc::from(&[][..]), size, file: Some(file), flags })
+        Arc::new(Self { bytes: Arc::from(&[][..]), size, file: Some(file), flags, file_share: None })
+    }
+    /// Construct a file-backed section retaining its mapping share claim. # C: O(1)
+    pub fn from_file_with_share(file: Arc<vfs::File>, size: usize, flags: u32, file_share: Arc<NtFileShare>) -> Arc<Self> {
+        Arc::new(Self { bytes: Arc::from(&[][..]), size, file: Some(file), flags, file_share: Some(file_share) })
     }
     /// Return the section's byte backing for a VMA. # C: O(1)
     pub fn bytes(&self) -> Arc<[u8]> { self.bytes.clone() }
