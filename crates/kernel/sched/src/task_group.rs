@@ -1,125 +1,144 @@
-//! Scheduler-owned fair-group hierarchy mirroring Linux task_group/cfs_rq.
+//! Scheduler-owned fair task-group descriptors and hierarchy registry.
 
 extern crate alloc;
+
+use alloc::collections::BTreeMap;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU32, AtomicU8, Ordering};
+use sync::{Spinlock, TaskList as TaskListClass};
 
-const DEFAULT_SLICE: i64 = 4_000_000;
+pub(crate) const ROOT_GROUP_ID: u64 = 0;
+pub(crate) const ROOT_GROUP_SHARES: u32 = 1024;
+const MIN_GROUP_SHARES: u32 = 1;
+const MAX_GROUP_SHARES: u32 = 102_400;
 
-/// Linux `cpu.weight` range, distinct from the nice-table task weight.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct GroupShares(u32);
-
-impl GroupShares {
-    pub const MIN: u32 = 1;
-    pub const MAX: u32 = 10_000;
-    pub const ROOT: Self = Self(1024);
-    pub const fn new(value: u32) -> Option<Self> {
-        if value < Self::MIN || value > Self::MAX { None } else { Some(Self(value)) }
-    }
-    pub const fn get(self) -> u32 { self.0 }
-}
-
-#[derive(Clone, Copy, Debug)]
-struct Entity { id: u32, weight: u32, vruntime: i64 }
-
-/// A Linux-shaped fair hierarchy node. Mutation is serialized by its owner.
-#[derive(Debug)]
+/// Scheduler execution identity for one cgroup CPU-controller node.
 pub struct TaskGroup {
-    id: u32,
-    shares: GroupShares,
-    entity: Entity,
-    tasks: Vec<Entity>,
-    children: Vec<TaskGroup>,
-    next_id: u32,
+    id: u64,
+    parent: Option<u64>,
+    depth: u16,
+    shares: AtomicU32,
+    online: AtomicU8,
+    path: Arc<[u64]>,
 }
 
 impl TaskGroup {
-    pub fn root(id: u32) -> Self {
-        Self { id, shares: GroupShares::ROOT,
-            entity: Entity { id, weight: GroupShares::ROOT.get(), vruntime: 0 },
-            tasks: Vec::new(), children: Vec::new(), next_id: 1 }
-    }
-    pub fn id(&self) -> u32 { self.id }
-    pub fn shares(&self) -> GroupShares { self.shares }
-    pub fn set_shares(&mut self, shares: GroupShares) {
-        self.shares = shares; self.entity.weight = shares.get();
-    }
-    pub fn add_child(&mut self, id: u32, shares: GroupShares) -> &mut Self {
-        self.children.push(Self { id, shares,
-            entity: Entity { id, weight: shares.get(), vruntime: 0 },
-            tasks: Vec::new(), children: Vec::new(), next_id: 1 });
-        self.children.last_mut().unwrap()
-    }
-    pub fn enqueue_task(&mut self, weight: u32) -> u32 {
-        let id = self.next_id; self.next_id += 1;
-        self.tasks.push(Entity { id, weight: weight.max(1), vruntime: 0 }); id
-    }
-    pub fn child(&self, id: u32) -> Option<&Self> {
-        self.children.iter().find(|child| child.id == id)
+    /// Opaque scheduler group identity. # C: O(1)
+    pub fn id(&self) -> u64 { self.id }
+
+    /// Parent scheduler group identity; root has none. # C: O(1)
+    pub fn parent_id(&self) -> Option<u64> { self.parent }
+
+    /// Root-first hierarchy depth. # C: O(1)
+    pub fn depth(&self) -> u16 { self.depth }
+
+    /// Current parent-entity shares. # C: O(1)
+    pub fn shares(&self) -> u32 { self.shares.load(Ordering::Acquire) }
+
+    pub(crate) fn path(&self) -> Arc<[u64]> { Arc::clone(&self.path) }
+
+    pub(crate) fn store_shares(&self, shares: u32) {
+        self.shares.store(clamp_shares(shares), Ordering::Release);
     }
 
-    /// Pick and charge one leaf using EEVDF eligibility and virtual deadline.
-    pub fn pick(&mut self) -> Option<u32> {
-        let total = self.tasks.iter().map(|task| task.weight as i64)
-            .chain(self.children.iter().map(|child| child.entity.weight as i64)).sum::<i64>();
-        if total == 0 { return None; }
-        let service = self.tasks.iter().map(|task| task.vruntime * task.weight as i64)
-            .chain(self.children.iter().map(|child| child.entity.vruntime * child.entity.weight as i64))
-            .sum::<i64>() / total;
-        let mut best: Option<(i64, bool, usize)> = None;
-        for (index, task) in self.tasks.iter().enumerate() {
-            let deadline = task.vruntime + request(task.weight);
-            if task.vruntime <= service && best.is_none_or(|candidate| deadline < candidate.0) {
-                best = Some((deadline, false, index));
-            }
-        }
-        for (index, child) in self.children.iter().enumerate() {
-            let deadline = child.entity.vruntime + request(child.entity.weight);
-            if child.entity.vruntime <= service && best.is_none_or(|candidate| deadline < candidate.0) {
-                best = Some((deadline, true, index));
-            }
-        }
-        let (_, is_child, index) = best.or_else(|| self.fallback())?;
-        if is_child {
-            let child = &mut self.children[index];
-            let leaf = child.pick()?;
-            child.entity.vruntime += request(child.entity.weight); Some(leaf)
-        } else {
-            let task = &mut self.tasks[index]; let id = task.id;
-            task.vruntime += request(task.weight); Some(id)
-        }
+    pub(crate) fn claim_online(&self) -> bool {
+        self.online.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire).is_ok()
     }
 
-    fn fallback(&self) -> Option<(i64, bool, usize)> {
-        let tasks = self.tasks.iter().enumerate().map(|(i, task)|
-            (task.vruntime + request(task.weight), false, i));
-        let children = self.children.iter().enumerate().map(|(i, child)|
-            (child.entity.vruntime + request(child.entity.weight), true, i));
-        tasks.chain(children).min_by_key(|candidate| candidate.0)
+    pub(crate) fn finish_online(&self) { self.online.store(2, Ordering::Release); }
+
+    pub(crate) fn wait_online(&self) {
+        while self.online.load(Ordering::Acquire) != 2 { core::hint::spin_loop(); }
     }
 }
 
-fn request(weight: u32) -> i64 { (DEFAULT_SLICE / weight.max(1) as i64).max(1) }
+static GROUPS: Spinlock<BTreeMap<u64, Arc<TaskGroup>>, TaskListClass> =
+    Spinlock::new(BTreeMap::new());
+
+/// Return the permanent root execution group. # C: O(log groups)
+pub fn root() -> Arc<TaskGroup> {
+    let mut groups = GROUPS.lock();
+    if let Some(root) = groups.get(&ROOT_GROUP_ID) { return Arc::clone(root); }
+    let root = Arc::new(TaskGroup {
+        id: ROOT_GROUP_ID, parent: None, depth: 0,
+        shares: AtomicU32::new(ROOT_GROUP_SHARES),
+        online: AtomicU8::new(2),
+        path: Arc::from([ROOT_GROUP_ID]),
+    });
+    groups.insert(ROOT_GROUP_ID, Arc::clone(&root));
+    root
+}
+
+pub(crate) fn lookup(id: u64) -> Option<Arc<TaskGroup>> {
+    GROUPS.lock().get(&id).cloned()
+}
+
+/// Publish a complete child descriptor before any task can attach to it.
+/// Returns the canonical descriptor and whether this call created it.
+pub(crate) fn register(id: u64, parent: &Arc<TaskGroup>, shares: u32)
+    -> (Arc<TaskGroup>, bool) {
+    assert!(id != ROOT_GROUP_ID, "root task group cannot be registered as a child");
+    let mut groups = GROUPS.lock();
+    if let Some(group) = groups.get(&id) {
+        assert_eq!(group.parent_id(), Some(parent.id()),
+            "task group identity changed parent");
+        return (Arc::clone(group), false);
+    }
+    let mut path = Vec::from(parent.path.as_ref());
+    path.push(id);
+    let group = Arc::new(TaskGroup {
+        id, parent: Some(parent.id()), depth: parent.depth.saturating_add(1),
+        shares: AtomicU32::new(clamp_shares(shares)), path: Arc::from(path),
+        online: AtomicU8::new(0),
+    });
+    groups.insert(id, Arc::clone(&group));
+    (group, true)
+}
+
+pub(crate) fn snapshot() -> Vec<Arc<TaskGroup>> {
+    let _ = root();
+    GROUPS.lock().values().cloned().collect()
+}
+
+pub(crate) fn unregister(id: u64) -> Option<Arc<TaskGroup>> {
+    if id == ROOT_GROUP_ID { return None; }
+    let mut groups = GROUPS.lock();
+    assert!(!groups.values().any(|group| group.parent_id() == Some(id)),
+        "task group removed before its children");
+    groups.remove(&id)
+}
+
+fn clamp_shares(shares: u32) -> u32 {
+    shares.clamp(MIN_GROUP_SHARES, MAX_GROUP_SHARES)
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test] fn shares_are_linux_bounded() {
-        assert!(GroupShares::new(0).is_none());
-        assert!(GroupShares::new(1).is_some());
-        assert!(GroupShares::new(10_000).is_some());
-        assert!(GroupShares::new(10_001).is_none());
+
+    #[test]
+    fn registered_group_keeps_root_first_parent_path() {
+        let root = root();
+        let (parent, _) = register(91_000, &root, 1024);
+        let (child, _) = register(91_001, &parent, 512);
+        assert_eq!(child.path().as_ref(), &[ROOT_GROUP_ID, 91_000, 91_001]);
+        assert_eq!(child.parent_id(), Some(parent.id()));
+        assert_eq!(child.depth(), 2);
+        unregister(child.id());
+        unregister(parent.id());
     }
-    #[test] fn nested_group_is_a_schedulable_entity() {
-        let mut root = TaskGroup::root(0); root.enqueue_task(1024);
-        root.add_child(7, GroupShares::new(512).unwrap()).enqueue_task(1024);
-        assert!(root.pick().is_some()); assert_eq!(root.child(7).unwrap().id(), 7);
-    }
-    #[test] fn weighted_entities_receive_more_service() {
-        let mut root = TaskGroup::root(0);
-        let first = root.enqueue_task(1024); let second = root.enqueue_task(2048);
-        let mut a = 0; let mut b = 0;
-        for _ in 0..9 { match root.pick() { Some(id) if id == first => a += 1, Some(id) if id == second => b += 1, _ => {} } }
-        assert!(b > a);
+
+    #[test]
+    fn registration_is_canonical_and_reweight_does_not_change_task_load() {
+        let root = root();
+        let (first, created) = register(91_002, &root, 1024);
+        let (second, duplicate) = register(91_002, &root, 2048);
+        assert!(created);
+        assert!(!duplicate);
+        assert!(Arc::ptr_eq(&first, &second));
+        first.store_shares(2048);
+        assert_eq!(second.shares(), 2048);
+        unregister(first.id());
     }
 }

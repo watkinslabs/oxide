@@ -34,11 +34,9 @@ pub fn set_nice(task: &Arc<Task>, nice: i8) {
     super::super::pi_boost::notify_waiter_change(task);
 }
 
-/// Update scheduler-owned task-group identity and shares under the same
-/// TaskPi→runqueue transaction as nice/class changes. Queued fair entities are
-/// removed and reinserted so their EEVDF request and parent-group key agree.
-pub fn set_group_shares(task: &Arc<Task>, group_id: u64, shares: u32) {
-    if task.sched.group_id() == group_id && task.sched.group_shares() == shares { return; }
+/// Move one task to an already-online scheduler group under TaskPi→runqueue.
+pub fn set_task_group(task: &Arc<Task>, group_id: u64) {
+    if task.sched.group_id() == group_id { return; }
     match super::super::rq_locate::task_rq_lock_with(
         &|cpu| unsafe { super::global_for(cpu) }, task)
     {
@@ -46,11 +44,9 @@ pub fn set_group_shares(task: &Arc<Task>, group_id: u64, shares: u32) {
             let _change = super::super::rq_locate::SchedChange::from_lock(
                 lock, task, super::super::schedule::change_clock_now());
             task.sched.store_group_id(group_id);
-            task.sched.store_group_shares(shares);
         }
         super::super::rq_locate::StableTaskGuard::OffRq(_pi) => {
             task.sched.store_group_id(group_id);
-            task.sched.store_group_shares(shares);
         }
     }
 }

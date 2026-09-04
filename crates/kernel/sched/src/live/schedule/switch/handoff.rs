@@ -62,7 +62,7 @@ pub fn update_curr(prev: &Task, inner: &RunqueueInner, now: u64) {
     let load = prev.sched.se.load.snapshot().weight;
     let vdelta = crate::cputime::vruntime_delta(delta, load).max(1);
     let cur = prev.sched.se.vruntime.load(Ordering::Acquire);
-    let floor = inner.cfs.min_vruntime();
+    let floor = inner.cfs.min_vruntime_for(prev);
     let base = if crate::cfs::vruntime_before(cur, floor) { floor } else { cur };
     let new = base.wrapping_add(vdelta);
     prev.sched.se.vruntime.store(new, Ordering::Release);

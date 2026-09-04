@@ -401,6 +401,7 @@ pub unsafe fn spawn_user_thread_for_fork(
 /// Publish a fully initialized clone in the task/PID registry. # C: O(N_tasks)
 pub fn publish_new_task(task: &Arc<Task>) {
     crate::cgroup::commit_untracked_nt_task(task);
+    crate::cgroup::sync_task_group(task);
     super::registry::insert(task);
 }
 

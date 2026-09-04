@@ -160,7 +160,6 @@ pub struct SchedChange<'a> {
     old_class: crate::SchedClass,
     old_deadline: u64,
     old_group_id: u64,
-    old_group_shares: u32,
     activate_parked_dl: bool,
     notify_change: bool,
     now: u64,
@@ -201,7 +200,7 @@ impl SchedChange<'_> {
         SchedChange {
             lock, task: Arc::clone(task), queued, running, old_class,
             old_deadline: task.effective_dl_deadline(),
-            old_group_id: task.sched.group_id(), old_group_shares: task.sched.group_shares(),
+            old_group_id: task.sched.group_id(),
             activate_parked_dl,
             notify_change: move_queued, now,
         }
@@ -213,8 +212,7 @@ impl Drop for SchedChange<'_> {
         let new_class = self.task.sched_class();
         let key_changed = queue_key_changed(self.old_class, self.old_deadline,
             new_class, self.task.effective_dl_deadline(),
-            self.old_group_id, self.old_group_shares,
-            self.task.sched.group_id(), self.task.sched.group_shares());
+            self.old_group_id, self.task.sched.group_id());
         if let Some(task) = self.queued.take() {
             if matches!(new_class, crate::SchedClass::Idle) {
                 task.on_rq.store(false, Ordering::Release);
@@ -269,14 +267,13 @@ impl Drop for SchedChange<'_> {
 
 fn queue_key_changed(old: crate::SchedClass, old_deadline: u64,
                      new: crate::SchedClass, new_deadline: u64,
-                     old_group_id: u64, old_group_shares: u32,
-                     new_group_id: u64, new_group_shares: u32) -> bool {
+                     old_group_id: u64, new_group_id: u64) -> bool {
     match (old, new) {
         (crate::SchedClass::Rt { prio: a, .. }, crate::SchedClass::Rt { prio: b, .. }) => a != b,
         (crate::SchedClass::NtFixed { level: a, .. },
          crate::SchedClass::NtFixed { level: b, .. }) => a != b,
         (crate::SchedClass::Normal { weight: a }, crate::SchedClass::Normal { weight: b }) =>
-            a != b || old_group_id != new_group_id || old_group_shares != new_group_shares,
+            a != b || old_group_id != new_group_id,
         (crate::SchedClass::Deadline, crate::SchedClass::Deadline) => old_deadline != new_deadline,
         (crate::SchedClass::Idle, crate::SchedClass::Idle) => false,
         _ => true,

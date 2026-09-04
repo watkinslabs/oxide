@@ -338,6 +338,7 @@ impl Task {
         *self.top_key.lock().unwrap() = donor.map(|(_, key)| key);
         self.recompute_effective();
     }
+    pub fn replenish_pi_unlocked(&self, _now: u64) {}
     pub fn pi_top_task_unlocked(&self) -> Option<Arc<Task>> {
         self.top_donor.lock().unwrap().as_ref().and_then(Weak::upgrade)
     }
@@ -358,7 +359,7 @@ impl Task {
     }
     pub fn pi_donor_key_unlocked(&self) -> pi_prio::PiDonorKey {
         pi_prio::PiDonorKey { class: self.sched_class(), deadline: self.effective_dl_deadline(),
-            special: self.effective_dl_special() }
+            special: self.effective_dl_special(), ..pi_prio::PiDonorKey::default() }
     }
     fn recompute_effective(&self) {
         let base = self.normal_sched_class();

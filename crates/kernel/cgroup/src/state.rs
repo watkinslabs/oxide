@@ -61,10 +61,12 @@ static SIGNAL_HOOK: Spinlock<Option<fn(u64, i32)>, TaskListClass> = Spinlock::ne
 /// no `sched` dependency. Mirrors `SIGNAL_HOOK` for `cgroup.kill`.
 static FREEZE_HOOK: Spinlock<Option<fn(u64, bool)>, TaskListClass> = Spinlock::new(None);
 
-/// `cpu.weight` delivery: `(pid, cfs_weight)`. The kernel installs a hook
-/// that rewrites the task's live CFS load weight so the cgroup weight
-/// shifts CPU shares. Leaf crate stays `sched`-free.
+/// `cpu.weight` delivery: `(cgid, cfs_weight)`. The scheduler reweights the
+/// group's parent-facing entities; member task loads remain nice-derived.
 static WEIGHT_HOOK: Spinlock<Option<fn(u64, u32)>, TaskListClass> = Spinlock::new(None);
+
+/// Empty cgroup release: scheduler drops its per-CPU execution entities.
+static GROUP_RELEASE_HOOK: Spinlock<Option<fn(u64)>, TaskListClass> = Spinlock::new(None);
 
 /// `cpuset.cpus` delivery: `(pid, cpu_mask)`. The kernel installs a hook
 /// that rewrites the task's `cpus_allowed` so the cgroup cpuset restricts
@@ -104,6 +106,9 @@ pub fn set_freeze_hook(f: fn(u64, bool)) { *FREEZE_HOOK.lock() = Some(f); }
 /// Install the cpu.weight hook. Boot path.
 /// # C: O(1)
 pub fn set_weight_hook(f: fn(u64, u32)) { *WEIGHT_HOOK.lock() = Some(f); }
+
+/// Install the scheduler task-group release hook. Boot path. # C: O(1)
+pub fn set_group_release_hook(f: fn(u64)) { *GROUP_RELEASE_HOOK.lock() = Some(f); }
 
 /// Install the cpuset.cpus hook. Boot path.
 /// # C: O(1)
@@ -226,6 +231,10 @@ pub(crate) fn freeze_hook() -> Option<fn(u64, bool)> {
 
 pub(crate) fn weight_hook() -> Option<fn(u64, u32)> {
     *WEIGHT_HOOK.lock()
+}
+
+pub(crate) fn group_release_hook() -> Option<fn(u64)> {
+    *GROUP_RELEASE_HOOK.lock()
 }
 
 pub(crate) fn cpuset_hook() -> Option<fn(u64, cpu::CpuMask)> {

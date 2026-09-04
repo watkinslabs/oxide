@@ -152,7 +152,7 @@ fn terminal_deadline_release_waits_for_final_schedule_out_charge() {
 }
 
 #[test]
-fn pi_deadline_donation_rekeys_a_queued_owner_by_effective_deadline() {
+fn pi_deadline_donation_keeps_the_owners_local_edf_entity() {
     let cpus = Cpus::new(&[REMOTE_CPU]);
     let owner = deadline_task(39, 30_000_000);
     let peer = deadline_task(40, 20_000_000);
@@ -175,9 +175,10 @@ fn pi_deadline_donation_rekeys_a_queued_owner_by_effective_deadline() {
     drop(change);
 
     let mut inner = cpus.get(REMOTE_CPU).unwrap().inner.lock();
-    assert_eq!(inner.pick_next_task().tid, owner.tid,
-        "ready key ignored the donated effective deadline");
-    assert_eq!(inner.pick_next_task().tid, peer.tid);
+    assert_eq!(owner.effective_dl_params(), donor.sched.dl.params());
+    assert_eq!(inner.pick_next_task().tid, peer.tid,
+        "borrowed parameters replaced the owner's local absolute deadline");
+    assert_eq!(inner.pick_next_task().tid, owner.tid);
 }
 
 #[test]
