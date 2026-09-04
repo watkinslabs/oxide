@@ -288,7 +288,9 @@ impl WindowManager {
         self.remove_window(id)
     }
     /// Reserve one live window for a synchronous destruction transaction. # C: O(N_windows)
-    pub fn begin_destroy(&mut self, id: WindowId) -> Result<bool, WindowError> {
+    pub fn begin_destroy(&mut self, owner_tid: u64, id: WindowId) -> Result<bool, WindowError> {
+        let record = self.get(id).ok_or(WindowError::NoSuchWindow)?;
+        if record.owner_tid != owner_tid { return Err(WindowError::WrongThread); }
         let order = self.destruction_order(id).ok_or(WindowError::NoSuchWindow)?;
         if order.iter().any(|window| self.destroying.contains(window)) { return Ok(false); }
         self.destroying.extend(order); Ok(true)
@@ -535,12 +537,12 @@ mod tests {
     fn destruction_reservation_is_idempotent_and_cancelable() {
         let mut manager = WindowManager::new();
         let window = manager.create(9, None, 0x1234).unwrap();
-        assert_eq!(manager.begin_destroy(window), Ok(true));
-        assert_eq!(manager.begin_destroy(window), Ok(false));
+        assert_eq!(manager.begin_destroy(9, window), Ok(true));
+        assert_eq!(manager.begin_destroy(9, window), Ok(false));
         manager.cancel_destroy(window);
-        assert_eq!(manager.begin_destroy(window), Ok(true));
+        assert_eq!(manager.begin_destroy(9, window), Ok(true));
         manager.destroy(window).unwrap();
-        assert_eq!(manager.begin_destroy(window), Err(WindowError::NoSuchWindow));
+        assert_eq!(manager.begin_destroy(9, window), Err(WindowError::NoSuchWindow));
     }
 
     #[test]
@@ -559,13 +561,22 @@ mod tests {
         let parent = manager.create(9, None, 0x1).unwrap();
         let child = manager.create(9, Some(parent), 0x2).unwrap();
         let sibling = manager.create(9, Some(parent), 0x3).unwrap();
-        assert_eq!(manager.begin_destroy(parent), Ok(true));
-        assert_eq!(manager.begin_destroy(child), Ok(false));
-        assert_eq!(manager.begin_destroy(sibling), Ok(false));
+        assert_eq!(manager.begin_destroy(9, parent), Ok(true));
+        assert_eq!(manager.begin_destroy(9, child), Ok(false));
+        assert_eq!(manager.begin_destroy(9, sibling), Ok(false));
         manager.cancel_destroy(parent);
-        assert_eq!(manager.begin_destroy(child), Ok(true));
+        assert_eq!(manager.begin_destroy(9, child), Ok(true));
         manager.cancel_destroy(child);
-        assert_eq!(manager.begin_destroy(parent), Ok(true));
+        assert_eq!(manager.begin_destroy(9, parent), Ok(true));
+    }
+
+    #[test]
+    fn destruction_reservation_rejects_a_non_owner_without_mutating_the_window() {
+        let mut manager = WindowManager::new();
+        let window = manager.create(9, None, 0x1234).unwrap();
+        assert_eq!(manager.begin_destroy(8, window), Err(WindowError::WrongThread));
+        assert_eq!(manager.get(window).unwrap().owner_tid, 9);
+        assert_eq!(manager.begin_destroy(9, window), Ok(true));
     }
 
     #[test]
