@@ -605,7 +605,7 @@
         let vma = as_.find_vma(process.environment.base).unwrap();
         let data = match vma.backing { VmaBacking::KernelBytes { data, .. } => data, _ => panic!("environment must be kernel-backed") };
         assert_eq!(u64::from_le_bytes(data[0x10..0x18].try_into().unwrap()), process.image.base);
-        assert_eq!(u32::from_le_bytes(data[0x540..0x544].try_into().unwrap()), process.image.size);
+        assert_eq!(u32::from_le_bytes(data[0x1940..0x1944].try_into().unwrap()), process.image.size);
     }
 
     #[test]

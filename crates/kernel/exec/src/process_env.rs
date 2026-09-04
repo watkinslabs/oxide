@@ -36,15 +36,18 @@ const TEB_TLS_EXPANSION_SLOTS_OFF: usize = 0x1780;
 // Keep the process-parameter structure clear of PEB64's inline TLS expansion
 // bitmap at 0x240..0x2c0. The loader list/module records follow it.
 const PARAM_OFF: usize = 0x300;
-const LDR_OFF: usize = 0x400;
-const MOD_OFF: usize = 0x500;
+const PARAM_SIZE: u32 = (ENV_OFF - PARAM_OFF) as u32;
+const PARAM_FLAGS_NORMALIZED: u32 = 1;
+const PARAM_ENVIRONMENT_SIZE_OFF: usize = 0x3f0;
+const LDR_OFF: usize = 0x1800;
+const MOD_OFF: usize = 0x1900;
 const MOD_STRIDE: usize = 0x70;
 const MAX_MODULES: usize = 64;
 const ENV_OFF: usize = 0x1000;
-const STR_OFF: usize = 0x2200;
+const STR_OFF: usize = 0x4000;
 const CURRENT_DIR: &str = "C:\\Windows";
 const CURRENT_DIR_STORAGE: usize = 0x400;
-const API_SET_OFF: usize = 0x5000;
+const API_SET_OFF: usize = 0x6000;
 const PEB_PROCESS_HEAP_OFF: usize = 0x30;
 const PEB_NUMBER_OF_PROCESSORS_OFF: usize = 0xb8;
 const PROCESS_HEAP_HANDLE: u64 = 1;
@@ -219,6 +222,12 @@ pub fn build_with_modules_and_params_and_stack(input: &EnvironmentInput<'_>, mod
     put_u64(&mut block, PEB_OFF + PEB_PROCESS_HEAP_OFF, PROCESS_HEAP_HANDLE);
     put_u32(&mut block, PEB_OFF + PEB_NUMBER_OF_PROCESSORS_OFF, INITIAL_PROCESSOR_COUNT);
     put_u64(&mut block, PEB_OFF + 0x68, base + API_SET_OFF as u64);
+    // RTL_USER_PROCESS_PARAMETERS is normalized: embedded string pointers
+    // are absolute, Size ends immediately before the separate environment
+    // allocation, and EnvironmentSize includes its terminating WCHAR.
+    put_u32(&mut block, PARAM_OFF, PARAM_SIZE);
+    put_u32(&mut block, PARAM_OFF + 4, PARAM_SIZE);
+    put_u32(&mut block, PARAM_OFF + 8, PARAM_FLAGS_NORMALIZED);
     put_u64(&mut block, PEB_OFF + 0x78, 0);
     // PEB.TlsBitmap/TlsExpansionBitmap are RTL_BITMAP pointers at these
     // x86-64 offsets. Wine's kernelbase TlsAlloc depends on both descriptors
@@ -302,6 +311,7 @@ pub fn build_with_modules_and_params_and_stack(input: &EnvironmentInput<'_>, mod
     copy_u16(&mut block, command_off, &command_line);
     copy_u16(&mut block, current_dir_off, &current_dir);
     copy_u16(&mut block, env_off, &env);
+    put_u64(&mut block, PARAM_OFF + PARAM_ENVIRONMENT_SIZE_OFF, (env.len() * 2) as u64);
     // Wine's x86-64 syscall dispatcher keeps its register/return frame in a
     // thread-data slot at TEB+0x378. The initial thread has no Wine-created
     // Unix thread bootstrap to allocate it, so reserve the same 0x300-byte
@@ -478,6 +488,27 @@ mod tests {
         assert_eq!(u32::from_le_bytes(bytes[API_SET_OFF..API_SET_OFF + 4].try_into().unwrap()), 6);
         assert_eq!(u32::from_le_bytes(bytes[API_SET_OFF + 12..API_SET_OFF + 16].try_into().unwrap()), pe::apiset::entries().len() as u32);
         assert_eq!(off, 0);
+    }
+
+    #[test]
+    fn normalized_process_parameters_publish_sizes_consumed_by_environment_apis() {
+        let as_ = AddressSpace::new(0x20_000).unwrap();
+        let e = build(&EnvironmentInput {
+            image_base: 0x1400_0000, image_size: 0x5000,
+            image_path: "C:\\Windows\\notepad.exe", command_line: "notepad.exe",
+            environment: &[("TEMP", "C:\\Temp"), ("PATH", "C:\\Windows")],
+            process_id: 1, thread_id: 2,
+        }, &as_).unwrap();
+        let vma = as_.find_vma(e.base).unwrap();
+        let data = match vma.backing { VmaBacking::KernelBytes { data, .. } => data, _ => panic!("environment must be kernel-backed") };
+        let read32 = |offset: usize| u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
+        let read64 = |offset: usize| u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
+        assert_eq!(read32(PARAM_OFF), PARAM_SIZE);
+        assert_eq!(read32(PARAM_OFF + 4), PARAM_SIZE);
+        assert_eq!(read32(PARAM_OFF + 8), PARAM_FLAGS_NORMALIZED);
+        assert_eq!(read64(PARAM_OFF + PARAM_ENVIRONMENT_SIZE_OFF), "TEMP=C:\\Temp\0PATH=C:\\Windows\0\0".encode_utf16().count() as u64 * 2);
+        assert_eq!(read64(PARAM_OFF + 0x80), e.base.as_u64() + ENV_OFF as u64);
+        assert_eq!(read64(PARAM_OFF + 0x80) - e.base.as_u64() - PARAM_OFF as u64, PARAM_SIZE as u64);
     }
 
     #[test]
