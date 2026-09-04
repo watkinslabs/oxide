@@ -34,6 +34,54 @@ impl From<io::Error> for BuildError {
 
 struct ModuleBuffer { name: Box<[u8]>, image: Box<[u8]> }
 
+/// Deterministic component selection for one Steam/Proton prefix.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RuntimeProfile {
+    pub prefix: PathBuf,
+    pub wine_runtime: PathBuf,
+    pub dxvk: PathBuf,
+    pub vkd3d: PathBuf,
+    pub faudio: PathBuf,
+}
+
+impl RuntimeProfile {
+    /// Resolve one profile from host-owned paths and explicit overrides.
+    /// # C: O(path bytes)
+    pub fn from_environment(dll_dir: &Path) -> Result<Self, BuildError> {
+        let runtime = env_path("STEAM_COMPAT_TOOL_PATHS", dll_dir);
+        let prefix = env_path("WINEPREFIX", Path::new("/var/lib/oxide/prefix"));
+        let dxvk = env_path("DXVK_PATH", &runtime.join("dxvk"));
+        let vkd3d = env_path("VKD3D_PROTON_PATH", &runtime.join("vkd3d-proton"));
+        let faudio = env_path("FAUDIO_PATH", &runtime.join("faudio"));
+        let profile = Self { prefix, wine_runtime: runtime, dxvk, vkd3d, faudio };
+        for path in [&profile.prefix, &profile.wine_runtime, &profile.dxvk, &profile.vkd3d, &profile.faudio] {
+            let bytes = path.as_os_str().as_bytes();
+            if bytes.is_empty() || bytes.contains(&0) { return Err(BuildError::InvalidEnvironment); }
+        }
+        Ok(profile)
+    }
+
+    /// Return the fixed launch variables consumed by Wine-derived components.
+    /// # C: O(path bytes)
+    pub fn environment(&self) -> Vec<(String, String)> {
+        vec![
+            ("WINEPREFIX".into(), self.prefix.to_string_lossy().into_owned()),
+            ("WINEARCH".into(), "win64".into()),
+            ("STEAM_COMPAT_DATA_PATH".into(), self.prefix.to_string_lossy().into_owned()),
+            ("STEAM_COMPAT_TOOL_PATHS".into(), self.wine_runtime.to_string_lossy().into_owned()),
+            ("DXVK_PATH".into(), self.dxvk.to_string_lossy().into_owned()),
+            ("VKD3D_PROTON_PATH".into(), self.vkd3d.to_string_lossy().into_owned()),
+            ("FAUDIO_PATH".into(), self.faudio.to_string_lossy().into_owned()),
+            ("WINEDLLOVERRIDES".into(), "d3d9,d3d10core,d3d11,dxgi=n;d3d12=n".into()),
+            ("OXIDE_NT_PERSONALITY".into(), "native".into()),
+        ]
+    }
+}
+
+fn env_path(name: &str, default: &Path) -> PathBuf {
+    std::env::var_os(name).map(PathBuf::from).unwrap_or_else(|| default.to_owned())
+}
+
 /// Owns every byte referenced by one `NtExecRequest` until the call returns.
 pub struct RuntimeRequest {
     // These fields are retained solely because the ABI records contain raw
@@ -57,13 +105,15 @@ impl RuntimeRequest {
     /// Read a PE32+ root and every non-native DLL in `dll_dir` using the Linux personality.
     /// # C: O(root + DLL directory bytes)
     pub fn from_paths(image_path: &Path, windows_path: &[u8], dll_dir: &Path) -> Result<Self, BuildError> {
-        Self::from_paths_with_environment(image_path, windows_path, windows_path, dll_dir, core::iter::empty())
+        let profile = RuntimeProfile::from_environment(dll_dir)?;
+        Self::from_paths_with_environment(image_path, windows_path, windows_path, dll_dir, profile.environment())
     }
 
     /// Read a PE32+ root and build an owned handoff with an explicit command line.
     /// # C: O(root + DLL directory bytes)
     pub fn from_paths_with_command_line(image_path: &Path, windows_path: &[u8], command_line: &[u8], dll_dir: &Path) -> Result<Self, BuildError> {
-        Self::from_paths_with_environment(image_path, windows_path, command_line, dll_dir, core::iter::empty())
+        let profile = RuntimeProfile::from_environment(dll_dir)?;
+        Self::from_paths_with_environment(image_path, windows_path, command_line, dll_dir, profile.environment())
     }
 
     /// Read a PE32+ root and preserve approved launch configuration in its Windows environment.
@@ -165,7 +215,7 @@ fn validate_size(size: u64) -> Result<(), BuildError> {
 }
 
 const PROTON_ENVIRONMENT_KEYS: &[&str] = &[
-    "WINEPREFIX", "WINEARCH", "WINEDLLOVERRIDES", "WINEDEBUG", "WINEESYNC", "WINEFSYNC",
+    "WINEPREFIX", "WINEARCH", "WINEDLLOVERRIDES", "WINEDEBUG", "WINEESYNC", "WINEFSYNC", "FAUDIO_PATH", "OXIDE_NT_PERSONALITY",
     "STEAM_COMPAT_CLIENT_INSTALL_PATH", "STEAM_COMPAT_DATA_PATH", "STEAM_COMPAT_INSTALL_PATH",
     "STEAM_COMPAT_TOOL_PATHS", "STEAM_COMPAT_MOUNTS", "STEAM_COMPAT_LIBRARY_PATHS",
     "PROTON_LOG", "PROTON_DUMP_DEBUG_COMMANDS", "PROTON_USE_WINED3D",
@@ -204,6 +254,7 @@ fn is_proton_environment_key(name: &str) -> bool {
         || ["STEAM_COMPAT_", "PROTON_", "DXVK_", "VKD3D_"].iter().any(|prefix| name.len() > prefix.len() && name.get(..prefix.len()).is_some_and(|head| head.eq_ignore_ascii_case(prefix)))
 }
 
+#[cfg(test)]
 fn environment_entries(block: &[u8]) -> Option<Vec<String>> {
     if block.len() % 2 != 0 { return None; }
     let units = block.chunks_exact(2).map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]])).collect::<Vec<_>>();
@@ -299,6 +350,36 @@ mod tests {
     fn malformed_launch_configuration_is_rejected_before_handoff() {
         assert!(matches!(environment_block([(String::from("DXVK_LOG_LEVEL"), String::from("bad\0value"))]), Err(BuildError::InvalidEnvironment)));
         assert!(matches!(environment_block([(String::from("DXVK_=NAME"), String::from("value"))]), Err(BuildError::InvalidEnvironment)));
+    }
+
+    #[test]
+    fn profile_composes_one_prefix_with_all_proton_components() {
+        let profile = RuntimeProfile {
+            prefix: PathBuf::from("/games/compatdata/123/pfx"),
+            wine_runtime: PathBuf::from("/opt/proton/files"),
+            dxvk: PathBuf::from("/opt/proton/files/lib64/dxvk"),
+            vkd3d: PathBuf::from("/opt/proton/files/lib64/vkd3d-proton"),
+            faudio: PathBuf::from("/opt/proton/files/lib64/faudio"),
+        };
+        let block = environment_block(profile.environment()).unwrap();
+        let entries = environment_entries(&block).unwrap();
+        for expected in [
+            "WINEPREFIX=/games/compatdata/123/pfx",
+            "WINEARCH=win64",
+            "STEAM_COMPAT_DATA_PATH=/games/compatdata/123/pfx",
+            "STEAM_COMPAT_TOOL_PATHS=/opt/proton/files",
+            "DXVK_PATH=/opt/proton/files/lib64/dxvk",
+            "VKD3D_PROTON_PATH=/opt/proton/files/lib64/vkd3d-proton",
+            "FAUDIO_PATH=/opt/proton/files/lib64/faudio",
+            "WINEDLLOVERRIDES=d3d9,d3d10core,d3d11,dxgi=n;d3d12=n",
+            "OXIDE_NT_PERSONALITY=native",
+        ] { assert!(entries.iter().any(|entry| entry == expected), "missing {expected}"); }
+    }
+
+    #[test]
+    fn profile_rejects_nul_in_a_component_path() {
+        let result = RuntimeProfile::from_environment(Path::new("/runtime\0dlls"));
+        assert!(matches!(result, Err(BuildError::InvalidEnvironment)));
     }
 
     fn wine_root() -> Option<&'static Path> {
