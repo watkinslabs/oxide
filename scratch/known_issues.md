@@ -1,6 +1,6 @@
 # Known issues
 
-**Live issue count: 299** — 296 `OPEN`, 3 `IN-PROGRESS`.
+**Live issue count: 298** — 296 `OPEN`, 2 `IN-PROGRESS`.
 
 | Id | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|---|
@@ -302,7 +302,6 @@
 | KI-0331 | OPEN | INFRA | med | audit-counts rejects zero enforced violations, so a clean scoped rule makes the PR gate red | B3325 on current origin/main: make audit-counts reports code/extern-std=0, code/panic-fmt=3, code/static-mut=0, then FAIL — a scoped rule left zero. This branch changes only scheduler selection/comments/tests and cannot affect extern-std or static-mut counts. | unowned |
 | KI-0332 | OPEN | DEFECT | high | install_default_runqueue reserves an 8216-byte x86_64 stack frame above the 8192-byte frame gate ceiling | B3325 make frame-gate on current origin/main-derived code: frame-size-gate reports sched::live::schedule::lifecycle::install_default_runqueue at 8216 bytes, NEW relative to tools/frame-size-baseline-x86_64.txt. This branch does not edit lifecycle.rs or stack-bearing locals. | unowned |
 | KI-0333 | OPEN | DEFECT | high | x86_64 interrupt path exceeds the 12000-byte nested-interrupt stack budget | B3325 direct irq gate on a fresh current-origin/main kernel reports oxide_irq_dispatch at 13856 bytes; aarch64 passes at 4752 bytes. This branch changes no interrupt code, indirect-edge map, or stack-bearing scheduler function. | unowned |
-| KI-0334 | IN-PROGRESS B3330-windows-registry-query-info | MISSING | med | [CLAIMED B3330-windows-registry-query-info 2026-09-04] Registry Phase 8 lacks the canonical Win32 RegQueryInfoKeyW adapter over the existing service metadata contract, preventing callers from obtaining key counts and maximum lengths. | The current Advapi adapter exposes open/create/query/set/enum/flush/close but no RegQueryInfoKeyW; existing QueryKey service already owns the metadata. Add a thin adapter mapping the canonical KeyInfo fields and contract tests. | windows-registry |
 
 ## Ext4 master program
 
