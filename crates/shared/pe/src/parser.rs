@@ -11,6 +11,8 @@ pub const IMAGE_DIRECTORY_ENTRY_TLS: usize = 9;
 pub const IMAGE_REL_BASED_ABSOLUTE: u16 = 0;
 pub const IMAGE_REL_BASED_DIR64: u16 = 10;
 const UNW_FLAG_CHAININFO: u8 = 0x04;
+const UWOP_SAVE_XMM128: u8 = 8;
+const UWOP_SAVE_XMM128_FAR: u8 = 9;
 const MAX_UNWIND_CHAIN: usize = 32;
 pub const RELAY_DESCRIPTOR_MAGIC: u32 = 0xdeb9_0002;
 const DIRECTORY_COUNT: usize = 16;
@@ -37,8 +39,10 @@ impl SectionFlags {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)] pub struct RuntimeFunction { pub begin_rva: u32, pub end_rva: u32, pub unwind_rva: u32 }
 #[derive(Copy, Clone, Debug, Eq, PartialEq)] pub struct UnwindCode { pub code_offset: u8, pub unwind_op: u8, pub op_info: u8 }
 #[derive(Debug, Eq, PartialEq)] pub struct UnwindInfo { pub version: u8, pub flags: u8, pub prolog_size: u8, pub code_count: u8, pub frame_register: u8, pub frame_offset: u8, pub codes: Vec<UnwindCode> }
-/// x64 integer register state consumed and produced by one unwind step.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)] pub struct UnwindContext { pub regs: [u64; 16], pub rip: u64, pub rsp: u64 }
+/// x64 register state consumed and produced by one unwind step.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)] pub struct UnwindContext {
+    pub regs: [u64; 16], pub xmm: [[u64; 2]; 16], pub rip: u64, pub rsp: u64,
+}
 /// Supplies PE bytes for one dependency name. Search policy stays outside the
 /// parser so Linux filesystem paths cannot become implicit DLL search paths.
 pub trait ModuleSource<'a> { fn load(&self, name: &[u8]) -> Option<&'a [u8]>; }
@@ -415,8 +419,10 @@ impl<'a> Image<'a> {
                 }
                 2 => bytes = bytes.checked_add((code.op_info as u32) * 8 + 8).ok_or(Error::Einval)?,
                 3 => if code.op_info != 0 { return Err(Error::Einval); },
-                4 | 8 => { if slot == info.codes.len() { return Err(Error::Einval); } slot += 1; }
-                5 | 9 => { if slot + 1 >= info.codes.len() { return Err(Error::Einval); } slot += 2; }
+                4 => { if slot == info.codes.len() { return Err(Error::Einval); } slot += 1; }
+                5 => { if slot + 1 >= info.codes.len() { return Err(Error::Einval); } slot += 2; }
+                UWOP_SAVE_XMM128 => { if code.op_info >= 16 || slot == info.codes.len() { return Err(Error::Einval); } slot += 1; }
+                UWOP_SAVE_XMM128_FAR => { if code.op_info >= 16 || slot + 1 >= info.codes.len() { return Err(Error::Einval); } slot += 2; }
                 10 => bytes = bytes.checked_add(if code.op_info == 0 { 40 } else if code.op_info == 1 { 48 } else { return Err(Error::Einval) }).ok_or(Error::Einval)?,
                 _ => return Err(Error::Unsupported),
             }
@@ -473,7 +479,18 @@ impl<'a> Image<'a> {
                     } else if code.op_info > 1 { return Err(Error::Einval); }
                     return Ok(context);
                 }
-                8 | 9 => return Err(Error::Unsupported),
+                UWOP_SAVE_XMM128 | UWOP_SAVE_XMM128_FAR => {
+                    let extra = if code.unwind_op == UWOP_SAVE_XMM128 { 1 } else { 2 };
+                    if slot + extra > info.codes.len() || code.op_info >= 16 { return Err(Error::Einval); }
+                    let offset = if extra == 1 {
+                        (self.unwind_slot(function, slot)? as u64).checked_mul(16).ok_or(Error::Einval)?
+                    } else { self.unwind_double_slot(function, slot)? as u64 };
+                    if apply {
+                        let address = frame.checked_add(offset).ok_or(Error::Einval)?;
+                        context.xmm[code.op_info as usize] = [read(address)?, read(address.checked_add(8).ok_or(Error::Einval)?)?];
+                    }
+                    slot += extra;
+                }
                 _ => return Err(Error::Unsupported),
             }
         }
