@@ -27,6 +27,7 @@ grep -Fq "if ordinal == WINE_CREATE_WINDOW_EX { return Some(raw_class::create_wi
 grep -Fq "pub(super) fn register_class(args: SyscallArgs)" "$raw_class_source"
 grep -Fq "pub(super) fn create_window(args: SyscallArgs)" "$raw_class_source"
 grep -Fq "const SERVER_REQ_CREATE_MAPPING: u32 = 63;" "$wine_unix_source"
+grep -Fq "const SERVER_REQ_OPEN_MAPPING: u32 = 64;" "$wine_unix_source"
 grep -Fq "fn server_create_mapping(" "$wine_unix_source"
 grep -Fq "const SERVER_REQ_GET_MAPPING_INFO: u32 = 65;" "$wine_unix_source"
 grep -Fq "const SERVER_REQ_GET_IMAGE_MAP_ADDRESS: u32 = 66;" "$wine_unix_source"

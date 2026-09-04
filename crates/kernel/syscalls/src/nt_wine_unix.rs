@@ -60,6 +60,7 @@ const SERVER_REPLY_VALUE_TWO: u64 = 12;
 const SERVER_REPLY_VALUE_THREE: u64 = 16;
 const SERVER_REQ_SELECT: u32 = 29;
 const SERVER_REQ_CREATE_MAPPING: u32 = 63;
+const SERVER_REQ_OPEN_MAPPING: u32 = 64;
 const SERVER_REQ_GET_MAPPING_INFO: u32 = 65;
 const SERVER_REQ_GET_IMAGE_MAP_ADDRESS: u32 = 66;
 const SERVER_REQ_MAP_VIEW: u32 = 67;
@@ -85,7 +86,7 @@ const SERVER_MAPPING_MAX_BYTES: u64 = 1 << 36;
 fn wine_arg(base: u64, offset: u64) -> Option<u64> { base.checked_add(offset) }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-enum ServerRequest { CloseHandle, CreateEvent, EventOp, QueryEvent, Select, CreateMutex, ReleaseMutex, QueryMutex, CreateSemaphore, ReleaseSemaphore, QuerySemaphore, CreateMapping, GetMappingInfo, GetImageMapAddress, MapView, MapImageView, UnmapView }
+enum ServerRequest { CloseHandle, CreateEvent, EventOp, QueryEvent, Select, CreateMutex, ReleaseMutex, QueryMutex, CreateSemaphore, ReleaseSemaphore, QuerySemaphore, CreateMapping, OpenMapping, GetMappingInfo, GetImageMapAddress, MapView, MapImageView, UnmapView }
 
 fn select_opcode_kind(op: u32) -> Option<u32> {
     match op { SERVER_SELECT_WAIT => Some(0), SERVER_SELECT_WAIT_ALL => Some(1), _ => None }
@@ -105,6 +106,7 @@ fn server_request_kind(request: u32) -> Option<ServerRequest> {
         SERVER_REQ_RELEASE_SEMAPHORE => Some(ServerRequest::ReleaseSemaphore),
         SERVER_REQ_QUERY_SEMAPHORE => Some(ServerRequest::QuerySemaphore),
         SERVER_REQ_CREATE_MAPPING => Some(ServerRequest::CreateMapping),
+        SERVER_REQ_OPEN_MAPPING => Some(ServerRequest::OpenMapping),
         SERVER_REQ_GET_MAPPING_INFO => Some(ServerRequest::GetMappingInfo),
         SERVER_REQ_GET_IMAGE_MAP_ADDRESS => Some(ServerRequest::GetImageMapAddress),
         SERVER_REQ_MAP_VIEW => Some(ServerRequest::MapView),
@@ -204,7 +206,11 @@ fn server_create_mapping(args: u64, request_size: u32, table: &sched::nt_object:
     let Ok(flags) = uaccess::get_user_u32(flags_address) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
     let Ok(requested_size) = uaccess::get_user_u64(size_address) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
     let Ok(file_raw) = uaccess::get_user_u32(file_address) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
-    if request_size != 0 || access == 0 { return server_reply(args, STATUS_INVALID_PARAMETER); }
+    if access == 0 { return server_reply(args, STATUS_INVALID_PARAMETER); }
+    let path = match wine_object_path(args, request_size, table) {
+        Ok(path) => path,
+        Err(status) => return server_reply(args, status),
+    };
     let object = if file_raw == 0 {
         if requested_size == 0 || requested_size > SERVER_MAPPING_MAX_BYTES { return server_reply(args, STATUS_INVALID_PARAMETER); }
         let Some(object) = table.new_section_with_flags(round_mapping_size(requested_size), flags) else { return server_reply(args, STATUS_NO_MEMORY); };
@@ -219,10 +225,16 @@ fn server_create_mapping(args: u64, request_size: u32, table: &sched::nt_object:
         if size == 0 || size < file_size || size > SERVER_MAPPING_MAX_BYTES { return server_reply(args, STATUS_INVALID_PARAMETER); }
         table.new_file_section_with_flags(file, round_mapping_size(size), flags)
     };
+    let (object, state) = match path {
+        Some(path) => sched::nt_object::publish_section(&path, object),
+        None => (object, sched::nt_object::NamedObjectState::Created),
+    };
+    if state == sched::nt_object::NamedObjectState::TypeMismatch { return server_reply(args, STATUS_OBJECT_TYPE_MISMATCH); }
+    if state == sched::nt_object::NamedObjectState::ParentMissing { return server_reply(args, STATUS_OBJECT_NAME_NOT_FOUND); }
     let Some(handle) = table.insert(object, access) else { return server_reply(args, STATUS_NO_MEMORY); };
     let Some(reply_address) = wine_arg(args, SERVER_REPLY_HANDLE) else { let _ = table.close(handle); return server_reply(args, STATUS_INVALID_PARAMETER); };
     if uaccess::put_user_u32(reply_address, handle.raw()).is_err() { let _ = table.close(handle); return server_reply(args, STATUS_INVALID_PARAMETER); }
-    server_reply(args, STATUS_SUCCESS)
+    server_reply(args, if state == sched::nt_object::NamedObjectState::Existing { STATUS_OBJECT_NAME_COLLISION } else { STATUS_SUCCESS })
 }
 
 #[cfg(target_os = "oxide-kernel")]
@@ -330,8 +342,31 @@ fn server_get_mapping_info(args: u64, table: &sched::nt_object::NtHandleTable) -
     server_reply(args, STATUS_SUCCESS)
 }
 
+#[cfg(target_os = "oxide-kernel")]
+fn server_open_mapping(args: u64, request_size: u32, table: &sched::nt_object::NtHandleTable) -> u64 {
+    let (Some(access_address), Some(attributes_address)) =
+        (wine_arg(args, 12), wine_arg(args, 16)) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+    let Ok(access) = uaccess::get_user_u32(access_address) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+    let Ok(_attributes) = uaccess::get_user_u32(attributes_address) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
+    if access == 0 { return server_reply(args, STATUS_INVALID_PARAMETER); }
+    let path = match wine_object_path(args, request_size, table) {
+        Ok(Some(path)) => path,
+        Ok(None) => return server_reply(args, STATUS_INVALID_PARAMETER),
+        Err(status) => return server_reply(args, status),
+    };
+    let Some(object) = sched::nt_object::lookup_object(&path, sched::nt_object::NtObjectType::Section) else {
+        return server_reply(args, STATUS_OBJECT_NAME_NOT_FOUND);
+    };
+    let Some(handle) = table.insert(object, access) else { return server_reply(args, STATUS_NO_MEMORY); };
+    let Some(reply_address) = wine_arg(args, SERVER_REPLY_HANDLE) else { let _ = table.close(handle); return server_reply(args, STATUS_INVALID_PARAMETER); };
+    if uaccess::put_user_u32(reply_address, handle.raw()).is_err() { let _ = table.close(handle); return server_reply(args, STATUS_INVALID_PARAMETER); }
+    server_reply(args, STATUS_SUCCESS)
+}
+
 #[cfg(not(target_os = "oxide-kernel"))]
 fn server_create_mapping(_args: u64, _request_size: u32, _table: &sched::nt_object::NtHandleTable) -> u64 { STATUS_INVALID_PARAMETER }
+#[cfg(not(target_os = "oxide-kernel"))]
+fn server_open_mapping(_args: u64, _request_size: u32, _table: &sched::nt_object::NtHandleTable) -> u64 { STATUS_INVALID_PARAMETER }
 #[cfg(not(target_os = "oxide-kernel"))]
 fn server_get_mapping_info(_args: u64, _table: &sched::nt_object::NtHandleTable) -> u64 { STATUS_INVALID_PARAMETER }
 #[cfg(not(target_os = "oxide-kernel"))]
@@ -366,11 +401,12 @@ fn server_call(args: u64) -> u64 {
     let Some(request_size_address) = wine_arg(args, SERVER_REQUEST_SIZE) else { return STATUS_INVALID_PARAMETER; };
     let Ok(request_size) = uaccess::get_user_u32(request_size_address) else { return STATUS_INVALID_PARAMETER; };
     let Some(request) = server_request_kind(request) else { return server_reply(args, STATUS_NOT_IMPLEMENTED); };
-    if request_size != 0 && !matches!(request, ServerRequest::Select | ServerRequest::CreateEvent | ServerRequest::CreateMutex | ServerRequest::CreateSemaphore) { return server_reply(args, STATUS_INVALID_PARAMETER); }
+    if request_size != 0 && !matches!(request, ServerRequest::Select | ServerRequest::CreateEvent | ServerRequest::CreateMutex | ServerRequest::CreateSemaphore | ServerRequest::CreateMapping | ServerRequest::OpenMapping) { return server_reply(args, STATUS_INVALID_PARAMETER); }
     if matches!(request, ServerRequest::Select) { return server_select(args); }
     let Some(cur) = sched::live::current() else { return server_reply(args, STATUS_INVALID_PARAMETER); };
     let table = cur.thread_group.nt_handles();
     if matches!(request, ServerRequest::CreateMapping) { return server_create_mapping(args, request_size, &table); }
+    if matches!(request, ServerRequest::OpenMapping) { return server_open_mapping(args, request_size, &table); }
     if matches!(request, ServerRequest::GetMappingInfo) { return server_get_mapping_info(args, &table); }
     if matches!(request, ServerRequest::MapView) { return server_reply(args, server_map_view(args, &table)); }
     if matches!(request, ServerRequest::GetImageMapAddress) { return server_get_image_map_address(args, &table); }
@@ -504,7 +540,7 @@ fn server_call(args: u64) -> u64 {
             let (Some(current_address), Some(maximum_address)) = (wine_arg(args, SERVER_REPLY_VALUE), wine_arg(args, SERVER_REPLY_VALUE_TWO)) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
             if uaccess::put_user_u32(current_address, current).is_err() || uaccess::put_user_u32(maximum_address, maximum).is_err() { STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
         }
-        ServerRequest::Select | ServerRequest::CreateMapping | ServerRequest::GetMappingInfo | ServerRequest::GetImageMapAddress | ServerRequest::MapView | ServerRequest::MapImageView | ServerRequest::UnmapView => STATUS_INVALID_PARAMETER,
+        ServerRequest::Select | ServerRequest::CreateMapping | ServerRequest::OpenMapping | ServerRequest::GetMappingInfo | ServerRequest::GetImageMapAddress | ServerRequest::MapView | ServerRequest::MapImageView | ServerRequest::UnmapView => STATUS_INVALID_PARAMETER,
     };
     server_reply(args, status)
 }
@@ -645,13 +681,13 @@ mod tests {
         assert_eq!(server_request_kind(41), Some(ServerRequest::ReleaseSemaphore));
         assert_eq!(server_request_kind(42), Some(ServerRequest::QuerySemaphore));
         assert_eq!(server_request_kind(63), Some(ServerRequest::CreateMapping));
+        assert_eq!(server_request_kind(64), Some(ServerRequest::OpenMapping));
         assert_eq!(server_request_kind(65), Some(ServerRequest::GetMappingInfo));
         assert_eq!(server_request_kind(66), Some(ServerRequest::GetImageMapAddress));
         assert_eq!(server_request_kind(67), Some(ServerRequest::MapView));
         assert_eq!(server_request_kind(68), Some(ServerRequest::MapImageView));
         assert_eq!(server_request_kind(71), Some(ServerRequest::UnmapView));
         assert_eq!(server_request_kind(62), None);
-        assert_eq!(server_request_kind(64), None);
         assert_eq!(server_request_kind(69), None);
         assert_eq!(server_request_kind(23), None);
         assert_eq!(select_opcode_kind(1), Some(0));
