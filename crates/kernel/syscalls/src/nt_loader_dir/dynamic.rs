@@ -212,7 +212,8 @@ fn load_locked(cur: &sched::Task, name_descriptor: u64, module_output: u64) -> u
         return STATUS_INVALID_PARAMETER;
     }
     for (loaded, module) in loaded.iter().zip(&modules) {
-        elf_load::pe_modules::append(&as_, elf_load::pe_modules::PeRuntimeModule { base: loaded.image.base, size: loaded.image.size, exception_rva: loaded.image.exception_directory.0, exception_size: loaded.image.exception_directory.1 });
+        let exception_functions = match pe::parse(&module.blob).and_then(|parsed| parsed.exception_functions()) { Ok(functions) => functions, Err(_) => return STATUS_INVALID_PARAMETER };
+        elf_load::pe_modules::append(&as_, elf_load::pe_modules::PeRuntimeModule { base: loaded.image.base, size: loaded.image.size, exception_rva: loaded.image.exception_directory.0, exception_size: loaded.image.exception_directory.1, exception_functions });
         if let Ok(Some(rvas)) = pe::parse(&module.blob).and_then(|parsed| parsed.export_rvas()) {
             elf_load::pe_modules::register_exports(&as_, loaded.image.base, rvas);
         }

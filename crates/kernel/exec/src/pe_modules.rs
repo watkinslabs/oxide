@@ -1,14 +1,16 @@
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
+use pe::RuntimeFunction;
 use sync::{Modules, Spinlock};
 use vmm::AddressSpace;
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PeRuntimeModule {
     pub base: u64,
     pub size: u32,
     pub exception_rva: u32,
     pub exception_size: u32,
+    pub exception_functions: Vec<RuntimeFunction>,
 }
 
 /// Validate one PE32+ runtime-function record against its mapped image. # C: O(1)
@@ -37,7 +39,16 @@ pub fn append(as_: &AddressSpace, module: PeRuntimeModule) {
 }
 
 pub fn find(root: u64, pc: u64) -> Option<PeRuntimeModule> {
-    MODULES.lock().get(&root).and_then(|modules| modules.iter().copied().find(|module| pc >= module.base && pc - module.base < module.size as u64))
+    MODULES.lock().get(&root).and_then(|modules| modules.iter().find(|module| pc >= module.base && pc - module.base < module.size as u64).cloned())
+}
+
+/// Return the mapped RUNTIME_FUNCTION address covering `pc`. # C: O(N_modules + N_functions)
+pub fn find_exception(root: u64, pc: u64) -> Option<u64> {
+    let modules = MODULES.lock();
+    let module = modules.get(&root)?.iter().find(|module| pc >= module.base && pc - module.base < module.size as u64)?;
+    let rva = u32::try_from(pc.checked_sub(module.base)?).ok()?;
+    let index = module.exception_functions.iter().position(|function| rva >= function.begin_rva && rva < function.end_rva)?;
+    module.base.checked_add(module.exception_rva as u64)?.checked_add((index as u64).checked_mul(12)?)
 }
 
 pub fn register_exports(as_: &AddressSpace, base: u64, rvas: Vec<u32>) {
@@ -58,12 +69,23 @@ mod tests {
     #[test]
     fn registry_finds_module_by_pc_and_preserves_exception_directory() {
         let as_ = AddressSpace::new(0x8_0000).unwrap();
-        let modules = [PeRuntimeModule { base: 0x1400_0000, size: 0x9000, exception_rva: 0x3000, exception_size: 0x60 }];
+        let modules = [PeRuntimeModule { base: 0x1400_0000, size: 0x9000, exception_rva: 0x3000, exception_size: 0x60, exception_functions: alloc::vec![RuntimeFunction { begin_rva: 0x1000, end_rva: 0x1050, unwind_rva: 0x2000 }] }];
         register(&as_, &modules);
-        assert_eq!(find(as_.root_pa(), 0x1400_1000), Some(modules[0]));
+        assert_eq!(find(as_.root_pa(), 0x1400_1000), Some(modules[0].clone()));
+        assert_eq!(find_exception(as_.root_pa(), 0x1400_1020), Some(0x1400_3000));
+        assert_eq!(find_exception(as_.root_pa(), 0x1400_1050), None);
         assert_eq!(find(as_.root_pa(), 0x1400_9000), None);
         clear(as_.root_pa());
         assert_eq!(find(as_.root_pa(), 0x1400_1000), None);
+    }
+
+    #[test]
+    fn exception_lookup_positive_control_rejects_uncovered_code() {
+        let as_ = AddressSpace::new(0xa_0000).unwrap();
+        register(&as_, &[PeRuntimeModule { base: 0x1500_0000, size: 0x4000, exception_rva: 0x2000, exception_size: 12, exception_functions: alloc::vec![RuntimeFunction { begin_rva: 0x100, end_rva: 0x180, unwind_rva: 0x300 }] }]);
+        assert_eq!(find_exception(as_.root_pa(), 0x1500_0100), Some(0x1500_2000));
+        assert_eq!(find_exception(as_.root_pa(), 0x1500_0180), None);
+        clear(as_.root_pa());
     }
 
     #[test]

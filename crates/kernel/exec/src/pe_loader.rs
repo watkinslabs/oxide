@@ -1070,9 +1070,9 @@ fn load_pe_process_with_catalog_with_fallback<R: ImportResolver>(blob: &[u8], as
         Err(error) => { let _ = as_.munmap(environment.base, environment.bytes); unmap_loaded_modules(as_, &loaded); return Err(error); }
     };
     if let Some(trampoline) = initializer_trampoline { entry.rip = trampoline.entry; }
-    let mut runtime_modules = loaded.iter().map(|module| pe_modules::PeRuntimeModule { base: module.image.base, size: module.image.size, exception_rva: module.image.exception_directory.0, exception_size: module.image.exception_directory.1 }).collect::<alloc::vec::Vec<_>>();
+    let mut runtime_modules = loaded.iter().zip(&owned).map(|(module, owned)| -> Result<_, pe::Error> { Ok(pe_modules::PeRuntimeModule { base: module.image.base, size: module.image.size, exception_rva: module.image.exception_directory.0, exception_size: module.image.exception_directory.1, exception_functions: pe::parse(&owned.blob)?.exception_functions()? }) }).collect::<Result<alloc::vec::Vec<_>, _>>()?;
     if !loaded.iter().any(|module| ascii_eq_ignore_case(module.name, b"ntdll.dll")) {
-        runtime_modules.push(pe_modules::PeRuntimeModule { base: runtime.base.as_u64(), size: runtime.bytes as u32, exception_rva: 0, exception_size: 0 });
+        runtime_modules.push(pe_modules::PeRuntimeModule { base: runtime.base.as_u64(), size: runtime.bytes as u32, exception_rva: 0, exception_size: 0, exception_functions: alloc::vec::Vec::new() });
     }
     pe_modules::register(as_, &runtime_modules);
     for (module, owned_module) in loaded.iter().zip(&owned) {
@@ -1122,7 +1122,7 @@ pub fn load_pe_process_with_resolver_and_modules_and_params<R: ImportResolver>(b
         Err(error) => { let _ = as_.munmap(environment.base, environment.bytes); let _ = as_.munmap(UserVirtAddr::new(image.base).ok_or(pe::Error::Einval)?, image.size as usize); return Err(error); }
     };
     let entry = if let Some(trampoline) = initializer_trampoline { PeEntryState { rip: trampoline.entry, ..entry } } else { entry };
-    pe_modules::register(as_, &[pe_modules::PeRuntimeModule { base: image.base, size: image.size, exception_rva: image.exception_directory.0, exception_size: image.exception_directory.1 }]);
+    pe_modules::register(as_, &[pe_modules::PeRuntimeModule { base: image.base, size: image.size, exception_rva: image.exception_directory.0, exception_size: image.exception_directory.1, exception_functions: pe::parse(blob)?.exception_functions()? }]);
     Ok(PeProcess { image, environment, entry, initializers, initializer_trampoline })
 }
 /// Map one validated PE32+ image into the common address space. # C: O(SizeOfImage + N_sections)

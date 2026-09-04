@@ -66,42 +66,10 @@ fn lookup_function_entry(pc: u64, base: u64) -> u64 {
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
     if uaccess::put_user_u64(base, 0).is_err() { return STATUS_INVALID_PARAMETER; }
-    let Some(module) = cur.clone_mm().and_then(|mm| pe_modules::find(mm.root_pa(), pc)) else { return 0; };
+    let Some(mm) = cur.clone_mm() else { return 0; };
+    let Some(module) = pe_modules::find(mm.root_pa(), pc) else { return 0; };
     if uaccess::put_user_u64(base, module.base).is_err() { return STATUS_INVALID_PARAMETER; }
-    let Some(rva) = pc.checked_sub(module.base) else { return 0; };
-    let exception_end = (module.exception_rva as u64).checked_add(module.exception_size as u64).unwrap_or(u64::MAX);
-    if exception_end > module.size as u64 || module.exception_size % 12 != 0 { return 0; }
-    let Some(table) = module.base.checked_add(module.exception_rva as u64) else { return 0; };
-    let count = module.exception_size / 12;
-    // The PE directory is a sorted array of records, but the mapped image is
-    // untrusted input. Validate every record before returning any pointer so a
-    // malformed row cannot make the runtime walk outside the image later.
-    for index in 0..count {
-        let Some(entry) = table.checked_add(index as u64 * 12) else { return 0; };
-        let mut bytes = [0u8; 12];
-        if uaccess::copy_from_user(&mut bytes, entry).is_err() { return 0; }
-        let begin = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
-        let end = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
-        let unwind = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
-        if !pe_modules::runtime_function_valid(begin, end, unwind, module.size) { return 0; }
-    }
-    // Linux's unwind lookup also treats the registered table as the canonical
-    // module-owned index. Binary search preserves the PE table's ordering and
-    // avoids making a second metadata registry for the same image.
-    let mut low = 0u32;
-    let mut high = count;
-    while low < high {
-        let mid = low + (high - low) / 2;
-        let Some(entry) = table.checked_add(mid as u64 * 12) else { return 0; };
-        let mut bytes = [0u8; 12];
-        if uaccess::copy_from_user(&mut bytes, entry).is_err() { return 0; }
-        let begin = u32::from_le_bytes(bytes[0..4].try_into().unwrap()) as u64;
-        let end = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as u64;
-        if rva < begin { high = mid; }
-        else if rva >= end { low = mid + 1; }
-        else { return entry; }
-    }
-    0
+    pe_modules::find_exception(mm.root_pa(), pc).unwrap_or(0)
 }
 
 fn pc_to_file_header(pc: u64, address: u64) -> u64 {
