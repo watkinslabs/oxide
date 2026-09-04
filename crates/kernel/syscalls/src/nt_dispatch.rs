@@ -138,6 +138,8 @@ const STATUS_NOT_MAPPED_DATA: u64 = 0xc000_001d;
 #[cfg(target_os = "oxide-kernel")]
 const STATUS_NOT_IMPLEMENTED: u64 = 0xc000_0002;
 #[cfg(target_os = "oxide-kernel")]
+const STATUS_ACCESS_VIOLATION: u64 = 0xc000_0005;
+#[cfg(target_os = "oxide-kernel")]
 const NT_CONTEXT_AMD64: u32 = 0x0010_0000;
 #[cfg(target_os = "oxide-kernel")]
 const NT_CONTEXT_CONTROL: u32 = 0x0000_0001;
@@ -511,10 +513,22 @@ pub fn dispatch(call: NtCall) -> u64 {
         if !cur.is_nt_personality() || call.args.a0 == 0 || call.args.a1 > u64::MAX - 8 {
             return STATUS_INVALID_PARAMETER;
         }
-        // Wine only permits changes within half a second and reports larger
-        // changes as STATUS_PRIVILEGE_NOT_HELD. The canonical timekeeper
-        // owner is not yet exposed to the NT personality, so fail closed.
-        return STATUS_NOT_IMPLEMENTED;
+        if crate::userbuf::validate_user_buf_readable(call.args.a0, 8, 8).is_err() {
+            return STATUS_ACCESS_VIOLATION;
+        }
+        let requested = match uaccess::get_user_u64(call.args.a0) {
+            Ok(value) => value, Err(_) => return STATUS_ACCESS_VIOLATION,
+        };
+        let old = crate::nt_system_time::unix_ns_to_nt_100ns(timekeeper::realtime_ns());
+        if call.args.a1 != 0 {
+            if crate::userbuf::validate_user_buf_writable(call.args.a1, 8, 8).is_err() {
+                return STATUS_ACCESS_VIOLATION;
+            }
+            if uaccess::put_user_u64(call.args.a1, old).is_err() {
+                return STATUS_ACCESS_VIOLATION;
+            }
+        }
+        return crate::nt_system_time::set_status(old, requested);
     }
     if call.service == syscall::nt::NtService::NtUnloadKey {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
