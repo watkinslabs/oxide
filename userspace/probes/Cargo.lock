@@ -217,6 +217,7 @@ version = "0.1.0"
 name = "windows-registry"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "syscall",
 ]
 

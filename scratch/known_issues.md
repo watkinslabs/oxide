@@ -1,6 +1,6 @@
 # Known issues
 
-**Live issue count: 299** — 294 `OPEN`, 5 `IN-PROGRESS`.
+**Live issue count: 300** — 294 `OPEN`, 6 `IN-PROGRESS`.
 
 | Id | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|---|
@@ -303,6 +303,7 @@
 | KI-0335 | IN-PROGRESS B3331-windows-path-unicode-casefold | MISSING | med | [CLAIMED B3331-windows-path-unicode-casefold 2026-09-04] Windows DOS path lookup keys fold only ASCII, so Unicode case-insensitive names can miss their existing Windows file | Current userspace/probes/windows-path lookup_key uses to_ascii_lowercase. Wine path matching uses Unicode towupper when case-insensitive; the Windows Phase 7 contract requires case-insensitive lookup while preserving display spelling. Add Unicode lookup-key coverage and implementation. | windows-path |
 | KI-0337 | IN-PROGRESS H1541-windows-exception-unwind-chain | DEFECT | high | [CLAIMED H1541-windows-exception-unwind-chain 2026-09-04] Phase 9 x86-64 chained unwind records are rejected instead of following the IMAGE_RUNTIME_FUNCTION_ENTRY chain, preventing canonical RtlVirtualUnwind behavior for functions split across chained prolog records. | Current shared PE unwind_x64 rejects UNW_FLAG_CHAININFO. Wine resolves the chained runtime function and continues unwind; focused regression will cover the chain and reject malformed chain targets. | NT runtime |
 | KI-0339 | IN-PROGRESS L1541-windows-audio-extensible-pr | MISSING | med | [CLAIMED L1541-windows-audio-extensible-pr 2026-09-04] Phase 11 audio boundary lacks canonical WAVEFORMATEXTENSIBLE validation | Current windows-audio rejects every nonzero cbSize. The Wine-derived audio boundary accepts WAVEFORMATEXTENSIBLE extension only for PCM/IEEE-float subtype, valid bits, and channel mask that fit native format. Add hosted ABI/semantic tests and preserve the existing native audio owner. | windows-audio |
+| KI-0340 | IN-PROGRESS Q1545-windows-registry-persistence | DEFECT | high | [CLAIMED Q1545-windows-registry-persistence 2026-09-04] RegistryStore sessions do not hold a Linux advisory lock across a hive session, allowing concurrent writers to overwrite persisted Windows registry updates. | Current RegistryStore::open loads without locking and flush atomically renames independently; Linux file locking serializes shared resource mutations. Focused contention and release tests will pin canonical owner behavior. | windows-registry |
 
 ## Ext4 master program
 
