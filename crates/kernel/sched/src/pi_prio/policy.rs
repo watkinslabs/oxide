@@ -27,9 +27,9 @@ pub struct PiDonorKey {
 /// # C: O(1)
 const fn sched_rank(c: SchedClass) -> (u8, u32) {
     match c {
-        SchedClass::Deadline          => (3, 0),
-        SchedClass::Rt { prio, .. }   => (2, prio as u32),
-        SchedClass::NtFixed { level, .. } => (1, level as u32),
+        SchedClass::Deadline          => (4, 0),
+        SchedClass::Rt { prio, .. }   => (3, prio as u32),
+        SchedClass::NtFixed { level, .. } => (2, level as u32),
         SchedClass::Normal { .. }     => (1, 0),
         SchedClass::Idle              => (0, 0),
     }
@@ -44,8 +44,9 @@ pub const fn outranks(a: SchedClass, b: SchedClass) -> bool {
 }
 
 /// True when waiter `a` sorts before waiter `b` in a PI wait tree.
-/// Deadline peers use their effective absolute deadlines; non-RT peers retain
-/// FIFO order because their waiter key is the common normal-priority value.
+/// Deadline peers use their effective absolute deadlines; RT and NT-fixed
+/// peers use their numeric priorities. Ordinary peers retain FIFO order
+/// because their waiter key is the common normal-priority value.
 /// # C: O(1)
 pub fn donor_key_outranks(a: PiDonorKey, b: PiDonorKey) -> bool {
     let ac = a.class;
@@ -57,12 +58,18 @@ pub fn donor_key_outranks(a: PiDonorKey, b: PiDonorKey) -> bool {
         (SchedClass::Deadline, SchedClass::Deadline) =>
             crate::deadline::dl_time_before(a.deadline, b.deadline),
         (SchedClass::Rt { prio: ap, .. }, SchedClass::Rt { prio: bp, .. }) => ap > bp,
+        (SchedClass::NtFixed { level: ap, .. }, SchedClass::NtFixed { level: bp, .. }) => ap > bp,
         _ => false,
     }
 }
 
 const fn waiter_rank(c: SchedClass) -> u8 {
-    match c { SchedClass::Deadline => 2, SchedClass::Rt { .. } => 1, _ => 0 }
+    match c {
+        SchedClass::Deadline => 3,
+        SchedClass::Rt { .. } => 2,
+        SchedClass::NtFixed { .. } => 1,
+        SchedClass::Normal { .. } | SchedClass::Idle => 0,
+    }
 }
 
 /// Effective class produced by one concrete top donor. `base_deadline` is the
@@ -105,7 +112,8 @@ pub fn class_with_key(base: SchedClass, base_deadline: u64, key: PiDonorKey) -> 
 pub fn boost_class(base: SchedClass, waiters: &[SchedClass]) -> Option<SchedClass> {
     let mut best = base;
     for &w in waiters {
-        if matches!(w, SchedClass::Deadline | SchedClass::Rt { .. }) && outranks(w, best) {
+        if matches!(w, SchedClass::Deadline | SchedClass::Rt { .. }
+            | SchedClass::NtFixed { .. }) && outranks(w, best) {
             best = w;
         }
     }

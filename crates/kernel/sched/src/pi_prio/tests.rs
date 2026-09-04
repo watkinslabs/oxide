@@ -3,6 +3,7 @@ use crate::{SchedClass, SchedPolicy};
 
 const fn rt(p: u8) -> SchedClass { SchedClass::Rt { prio: p, policy: SchedPolicy::Fifo } }
 const fn rr(p: u8) -> SchedClass { SchedClass::Rt { prio: p, policy: SchedPolicy::Rr } }
+const fn nt(level: u8) -> SchedClass { SchedClass::NtFixed { level, quantum: 3 } }
 const fn fair(w: u32) -> SchedClass { SchedClass::Normal { weight: w } }
 
 #[test]
@@ -58,4 +59,28 @@ fn every_non_rt_non_dl_waiter_has_one_default_key() {
     assert!(!donor_key_outranks(idle_key, fair_key));
     assert_eq!(boost_class(SchedClass::Idle, &[fair(1)]), None);
     assert!(outranks(fair(1), SchedClass::Idle));
+}
+
+#[test]
+fn nt_fixed_waiters_order_strictly_by_level() {
+    let low = PiDonorKey { class: nt(5), deadline: 0, special: false };
+    let high = PiDonorKey { class: nt(24), deadline: 0, special: false };
+    let equal = PiDonorKey { class: nt(24), deadline: 0, special: false };
+    assert!(donor_key_outranks(high, low));
+    assert!(!donor_key_outranks(low, high));
+    assert!(!donor_key_outranks(high, equal));
+}
+
+#[test]
+fn nt_fixed_pi_rank_is_below_rt_and_above_fair() {
+    let rt_key = PiDonorKey { class: rt(1), deadline: 0, special: false };
+    let nt_key = PiDonorKey { class: nt(31), deadline: 0, special: false };
+    let fair_key = PiDonorKey { class: fair(88_761), deadline: 0, special: false };
+    assert!(donor_key_outranks(rt_key, nt_key));
+    assert!(!donor_key_outranks(nt_key, rt_key));
+    assert!(donor_key_outranks(nt_key, fair_key));
+    assert!(!donor_key_outranks(fair_key, nt_key));
+    assert!(outranks(nt(0), fair(88_761)));
+    assert_eq!(boost_class(fair(1024), &[nt(5), nt(24)]), Some(nt(24)));
+    assert_eq!(boost_class(nt(24), &[rt(1)]), Some(rt(1)));
 }

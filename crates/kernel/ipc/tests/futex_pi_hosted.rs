@@ -340,6 +340,7 @@ fn a_departing_waiter_lowers_the_owners_boost_to_the_next_highest() {
 }
 
 #[path = "futex_pi/donor.rs"] mod donor_tests;
+#[path = "futex_pi/donor_ntfixed.rs"] mod donor_ntfixed_tests;
 #[path = "futex_pi/alloc_guard.rs"] mod alloc_guard;
 #[global_allocator]
 static PI_CHECKED_ALLOCATOR: alloc_guard::PiCheckedAllocator = alloc_guard::PiCheckedAllocator;
