@@ -3,6 +3,7 @@
 
 extern crate alloc;
 
+use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use core::cmp::Ordering as CmpOrdering;
 use core::sync::atomic::Ordering;
@@ -11,6 +12,8 @@ use crate::intrusive_tree::{Adapter, IntrusiveTaskTree};
 use crate::task::{SchedClass, Task, TreeRunNode};
 
 const FAIR_SLICE_NS: u64 = 4_000_000;
+
+struct GroupEntity { shares: u32, vruntime: i64, members: u32 }
 
 struct FairTree;
 
@@ -34,12 +37,14 @@ unsafe impl Adapter for FairTree {
 pub(crate) struct CfsRunqueue {
     tree: IntrusiveTaskTree<FairTree>,
     queue_id: u64,
+    groups: BTreeMap<u64, GroupEntity>,
 }
 
 impl CfsRunqueue {
     /// # C: O(1)
     pub(crate) fn new() -> Self {
-        Self { tree: IntrusiveTaskTree::new(), queue_id: crate::class_queue::fresh_id() }
+        Self { tree: IntrusiveTaskTree::new(), queue_id: crate::class_queue::fresh_id(),
+            groups: BTreeMap::new() }
     }
 
     /// # C: O(1)
@@ -76,21 +81,28 @@ impl CfsRunqueue {
         let vruntime = task.sched.se.vruntime.load(Ordering::Acquire);
         let slice = task.sched.se.slice.load(Ordering::Acquire).max(FAIR_SLICE_NS);
         task.sched.se.slice.store(slice, Ordering::Release);
-        let weight = task.sched.se.load.snapshot().weight >> 10;
+        let weight = (task.sched.se.load.snapshot().weight >> 10)
+            .saturating_mul(task.sched.group_shares() as u64) / 1024;
         let request = crate::eevdf::request_delta(slice, weight);
         task.sched.se.deadline.store(vruntime.wrapping_add(request), Ordering::Release);
         let floor = self.min_vruntime();
         let total = self.tree.sum(|queued| {
-            (queued.sched.se.load.snapshot().weight >> 10).max(1)
+            ((queued.sched.se.load.snapshot().weight >> 10)
+                .saturating_mul(queued.sched.group_shares() as u64) / 1024).max(1)
         });
         let sum = self.tree.sum_i128(|queued| {
             let key = queued.sched.se.vruntime.load(Ordering::Acquire);
             (key.wrapping_sub(floor) as i64 as i128)
-                * (queued.sched.se.load.snapshot().weight >> 10).max(1) as i128
+                * (((queued.sched.se.load.snapshot().weight >> 10)
+                    .saturating_mul(queued.sched.group_shares() as u64) / 1024).max(1)) as i128
         });
         task.sched.se.vlag.store(crate::eevdf::bounded_lag(
             sum, total as u128, floor, vruntime, request), Ordering::Release);
         task.sched.se.on_rq.store(true, Ordering::Release);
+        let group = self.groups.entry(task.sched.group_id()).or_insert(GroupEntity {
+            shares: task.sched.group_shares(), vruntime: 0, members: 0 });
+        group.shares = task.sched.group_shares();
+        group.members += 1;
         self.tree.insert(task);
         true
     }
@@ -99,6 +111,10 @@ impl CfsRunqueue {
     #[inline(never)]
     pub(crate) fn pick_leftmost(&mut self) -> Option<Arc<Task>> {
         let task = self.pick_eevdf()?;
+        let group_id = task.sched.group_id();
+        if let Some(group) = self.groups.get_mut(&group_id) {
+            group.vruntime = group.vruntime.saturating_add(group_request(group.shares));
+        }
         self.remove(&task)
     }
 
@@ -107,19 +123,24 @@ impl CfsRunqueue {
     /// deadline selection are the EEVDF policy layered over that index.
     /// # C: O(N) selection, O(log N) removal
     fn pick_eevdf(&self) -> Option<Arc<Task>> {
-        let total = self.tree.sum(|task| (task.sched.se.load.snapshot().weight >> 10).max(1));
+        let selected_group = self.pick_group();
+        let total = self.tree.sum(|task| ((task.sched.se.load.snapshot().weight >> 10)
+            .saturating_mul(task.sched.group_shares() as u64) / 1024).max(1));
         if total == 0 { return None; }
         let floor = self.min_vruntime();
         let service = self.tree.sum_i128(|task| {
             let key = task.sched.se.vruntime.load(Ordering::Acquire);
             (key.wrapping_sub(floor) as i64 as i128)
-                * (task.sched.se.load.snapshot().weight >> 10).max(1) as i128
+                * (((task.sched.se.load.snapshot().weight >> 10)
+                    .saturating_mul(task.sched.group_shares() as u64) / 1024).max(1)) as i128
         });
         let eligible = |task: &Task| {
             crate::eevdf::eligible(service, total as u128, floor,
                 task.sched.se.vruntime.load(Ordering::Acquire))
         };
         self.tree.find_best(|a, b| {
+            if selected_group != Some(a.sched.group_id()) { return false; }
+            if selected_group != Some(b.sched.group_id()) { return true; }
             let ae = eligible(a);
             let be = eligible(b);
             (ae && !be) || (ae == be && {
@@ -128,6 +149,12 @@ impl CfsRunqueue {
                 ad < bd || (ad == bd && a.tid < b.tid)
             })
         })
+    }
+
+    fn pick_group(&self) -> Option<u64> {
+        self.groups.iter().filter(|(_, group)| group.members != 0)
+            .min_by_key(|(_, group)| group.vruntime.saturating_add(group_request(group.shares)))
+            .map(|(id, _)| *id)
     }
 
     /// Clone the earliest task without removing it. # C: O(1)
@@ -145,6 +172,11 @@ impl CfsRunqueue {
         if !crate::class_queue::owns(task, self.queue_id) { return None; }
         let removed = self.tree.remove(task).expect("fair queue claim lacks tree node");
         removed.sched.se.on_rq.store(false, Ordering::Release);
+        let group_id = removed.sched.group_id();
+        if let Some(group) = self.groups.get_mut(&group_id) {
+            group.members = group.members.saturating_sub(1);
+            if group.members == 0 { self.groups.remove(&group_id); }
+        }
         crate::class_queue::release(&removed, self.queue_id);
         Some(removed)
     }
@@ -167,6 +199,10 @@ impl Drop for CfsRunqueue {
 
 fn key(task: &Task) -> (u64, u32) {
     (task.sched.se.vruntime.load(Ordering::Acquire), task.tid)
+}
+
+fn group_request(shares: u32) -> i64 {
+    (FAIR_SLICE_NS / shares.max(1) as u64).max(1) as i64
 }
 
 fn cmp(a: (u64, u32), b: (u64, u32)) -> CmpOrdering {
