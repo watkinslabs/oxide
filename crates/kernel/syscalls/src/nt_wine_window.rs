@@ -4,6 +4,8 @@ use syscall::{nt::{NtCall, NtService}, SyscallArgs};
 
 #[cfg(target_os = "oxide-kernel")]
 mod raw_class;
+#[cfg(target_os = "oxide-kernel")]
+mod raw_callback;
 
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 const STATUS_NOT_IMPLEMENTED: u64 = 0xc000_0002;
@@ -84,7 +86,8 @@ fn message_field(base: u64, offset: u64) -> Option<u64> { base.checked_add(offse
 /// # C: O(1)
 fn raw_ordinal_claimed(ordinal: u64) -> bool {
     matches!(ordinal,
-        WINE_CREATE_WINDOW_EX | WINE_REGISTER_CLASS_EX | WINE_GET_MESSAGE | WINE_DESTROY_WINDOW | WINE_PEEK_MESSAGE |
+        WINE_CREATE_WINDOW_EX | WINE_REGISTER_CLASS_EX | WINE_DISPATCH_MESSAGE | WINE_MESSAGE_CALL |
+        WINE_GET_MESSAGE | WINE_DESTROY_WINDOW | WINE_PEEK_MESSAGE |
         WINE_POST_MESSAGE | WINE_SHOW_WINDOW | WINE_BEGIN_PAINT | WINE_END_PAINT |
         WINE_GET_DC | WINE_GET_DC_EX | WINE_INVALIDATE_RECT | WINE_RELEASE_DC |
         WINE_SET_WINDOW_POS |
@@ -370,6 +373,8 @@ pub fn dispatch_raw(ordinal: u64, args: SyscallArgs) -> Option<u64> {
     if !raw_ordinal_claimed(ordinal) { return None; }
     if ordinal == WINE_REGISTER_CLASS_EX { return Some(raw_class::register_class(args)); }
     if ordinal == WINE_CREATE_WINDOW_EX { return Some(raw_class::create_window(args)); }
+    if ordinal == WINE_DISPATCH_MESSAGE { return Some(raw_callback::dispatch_message(args.a0)); }
+    if ordinal == WINE_MESSAGE_CALL { return Some(raw_callback::message_call(args)); }
     let native = |service: NtService, call_args: SyscallArgs| crate::nt_window::dispatch(NtCall { service, args: call_args }).unwrap_or(STATUS_INVALID_PARAMETER);
     let gdi = |service: NtService, call_args: SyscallArgs| crate::nt_gdi::dispatch(NtCall { service, args: call_args }).unwrap_or(STATUS_INVALID_PARAMETER);
     if ordinal == WINE_DESTROY_WINDOW { return Some(win_bool(native(NtService::DestroyWindow, SyscallArgs { a0: args.a0, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 }))); }
