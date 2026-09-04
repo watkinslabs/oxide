@@ -687,9 +687,11 @@ canonical VMA/PMM lock state; remote-process APC delivery remains unimplemented.
 `NtUnmapViewOfSectionEx` supports the documented zero-flags current-process
 path through the canonical VMA unmapper; extended flags and remote processes
 remain unimplemented.
-`NtWriteFileGather` validates its native I/O-status and segment-array pointer
-shape; scatter/gather segment copying and file-owner integration remain
-unimplemented.
+`NtWriteFileGather` now validates native length and I/O-status ordering, direct
+regular-file options, page-aligned segment entries, and bounded segmented
+source reads before writing through the canonical VFS file object. Short writes,
+user-buffer faults, and zero-byte disk-full results preserve the completed byte
+prefix in the NT I/O status and completion packet.
 `NtWriteVirtualMemory` routes current-process writes through the canonical
 `elf-load::nt_memory` owner, probes the readable source and writable target in
 Wine's order, and reports the completed prefix as `STATUS_PARTIAL_COPY`;

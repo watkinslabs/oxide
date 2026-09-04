@@ -32,6 +32,7 @@ mod nt_process_policy;
 mod nt_directory_abi;
 pub(crate) mod nt_file_policy;
 mod nt_file_scatter_policy;
+mod nt_file_gather_policy;
 mod nt_file_volume_abi;
 pub(crate) mod nt_file_lock_policy;
 pub(crate) mod nt_registry_policy;
@@ -50,6 +51,8 @@ mod nt_exec;
 mod nt_file;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_file_scatter;
+#[cfg(target_os = "oxide-kernel")]
+mod nt_file_gather;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_file_volume;
 #[cfg(target_os = "oxide-kernel")]
