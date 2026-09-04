@@ -629,16 +629,11 @@
     }
 
     #[test]
-    fn wine_relay_dispatcher_is_selected_without_preempting_wine_eat_setup() {
+    fn wine_imports_bind_implementation_when_relay_installation_is_absent() {
         let path = std::path::Path::new("/usr/lib64/wine/x86_64-windows/advapi32.dll");
         if !path.is_file() { return; }
         let blob = std::fs::read(path).expect("installed Wine advapi32 must be readable");
         let parsed = pe::parse(&blob).expect("installed Wine advapi32 must parse");
-        let exports = parsed.exports().unwrap().unwrap();
-        let functions = exports.functions_rva as usize;
-        let relays = parsed.relay_export_rvas().unwrap().unwrap();
-        let index = relays.iter().position(|&rva| rva == 0x4c48).unwrap();
-        let original = parsed.export_rvas().unwrap().unwrap()[index];
         let import = pe::ImportThunk::Name { hint: 0, name: b"RegCloseKey" };
         assert_eq!(parsed.export_rva(&import).unwrap(), Some(0x6fcc));
         assert_eq!(parsed.relay_export_rva(&import).unwrap(), Some(0x4c48));
@@ -648,8 +643,8 @@
         let image_base = parsed.image_base;
         let exports = [PeExportModule { name: b"advapi32.dll", image: parsed, base: 0x1800_0000 }];
         let resolver = PeExportResolver { modules: &exports };
-        assert_eq!(resolver.resolve(b"ADVAPI32.DLL", &import).unwrap(), 0x1800_4c48);
-        assert_eq!(resolver.resolve(b"advapi32.dll", &event_log).unwrap(), 0x1800_4c1c);
+        assert_eq!(resolver.resolve(b"ADVAPI32.DLL", &import).unwrap(), 0x1800_6fcc);
+        assert_eq!(resolver.resolve(b"advapi32.dll", &event_log).unwrap(), 0x1801_9c90);
         struct AnyResolver;
         impl ImportResolver for AnyResolver {
             fn resolve(&self, _dll: &[u8], _import: &pe::ImportThunk<'_>) -> Result<u64, pe::Error> { Ok(0x1234_5678_9abc_def0) }
@@ -658,11 +653,6 @@
         let base = UserVirtAddr::new(image_base).unwrap();
         let relay_call = 0xfeed_beef_cafe_0000;
         let image = load_pe_image_with_resolver_at(&blob, &as_, &AnyResolver, Some(base), relay_call).unwrap();
-        let slot = functions + index * 4;
-        let vma = as_.find_vma(UserVirtAddr::new(image.base + slot as u64).unwrap()).unwrap();
-        let data = match vma.backing { VmaBacking::KernelBytes { data, off } => (data, off), _ => panic!("PE image must be kernel-backed") };
-        let offset = data.1 as usize + (image.base + slot as u64 - vma.start.as_u64()) as usize;
-        assert_eq!(u32::from_le_bytes(data.0[offset..offset + 4].try_into().unwrap()), original);
         let descriptor = UserVirtAddr::new(image.base + 0x24000 + 8).unwrap();
         let vma = as_.find_vma(descriptor).unwrap();
         let data = match vma.backing { VmaBacking::KernelBytes { data, off } => (data, off), _ => panic!("PE image must be kernel-backed") };

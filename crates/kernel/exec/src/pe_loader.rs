@@ -339,9 +339,6 @@ pub struct PeGraphResolver<'m, 'b, R> {
 impl ImportResolver for PeExportResolver<'_> {
     fn resolve(&self, dll: &[u8], import: &pe::ImportThunk<'_>) -> Result<u64, pe::Error> {
         let module = self.modules.iter().find(|module| ascii_eq_ignore_case(module.name, dll)).ok_or(pe::Error::Unsupported)?;
-        if let Some(rva) = module.image.relay_export_rva(import)? {
-            return module.base.checked_add(rva as u64).ok_or(pe::Error::Einval);
-        }
         let rva = match module.image.export_target(import)?.ok_or(pe::Error::Unsupported)? {
             pe::ExportTarget::Rva(_) => module.image.export_rva(import)?,
             pe::ExportTarget::Forwarder(_) => return Err(pe::Error::Unsupported),
@@ -364,9 +361,6 @@ impl<'m, 'b, R: ImportResolver> PeGraphResolver<'m, 'b, R> {
             return self.resolve_graph(target, import, depth + 1);
         }
         if let Some(module) = self.modules.iter().find(|module| ascii_eq_ignore_case(module.name, dll)) {
-            if let Some(rva) = module.image.relay_export_rva(import)? {
-                return module.base.checked_add(rva as u64).ok_or(pe::Error::Einval);
-            }
             let target = module.image.export_target(import)?.ok_or(pe::Error::Unsupported)?;
             return match target {
                 pe::ExportTarget::Rva(rva) => {
