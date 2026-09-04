@@ -1,6 +1,6 @@
 # Known issues
 
-**Live issue count: 298** — 294 `OPEN`, 4 `IN-PROGRESS`.
+**Live issue count: 299** — 294 `OPEN`, 5 `IN-PROGRESS`.
 
 | Id | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|---|
@@ -302,6 +302,7 @@
 | KI-0333 | OPEN | DEFECT | high | x86_64 interrupt path exceeds the 12000-byte nested-interrupt stack budget | B3325 direct irq gate on a fresh current-origin/main kernel reports oxide_irq_dispatch at 13856 bytes; aarch64 passes at 4752 bytes. This branch changes no interrupt code, indirect-edge map, or stack-bearing scheduler function. | unowned |
 | KI-0335 | IN-PROGRESS B3331-windows-path-unicode-casefold | MISSING | med | [CLAIMED B3331-windows-path-unicode-casefold 2026-09-04] Windows DOS path lookup keys fold only ASCII, so Unicode case-insensitive names can miss their existing Windows file | Current userspace/probes/windows-path lookup_key uses to_ascii_lowercase. Wine path matching uses Unicode towupper when case-insensitive; the Windows Phase 7 contract requires case-insensitive lookup while preserving display spelling. Add Unicode lookup-key coverage and implementation. | windows-path |
 | KI-0337 | IN-PROGRESS H1541-windows-exception-unwind-chain | DEFECT | high | [CLAIMED H1541-windows-exception-unwind-chain 2026-09-04] Phase 9 x86-64 chained unwind records are rejected instead of following the IMAGE_RUNTIME_FUNCTION_ENTRY chain, preventing canonical RtlVirtualUnwind behavior for functions split across chained prolog records. | Current shared PE unwind_x64 rejects UNW_FLAG_CHAININFO. Wine resolves the chained runtime function and continues unwind; focused regression will cover the chain and reject malformed chain targets. | NT runtime |
+| KI-0339 | IN-PROGRESS L1541-windows-audio-extensible-pr | MISSING | med | [CLAIMED L1541-windows-audio-extensible-pr 2026-09-04] Phase 11 audio boundary lacks canonical WAVEFORMATEXTENSIBLE validation | Current windows-audio rejects every nonzero cbSize. The Wine-derived audio boundary accepts WAVEFORMATEXTENSIBLE extension only for PCM/IEEE-float subtype, valid bits, and channel mask that fit native format. Add hosted ABI/semantic tests and preserve the existing native audio owner. | windows-audio |
 
 ## Ext4 master program
 
