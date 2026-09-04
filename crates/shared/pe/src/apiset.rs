@@ -2,11 +2,12 @@
 
 use core::cmp::min;
 
-const CONTRACTS: [(&[u8], &[u8]); 4] = [
+const CONTRACTS: [(&[u8], &[u8]); 5] = [
     (b"api-ms-win-core-synch-l1-2-0", b"kernelbase.dll"),
     (b"api-ms-win-core-file-l1-2-0", b"kernelbase.dll"),
     (b"api-ms-win-core-libraryloader-l1-2-0", b"kernelbase.dll"),
     (b"ext-ms-win-ntuser-window-l1-1-0", b"user32.dll"),
+    (b"api-ms-win-core-console-l1-1-0", b"kernelbase.dll"),
 ];
 
 /// Return the built-in contract records used for a fresh NT process.
@@ -28,5 +29,11 @@ mod tests {
     fn resolves_contract_names_with_or_without_dll_suffix() {
         assert_eq!(target(b"API-MS-WIN-CORE-SYNCH-L1-2-0.dll"), Some(b"kernelbase.dll".as_slice()));
         assert_eq!(target(b"ext-ms-win-missing-l1-1-0.dll"), None);
+    }
+
+    #[test]
+    fn resolves_console_contract_to_kernelbase() {
+        assert_eq!(target(b"api-ms-win-core-console-l1-1-0.dll"), Some(b"kernelbase.dll".as_slice()));
+        assert!(entries().iter().any(|(name, host)| *name == b"api-ms-win-core-console-l1-1-0" && *host == b"kernelbase.dll"));
     }
 }
