@@ -283,8 +283,8 @@ fn cfs_rotation_is_round_robin_for_equal_weight() {
 }
 
 // Linux keeps task `on_rq == QUEUED` while a running runnable entity is off
-// its class tree. `on_cpu` goes up before class-tree membership goes down,
-// paired against
+// its class tree. The exact task selected by policy receives `on_cpu`, paired
+// against
 // `try_to_wake_up`'s `smp_load_acquire(&p->on_cpu)`:
 //
 //   __schedule() (switch to task 'p')      try_to_wake_up()
@@ -315,6 +315,38 @@ fn claiming_pick_preserves_on_rq_and_clears_class_membership() {
         "a running runnable task must remain canonically queued");
     assert!(!picked.on_class_rq.load(Ordering::Acquire),
         "the pick must take the entity out of its class tree");
+}
+
+/// EEVDF selection is not the fair tree's leftmost-vruntime ordering. This is
+/// the KI-0327 positive control: the old peek-then-pick transaction claimed
+/// `leftmost` but returned `selected`, leaving `leftmost.on_cpu` orphaned for a
+/// later CPU to diagnose as double ownership.
+#[test]
+fn claiming_pick_owns_the_exact_eevdf_selected_task() {
+    let mut rq = RunqueueInner::new(0, idle(0));
+    let leftmost = normal(34, 100, 1024);
+    let selected = normal(35, 200, 1024);
+    let ineligible = normal(36, 300, 1024);
+    rq.enqueue(Arc::clone(&leftmost));
+    rq.enqueue(Arc::clone(&selected));
+    rq.enqueue(Arc::clone(&ineligible));
+
+    leftmost.sched.se.deadline.store(900, Ordering::Release);
+    selected.sched.se.deadline.store(500, Ordering::Release);
+    ineligible.sched.se.deadline.store(1, Ordering::Release);
+    assert_eq!(rq.peek_next_task().tid, leftmost.tid,
+        "positive control requires fair peek and EEVDF selection to differ");
+
+    let (picked, already) = rq.pick_next_task_claim();
+
+    assert_eq!(picked.tid, selected.tid);
+    assert!(!already, "the selected task started unowned");
+    assert!(selected.on_cpu.load(Ordering::Acquire),
+        "prepare_task must claim the task returned by policy selection");
+    assert!(!leftmost.on_cpu.load(Ordering::Acquire),
+        "a non-selected fair-tree task must not retain CPU ownership");
+    assert!(!ineligible.on_cpu.load(Ordering::Acquire),
+        "an ineligible fair task must not retain CPU ownership");
 }
 
 /// The window the store order closes: at EVERY point observable by a
