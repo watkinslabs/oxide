@@ -58,7 +58,7 @@ const SERVER_SYNC_VALUE_TWO: u64 = 20;
 const SERVER_REPLY_VALUE: u64 = 8;
 const SERVER_REPLY_VALUE_TWO: u64 = 12;
 const SERVER_REPLY_VALUE_THREE: u64 = 16;
-const SERVER_REQ_SELECT: u32 = 23;
+const SERVER_REQ_SELECT: u32 = 29;
 const SERVER_REQ_CREATE_MAPPING: u32 = 63;
 const SERVER_REQ_GET_MAPPING_INFO: u32 = 65;
 const SERVER_REQ_MAP_VIEW: u32 = 67;
@@ -584,7 +584,7 @@ mod tests {
         assert_eq!(server_request_kind(30), Some(ServerRequest::CreateEvent));
         assert_eq!(server_request_kind(31), Some(ServerRequest::EventOp));
         assert_eq!(server_request_kind(32), Some(ServerRequest::QueryEvent));
-        assert_eq!(server_request_kind(23), Some(ServerRequest::Select));
+        assert_eq!(server_request_kind(29), Some(ServerRequest::Select));
         assert_eq!(server_request_kind(36), Some(ServerRequest::CreateMutex));
         assert_eq!(server_request_kind(37), Some(ServerRequest::ReleaseMutex));
         assert_eq!(server_request_kind(39), Some(ServerRequest::QueryMutex));
@@ -598,6 +598,7 @@ mod tests {
         assert_eq!(server_request_kind(62), None);
         assert_eq!(server_request_kind(64), None);
         assert_eq!(server_request_kind(68), None);
+        assert_eq!(server_request_kind(23), None);
         assert_eq!(select_opcode_kind(1), Some(0));
         assert_eq!(select_opcode_kind(2), Some(1));
         assert_eq!(select_opcode_kind(3), None);
