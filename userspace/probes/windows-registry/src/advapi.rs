@@ -78,6 +78,29 @@ impl Advapi {
         match self.client.flush(KeyHandle(key)) { Ok(Response::Success) => ERROR_SUCCESS, Ok(Response::Failure(error)) => status_handle(error), Ok(_) | Err(_) => ERROR_GEN_FAILURE }
     }
 
+    /// Implement `RegQueryInfoKeyW` from the service's canonical key metadata. # C: O(N_subkeys + N_values)
+    pub fn reg_query_info_key_w(&mut self, key: u64, class: Option<&mut [u16]>, class_len: Option<&mut u32>, reserved: u32,
+        subkeys: Option<&mut u32>, max_subkey_len: Option<&mut u32>, max_class_len: Option<&mut u32>, values: Option<&mut u32>,
+        max_value_name_len: Option<&mut u32>, max_value_len: Option<&mut u32>, security_len: Option<&mut u32>, last_write_time: Option<&mut u64>) -> u32 {
+        if reserved != 0 || class.is_some() && class_len.is_none() { return ERROR_INVALID_PARAMETER; }
+        let info = match self.client.query_key(KeyHandle(key)) {
+            Ok(Response::KeyInfo(info)) => info,
+            Ok(Response::Failure(error)) => return status_handle(error),
+            Ok(_) | Err(_) => return ERROR_GEN_FAILURE,
+        };
+        if let Some(output) = subkeys { *output = info.subkeys; }
+        if let Some(output) = max_subkey_len { *output = info.max_subkey / 2; }
+        if let Some(output) = values { *output = info.values; }
+        if let Some(output) = max_value_name_len { *output = info.max_value_name / 2; }
+        if let Some(output) = max_value_len { *output = info.max_value_data; }
+        if let Some(output) = max_class_len { *output = 0; }
+        if let Some(output) = security_len { *output = 0; }
+        if let Some(output) = last_write_time { *output = 0; }
+        if let Some(output) = class_len { *output = 0; }
+        if let Some(buffer) = class { if let Some(first) = buffer.first_mut() { *first = 0; } }
+        ERROR_SUCCESS
+    }
+
     /// Implement `RegRenameKey` while retaining handles to renamed descendants. # C: O(subtree)
     pub fn reg_rename_key(&mut self, key: u64, name: &[u16]) -> u32 {
         match self.client.rename_utf16(KeyHandle(key), name) { Ok(Response::Success) => ERROR_SUCCESS, Ok(Response::Failure(error)) => status_handle(error), Ok(_) | Err(_) => ERROR_GEN_FAILURE }
@@ -164,5 +187,29 @@ mod tests {
         let mut value_name = [0u16; 8]; let mut value_name_len = value_name.len() as u32; assert_eq!(api.reg_enum_value_w(key, 0, &mut value_name, &mut value_name_len, 0, &mut kind, None, &mut 0), ERROR_SUCCESS); assert_eq!(String::from_utf16(&value_name[..value_name_len as usize]).unwrap(), "");
         let mut child_name = [0u16; 8]; let mut child_name_len = child_name.len() as u32; assert_eq!(api.reg_enum_key_ex_w(key, 0, &mut child_name, &mut child_name_len, 0), ERROR_NO_MORE_ITEMS);
         assert_eq!(api.reg_close_key(key), ERROR_SUCCESS); assert_eq!(api.reg_flush_key(key), ERROR_INVALID_HANDLE); drop(api); server.join().unwrap(); let _ = std::fs::remove_file(socket); let _ = std::fs::remove_file(database);
+    }
+
+    #[test]
+    fn query_info_maps_canonical_metadata_to_windows_units_and_rejects_bad_arguments() {
+        use std::os::unix::net::UnixListener;
+        use std::thread;
+        let base = std::env::temp_dir(); let id = std::process::id();
+        let socket = base.join(format!("oxide-advapi-info-{id}.sock")); let database = base.join(format!("oxide-advapi-info-{id}.db"));
+        let _ = std::fs::remove_file(&socket); let _ = std::fs::remove_file(&database);
+        let listener = UnixListener::bind(&socket).unwrap(); let server_database = database.clone();
+        let server = thread::spawn(move || { let (mut stream, _) = listener.accept().unwrap(); let mut store = crate::RegistryStore::open(&server_database).unwrap(); crate::serve_connection(&mut stream, &mut store).unwrap(); });
+        let mut api = Advapi::connect(&socket).unwrap();
+        let parent = "Software\\Oxide".encode_utf16().chain([0]).collect::<Vec<_>>();
+        let child = "LongChild".encode_utf16().chain([0]).collect::<Vec<_>>();
+        let (status, key) = api.reg_create_key_ex_w(HKEY_CURRENT_USER, Some(&parent), 0, 0, 0); assert_eq!(status, ERROR_SUCCESS);
+        let key = key.unwrap(); let (_, child_key) = api.reg_create_key_ex_w(key, Some(&child), 0, 0, 0); assert!(child_key.is_some());
+        assert_eq!(api.reg_set_value_ex_w(key, Some(&"ValueName".encode_utf16().chain([0]).collect::<Vec<_>>()), 0, ValueType::Binary as u32, Some(&[1, 2, 3, 4]), 4), ERROR_SUCCESS);
+        assert_eq!(api.reg_query_info_key_w(key, Some(&mut [0x55; 1]), None, 0, None, None, None, None, None, None, None, None), ERROR_INVALID_PARAMETER);
+        let mut count = 0; let mut max_key = 0; let mut value_count = 0; let mut max_name = 0; let mut max_data = 0;
+        assert_eq!(api.reg_query_info_key_w(key, None, None, 0, Some(&mut count), Some(&mut max_key), None, Some(&mut value_count), Some(&mut max_name), Some(&mut max_data), None, None), ERROR_SUCCESS);
+        assert_eq!((count, max_key, value_count, max_name, max_data), (1, 9, 1, 9, 4));
+        assert_eq!(api.reg_query_info_key_w(key, None, None, 1, None, None, None, None, None, None, None, None), ERROR_INVALID_PARAMETER);
+        assert_eq!(api.reg_query_info_key_w(0xdead, None, None, 0, None, None, None, None, None, None, None, None), ERROR_INVALID_HANDLE);
+        drop(api); server.join().unwrap(); let _ = std::fs::remove_file(socket); let _ = std::fs::remove_file(database);
     }
 }
