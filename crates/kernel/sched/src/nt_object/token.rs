@@ -35,6 +35,52 @@ impl NtToken {
     }
     pub const fn uid(&self) -> u32 { self.uid }
     pub const fn gid(&self) -> u32 { self.gid }
+    /// Return the stable NT SID derived from this token's Unix identity. # C: O(1)
+    pub fn user_sid(&self) -> [u8; 16] { sid(5, self.uid) }
+    /// Snapshot token group membership for serialization or policy. # C: O(groups)
+    pub fn groups(&self) -> Vec<NtTokenGroup> { self.groups.lock().clone() }
+    /// Add one privilege while assembling a freshly opened token. # C: O(1)
+    pub fn add_privilege(&self, privilege: NtTokenPrivilege) { self.privileges.lock().push(privilege); }
+    /// Serialize variable-length Windows token records with inline SIDs.
+    /// # C: O(groups + privileges)
+    pub fn query_bytes(&self, class: u32, base: u64) -> Option<Vec<u8>> {
+        const TOKEN_USER: u32 = 1;
+        const TOKEN_GROUPS: u32 = 2;
+        const TOKEN_PRIVILEGES: u32 = 3;
+        let mut bytes = Vec::new();
+        match class {
+            TOKEN_USER => {
+                bytes.resize(32, 0);
+                bytes[0..8].copy_from_slice(&base.checked_add(16)?.to_ne_bytes());
+                bytes[16..32].copy_from_slice(&self.user_sid());
+            }
+            TOKEN_GROUPS => {
+                let groups = self.groups();
+                let sid_base = 8usize.checked_add(groups.len().checked_mul(16)?)?;
+                bytes.resize(sid_base.checked_add(groups.len().checked_mul(16)?)?, 0);
+                bytes[0..4].copy_from_slice(&(groups.len() as u32).to_ne_bytes());
+                for (index, group) in groups.iter().enumerate() {
+                    let entry = 8 + index * 16;
+                    let sid_offset = sid_base + index * 16;
+                    bytes[entry..entry + 8].copy_from_slice(&base.checked_add(sid_offset as u64)?.to_ne_bytes());
+                    bytes[entry + 8..entry + 12].copy_from_slice(&group.attributes.to_ne_bytes());
+                    bytes[sid_offset..sid_offset + 16].copy_from_slice(&group.sid);
+                }
+            }
+            TOKEN_PRIVILEGES => {
+                let privileges = self.privileges();
+                bytes.resize(8usize.checked_add(privileges.len().checked_mul(16)?)?, 0);
+                bytes[0..4].copy_from_slice(&(privileges.len() as u32).to_ne_bytes());
+                for (index, privilege) in privileges.iter().enumerate() {
+                    let entry = 8 + index * 16;
+                    bytes[entry..entry + 8].copy_from_slice(&privilege.luid.to_ne_bytes());
+                    bytes[entry + 8..entry + 12].copy_from_slice(&privilege.attributes.to_ne_bytes());
+                }
+            }
+            _ => return None,
+        }
+        Some(bytes)
+    }
     pub fn replace_groups(&self, groups: Vec<NtTokenGroup>) { *self.groups.lock() = groups; }
     pub fn has_sid(&self, sid: &[u8; 16]) -> bool {
         self.groups.lock().iter().any(|group| group.sid == *sid && group.attributes & 4 != 0)
@@ -72,6 +118,11 @@ impl NtToken {
     }
     pub fn session_id(&self) -> u32 { self.session_id.load(Ordering::Acquire) }
     pub fn set_session_id(&self, value: u32) { self.session_id.store(value, Ordering::Release); }
+}
+
+/// Encode one Unix identity as a valid NT authority SID. # C: O(1)
+pub fn sid_for_id(subauthority: u32) -> [u8; 16] {
+    sid(5, subauthority)
 }
 
 fn sid(authority: u64, subauthority: u32) -> [u8; 16] {
@@ -128,5 +179,28 @@ mod tests {
         assert_eq!(filtered.privileges()[0].attributes, 1);
         assert!(token.has_sid(&group));
         assert_eq!(token.privileges()[0].attributes, 3);
+    }
+
+    #[test]
+    fn query_records_use_inline_sids_and_windows_x64_alignment() {
+        let token = NtToken::new(1000, 1001);
+        let user = token.query_bytes(1, 0x1000).unwrap();
+        assert_eq!(user.len(), 32);
+        assert_eq!(u64::from_ne_bytes(user[..8].try_into().unwrap()), 0x1010);
+        assert_eq!(&user[16..], &token.user_sid());
+        let groups = token.query_bytes(2, 0x2000).unwrap();
+        assert_eq!(u32::from_ne_bytes(groups[..4].try_into().unwrap()), 1);
+        assert_eq!(u64::from_ne_bytes(groups[8..16].try_into().unwrap()), 0x2018);
+        assert_eq!(groups.len(), 40);
+    }
+
+    #[test]
+    fn query_privileges_contains_change_notify() {
+        let token = NtToken::new(1000, 1001);
+        token.add_privilege(NtTokenPrivilege { luid: 23, attributes: 3 });
+        let bytes = token.query_bytes(3, 0x3000).unwrap();
+        assert_eq!(u32::from_ne_bytes(bytes[..4].try_into().unwrap()), 1);
+        assert_eq!(u64::from_ne_bytes(bytes[8..16].try_into().unwrap()), 23);
+        assert_eq!(u32::from_ne_bytes(bytes[16..20].try_into().unwrap()), 3);
     }
 }
