@@ -41,13 +41,6 @@ fn now_ns() -> u64 { use hal::TimerOps; hal_x86_64::X86TimerOps::monotonic_ns().
 #[cfg(target_arch = "aarch64")]
 fn now_ns() -> u64 { use hal::TimerOps; hal_aarch64::ArmTimerOps::monotonic_ns().0 }
 
-#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
-fn this_cpu() -> u32 { use hal::CpuOps; hal_x86_64::X86CpuOps::current_cpu() }
-#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
-fn this_cpu() -> u32 { use hal::CpuOps; hal_aarch64::ArmCpuOps::current_cpu() }
-#[cfg(not(target_os = "oxide-kernel"))]
-fn this_cpu() -> u32 { 0 }
-
 /// # C: O(due timers) per registered deadline or bounded idle wake
 extern "C" fn driver(_arg: usize) -> ! {
     loop {
@@ -80,11 +73,9 @@ extern "C" fn driver(_arg: usize) -> ! {
 }
 
 /// Independent waker for ktimers, called from the HARD timer tick (BSP). When
-/// ktimers' published park deadline passes, enqueue a wake on the local CPU's
-/// deferred wake list (IRQ-safe, unlike the registry/rq locks) and disarm so
-/// exactly one wake fires per park. The tick already set `need_resched`, so the
-/// IRQ-return `schedule()` drains the wake list and runs ktimers. Without this,
-/// ktimers is woken only by the walker it runs → circular wedge.
+/// ktimers' published park deadline passes, invoke the complete IRQ-safe wake
+/// transaction and disarm so exactly one wake fires per park. The wake claim,
+/// CPU selection, task-CPU publication, and list linkage remain under TaskPi.
 /// # C: O(1)
 pub fn tick_poll_ktimers(now_ns: u64) {
     let dl = DEADLINE.load(Ordering::Acquire);
@@ -99,9 +90,9 @@ pub fn tick_poll_ktimers(now_ns: u64) {
     unsafe { Arc::increment_strong_count(p as *const Task); }
     // SAFETY: matches the increment above; hands the fresh Arc to the wake list.
     let arc = unsafe { Arc::from_raw(p as *const Task) };
-    if super::ttwu::wake_list_push(this_cpu(), arc) {
-        super::ttwu::resched_curr(this_cpu());
-    }
+    // SAFETY: hard-timer wake site; the leaked ktimers reference keeps the
+    // task live and ttwu_deferred performs the full TaskPi wake transaction.
+    let _ = unsafe { super::ttwu::ttwu_deferred(arc) };
 }
 
 /// Spawn the timer-driver kthread. Boot, once, after the runqueue installs.

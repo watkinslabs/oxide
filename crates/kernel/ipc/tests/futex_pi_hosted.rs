@@ -18,12 +18,8 @@ extern crate self as hal;
 extern crate self as hal_x86_64;
 extern crate self as sched;
 
-// The production source reaches user memory through `crate::useraccess`, the
-// crate's non-gated owner of the exception-table copies. Under this harness
-// `crate` is the test binary, so the real module is re-exported into that name
-// — the harness's "user" addresses are host buffers and the hosted `uaccess`
-// copy is a plain memcpy, which is exactly what the tests want to drive.
-pub mod useraccess { pub use ipc::useraccess::*; }
+// Production PI source resolves this harness-owned race-injecting uaccess shim.
+#[path = "futex_pi/useraccess.rs"] pub mod useraccess;
 
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -74,6 +70,21 @@ fn an_uncontended_lock_pi_takes_the_word_and_never_blocks() {
                "an uncontended take must write the caller's TID into the word");
     assert_eq!(W.load(Ordering::SeqCst) & FUTEX_WAITERS, 0,
                "no kernel state exists, so nothing should force the slow path");
+}
+
+#[test]
+fn an_inatomic_cmpxchg_fault_drops_pi_table_prefaults_and_retries() {
+    static W: AtomicU32 = AtomicU32::new(0);
+    let ua = word_addr(&W);
+    live::set_current(Arc::new(Task::new(1091, 0x9100)));
+    // Call 1 is the outside-lock same-value prefault; call 2 is the first
+    // RtMutexWait-protected take and emulates its exception-table EFAULT.
+    useraccess::fault_cmpxchg_on_call(ua, 2);
+
+    assert_eq!(futex_pi::pi::lock_pi(ua, true, 0, false), 0);
+    assert_eq!(W.load(Ordering::SeqCst) & FUTEX_TID_MASK, 1091);
+    assert!(useraccess::cmpxchg_calls() >= 4,
+        "the in-lock fault must restart through another outside-lock prefault");
 }
 
 #[test]
@@ -143,6 +154,18 @@ fn spawn_locker(ua: u64, tid: u32, mm: u64, class: SchedClass)
     (watch, rx, h)
 }
 
+fn spawn_existing_locker(ua: u64, task: Arc<Task>)
+    -> (Arc<Task>, mpsc::Receiver<i64>, std::thread::JoinHandle<()>)
+{
+    let watch = Arc::clone(&task);
+    let (tx, rx) = mpsc::channel();
+    let h = std::thread::spawn(move || {
+        live::set_current(task);
+        tx.send(futex_pi::pi::lock_pi(ua, true, 0, false)).unwrap();
+    });
+    (watch, rx, h)
+}
+
 #[test]
 fn unlock_pi_hands_the_mutex_to_the_waiter_which_returns_owning_it() {
     static W: AtomicU32 = AtomicU32::new(0);
@@ -205,7 +228,7 @@ fn an_owners_death_hands_the_mutex_to_the_waiter_with_futex_owner_died() {
 
     // The owner dies WITHOUT unlocking — exactly what the exit path must
     // recover from. This is the production `exit_pi_state_list`.
-    futex_pi::pi::exit_pi_state_list(1301);
+    futex_pi::pi::exit_pi_state_list(&owner);
 
     let rv = rx.recv_timeout(Duration::from_secs(5))
         .expect("a waiter behind a dead owner must be released — a hang here is the whole defect");
@@ -223,7 +246,8 @@ fn a_dead_owner_with_no_kernel_pi_state_is_left_for_the_robust_list() {
     static W: AtomicU32 = AtomicU32::new(0);
     let ua = word_addr(&W);
     const MM: u64 = 0xa000;
-    live::set_current(Arc::new(Task::new(1401, MM)));
+    let owner = Arc::new(Task::new(1401, MM));
+    live::set_current(Arc::clone(&owner));
     assert_eq!(futex_pi::pi::lock_pi(ua, true, 0, false), 0);
 
     // No waiter ever contended it, so no kernel PI record exists — exactly as
@@ -231,7 +255,7 @@ fn a_dead_owner_with_no_kernel_pi_state_is_left_for_the_robust_list() {
     // with the last. The exit walk therefore has nothing to hand over and must
     // not invent state; recovering THIS mutex is the robust list's job, which
     // is why glibc registers robust PI mutexes on both mechanisms.
-    futex_pi::pi::exit_pi_state_list(1401);
+    futex_pi::pi::exit_pi_state_list(&owner);
     assert_eq!(W.load(Ordering::SeqCst) & FUTEX_TID_MASK, 1401);
     assert_eq!(W.load(Ordering::SeqCst) & FUTEX_OWNER_DIED, 0,
                "the PI exit walk must not touch a futex it holds no ownership record for");
@@ -264,8 +288,8 @@ fn a_base_policy_change_during_donation_survives_deboost() {
     live::pi_boost::set_base_class(&owner, requested);
     assert_eq!(owner.normal_sched_class(), requested,
                "a policy change while boosted must update configured state immediately");
-    assert_eq!(owner.sched_class(), SchedClass::Rt { prio: 70, policy: SchedPolicy::Fifo },
-               "a weaker base-policy change must not erase a stronger active donation");
+    assert_eq!(owner.sched_class(), SchedClass::Rt { prio: 70, policy: SchedPolicy::Rr },
+               "the donor supplies priority while an RT owner retains its configured policy");
     assert!(owner.sched_is_boosted());
 
     live::set_current(owner.clone());
@@ -314,6 +338,11 @@ fn a_departing_waiter_lowers_the_owners_boost_to_the_next_highest() {
     h_hi.join().unwrap();
     h_mid.join().unwrap();
 }
+
+#[path = "futex_pi/donor.rs"] mod donor_tests;
+#[path = "futex_pi/alloc_guard.rs"] mod alloc_guard;
+#[global_allocator]
+static PI_CHECKED_ALLOCATOR: alloc_guard::PiCheckedAllocator = alloc_guard::PiCheckedAllocator;
 
 // ---------------------------------------------------------------------------
 // Robust-list exit walk — the real walk, over a real list, with a real waiter
@@ -403,53 +432,5 @@ fn the_robust_walk_leaves_a_mutex_owned_by_someone_else_untouched() {
                "a mutex the dying thread does not own must be left exactly as it was");
 }
 
-// ---------------------------------------------------------------------------
-// requeue-PI pairing
-// ---------------------------------------------------------------------------
-
-#[test]
-fn wait_requeue_pi_rejects_the_same_address_for_both_futexes() {
-    static W: AtomicU32 = AtomicU32::new(0);
-    let ua = word_addr(&W);
-    live::set_current(Arc::new(Task::new(1901, 0xf000)));
-    assert_eq!(futex_pi::pi::wait_requeue_pi(ua, 0, u32::MAX, ua, true, 0), einval());
-}
-
-#[test]
-fn cmp_requeue_pi_refuses_to_wake_more_than_one_waiter() {
-    static A: AtomicU32 = AtomicU32::new(0);
-    static B: AtomicU32 = AtomicU32::new(0);
-    live::set_current(Arc::new(Task::new(1902, 0xf100)));
-    assert_eq!(futex_pi::pi::cmp_requeue_pi(word_addr(&A), word_addr(&B), 2, 1, 0, true), einval(),
-               "only the one waiter the requeue can acquire the PI mutex for may be woken");
-    assert_eq!(futex_pi::pi::cmp_requeue_pi(word_addr(&A), word_addr(&B), 1, -1, 0, true), einval());
-}
-
-#[test]
-fn a_plain_wake_cannot_release_a_requeue_pi_waiter() {
-    static SRC: AtomicU32 = AtomicU32::new(0);
-    static DST: AtomicU32 = AtomicU32::new(0);
-    let (src, dst) = (word_addr(&SRC), word_addr(&DST));
-    const MM: u64 = 0xf200;
-    let w = Arc::new(Task::new(1903, MM));
-    let watch = w.clone();
-    let (tx, rx) = mpsc::channel();
-    let h = std::thread::spawn(move || {
-        live::set_current(w);
-        tx.send(futex_pi::pi::wait_requeue_pi(src, 0, u32::MAX, dst, true, 0)).unwrap();
-    });
-    wait_until_parked(&watch);
-
-    live::set_current(Arc::new(Task::new(1904, MM)));
-    assert_eq!(futex_pi::wait::dispatch(src, FUTEX_WAKE | FUTEX_PRIVATE_FLAG, 1), einval(),
-               "releasing a requeue-pi waiter through a plain wake would return it to userspace \
-                believing it owns a mutex nobody handed it");
-    assert!(rx.try_recv().is_err(), "the waiter must still be parked");
-
-    // Release it the only legal way, so the thread can join.
-    assert_eq!(futex_pi::pi::cmp_requeue_pi(src, dst, 1, 0, 0, true), 1);
-    assert_eq!(rx.recv_timeout(Duration::from_secs(5)).expect("requeue-pi wake"), 0);
-    assert_eq!(DST.load(Ordering::SeqCst) & FUTEX_TID_MASK, 1903,
-               "the requeue acquires the PI mutex on the woken waiter's behalf");
-    h.join().unwrap();
-}
+#[path = "futex_pi/requeue_tests.rs"] mod requeue_tests;
+#[path = "futex_pi/task_owned.rs"] mod task_owned;

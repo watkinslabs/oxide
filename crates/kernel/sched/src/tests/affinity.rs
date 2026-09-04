@@ -105,7 +105,6 @@ impl Cpus {
         self.rqs.iter().find_map(|(c, rq)| {
             let mut inner = rq.inner.lock();
             let found = inner.remove(tid)?;
-            found.on_rq.store(false, Ordering::Release);
             inner.enqueue(found);
             Some(*c)
         })
@@ -259,7 +258,10 @@ fn a_queued_task_relocates_off_a_forbidden_cpu() {
     let (moved, from) = dequeue_from_owning_rq_with(&|c| cpus.get(c), 3011)
         .expect("queued task is found on the CPU that owns it, not on the caller's");
     assert_eq!(from, HERE);
-    assert!(!moved.on_rq.load(Ordering::Acquire), "the dequeue clears on_rq");
+    assert!(moved.on_rq.is_queued(Ordering::Acquire),
+        "class removal must preserve canonical runnable state");
+    assert!(!moved.on_class_rq.load(Ordering::Acquire),
+        "the dequeue clears class-tree membership");
     let target = select_task_rq_with(&|c| cpus.get(c), HERE, &moved);
     assert_eq!(target, THERE, "placement honours the new mask");
     assert!(enqueue_on_with(&|c| cpus.get(c), target, moved));
@@ -358,6 +360,31 @@ fn a_mask_naming_no_installed_cpu_strands_nothing() {
     crate::live::ttwu::relocate_for_affinity_with(&|c| cpus.get(c), &t, allowed);
 
     assert_eq!(cpus.holder(t.tid), Some(HERE), "affinity is broken before a task is lost");
+}
+
+/// CPU ownership, not a cross-rq tid scan, selects the source. A stale task
+/// with the same tid on an earlier CPU must remain untouched.
+#[test]
+fn affinity_relocation_uses_task_cpu_as_source_authority() {
+    const WRONG: u32 = 28;
+    const HERE: u32 = 30;
+    const THERE: u32 = 31;
+    let cpus = Cpus::new(&[WRONG, HERE, THERE]);
+    let impostor = running_on(4005, WRONG, 1u64 << THERE);
+    let task = running_on(4005, HERE, 1u64 << HERE);
+    assert!(enqueue_on_with(&|c| cpus.get(c), WRONG, Arc::clone(&impostor)));
+    assert!(enqueue_on_with(&|c| cpus.get(c), HERE, Arc::clone(&task)));
+
+    let allowed = m(1u64 << THERE);
+    task.cpus_allowed.store(allowed, Ordering::Release);
+    crate::live::ttwu::relocate_for_affinity_with(&|c| cpus.get(c), &task, allowed);
+
+    assert_eq!(task.cpu.load(Ordering::Acquire), THERE as u16);
+    assert_eq!(impostor.cpu.load(Ordering::Acquire), WRONG as u16,
+        "same-tid task on an unrelated rq was treated as the source");
+    assert_eq!(cpus.get(WRONG).unwrap().nr_running.load(Ordering::Acquire), 1);
+    assert_eq!(cpus.get(HERE).unwrap().nr_running.load(Ordering::Acquire), 0);
+    assert_eq!(cpus.get(THERE).unwrap().nr_running.load(Ordering::Acquire), 1);
 }
 
 /// Linux's CPU-down stopper may run the transition coordinator on the

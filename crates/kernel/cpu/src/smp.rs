@@ -30,12 +30,28 @@ pub mod terminal_stop;
 /// word-array mask so the topology cap can grow without changing the online
 /// set's representation.
 static ONLINE_MASK: crate::AtomicCpuMask = crate::AtomicCpuMask::new();
+/// CPUs counted by the deadline admission domain. CPU-down removes this set
+/// before ACTIVE, while ONLINE continues to name a reachable executing CPU.
+static CAPACITY_MASK: crate::AtomicCpuMask = crate::AtomicCpuMask::new();
+/// Scheduler placement eligibility, distinct from admission capacity.
+/// CPU-down removes capacity first, then clears this set before waiting for
+/// pre-existing placement readers.
+static ACTIVE_MASK: crate::AtomicCpuMask = crate::AtomicCpuMask::new();
+/// CPUs accepting new generic cross-call descriptors. This remains set after
+/// ACTIVE clears, so TLB/membarrier still reach an executing deactivated CPU,
+/// and clears only at the final stop boundary before ONLINE.
+static CALLABLE_MASK: crate::AtomicCpuMask = crate::AtomicCpuMask::new();
+const NO_HOTPLUG_OWNER: u32 = u32::MAX;
+/// Linux `cpu_hotplug_lock` equivalent: one CPU-down writer owns topology
+/// mutation, IRQ evacuation, and terminal publication at a time.
+static HOTPLUG_OWNER: AtomicU32 = AtomicU32::new(NO_HOTPLUG_OWNER);
 
 const HP_IDLE: u8 = 0;
 const HP_REQUESTED: u8 = 1;
 const HP_TAIL: u8 = 2;
 const HP_FAILED: u8 = 3;
 const HP_OFFLINE: u8 = 4;
+const HP_COMMITTING: u8 = 5;
 static HOTPLUG: [AtomicU8; crate::MAX_CPUS] = [const { AtomicU8::new(HP_IDLE) }; crate::MAX_CPUS];
 static FROZEN: crate::AtomicCpuMask = crate::AtomicCpuMask::new();
 
@@ -60,6 +76,31 @@ pub fn online_transport_mask() -> [u64; hal::MAX_CPUS.div_ceil(u64::BITS as usiz
 /// # C: O(words)
 pub fn online_cpumask() -> crate::CpuMask { ONLINE_MASK.load(Ordering::Acquire) }
 
+/// CPUs counted by scheduler admission capacity. # C: O(words)
+pub fn capacity_cpumask() -> crate::CpuMask { CAPACITY_MASK.load(Ordering::Acquire) }
+
+/// Compatibility spelling for physical cross-call reachability. # C: O(words)
+pub fn live_cpumask() -> crate::CpuMask { online_cpumask() }
+
+/// CPUs eligible for new scheduler placement. # C: O(words)
+pub fn active_cpumask() -> crate::CpuMask { ACTIVE_MASK.load(Ordering::Acquire) }
+
+/// CPUs accepting new call-function publication. # C: O(words)
+pub fn callable_cpumask() -> crate::CpuMask { CALLABLE_MASK.load(Ordering::Acquire) }
+
+/// Whether `cpu` may receive newly placed scheduler work. # C: O(1)
+pub fn is_active(cpu: u32) -> bool {
+    (cpu as usize) < crate::MAX_CPUS && ACTIVE_MASK.load(Ordering::Acquire).contains(cpu as usize)
+}
+
+/// RCU placement read section. A successful result remains valid through a
+/// destination commit performed before this guard drops: CPU-down clears the
+/// active bit and waits a grace period before evacuation. # C: O(1)
+pub fn placement_guard(cpu: u32) -> Option<sync::RcuReadGuard> {
+    let guard = sync::rcu_read_lock();
+    if is_active(cpu) { Some(guard) } else { None }
+}
+
 /// Mark logical CPU `cpu` online in the bitmap. Boot CPU + each AP call this
 /// as they finish bring-up. Idempotent.
 /// # SAFETY: caller is the boot CPU (for itself) or an arriving AP (for
@@ -70,33 +111,60 @@ pub unsafe fn mark_online(cpu: u32) {
         if ONLINE_MASK.set(cpu as usize, Ordering::AcqRel) {
             ONLINE.fetch_add(1, Ordering::AcqRel);
         }
+        let _ = CAPACITY_MASK.set(cpu as usize, Ordering::Release);
+        let _ = ACTIVE_MASK.set(cpu as usize, Ordering::Release);
+        let _ = CALLABLE_MASK.set(cpu as usize, Ordering::Release);
     }
 }
 
-/// Remove this logical CPU from the one scheduler-visible online set. Returns
-/// whether it was online, so only the winning transition adjusts the count.
-/// # SAFETY: caller runs on `cpu` after it has stopped accepting scheduler
-/// work, or is the boot CPU resetting hosted topology state.
+/// Remove this logical CPU from scheduler capacity while retaining transport
+/// reachability for placement grace and evacuation.
+/// # SAFETY: caller owns the serialized deadline-capacity transition.
 /// # C: O(1)
 pub unsafe fn mark_offline(cpu: u32) -> bool {
     if (cpu as usize) >= crate::MAX_CPUS { return false; }
-    if ONLINE_MASK.clear_cpu(cpu as usize, Ordering::AcqRel) {
-        ONLINE.fetch_sub(1, Ordering::AcqRel);
-        true
-    } else { false }
+    CAPACITY_MASK.clear_cpu(cpu as usize, Ordering::AcqRel)
 }
 
-/// Begin one suspend CPU-down request. # C: O(1)
+/// Claim one serialized CPU-down transition. Capacity and active placement
+/// remain unchanged until their owning stages run. # C: O(1)
 pub fn request_offline(cpu: u32) -> bool {
-    HOTPLUG.get(cpu as usize).is_some_and(|s| s.compare_exchange(
-        HP_IDLE, HP_REQUESTED, Ordering::AcqRel, Ordering::Acquire).is_ok())
+    let Some(state) = HOTPLUG.get(cpu as usize) else { return false; };
+    if HOTPLUG_OWNER.compare_exchange(NO_HOTPLUG_OWNER, cpu,
+        Ordering::AcqRel, Ordering::Acquire).is_err() { return false; }
+    let accepted = boot_logical_id() != Some(cpu) && active_cpumask().count_ones() > 1
+        && online_cpumask().contains(cpu as usize) && is_active(cpu)
+        && state.compare_exchange(HP_IDLE, HP_REQUESTED,
+            Ordering::AcqRel, Ordering::Acquire).is_ok();
+    if !accepted {
+        let _ = HOTPLUG_OWNER.compare_exchange(cpu, NO_HOTPLUG_OWNER,
+            Ordering::AcqRel, Ordering::Acquire);
+    }
+    accepted
 }
 
-/// Whether scheduler producers may place new work on `cpu`. A requested CPU
-/// stops admission before its target-side idle proof, closing wakeup races
-/// without creating another online bitmap. # C: O(1)
+/// Close new scheduler placement after deadline capacity was removed, then
+/// wait out every selector that sampled the old active set. # Sleeps: y
+/// # C: O(grace)
+pub fn deactivate(cpu: u32) -> bool {
+    deactivate_with(cpu, sync::synchronize_rcu)
+}
+
+fn deactivate_with<F>(cpu: u32, grace: F) -> bool
+where F: FnOnce() {
+    let Some(state) = HOTPLUG.get(cpu as usize) else { return false; };
+    if state.load(Ordering::Acquire) != HP_REQUESTED
+        || capacity_cpumask().contains(cpu as usize) { return false; }
+    if !ACTIVE_MASK.clear_cpu(cpu as usize, Ordering::AcqRel) {
+        return false;
+    }
+    grace();
+    true
+}
+
+/// Compatibility spelling for scheduler placement eligibility. # C: O(1)
 pub fn accepts_work(cpu: u32) -> bool {
-    HOTPLUG.get(cpu as usize).is_some_and(|s| s.load(Ordering::Acquire) == HP_IDLE)
+    is_active(cpu)
 }
 
 /// Transfer an admitted CPU-down request from the call-function handler to
@@ -113,16 +181,78 @@ pub fn offline_tail_requested(cpu: u32) -> bool {
     HOTPLUG.get(cpu as usize).is_some_and(|s| s.load(Ordering::Acquire) == HP_TAIL)
 }
 
+/// Linearize final play-dead against coordinator cancellation. Once this
+/// succeeds cancellation waits for the target's offline publication; if
+/// cancellation wins first, the target must remain online. # C: O(1)
+pub fn claim_offline_commit(cpu: u32) -> bool {
+    HOTPLUG.get(cpu as usize).is_some_and(|s| s.compare_exchange(
+        HP_TAIL, HP_COMMITTING, Ordering::AcqRel, Ordering::Acquire).is_ok())
+}
+
 /// Publish target-side refusal before returning from the call handler. # C: O(1)
 pub fn reject_offline(cpu: u32) {
-    if let Some(s) = HOTPLUG.get(cpu as usize) { s.store(HP_FAILED, Ordering::Release); }
+    let Some(state) = HOTPLUG.get(cpu as usize) else { return; };
+    loop {
+        let observed = state.load(Ordering::Acquire);
+        if observed == HP_IDLE || observed == HP_COMMITTING || observed == HP_OFFLINE { return; }
+        if !matches!(observed, HP_REQUESTED | HP_TAIL | HP_FAILED) { return; }
+        if observed != HP_FAILED && state.compare_exchange(observed, HP_FAILED,
+            Ordering::AcqRel, Ordering::Acquire).is_err() { continue; }
+        if online_cpumask().contains(cpu as usize) {
+            let _ = CAPACITY_MASK.set(cpu as usize, Ordering::Release);
+            let _ = ACTIVE_MASK.set(cpu as usize, Ordering::Release);
+            let _ = CALLABLE_MASK.set(cpu as usize, Ordering::Release);
+        }
+        return;
+    }
+}
+
+/// Restore hardware and then software topology after a CPU_OFF primitive
+/// returns. The callback runs while every admission mask remains closed, so
+/// ACTIVE never advertises a CPU unable to receive interrupts or timer work.
+/// # SAFETY: caller is the refused target CPU and owns its lifecycle state.
+pub unsafe fn restore_offline_refusal_with<F>(cpu: u32, restore_local: F)
+where F: FnOnce() {
+    let Some(state) = HOTPLUG.get(cpu as usize) else { return; };
+    if !matches!(state.load(Ordering::Acquire), HP_COMMITTING | HP_OFFLINE) { return; }
+    restore_local();
+    // SAFETY: the target is still physically executing after refusal.
+    unsafe { mark_online(cpu); }
+    let _ = FROZEN.clear_cpu(cpu as usize, Ordering::AcqRel);
+    state.store(HP_FAILED, Ordering::Release);
+}
+
+/// Close generic cross-call publication from the process-context coordinator
+/// after scheduler evacuation. Existing readers may publish during the grace;
+/// the later terminal IPI drains them before its final locked proof.
+/// Cancellation can win during the grace and re-open CALLABLE.
+/// # Sleeps: y # Ctx: process # C: O(grace)
+pub fn begin_callfn_shutdown(cpu: u32) -> bool {
+    begin_callfn_shutdown_with(cpu, sync::synchronize_rcu)
+}
+
+fn begin_callfn_shutdown_with<F>(cpu: u32, grace: F) -> bool
+where F: FnOnce() {
+    let Some(state) = HOTPLUG.get(cpu as usize) else { return false; };
+    if !matches!(state.load(Ordering::Acquire), HP_REQUESTED | HP_TAIL) { return false; }
+    if CALLABLE_MASK.clear_cpu(cpu as usize, Ordering::AcqRel) { grace(); }
+    matches!(state.load(Ordering::Acquire), HP_REQUESTED | HP_TAIL)
+        && !callable_cpumask().contains(cpu as usize)
 }
 
 /// Publish that `cpu` has left the online set and is entering architecture
 /// play-dead. The frozen set records only successful transitions. # C: O(1)
 pub fn finish_offline(cpu: u32) {
+    let _ = ACTIVE_MASK.clear_cpu(cpu as usize, Ordering::AcqRel);
+    let _ = CAPACITY_MASK.clear_cpu(cpu as usize, Ordering::AcqRel);
+    let _ = CALLABLE_MASK.clear_cpu(cpu as usize, Ordering::AcqRel);
+    if ONLINE_MASK.clear_cpu(cpu as usize, Ordering::AcqRel) {
+        ONLINE.fetch_sub(1, Ordering::AcqRel);
+    }
     let _ = FROZEN.set(cpu as usize, Ordering::AcqRel);
     if let Some(s) = HOTPLUG.get(cpu as usize) { s.store(HP_OFFLINE, Ordering::Release); }
+    let _ = HOTPLUG_OWNER.compare_exchange(cpu, NO_HOTPLUG_OWNER,
+        Ordering::AcqRel, Ordering::Acquire);
 }
 
 /// Current suspend hotplug result: `Some(true)` offline, `Some(false)` failed,
@@ -137,8 +267,27 @@ pub fn offline_result(cpu: u32) -> Option<bool> {
 /// Successful offline ownership is untouched. # C: O(1)
 pub fn cancel_offline(cpu: u32) {
     if !online_cpumask().contains(cpu as usize) { return; }
-    let _ = FROZEN.clear_cpu(cpu as usize, Ordering::AcqRel);
-    if let Some(s) = HOTPLUG.get(cpu as usize) { s.store(HP_IDLE, Ordering::Release); }
+    let Some(state) = HOTPLUG.get(cpu as usize) else { return; };
+    loop {
+        match state.load(Ordering::Acquire) {
+            HP_REQUESTED | HP_TAIL | HP_FAILED => {
+                let observed = state.load(Ordering::Acquire);
+                if !matches!(observed, HP_REQUESTED | HP_TAIL | HP_FAILED) { continue; }
+                if state.compare_exchange(observed, HP_IDLE, Ordering::AcqRel,
+                    Ordering::Acquire).is_err() { continue; }
+                let _ = FROZEN.clear_cpu(cpu as usize, Ordering::AcqRel);
+                let _ = CAPACITY_MASK.set(cpu as usize, Ordering::Release);
+                let _ = ACTIVE_MASK.set(cpu as usize, Ordering::Release);
+                let _ = CALLABLE_MASK.set(cpu as usize, Ordering::Release);
+                let _ = HOTPLUG_OWNER.compare_exchange(cpu, NO_HOTPLUG_OWNER,
+                    Ordering::AcqRel, Ordering::Acquire);
+                return;
+            }
+            HP_COMMITTING => sync::spin_relax::relax(),
+            HP_IDLE | HP_OFFLINE => return,
+            _ => return,
+        }
+    }
 }
 
 /// Exact CPUs successfully taken down by the current suspend pass. # C: O(words)
@@ -151,6 +300,7 @@ pub fn finish_thaw_cpu(cpu: u32, online: bool) {
     let Some(state) = HOTPLUG.get(cpu as usize) else { return; };
     if online {
         let _ = FROZEN.clear_cpu(cpu as usize, Ordering::AcqRel);
+        let _ = ACTIVE_MASK.set(cpu as usize, Ordering::Release);
         state.store(HP_IDLE, Ordering::Release);
     } else {
         state.store(HP_OFFLINE, Ordering::Release);
@@ -167,6 +317,10 @@ pub fn begin_freeze() -> bool {
 /// Used by `enumerate_aps` to filter the boot CPU out of the
 /// "secondaries to start" list.
 static BOOT_CPU_ID: AtomicU64 = AtomicU64::new(u64::MAX);
+/// Canonical dense scheduler ID resolved once beside [`BOOT_CPU_ID`]. The
+/// topology may use sparse APIC IDs/MPIDRs, so no later path may reinterpret
+/// the hardware ID as a logical index.
+static BOOT_LOGICAL_ID: AtomicU32 = AtomicU32::new(u32::MAX);
 
 /// Online-count, incremented by each AP as it finishes its bring-
 /// up sequence (P4-08+). Boot CPU stamps 1 before letting any AP
@@ -188,6 +342,7 @@ pub unsafe fn set_boot_cpu_id(id: u64) {
     // ACPI walk has populated the topology by now, so logical_id_for_hardware
     // resolves; fall back to logical 0 (the boot CPU's conventional slot).
     let boot_logical = cpu_topology::logical_id_for_hardware(id).unwrap_or(0);
+    BOOT_LOGICAL_ID.store(boot_logical, Ordering::Release);
     // SAFETY: boot path, sole writer for the boot CPU's bit.
     unsafe { mark_online(boot_logical); }
 }
@@ -196,6 +351,12 @@ pub unsafe fn set_boot_cpu_id(id: u64) {
 /// hasn't run yet.
 /// # C: O(1)
 pub fn boot_cpu_id() -> u64 { BOOT_CPU_ID.load(Ordering::Acquire) }
+
+/// Dense logical ID permanently paired with the boot hardware ID. # C: O(1)
+pub fn boot_logical_id() -> Option<u32> {
+    let id = BOOT_LOGICAL_ID.load(Ordering::Acquire);
+    ((id as usize) < crate::MAX_CPUS).then_some(id)
+}
 
 /// Number of CPUs that have completed bring-up. Boot CPU counts
 /// as 1 from `set_boot_cpu_id` onward; each AP increments on
@@ -238,99 +399,5 @@ pub unsafe fn bring_up_aps() -> usize {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn reset() {
-        BOOT_CPU_ID.store(u64::MAX, Ordering::Release);
-        ONLINE.store(0, Ordering::Release);
-        ONLINE_MASK.clear();
-        FROZEN.clear();
-        for state in &HOTPLUG { state.store(HP_IDLE, Ordering::Release); }
-    }
-
-    #[test]
-    fn empty_topology_yields_no_aps() {
-        reset();
-        // SAFETY: hosted test single-thread invariant; sole writer for BOOT_CPU_ID.
-        unsafe { set_boot_cpu_id(0); }
-        // Topology may be non-empty from prior tests, but boot id 0
-        // and (likely) no other id 0 entries means filter passes.
-        // The robust check: enumerate result excludes boot_cpu_id.
-        let aps = enumerate_aps();
-        assert!(!aps.contains(&0));
-    }
-
-    #[test]
-    fn online_transitions_are_idempotent_and_reversible() {
-        reset();
-        // SAFETY: hosted-test single-thread invariant; sole writer.
-        unsafe { set_boot_cpu_id(0); }
-        assert_eq!(online_count(), 1);
-        // SAFETY: test owns CPU 1's lifecycle transition.
-        unsafe { mark_online(1); mark_online(1); }
-        assert_eq!(online_count(), 2);
-        // SAFETY: test owns CPU 1's lifecycle transition.
-        assert!(unsafe { mark_offline(1) });
-        // SAFETY: test still exclusively owns CPU 1's lifecycle state.
-        assert!(!unsafe { mark_offline(1) });
-        assert_eq!(online_count(), 1);
-    }
-
-    #[test]
-    fn online_set_is_published_through_the_canonical_cpumask() {
-        reset();
-        // SAFETY: hosted-test single-thread invariant; each logical bit has one writer.
-        unsafe { mark_online(0); mark_online(crate::MAX_CPUS as u32 - 1); }
-        let online = online_cpumask();
-        assert!(online.contains(0));
-        assert!(online.contains(crate::MAX_CPUS - 1));
-    }
-
-    #[test]
-    fn failed_partial_thaw_retains_only_the_unrestored_cpu() {
-        reset();
-        // SAFETY: hosted test owns these logical lifecycle transitions.
-        unsafe { set_boot_cpu_id(0); mark_online(1); mark_online(2); mark_offline(1); mark_offline(2); }
-        finish_offline(1); finish_offline(2);
-        // SAFETY: CPU 1's simulated restart owns its online transition.
-        unsafe { mark_online(1); }
-        finish_thaw_cpu(1, true);
-        finish_thaw_cpu(2, false);
-        let frozen = frozen_cpumask();
-        assert!(!frozen.contains(1));
-        assert!(frozen.contains(2), "failed CPU-up must retain frozen ownership");
-        assert!(!begin_freeze(), "a partial thaw must block a new down transaction");
-    }
-
-    #[test]
-    fn target_refusal_never_enters_the_frozen_set() {
-        reset();
-        // SAFETY: hosted test owns the topology lifecycle.
-        unsafe { set_boot_cpu_id(0); mark_online(1); }
-        assert!(request_offline(1));
-        reject_offline(1);
-        assert_eq!(offline_result(1), Some(false));
-        assert!(online_cpumask().contains(1));
-        assert!(!frozen_cpumask().contains(1));
-        cancel_offline(1);
-        assert!(accepts_work(1), "refused target must resume scheduler admission");
-    }
-
-    #[test]
-    fn cpu_down_reaches_play_dead_only_from_the_irq_tail_state() {
-        reset();
-        // SAFETY: hosted test owns the topology lifecycle.
-        unsafe { set_boot_cpu_id(0); mark_online(1); }
-        assert!(request_offline(1));
-        assert!(!offline_tail_requested(1));
-        assert!(request_offline_tail(1));
-        assert!(offline_tail_requested(1));
-        assert_eq!(offline_result(1), None);
-        assert!(!request_offline_tail(1), "call-function admission transfers once");
-        reject_offline(1);
-        assert_eq!(offline_result(1), Some(false));
-        cancel_offline(1);
-        assert!(accepts_work(1));
-    }
-}
+#[path = "smp/tests.rs"]
+mod tests;

@@ -13,7 +13,7 @@ use alloc::vec::Vec;
 
 use sync::{Spinlock, TaskList as TaskListClass};
 
-use crate::bpf_lsm::{Hook, hook_by_stub_name, HOOKS};
+use crate::bpf_lsm::{ArgType, Hook, hook_by_stub_name, HOOKS};
 use super::super::iter::{IterTarget, target_by_stub_name};
 use super::super::iter::targets::TARGETS as ITER_TARGETS;
 use super::format::{FLAGS_NONE, HEADER_LEN, Kind, MAGIC, VERSION};
@@ -70,8 +70,11 @@ impl Builder {
 /// One stub function this kernel declares as an attachable target.
 struct Stub {
     name: &'static str,
-    args: &'static [&'static str],
+    args: Vec<StubArg>,
 }
+
+#[derive(Copy, Clone)]
+struct StubArg { name: &'static str, ty: ArgType }
 
 /// Program-stream kfuncs published by the kernel object and callable through
 /// `BPF_PSEUDO_KFUNC_CALL`.
@@ -87,27 +90,63 @@ const STREAM_VPRINTK: &str = "bpf_stream_vprintk";
 /// # C: O(hooks + iterator targets)
 fn published_stubs() -> Vec<Stub> {
     let mut stubs = Vec::new();
-    for (_, spec) in HOOKS { stubs.push(Stub { name: spec.stub, args: spec.args }); }
-    for (_, spec) in ITER_TARGETS { stubs.push(Stub { name: spec.stub, args: spec.args }); }
+    for (_, spec) in HOOKS {
+        stubs.push(Stub {
+            name: spec.stub,
+            args: spec.args.iter().map(|arg| StubArg { name: arg.name, ty: arg.ty }).collect(),
+        });
+    }
+    for (_, spec) in ITER_TARGETS {
+        stubs.push(Stub {
+            name: spec.stub,
+            args: spec.args.iter().map(|name| StubArg {
+                name: *name, ty: ArgType::Opaque(*name),
+            }).collect(),
+        });
+    }
     stubs
 }
 
-/// Build the raw object. Declares one `int`, then per stub: an opaque
-/// forward declaration per argument type, a pointer to each, the stub's
-/// prototype, and the stub function itself.
+/// Build the raw object. Declares one `int`, a concrete task view shared by
+/// both task hooks, interns every other opaque pointer, then emits each stub.
 /// # C: O(total stub argument count)
 fn build() -> Vec<u8> {
     let mut b = Builder::new();
     let int_name = b.name("int");
     let int_payload = INT_SIGNED << INT_ENCODING_SHIFT | INT_BITS;
     b.record(int_name, Kind::Int, 0, INT_BYTES, &[int_payload]);
+    let mut opaque = Vec::<(&str, u32)>::new();
+    let mut task_ptr = None;
     for stub in published_stubs() {
         let mut params = Vec::new();
         for arg in stub.args {
-            let arg_name = b.name(arg);
-            let fwd = b.record(arg_name, Kind::Fwd, 0, 0, &[]);
-            let ptr = b.record(0, Kind::Ptr, 0, fwd, &[]);
-            params.push((arg_name, ptr));
+            let arg_name = b.name(arg.name);
+            let type_id = match arg.ty {
+                ArgType::Int => INT_TYPE_ID,
+                ArgType::Task => if let Some(ptr) = task_ptr { ptr } else {
+                    let name = b.name("task_struct");
+                    let pid = b.name("pid");
+                    let tgid = b.name("tgid");
+                    let members = [pid, INT_TYPE_ID, 0, tgid, INT_TYPE_ID, 32];
+                    let structure = b.record(name, Kind::Struct, 2,
+                        crate::bpf_lsm::task_struct::SIZE as u32, &members);
+                    let ptr = b.record(0, Kind::Ptr, 0, structure, &[]);
+                    task_ptr = Some(ptr);
+                    ptr
+                },
+                ArgType::Opaque(name) => {
+                    if let Some((_, type_id)) = opaque.iter().find(|(known, _)| *known == name) {
+                        *type_id
+                    } else {
+                        let type_name = b.name(name);
+                        let fwd = b.record(type_name, Kind::Fwd, 0, 0, &[]);
+                        let ptr = b.record(0, Kind::Ptr, 0, fwd, &[]);
+                        opaque.push((name, ptr));
+                        ptr
+                    }
+                }
+            };
+            params.push((arg_name, type_id));
         }
         let mut payload = Vec::new();
         for (arg_name, ptr) in &params { payload.push(*arg_name); payload.push(*ptr); }
@@ -231,6 +270,13 @@ pub(crate) fn stream_vprintk_btf_id() -> Option<u32> {
     let btf = published()?;
     (1..=btf.index.type_count() as u32)
         .find(|id| stream_kfunc_by_btf_id(*id) == Some(StreamKfunc::Vprintk))
+}
+
+#[cfg(test)]
+pub(crate) fn lsm_hook_btf_id(hook: Hook) -> Option<u32> {
+    let btf = published()?;
+    (1..=btf.index.type_count() as u32)
+        .find(|id| lsm_hook_by_btf_id(*id) == Some(hook))
 }
 
 /// Name of the stub function one type id declares, when it declares one.

@@ -12,7 +12,6 @@
 // is what the periodic balancer will reuse verbatim.
 
 
-use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
 
 use crate::Task;
@@ -53,35 +52,64 @@ struct CpuLoad {
     nr_running: u32,
 }
 
-/// Pick a CFS task off `rq`'s queue. Returns `None` if no CFS
-/// task is queued (only idle / RT). Caller already filtered to
-/// "this CPU has surplus".
-fn pop_one_cfs(rq: &Runqueue) -> Option<Arc<Task>> {
+/// Move one CFS task through the single-rq migration bridge. Candidate lookup
+/// is speculative; after taking TaskPi -> source rq, CPU, state, affinity, and
+/// class-tree membership are revalidated before any state changes.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum MigrationPoint {
+    BeforeDequeue,
+    BeforeSourceUnlock,
+    BeforeDestinationCommit,
+    AfterDestinationEnqueue,
+}
+
+fn migration_destination_accepts(cpu: u32) -> bool {
+    cpu::smp::is_active(cpu)
+}
+
+fn cache_hot(task: &Task, now: u64) -> bool {
+    let last = task.sched.se.exec_start.load(Ordering::Acquire);
+    last != 0 && now.saturating_sub(last) < MIGRATION_COST_NS
+}
+
+fn migrate_one_cfs_with<'a, F, A, G>(src: &'a Runqueue, dst: &'a Runqueue,
+                                     get_rq: &G, ignore_hot: bool,
+                                     mut probe: F, accepts: A) -> Option<u32>
+where F: FnMut(MigrationPoint, &Task), A: Fn(u32) -> bool,
+      G: Fn(u32) -> Option<&'a Runqueue> {
     // `lock_irqsave`, not `lock`: the balancer runs from the IDLE LOOP
     // (`halt_forever` -> `newidle_balance`), outside `schedule()`'s IRQ-off
     // window, while softirq context takes this same runqueue lock. A plain
     // acquisition lets a softirq land on this CPU mid-hold and spin on it
     // forever (`06§3.1`, `skizm.md` Step 3e-bh).
     //
-    // NOT `lock_bh`, which is the usual answer for a softirq-shared lock:
-    // `balance_once` holds TWO runqueue locks at once, and `local_bh_enable`
-    // on the inner guard's release DRAINS SOFTIRQS while the outer lock is
-    // still held — and those softirqs take a runqueue lock. That deadlocks,
-    // and did: it hung the boot with an NMI backtrace. Masking interrupts
-    // excludes softirqs on this CPU with no drain on release, which is exactly
-    // why Linux's rq lock is `raw_spin_lock_irqsave`.
-    let mut inner = rq.inner.lock_irqsave::<RqIrq>();
-    // CFS tasks are leftmost in vruntime order; pick_leftmost is
-    // O(log N) but we don't actually want the *highest priority*
-    // — for migration the principle is "any task is fine, just
-    // unload this CPU". Steal the leftmost since that's what's
-    // already at the head of the queue.
-    let t = inner.cfs.pick_leftmost();
-    if let Some(ref tk) = t {
-        let _ = tk;
+    // NOT `lock_bh`, which drains softirqs on release; those callbacks also
+    // take rq locks. Masking interrupts excludes them without a release-time
+    // drain, matching the rq lock's irqsave contract.
+    let task = {
+        let inner = src.inner.lock_irqsave::<RqIrq>();
+        let now = now_ns();
+        inner.cfs.find(|task| can_migrate_task(task, dst.cpu as u32)
+            && (ignore_hot || !cache_hot(task, now)))?
+    };
+    let _placement = sync::rcu_read_lock();
+    let mut bridge = |point, _, moving: &Task| probe(match point {
+        super::migration::MovePoint::SourceLocked => MigrationPoint::BeforeDequeue,
+        super::migration::MovePoint::SourceDetached => MigrationPoint::BeforeSourceUnlock,
+        super::migration::MovePoint::DestinationLocked => MigrationPoint::BeforeDestinationCommit,
+        super::migration::MovePoint::DestinationCommitted => MigrationPoint::AfterDestinationEnqueue,
+    }, moving);
+    match super::migration::move_queued_with(get_rq, &task, Some(dst.cpu as u32),
+                                              &accepts, &mut bridge) {
+        super::migration::MoveResult::Moved { from, to } if from != to => Some(to),
+        super::migration::MoveResult::Unplaced { from, task } =>
+            match super::migration::finish_unplaced_with(
+                get_rq, task, from, Some(dst.cpu as u32), &accepts, &mut bridge) {
+                super::migration::MoveResult::Moved { from, to } if from != to => Some(to),
+                _ => None,
+            },
+        _ => None,
     }
-    rq.publish_nr_running(inner.nr_running());
-    t
 }
 
 /// Linux `can_migrate_task`, the two unconditional
@@ -109,14 +137,6 @@ pub fn can_migrate_task(task: &Task, dst_cpu: u32) -> bool {
     true
 }
 
-/// Push `task` onto `rq`'s queue.
-fn push_to(rq: &Runqueue, task: Arc<Task>) {
-    // Same reasoning as `pop_one_cfs`: reached from the idle-loop balancer.
-    let mut inner = rq.inner.lock_irqsave::<RqIrq>();
-    inner.enqueue(task);
-    rq.publish_nr_running(inner.nr_running());
-}
-
 /// One pass of the load balancer. Returns the number of tasks
 /// migrated (0 or 1 in v1).
 ///
@@ -124,7 +144,7 @@ fn push_to(rq: &Runqueue, task: Arc<Task>) {
 /// `global_for` returns stable references for online CPUs;
 /// migration takes per-CPU runqueue inner locks in CPU-id order
 /// to avoid the trivial deadlock between a pair.
-/// # C: O(N_cpus + log N_tasks)
+/// # C: O(N_cpus + N_tasks + log N_tasks)
 pub unsafe fn balance_once() -> u32 {
     let online = cpu::smp::online_count();
     if online < 2 { return 0; }
@@ -157,9 +177,6 @@ pub unsafe fn balance_once() -> u32 {
     let delta = loads[busy_idx].nr_running.saturating_sub(loads[idle_idx].nr_running);
     if delta < 2 { return 0; }
 
-    // Lock order: lower cpu id first so concurrent balancers on
-    // a pair never deadlock. v1 only ever runs from BSP for now,
-    // so this is forward-looking.
     let busy_cpu = loads[busy_idx].cpu;
     let idle_cpu = loads[idle_idx].cpu;
 
@@ -174,34 +191,18 @@ pub unsafe fn balance_once() -> u32 {
         None     => return 0,
     };
 
-    let task = pop_one_cfs(busy_rq);
-    let task = match task { Some(t) => t, None => return 0 };
-    // Still running on busy_cpu, or pinned away from idle_cpu? Put it back and
-    // skip this round rather than violate either rule (a later round may move a
-    // different task).
-    if !can_migrate_task(&task, idle_cpu) {
-        push_to(busy_rq, task);
-        return 0;
-    }
-    // can_migrate_task cache-hot guard (Linux): a task that ran within
-    // MIGRATION_COST_NS is likely cache-warm on `busy_cpu`; leave it unless
-    // the imbalance is large (delta >= 4) where spreading wins over locality.
-    if delta < 4 {
-        let last = task.sched.se.exec_start.load(Ordering::Acquire);
-        let now = now_ns();
-        if last != 0 && now.saturating_sub(last) < MIGRATION_COST_NS {
-            push_to(busy_rq, task);
-            return 0;
-        }
-    }
-    task.cpu.store(idle_cpu as u16, Ordering::Release);
-    push_to(idle_rq, task);
+    // A large imbalance overrides cache warmth. All admission checks and CPU
+    // publication occur under TaskPi -> source rq; source and destination rq
+    // locks are never nested.
+    let get_rq = |cpu| unsafe { global_for(cpu) };
+    let Some(target) = migrate_one_cfs_with(busy_rq, idle_rq, &get_rq, delta >= 4, |_, _| {},
+                                             migration_destination_accepts) else { return 0; };
 
     // Wake the destination so its idle loop picks up the new task. The
     // hook is arch-agnostic (x86 LAPIC ICR / arm GIC SGI), installed at
     // boot; no-op (false) when unset.
     // SAFETY: send_resched_ipi is a non-blocking IPI/SGI to an online CPU.
-    unsafe { let _ = super::send_resched_ipi(idle_cpu); }
+    unsafe { let _ = super::send_resched_ipi(target); }
 
     1
 }
@@ -225,7 +226,7 @@ pub fn balance_tick(_now_ns: u64) {
 /// the task anyway). Returns 1 if it pulled a task, else 0.
 /// # SAFETY: idle context, not holding any runqueue lock; takes one per-CPU
 /// inner lock at a time (no nesting).
-/// # C: O(N_cpus + log N)
+/// # C: O(N_cpus + N_tasks + log N_tasks)
 pub unsafe fn newidle_balance() -> u32 {
     if cpu::smp::online_count() < 2 { return 0; }
     let me = this_cpu();
@@ -252,16 +253,9 @@ pub unsafe fn newidle_balance() -> u32 {
     let busy_cpu = match busy_cpu { Some(c) => c, None => return 0 };
     // SAFETY: busy_cpu was just enumerated with a live runqueue.
     let busy_rq = match unsafe { global_for(busy_cpu) } { Some(r) => r, None => return 0 };
-    let task = pop_one_cfs(busy_rq);
-    let task = match task { Some(t) => t, None => return 0 };
-    // Still running on busy_cpu, or pinned away from us? Put it back and skip.
-    if !can_migrate_task(&task, me) {
-        push_to(busy_rq, task);
-        return 0;
-    }
-    task.cpu.store(me as u16, Ordering::Release);
-    push_to(my_rq, task);
-    1
+    let get_rq = |cpu| unsafe { global_for(cpu) };
+    migrate_one_cfs_with(busy_rq, my_rq, &get_rq, true, |_, _| {},
+                         migration_destination_accepts).is_some() as u32
 }
 
 #[cfg(test)]

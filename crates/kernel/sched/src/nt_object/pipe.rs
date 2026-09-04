@@ -1,8 +1,8 @@
 //! State owned by one native NT named-pipe object.
 
 use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
-use crate::live::WaitList;
-use crate::WaitOutcome;
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))] use crate::live::WaitList;
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))] use crate::WaitOutcome;
 use sync::{Spinlock, TaskList as TaskListClass};
 
 /// The side of a named-pipe connection owned by one handle.
@@ -51,8 +51,8 @@ pub struct NtPipe {
     config: NtPipeConfig,
     instances: Spinlock<u32, TaskListClass>,
     transport: Spinlock<PipeTransport, TaskListClass>,
-    read_waiters: WaitList,
-    write_waiters: WaitList,
+    #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))] read_waiters: WaitList,
+    #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))] write_waiters: WaitList,
     pending_io: Spinlock<Vec<PipeIoRequest>, TaskListClass>,
 }
 
@@ -96,7 +96,10 @@ impl NtPipe {
         Self { config, instances: Spinlock::new(0), transport: Spinlock::new(PipeTransport {
             server_to_client: VecDeque::new(), client_to_server: VecDeque::new(),
             server_closed: false, client_closed: false, connected: false, listening: false,
-        }), read_waiters: WaitList::new(), write_waiters: WaitList::new(), pending_io: Spinlock::new(Vec::new()) }
+        }),
+            #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))] read_waiters: WaitList::new(),
+            #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))] write_waiters: WaitList::new(),
+            pending_io: Spinlock::new(Vec::new()) }
     }
 
     pub fn config(&self) -> NtPipeConfig { self.config }
@@ -128,6 +131,7 @@ impl NtPipe {
             }
         }
         drop(requests);
+        #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
         if cancelled { self.read_waiters.wake_all(); self.write_waiters.wake_all(); }
         cancelled
     }
@@ -157,8 +161,8 @@ impl NtPipe {
         transport.connected = true;
         transport.listening = false;
         drop(transport);
-        self.read_waiters.wake_all();
-        self.write_waiters.wake_all();
+        #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
+        { self.read_waiters.wake_all(); self.write_waiters.wake_all(); }
         true
     }
 
@@ -216,6 +220,7 @@ impl NtPipe {
         queue.extend(data[..count].iter().copied());
         let result = if count == 0 { NtPipeIo::WouldBlock } else { NtPipeIo::Complete(count) };
         drop(transport);
+        #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
         if count != 0 { self.read_waiters.wake_all(); }
         result
     }
@@ -227,6 +232,7 @@ impl NtPipe {
         for byte in &mut output[..count] { *byte = queue.pop_front().unwrap(); }
         if count != 0 {
             drop(transport);
+            #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
             self.write_waiters.wake_all();
             return NtPipeIo::Complete(count);
         }
@@ -240,8 +246,8 @@ impl NtPipe {
         let mut transport = self.transport.lock();
         match side { NtPipeSide::Server => transport.server_closed = true, NtPipeSide::Client => transport.client_closed = true }
         drop(transport);
-        self.read_waiters.wake_all();
-        self.write_waiters.wake_all();
+        #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
+        { self.read_waiters.wake_all(); self.write_waiters.wake_all(); }
     }
 
     fn disconnect(&self) {
@@ -253,8 +259,8 @@ impl NtPipe {
         transport.connected = false;
         transport.listening = false;
         drop(transport);
-        self.read_waiters.wake_all();
-        self.write_waiters.wake_all();
+        #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
+        { self.read_waiters.wake_all(); self.write_waiters.wake_all(); }
     }
 
     fn read_ready(&self, side: NtPipeSide) -> bool {
@@ -275,6 +281,7 @@ impl NtPipe {
     /// Wait until the endpoint can make progress, preserving the scheduler's
     /// prepare/recheck/park ordering used by every blocking kernel path.
     /// # Sleeps: yes
+    #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
     pub unsafe fn wait_for_io(&self, side: NtPipeSide, write: bool, deadline_ns: u64,
                               owner_tid: u32, io_status: u64, now: impl Fn() -> u64) -> NtPipeWait {
         let waiters = if write { &self.write_waiters } else { &self.read_waiters };
@@ -299,6 +306,7 @@ impl NtPipeEndpoint {
     pub fn read(&self, output: &mut [u8]) -> NtPipeIo { self.pipe.read(self.side, output) }
     pub fn completion_mode(&self) -> u32 { self.modes.lock().1 }
     /// # Sleeps: yes
+    #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
     pub unsafe fn wait_for_io(&self, write: bool, deadline_ns: u64, owner_tid: u32,
                               io_status: u64, now: impl Fn() -> u64) -> NtPipeWait {
         // SAFETY: forwards the endpoint's process-context wait contract.

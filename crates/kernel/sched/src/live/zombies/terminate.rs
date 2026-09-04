@@ -59,10 +59,7 @@ pub fn terminate_current_with_signal(sig: u8) -> ! {
             // PI ownership records are what release a PTHREAD_PRIO_INHERIT
             // mutex to the next waiter with FUTEX_OWNER_DIED. Same mm-still-
             // mapped requirement as the robust walk above.
-            {
-                let vt = task.security.vtid.load(Ordering::Acquire);
-                crate::live::run_pi_exit(if vt != 0 { vt } else { task.tid });
-            }
+            crate::live::run_pi_exit(task);
             // SysV SEM_UNDO recovery (Linux do_exit -> exit_sem). Every dying
             // task runs it: the list is shared by CLONE_SYSVSEM and refcounted,
             // so this drops only THIS task's reference and the adjustments are

@@ -42,18 +42,6 @@ fn copy_clone_args(uptr: u64, size: usize) -> Result<(CloneArgs, bool), Errno> {
     Ok((CloneArgs::from_slots(&words), tail_zero))
 }
 
-/// Resolve `clone_args::cgroup` to the cgroup the child is created inside.
-/// # C: O(1)
-fn resolve_cgroup(fd: i32) -> Result<u64, Errno> {
-    let cur = sched::live::current().ok_or(Errno::Esrch)?;
-    // SAFETY: running task on this CPU; preempt-off; sole reader of the fd_table slot.
-    let fdt = unsafe { cur.fd_table_ref() }.ok_or(Errno::Ebadf)?;
-    let file = fdt.get(fd).map_err(|_| Errno::Ebadf)?;
-    let inode = file.inode();
-    if inode.file_type() != vfs::FileType::Directory { return Err(Errno::Einval); }
-    cgroup::cgid_from_dir_inode(&inode).ok_or(Errno::Einval)
-}
-
 /// `sys_clone3(cl_args, size)` — slot 435. Returns the child's pid in the
 /// parent and 0 in the child.
 /// # C: O(parent VMAs) | O(1) for CLONE_VM
@@ -82,11 +70,8 @@ pub fn sys_clone3(args: &SyscallArgs) -> i64 {
     let stack_ok = cl.stack == 0
         || uaccess::access_ok(cl.stack, cl.stack_size as usize);
     if let Err(e) = clone_abi::clone3_flags_ok(&cl, stack_ok) { return errno(e); }
-    let into_cgid = if (cl.flags & CLONE_INTO_CGROUP) != 0 {
-        match resolve_cgroup(cl.cgroup as i32) {
-            Ok(id) => Some(id),
-            Err(e) => return errno(e),
-        }
+    let into_cgroup_fd = if (cl.flags & CLONE_INTO_CGROUP) != 0 {
+        Some(cl.cgroup as i32)
     } else {
         None
     };
@@ -101,7 +86,7 @@ pub fn sys_clone3(args: &SyscallArgs) -> i64 {
         pidfd: cl.pidfd,
         child_tid: cl.child_tid,
         tls: cl.tls,
-        into_cgroup: into_cgid,
+        into_cgroup_fd,
         set_tid: &requested[..requested_len],
     })
 }

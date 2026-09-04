@@ -50,3 +50,19 @@ pub fn resched_curr(cpu: u32) {
         unsafe { let _ = super::super::send_resched_ipi(cpu); }
     }
 }
+
+/// `resched_curr()` when the caller already holds and therefore pins the
+/// target runqueue. Mark that exact `rq->curr` directly; the generic CPU lookup
+/// would miss injected hosted runqueues and can race a global slot transition.
+pub(crate) fn resched_locked(rq: &crate::live::runqueue::Runqueue) {
+    use core::sync::atomic::Ordering;
+    let current = rq.current.load(Ordering::Acquire);
+    if !current.is_null() {
+        // SAFETY: the caller-held rq lock pins the current strong reference.
+        crate::preempt::resched::set_tsk_need_resched(unsafe { &*current });
+    }
+    if rq.cpu as u32 != this_cpu() {
+        // SAFETY: non-blocking reschedule IPI/SGI to the installed rq owner.
+        unsafe { let _ = super::super::send_resched_ipi(rq.cpu as u32); }
+    }
+}

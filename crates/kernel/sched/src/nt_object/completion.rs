@@ -3,6 +3,7 @@
 extern crate alloc;
 
 use alloc::collections::VecDeque;
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 use crate::live::WaitList;
 use sync::{Spinlock, TaskList as TaskListClass};
 
@@ -18,17 +19,21 @@ pub struct NtCompletionPacket {
 /// Queue-backed NT completion port. # C: O(1) post, O(N) wake
 pub struct NtCompletionPort {
     packets: Spinlock<VecDeque<NtCompletionPacket>, TaskListClass>,
+    #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
     waiters: WaitList,
     concurrency: u32,
 }
 
 impl NtCompletionPort {
     pub fn new(concurrency: u32) -> Self {
-        Self { packets: Spinlock::new(VecDeque::new()), waiters: WaitList::new(), concurrency }
+        Self { packets: Spinlock::new(VecDeque::new()),
+            #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
+            waiters: WaitList::new(), concurrency }
     }
 
     pub fn post(&self, packet: NtCompletionPacket) {
         self.packets.lock().push_back(packet);
+        #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
         self.waiters.wake_one();
     }
 
@@ -39,6 +44,7 @@ impl NtCompletionPort {
     pub fn concurrency(&self) -> u32 { self.concurrency }
 
     /// Sleep until a packet is available or the supplied deadline expires.
+    #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
     pub unsafe fn wait(&self, deadline_ns: u64, now: impl Fn() -> u64) -> crate::WaitOutcome {
         // SAFETY: caller is process context and the queue predicate owns no
         // caller lock while the scheduler parks the current task.

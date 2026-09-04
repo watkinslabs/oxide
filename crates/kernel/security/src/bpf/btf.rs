@@ -24,7 +24,7 @@ pub(crate) use kernel::{
     stream_kfunc_by_btf_id,
 };
 #[cfg(test)]
-pub(crate) use kernel::stream_vprintk_btf_id;
+pub(crate) use kernel::{lsm_hook_btf_id, stream_vprintk_btf_id};
 
 /// Highest type id any object may declare. An attach target above it names
 /// no type in any object and is refused before any object is consulted.

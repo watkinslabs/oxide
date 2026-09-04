@@ -42,11 +42,6 @@ type ActiveMmu = hal_x86_64::mmu_ops::X86Mmu;
 #[cfg(target_arch = "aarch64")]
 type ActiveMmu = hal_aarch64::mmu_ops::ArmMmu;
 
-/// Largest CPU-time delta charged in one `update_curr` - the scheduler
-/// tick period (10ms @ 100Hz). Caps a single charge against clock skew /
-/// a long IRQ-off window per `13§3`.
-const MAX_TICK_NS: u64 = 10_000_000;
-
 mod handoff;
 mod round;
 mod yield_api;
@@ -56,3 +51,26 @@ mod tests;
 pub(super) use round::schedule_once;
 pub use handoff::oxide_finish_task_switch;
 pub use yield_api::{park_yield, sched_yield, schedule, tick_yield};
+
+/// Settle the elapsed execution interval before a scheduler parameter change
+/// rewrites the task's class or weight. Linux does this through
+/// `update_rq_clock()` plus `put_prev_task()` inside `sched_change_begin()`.
+/// Oxide's running task is outside the class tree, so only the accounting half
+/// is needed here; the transaction requests a reschedule after the mutation.
+pub(crate) fn settle_running_for_change(task: &Task, inner: &RunqueueInner, now: u64) {
+    handoff::update_curr(task, inner, now);
+}
+
+/// Restart the accounting clock after a running task's scheduler class or
+/// parameters change. Linux's generic `set_next_task()` dispatches to the new
+/// class here: Deadline owns a separate CBS clock, while Fair and RT share the
+/// scheduler-entity execution stamp.
+pub(crate) fn restart_running_after_change(task: &Task, now: u64) {
+    if matches!(task.sched_class(), crate::SchedClass::Deadline) {
+        crate::deadline::live::set_next_task_dl(task, now);
+    } else {
+        task.sched.se.exec_start.store(now, core::sync::atomic::Ordering::Release);
+    }
+}
+
+pub(crate) fn change_clock_now() -> u64 { handoff::now_ns() }

@@ -5,6 +5,9 @@
 // - sched_priority: canonical configured/normal/effective priority order.
 // - sched_entity: canonical fair/RT entity scalar state.
 // - sched_state: sole task scheduler-state owner and coherent snapshots.
+// - on_rq: canonical off/queued/migrating ownership state.
+// - pi: task-owned PI lock state and blocked-on relation.
+// - run_node: embedded RT and tree runqueue nodes.
 // - creds: POSIX credentials and capability helpers.
 // - audit_identity: per-task login uid/session identity and fork inheritance.
 // - dup: refcounted Task allocation (`dup_task_struct` shape) — construct into
@@ -51,6 +54,7 @@ pub mod dup;
 pub(crate) mod creds;
 mod exe_path;
 mod parent_arc;
+mod pi;
 mod proc_strings;
 mod rlimits;
 mod fd_table;
@@ -63,8 +67,10 @@ mod mempolicy;
 mod methods;
 mod net_namespace;
 mod namespaces;
+mod on_rq;
 pub mod restart;
 mod signals;
+mod run_node;
 mod sched_priority;
 mod sched_entity;
 mod sched_state;
@@ -80,12 +86,15 @@ pub use creds::{securebits, Creds, GroupList};
 pub use fs_context::{FsContext, FsContextSnapshot, UMASK_MASK};
 pub use io_context::current_ioprio;
 pub use namespaces::TaskNamespaceSnapshot;
+pub use on_rq::TaskOnRq;
+pub use pi::{PiBlockedOn, TaskPiState};
 pub use restart::RestartBlock;
 pub use signals::{SaHandler, SigActions, SignalPending, SA_IMMUTABLE, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK};
 pub use sched_priority::{DEFAULT_PRIO, FairPriority, MAX_DL_PRIO, MAX_NICE, MAX_PRIO,
     MAX_RT_PRIO, MIN_NICE, NtFixedPriority, PosixRtPriority, SchedPriority,
     nice_to_prio, normal_prio_to_rt_priority, prio_to_nice, rt_priority_to_normal_prio};
 pub use sched_entity::{LoadWeight, SchedEntity, SchedRtEntity};
+pub(crate) use run_node::{RtRunNode, TreeRunNode};
 pub(crate) use sched_entity::{SchedEntityState, SchedRtEntityState};
 #[cfg(test)]
 pub(crate) use sched_entity::AtomicLoadWeight;

@@ -243,7 +243,7 @@ pub fn user_ns_is_ancestor(ancestor: &NamespacePin, descendant: &NamespacePin) -
 /// target is not a descendant, which is a refusal.
 /// # C: O(depth)
 pub fn has_cap_for(cur: &sched::Task, target_user_ns: &NamespacePin, cap: u32) -> bool {
-    let Some(cur_ns) = cur.namespace_owner(NamespaceKind::User) else { return false; };
+    let cur_ns = cur.security.creds.user_namespace();
     let cred_ns = cur_ns.pin();
     let euid = cur.security.creds.euid.load(core::sync::atomic::Ordering::Acquire);
     let mut ns = target_user_ns.clone();
@@ -260,6 +260,20 @@ pub fn has_cap_for(cur: &sched::Task, target_user_ns: &NamespacePin, cap: u32) -
         }
         ns = parent;
     }
+}
+
+/// Check `cur`'s capability against the immutable user namespace retained by
+/// `target`'s credentials, including after ordinary namespace teardown.
+/// # C: O(userns depth)
+pub fn has_cap_for_task(cur: &sched::Task, target: &sched::Task, cap: u32) -> bool {
+    let target_ns = target.security.creds.user_namespace();
+    has_cap_for(cur, &target_ns.pin(), cap)
+}
+
+/// Check `cur`'s capability against the initial user namespace. # C: O(depth)
+pub fn has_cap_in_initial_user_ns(cur: &sched::Task, cap: u32) -> bool {
+    let initial = namespace_identity::initial(NamespaceKind::User);
+    has_cap_for(cur, &initial.pin(), cap)
 }
 
 /// The writer must hold `cap` in `target_user_ns`'s PARENT (or an ancestor of
@@ -364,10 +378,15 @@ pub fn setns_apply(ns: &NsInode, nstype: u64, cur: &sched::Task) -> i64 {
         if !cur.thread_group.is_single_member() {
             return -(Errno::Eusers.as_i32() as i64);
         }
-        let target_user = owner.owner_user_namespace();
-        let Some(current_user) = cur.namespace_owner(NamespaceKind::User) else {
+        // Namespace installation is prepared against a live namespace set;
+        // no irreversible time-offset commit may happen after that set has
+        // already been released. A successful replacement below cannot fail
+        // for the current task once this point has been reached.
+        if cur.namespace_snapshot().is_none() {
             return -(Errno::Esrch.as_i32() as i64);
-        };
+        }
+        let target_user = owner.owner_user_namespace();
+        let current_user = cur.security.creds.user_namespace();
         if !has_cap_for(cur, &target_user, sched::cap::SYS_ADMIN)
             || !has_cap_for(cur, &current_user.pin(), sched::cap::SYS_ADMIN)
         {

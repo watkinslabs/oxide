@@ -30,38 +30,63 @@ pub fn need_resched() -> bool { crate::preempt::take_need_resched() }
 /// blocks or yields — that is its defining guarantee, and preempting it every
 /// tick makes FIFO behave exactly like RR.
 ///
-/// `SCHED_RR` decrements its quantum and only requeues when it is exhausted,
-/// and then only if it is not alone at its level (Linux checks
-/// `run_list.prev != run_list.next`; requeueing a sole runnable task is pure
-/// overhead). Everything else — fair and idle — preempts per tick as before.
+/// Runtime is settled before the class decision, including the FIFO early
+/// return. `SCHED_RR` decrements its quantum and only requeues when it is
+/// exhausted, and then only if it is not alone at its level. Everything else
+/// — fair and idle — preempts per tick as before.
 /// # C: O(1)
 pub fn task_tick() {
-    let Some(cur) = crate::current() else { crate::preempt::set_need_resched(); return; };
+    let Some(rq) = crate::live::runqueue::global()
+        else { crate::preempt::set_need_resched(); return; };
+    // SAFETY: timer IRQ context is preempt-disabled and this CPU's runqueue
+    // owns its current task for the complete tick callback.
+    let cur = unsafe { rq.current_ref() };
     // Deadline class first: it is the only class whose tick can REVOKE the CPU
     // outright, and its budget must be charged before any other class rule runs.
     if matches!(cur.sched_class(), crate::SchedClass::Deadline) {
         crate::deadline::live::task_tick_dl(cur);
         return;
     }
+    task_tick_with_clock(cur, rq, crate::live::schedule::change_clock_now);
+}
+
+fn task_tick_with_clock<F>(cur: &crate::Task, rq: &crate::live::runqueue::Runqueue, now: F)
+where F: FnOnce() -> u64 {
+    use core::sync::atomic::Ordering;
+
+    // The rq lock serialises this snapshot with class changes and keeps the
+    // running Fair entity outside its class tree while its vruntime advances.
+    let inner = rq.inner.lock_irqsave::<crate::live::runqueue::RqIrq>();
+    crate::live::schedule::settle_running_for_change(cur, &inner, now());
     let policy = cur.sched_policy_code();
-    let left = cur.sched.rt.time_slice.load(core::sync::atomic::Ordering::Acquire);
-    if policy == crate::sched_enc::SCHED_RR {
-        if left > 1 {
-            cur.sched.rt.time_slice.store(left - 1, core::sync::atomic::Ordering::Release);
-            return;
-        }
-        cur.sched.rt.time_slice.store(crate::sched_enc::RR_TIMESLICE_TICKS,
-                                      core::sync::atomic::Ordering::Release);
+    if policy == crate::sched_enc::SCHED_FIFO { return; }
+    if policy != crate::sched_enc::SCHED_RR {
+        crate::preempt::set_need_resched();
+        return;
     }
-    let peer = crate::live::runqueue::has_rt_peer_at_same_level(cur);
+    let left = cur.sched.rt.time_slice.load(Ordering::Acquire);
+    if left > 1 {
+        cur.sched.rt.time_slice.store(left - 1, Ordering::Release);
+        return;
+    }
+    cur.sched.rt.time_slice.store(crate::sched_enc::RR_TIMESLICE_TICKS,
+                                  Ordering::Release);
+    let peer = match cur.sched_class() {
+        crate::SchedClass::Rt { prio, .. } => inner.rt.has_peer_at(prio),
+        _ => false,
+    };
     // A spent SCHED_RR quantum is the one tick outcome that ROTATES the task:
     // mark it so `put_prev_task` returns it behind its equal-priority peers
     // instead of ahead of them. Nothing else — a SCHED_FIFO task has no
     // quantum and must keep its place across any number of preemptions.
     if crate::sched_enc::requeue::tick_gives_up_turn(policy, left, peer) {
-        cur.rt_requeue_tail.store(true, core::sync::atomic::Ordering::Release);
+        cur.rt_requeue_tail.store(true, Ordering::Release);
     }
     if crate::sched_enc::rt_tick_wants_resched(policy, left, peer) {
         crate::preempt::set_need_resched();
     }
 }
+
+#[cfg(test)]
+#[path = "preempt/tests.rs"]
+mod tests;

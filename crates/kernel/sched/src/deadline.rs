@@ -13,6 +13,7 @@
 //   clock.rs     — the monotonic source, selected at the module boundary.
 //   replenish.rs — throttled entities ordered by replenishment instant, folded
 //                  into the hardware one-shot.
+//   inactive.rs  — ordinary bookings retained until zero lag after leave/exit.
 //   live.rs      — the runqueue/tick/yield wiring that applies `cbs.rs`.
 //
 // The ready set itself lives beside the other class runqueues in `dl.rs`, so
@@ -22,6 +23,7 @@ pub mod bw;
 pub mod cbs;
 pub mod clock;
 pub mod entity;
+pub mod inactive;
 pub mod params;
 
 pub mod live;
@@ -29,6 +31,14 @@ pub mod replenish;
 
 #[cfg(test)]
 #[path = "deadline/tests/live.rs"] mod live_tests;
+#[cfg(test)]
+#[path = "deadline/tests/transaction.rs"] mod transaction_tests;
+#[cfg(test)]
+#[path = "deadline/tests/timer_shape.rs"] mod timer_shape_tests;
+#[cfg(test)]
+#[path = "deadline/tests/replenish.rs"] mod replenish_tests;
+#[cfg(test)]
+#[path = "deadline/tests/edf.rs"] mod edf_tests;
 
 pub use cbs::{dl_time_before, Charged, DlSched};
 pub use entity::DlEntity;
@@ -55,7 +65,7 @@ pub fn enqueue_admits(task: &crate::task::Task) -> bool {
 /// against capacity that does not exist yet.
 /// # C: O(1)
 pub fn span() -> cpu::CpuMask {
-    let m = cpu::smp::online_cpumask();
+    let m = cpu::smp::capacity_cpumask();
     if m.is_empty() { cpu::CpuMask::of(0) } else { m }
 }
 

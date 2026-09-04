@@ -58,6 +58,18 @@ fn is_nice_reduction(target: &sched::Task, nice: i32) -> bool {
     nice_to_rlimit(nice) as i64 <= lim as i64
 }
 
+/// Whether `caller` holds `CAP_SYS_NICE` over `target`'s credential namespace.
+/// # C: O(userns depth)
+fn target_cap_sys_nice(caller: &sched::Task, target: &sched::Task) -> bool {
+    nscg::proc_ns::has_cap_for_task(caller, target, sched::cap::SYS_NICE)
+}
+
+/// Whether `caller` holds `CAP_SYS_NICE` in the initial user namespace.
+/// # C: O(userns depth)
+fn capable_sys_nice(caller: &sched::Task) -> bool {
+    nscg::proc_ns::has_cap_in_initial_user_ns(caller, sched::cap::SYS_NICE)
+}
+
 /// Linux `check_same_owner()`: caller's euid matches the target's euid or ruid.
 /// # C: O(1)
 pub fn check_same_owner(caller: &sched::Task, target: &sched::Task) -> bool {
@@ -66,11 +78,61 @@ pub fn check_same_owner(caller: &sched::Task, target: &sched::Task) -> bool {
         || euid == target.security.creds.ruid.load(Ordering::Acquire)
 }
 
-/// Linux `user_check_sched_setscheduler()` verbatim: every branch that needs
-/// privilege falls through to a single `capable(CAP_SYS_NICE)` test, so
-/// `CAP_SYS_NICE` is an override rather than a precondition. Returns `0` or
-/// `-EPERM`.
-/// # C: O(1)
+/// Authorize one `setpriority` target before mutation. Ownership is checked
+/// first, then the priority-raise limit, then the stacked task hook.
+/// # C: O(userns depth + LSM providers)
+pub(crate) fn setpriority_check(caller: &sched::Task, target: &sched::Task, nice: i32)
+    -> Result<(), i64>
+{
+    if !check_same_owner(caller, target) && !target_cap_sys_nice(caller, target) {
+        return Err(err(Errno::Eperm));
+    }
+    if nice < target.nice_value() as i32 && !is_nice_reduction(target, nice)
+        && !capable_sys_nice(caller) {
+        return Err(err(Errno::Eacces));
+    }
+    security::lsm::task_setnice(caller, target, nice)
+}
+
+/// Hosted-testable state of one `setpriority` target walk. # C: O(1) per target
+pub(crate) struct SetpriorityWalk<'a> {
+    caller: &'a sched::Task,
+    nice: i8,
+    error: i64,
+}
+
+impl<'a> SetpriorityWalk<'a> {
+    /// Validate the selector, clamp the requested nice value, and seed ESRCH.
+    /// # C: O(1)
+    pub(crate) fn new(which: u64, caller: &'a sched::Task, nice: i32) -> Result<Self, i64> {
+        if crate::priority_target::which_from_prio_base(which).is_none() {
+            return Err(err(Errno::Einval));
+        }
+        Ok(Self { caller, nice: sched::rlimit::clamp_nice(nice), error: err(Errno::Esrch) })
+    }
+
+    /// Clamped nice value applied to every permitted target. # C: O(1)
+    pub(crate) fn nice(&self) -> i8 { self.nice }
+
+    /// Apply one target with Linux error accumulation and mutation ordering.
+    /// # C: O(userns depth + LSM providers)
+    pub(crate) fn visit(&mut self, target: &sched::Task, apply: impl FnOnce()) {
+        if let Err(rv) = setpriority_check(self.caller, target, self.nice as i32) {
+            self.error = rv;
+            return;
+        }
+        if self.error == err(Errno::Esrch) { self.error = 0; }
+        apply();
+    }
+
+    /// Final syscall result after every selected target was visited. # C: O(1)
+    pub(crate) fn result(&self) -> i64 { self.error }
+}
+
+/// Scheduler-policy privilege ladder. Every branch that needs privilege falls
+/// through to one initial-user-namespace `CAP_SYS_NICE` test, so the capability
+/// is an override rather than a precondition. Returns `0` or `-EPERM`.
+/// # C: O(userns depth)
 pub fn user_check(caller: &sched::Task, target: &sched::Task,
                   policy: u32, nice: i32, prio: u32, reset_on_fork: bool) -> i64 {
     let mut req_priv = false;
@@ -100,7 +162,7 @@ pub fn user_check(caller: &sched::Task, target: &sched::Task,
     // Normal users shall not reset the sched_reset_on_fork flag.
     if target.priority_snapshot().reset_on_fork && !reset_on_fork { req_priv = true; }
 
-    if req_priv && !caller.has_cap(sched::cap::SYS_NICE) { return err(Errno::Eperm); }
+    if req_priv && !capable_sys_nice(caller) { return err(Errno::Eperm); }
     0
 }
 
@@ -117,11 +179,10 @@ pub fn user_check(caller: &sched::Task, target: &sched::Task,
 pub fn get_params(t: &sched::Task, attr: &mut SchedAttr, dynamic: bool) {
     let policy = task_policy(t);
     if dl_policy(policy) {
-        let p = t.sched_deadline_params();
+        let (p, s) = t.sched_deadline_snapshot();
         attr.priority = task_rt_priority(t);
         attr.period = p.period;
         if dynamic {
-            let s = t.sched_deadline_state();
             attr.runtime = s.runtime as u64;
             attr.deadline = s.deadline;
         } else {

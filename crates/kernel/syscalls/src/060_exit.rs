@@ -207,10 +207,7 @@ pub fn do_exit(status: i32) -> i64 {
             // PI ownership records are what release a PTHREAD_PRIO_INHERIT
             // mutex to the next waiter with FUTEX_OWNER_DIED. Same mm-still-
             // mapped requirement as the robust walk above.
-            {
-                let vt = task.security.vtid.load(Ordering::Acquire);
-                ipc::live::futex::exit_pi_state_list(if vt != 0 { vt } else { task.tid });
-            }
+            ipc::live::futex::exit_pi_state_list(task);
             // SysV SEM_UNDO recovery (Linux do_exit -> exit_sem): this task
             // drops its reference on the adjustment list, and the adjustments
             // are applied only when the LAST holder does. Unconditional, and

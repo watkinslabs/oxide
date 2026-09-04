@@ -4,6 +4,7 @@
 // directories that do not exist.
 #![allow(dead_code)]
 #[path = "../../../src/live/futex/pi/state.rs"] pub mod state;
+#[path = "../../../src/live/futex/pi/graph.rs"] pub mod graph;
 #[path = "../../../src/live/futex/pi/lock.rs"] pub mod lock;
 #[path = "../../../src/live/futex/pi/park.rs"] pub mod park;
 #[path = "../../../src/live/futex/pi/unlock.rs"] pub mod unlock;

@@ -10,7 +10,7 @@ fn target_drain_completes_a_current_task_wake_without_waiting_on_itself() {
     let rq = cpus.get(CPU).expect("test cpu installed");
     let t = parked_but_still_running(2011, CPU);
     assert!(t.claim_wake());
-    wake_list_push(CPU, Arc::clone(&t));
+    wake_list_push_selected(CPU, Arc::clone(&t));
 
     assert!(!sched_ttwu_pending(CPU, Arc::as_ptr(&t) as *mut Task, rq));
     assert_eq!(t.state(), TaskState::Runnable);

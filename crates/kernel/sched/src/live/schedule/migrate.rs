@@ -30,7 +30,7 @@ use alloc::sync::Arc;
 use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
 use crate::{SchedClass, Task};
-use crate::live::runqueue::{global_for, Runqueue};
+use crate::live::runqueue::{global_for, RqIrq, Runqueue};
 
 /// `target` value meaning "slot empty".
 const NO_TARGET: u32 = u32::MAX;
@@ -58,27 +58,45 @@ pub fn evict_target_for_with<'a, F>(
     transition: Option<u32>,
 ) -> Option<u32>
 where F: Fn(u32) -> Option<&'a Runqueue> {
+    evict_target_for_active_with(get_rq, cpu, task, transition, &|cpu| get_rq(cpu).is_some())
+}
+
+pub(crate) fn evict_target_for_active_with<'a, F, A>(
+    get_rq: &F,
+    cpu: u32,
+    task: &Task,
+    transition: Option<u32>,
+    active: &A,
+) -> Option<u32>
+where F: Fn(u32) -> Option<&'a Runqueue>, A: Fn(u32) -> bool {
     if matches!(task.sched_class(), SchedClass::Idle) { return None; }
     if let Some(target) = transition {
         if target == cpu { return None; }
-        return get_rq(target).is_some().then_some(target);
+        return (active(target) && get_rq(target).is_some()).then_some(target);
     }
     let allowed = task.cpus_allowed.load(Ordering::Acquire);
-    if cpu_permitted(allowed, cpu) { return None; }
-    let target = crate::live::ttwu::select_task_rq_with(get_rq, cpu, task);
-    if target == cpu || !cpu_permitted(allowed, target) { return None; }
+    if cpu_permitted(allowed, cpu) && active(cpu) { return None; }
+    let target = crate::live::ttwu::select_task_rq_with(&|candidate| {
+        if active(candidate) { get_rq(candidate) } else { None }
+    }, cpu, task);
+    // The enclosing placement reader keeps an old ACTIVE sample valid through
+    // publication into PARKED. Destination attachment revalidates under its
+    // rq lock and can choose another active CPU.
+    if target == cpu { return None; }
     if get_rq(target).is_none() { return None; }
     Some(target)
 }
 
 /// [`evict_target_with`] over the live per-CPU runqueues. # C: O(N_cpus)
 pub fn evict_target(cpu: u32, task: &Task) -> Option<u32> {
+    let _placement = sync::rcu_read_lock();
     // SAFETY: `global_for` is sound for any index and yields `None` for a CPU
     // that has not completed `install_global`, which the scan skips.
-    evict_target_for_with(
+    evict_target_for_active_with(
         // SAFETY: each queried index is range-checked by `global_for`, and a
         // missing runqueue is represented as `None` rather than dereferenced.
         &|c| unsafe { global_for(c) }, cpu, task, transition_target(task),
+        &cpu::smp::is_active,
     )
 }
 
@@ -204,6 +222,26 @@ pub fn unpark(cpu: u32) -> Option<Arc<Task>> {
     Some(task)
 }
 
+/// Whether switch-time placement still owns a detached task for `cpu`.
+/// # C: O(1)
+pub fn has_parked(cpu: u32) -> bool {
+    PARKED.get(cpu as usize).is_some_and(|slot| !slot.task.load(Ordering::Acquire).is_null())
+}
+
+/// True when switch-tail owns this exact, now-off-CPU task.  Keeping the slot
+/// published until TaskPi is acquired lets PI updates recognize that there is
+/// no runqueue tree to re-key; the tail will consume their update before it
+/// attaches the task to a destination.  `on_cpu == false` excludes the
+/// no-switch rollback, which still has to requeue under the source rq lock.
+/// # C: O(1)
+pub(crate) fn owns_switched_parked(cpu: u32, task: &Task) -> bool {
+    if task.on_cpu.load(Ordering::Acquire) { return false; }
+    PARKED.get(cpu as usize).is_some_and(|slot| {
+        let raw = slot.task.load(Ordering::Acquire);
+        !raw.is_null() && core::ptr::eq(raw.cast_const(), core::ptr::from_ref(task))
+    })
+}
+
 /// Reclaim the parked task and its destination. # C: O(1)
 fn take(cpu: u32) -> Option<(Arc<Task>, u32)> {
     let slot = PARKED.get(cpu as usize)?;
@@ -219,23 +257,80 @@ fn take(cpu: u32) -> Option<(Arc<Task>, u32)> {
 /// kick so it re-picks. Caller must hold NO runqueue lock: this takes the
 /// destination runqueue's lock.
 /// # C: O(log N)
+#[cfg(test)]
 pub fn place_parked_with<'a, F>(get_rq: &F, cpu: u32) -> Option<u32>
 where F: Fn(u32) -> Option<&'a Runqueue> {
-    let (task, target) = take(cpu)?;
-    // The destination went away between the park and here: keep the task
-    // runnable on this CPU rather than stranding it.
-    let dest = if get_rq(target).is_some() { target } else { cpu };
-    // `dest` was just confirmed installed, so this cannot fail.
-    let _ = crate::live::rq_locate::enqueue_on_with(get_rq, dest, task);
-    Some(dest)
+    place_parked_with_lock_probe(get_rq, cpu, &|cpu| get_rq(cpu).is_some(),
+        &mut || {}, &mut |_, _, _| {})
 }
 
-/// [`place_parked_with`] over the live per-CPU runqueues, plus the reschedule
-/// kick the destination needs to pick the task up.
+#[cfg(test)]
+fn place_parked_with_probe<'a, F, A, P>(get_rq: &F, cpu: u32, active: &A,
+    probe: &mut P) -> Option<u32>
+where F: Fn(u32) -> Option<&'a Runqueue>, A: Fn(u32) -> bool,
+      P: FnMut(crate::live::migration::MovePoint, u32, &Task) {
+    place_parked_with_lock_probe(get_rq, cpu, active, &mut || {}, probe)
+}
+
+#[cfg(test)]
+fn place_parked_with_lock_probe<'a, F, A, L, P>(get_rq: &F, cpu: u32, active: &A,
+    lock_blocked: &mut L, probe: &mut P) -> Option<u32>
+where F: Fn(u32) -> Option<&'a Runqueue>, A: Fn(u32) -> bool, L: FnMut(),
+      P: FnMut(crate::live::migration::MovePoint, u32, &Task) {
+    let slot = PARKED.get(cpu as usize)?;
+    let raw = slot.task.load(Ordering::Acquire);
+    if raw.is_null() { return None; }
+    // Retain the published task before waiting for TaskPi.  Most importantly,
+    // do not clear PARKED first: an already-running PI transaction must be
+    // able to classify this off-rq bridge and finish, otherwise both sides
+    // wait forever (PI waits for MIGRATING; switch-tail waits for TaskPi).
+    // SAFETY: this CPU is the sole slot consumer and the slot owns one Arc
+    // until `take`; this increment creates the independent `pi_owner` Arc.
+    unsafe { Arc::increment_strong_count(raw); }
+    // SAFETY: balances the increment immediately above.
+    let pi_owner = unsafe { Arc::from_raw(raw) };
+    if pi_owner.pi_lock.try_lock().is_none() { lock_blocked(); }
+    let _pi = pi_owner.pi_lock.lock_irqsave::<RqIrq>();
+    let (task, target) = take(cpu)?;
+    let _placement = sync::rcu_read_lock();
+    match crate::live::migration::place_detached_with(
+        get_rq, task, Some(target), active, probe) {
+        Ok(dest) => Some(dest),
+        Err(task) => {
+            let slot = &PARKED[cpu as usize];
+            slot.target.store(target, Ordering::Release);
+            slot.task.store(Arc::into_raw(task) as *mut Task, Ordering::Release);
+            None
+        }
+    }
+}
+
+/// Place the switch-tail task on a live runqueue and kick a remote destination.
 /// # C: O(log N)
 pub fn place_parked(cpu: u32) {
-    // SAFETY: `global_for` is sound for any index; `None` for a CPU that has
-    // not installed its runqueue, which routes the task back to `cpu`.
-    let dest = place_parked_with(&|c| unsafe { global_for(c) }, cpu);
-    if let Some(d) = dest { if d != cpu { crate::live::ttwu::resched_curr(d); } }
+    let Some(slot) = PARKED.get(cpu as usize) else { return; };
+    let raw = slot.task.load(Ordering::Acquire);
+    if raw.is_null() { return; }
+    // SAFETY: the per-CPU switch tail is the sole consumer; PARKED retains
+    // the original strong reference until `take` below.
+    unsafe { Arc::increment_strong_count(raw); }
+    // SAFETY: balances the increment immediately above.
+    let pi_owner = unsafe { Arc::from_raw(raw) };
+    let pi = pi_owner.pi_lock.lock_irqsave::<RqIrq>();
+    let Some((task, target)) = take(cpu) else { return; };
+    let result = {
+        let _placement = sync::rcu_read_lock();
+        crate::live::migration::finish_unplaced_pi_locked_with(
+            &|candidate| unsafe { global_for(candidate) }, task, cpu, Some(target),
+            &cpu::smp::is_active, &mut |_, _, _| {})
+    };
+    drop(pi);
+    drop(pi_owner);
+    if let crate::live::migration::MoveResult::Moved { to, .. } = result {
+        if to != cpu { crate::live::ttwu::resched_curr(to); }
+    }
 }
+
+#[cfg(test)]
+#[path = "migrate/tests.rs"]
+mod tests;

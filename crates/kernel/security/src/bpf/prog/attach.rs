@@ -370,7 +370,7 @@ fn lsm_link_create(l: attr::LinkCreate, prog: InodeRef) -> Result<i64, Errno> {
         return Err(Errno::Einval);
     }
     let hook = attach_target_hook(&prog).ok_or(Errno::Einval)?;
-    let id = crate::bpf_lsm::register(hook, Arc::clone(&prog));
+    let id = crate::bpf_lsm::register(hook, Arc::clone(&prog))?;
     let link = make_bpf_lsm_link_inode(BpfLsmLinkInode { id, _hook: hook, _prog: prog });
     install_fd(link, "bpf-link")
 }

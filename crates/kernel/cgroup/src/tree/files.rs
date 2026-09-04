@@ -44,10 +44,23 @@ impl Tree {
             }
             "cgroup.max.depth" => "max\n".to_string(),
             "cgroup.max.descendants" => "max\n".to_string(),
-            "pids.current" => format!("{}\n", self.subtree_proc_count(id)),
+            "pids.current" => format!("{}\n", self.subtree_pids_count(id)),
             "pids.max" => { let mut o = fmt_max(n.pids_max); o.push('\n'); o }
-            "pids.peak" => format!("{}\n", self.subtree_proc_count(id)),
-            "pids.events" => "max 0\n".to_string(),
+            "pids.peak" => format!("{}\n", n.pids_peak),
+            "pids.events" => {
+                let count = if crate::state::root_flags()
+                    .has(crate::root_flags::RootFlag::PidsLocalEvents) {
+                    n.pids_forkfail_local
+                } else { n.pids_events };
+                format!("max {}\n", count)
+            }
+            "pids.events.local" => {
+                let count = if crate::state::root_flags()
+                    .has(crate::root_flags::RootFlag::PidsLocalEvents) {
+                    n.pids_forkfail_local
+                } else { n.pids_events_local };
+                format!("max {}\n", count)
+            }
             "memory.current" => format!("{}\n", self.subtree_mem(id)),
             "memory.max" => { let mut o = fmt_max(n.mem_max); o.push('\n'); o }
             "memory.high" => { let mut o = fmt_max(n.mem_high); o.push('\n'); o }

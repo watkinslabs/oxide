@@ -215,10 +215,9 @@ fn unreadable_register_and_stack_access_failures_are_access_denied() {
     }
 }
 
-/// Type id of `bpf_iter_bpf_prog` in the published object: the hook stubs
-/// come first, then one forward declaration, one pointer, the prototype and
-/// the stub per iterator argument.
-const ITER_BPF_PROG_BTF_ID: u32 = 11;
+/// Type id of `bpf_iter_bpf_prog` in the published object: task hooks precede
+/// iterator stubs, and repeated opaque argument pointer types are interned.
+const ITER_BPF_PROG_BTF_ID: u32 = 17;
 
 #[test]
 fn an_iterator_program_loads_against_a_published_target() {

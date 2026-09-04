@@ -13,17 +13,24 @@ pub const VIRTIO_ID_PMEM: u16 = 27;
 pub const DRIVER_ID: virtio::VirtioChildDriverId =
     virtio::VirtioChildDriverId::new("virtio-pmem", VIRTIO_ID_PMEM);
 pub use virtio::VIRTIO_PMEM_F_SHMEM_REGION;
+#[cfg_attr(not(target_os = "oxide-kernel"), allow(dead_code))]
 pub const VIRTIO_PMEM_REGION_ID: u32 = 0;
+#[cfg_attr(not(target_os = "oxide-kernel"), allow(dead_code))]
 const PMEM_BLOCK_BYTES: u32 = 512;
+#[cfg_attr(not(target_os = "oxide-kernel"), allow(dead_code))]
 const PMEM_FLUSH_POLL_BUDGET: u32 = 2_000_000;
+#[cfg_attr(not(target_os = "oxide-kernel"), allow(dead_code))]
 const PMEM_REQUEST_BYTES: usize = 4;
+#[cfg_attr(not(target_os = "oxide-kernel"), allow(dead_code))]
 const PMEM_RESPONSE_BYTES: usize = 4;
+#[cfg_attr(not(target_os = "oxide-kernel"), allow(dead_code))]
 const PMEM_BOUNCE_BYTES: usize = PMEM_REQUEST_BYTES + PMEM_RESPONSE_BYTES;
 
 #[cfg(feature = "debug-pmem")]
 fn pmem_diag(message: &[u8]) { klog::write_raw(b"[PMEM-IO] "); klog::write_raw(message); }
 
 #[cfg(not(feature = "debug-pmem"))]
+#[cfg_attr(not(target_os = "oxide-kernel"), allow(dead_code))]
 fn pmem_diag(_message: &[u8]) {}
 
 pub const fn transport_profile() -> virtio::VirtioTransportProfile {
@@ -38,11 +45,13 @@ pub const fn transport_profile() -> virtio::VirtioTransportProfile {
     virtio::VirtioTransportProfile::q0(VIRTIO_PMEM_F_SHMEM_REGION, None)
 }
 
+#[cfg_attr(not(target_os = "oxide-kernel"), allow(dead_code))]
 fn region_from_geometry(base_pa: u64, size_bytes: u64) -> Option<DaxRegion> {
     if size_bytes == 0 || base_pa.checked_add(size_bytes).is_none() { return None; }
     Some(DaxRegion { base_pa, size_bytes, partition_offset: 0, synchronous: false })
 }
 
+#[cfg_attr(not(target_os = "oxide-kernel"), allow(dead_code))]
 struct PmemInner {
     queue: virtio::VirtioSplitQueue,
     bounce_pa: u64,
@@ -51,6 +60,7 @@ struct PmemInner {
     bdf: pci::Bdf,
 }
 
+#[cfg_attr(not(target_os = "oxide-kernel"), allow(dead_code))]
 struct PmemDevice {
     region: DaxRegion,
     cfg_va: u64,
@@ -59,6 +69,7 @@ struct PmemDevice {
     flush_lock: Mutex<()>,
 }
 
+#[cfg_attr(not(target_os = "oxide-kernel"), allow(dead_code))]
 struct PmemRecord {
     key: virtio::VirtioChildDeviceKey,
     name: String,

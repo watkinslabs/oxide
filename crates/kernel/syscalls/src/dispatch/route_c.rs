@@ -12,7 +12,7 @@ fn legacy_clone_request(flags: u64, child_stack: u64, parent_tid: u64, child_tid
         flags,
         exit_signal: crate::clone_abi::FORK_EXIT_SIGNAL,
         child_stack, parent_tid, pidfd: 0, child_tid, tls,
-        into_cgroup: None,
+        into_cgroup_fd: None,
         set_tid: &[],
     }
 }
@@ -117,7 +117,7 @@ pub(super) fn dispatch_route_c(nr: u64, args: &SyscallArgs) -> Option<i64> {
                 pidfd: args.a2,
                 child_tid,
                 tls,
-                into_cgroup: None,
+                into_cgroup_fd: None,
                 set_tid: &[],
             })
         }

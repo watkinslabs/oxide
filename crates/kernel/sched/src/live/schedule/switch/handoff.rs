@@ -14,7 +14,7 @@ pub fn now_ns() -> u64 {
 }
 
 /// `update_curr(prev)` per `13§3`/`13§8`: charge the CPU time the prev
-/// task just consumed (`now - exec_start`, clamped) to its
+/// task just consumed (the complete positive `now - exec_start`) to its
 /// `sum_exec_runtime`, advance its vruntime by that delta scaled by
 /// load weight (heavier/lower-nice -> slower vruntime -> more CPU), and
 /// re-stamp exec_start. The vruntime advance is floored at
@@ -41,7 +41,12 @@ pub fn update_curr(prev: &Task, inner: &RunqueueInner, now: u64) {
     // at zero. The vruntime advance below is fair-only, so the two parts are
     // gated separately.
     let start = prev.sched.se.exec_start.load(Ordering::Acquire);
-    let delta = crate::cputime::clamp_delta(now, start, MAX_TICK_NS);
+    if start == 0 {
+        prev.sched.se.exec_start.store(now, Ordering::Release);
+        return;
+    }
+    if now < start { return; }
+    let delta = crate::cputime::runtime_delta(now, start);
     if !crate::cputime::accounts_exec_runtime(prev.sched_class()) { return; }
     if delta != 0 {
         crate::cputime::charge_exec_runtime(prev, delta);
@@ -58,7 +63,8 @@ pub fn update_curr(prev: &Task, inner: &RunqueueInner, now: u64) {
     let vdelta = crate::cputime::vruntime_delta(delta, load).max(1);
     let cur = prev.sched.se.vruntime.load(Ordering::Acquire);
     let floor = inner.cfs.min_vruntime();
-    let new = core::cmp::max(cur, floor).saturating_add(vdelta);
+    let base = if crate::cfs::vruntime_before(cur, floor) { floor } else { cur };
+    let new = base.wrapping_add(vdelta);
     prev.sched.se.vruntime.store(new, Ordering::Release);
     prev.sched.se.exec_start.store(now, Ordering::Release);
 }
@@ -68,7 +74,7 @@ pub fn update_curr(prev: &Task, inner: &RunqueueInner, now: u64) {
 /// be able to see that the old task is no longer executing.
 /// # SAFETY: caller runs on this runqueue's CPU in scheduler context.
 /// # C: O(1)
-unsafe fn finish_switched_from(rq: &Runqueue) {
+unsafe fn finish_switched_from(rq: &Runqueue) -> bool {
     let from = rq.switched_from.swap(core::ptr::null_mut(), Ordering::AcqRel);
     if !from.is_null() {
         // SAFETY: `from` is the scheduler handoff pointer stored by schedule(); this debug read only validates the Task sentinel before the handoff write.
@@ -76,7 +82,10 @@ unsafe fn finish_switched_from(rq: &Runqueue) {
         // SAFETY: `from` was stored by schedule() before a context switch; the
         // outgoing task is kept alive by the switcher's frame or task registry.
         unsafe { (&(*from)).on_cpu.store(false, Ordering::Release); }
+        // SAFETY: the same live outgoing Task remains owned through unlock.
+        return unsafe { (&*from).kthread_parked.load(Ordering::Acquire) };
     }
+    false
 }
 
 /// Complete the lock/ownership half of a switch handoff exactly once.
@@ -95,9 +104,12 @@ pub unsafe fn finish_lock_switch_pending(rq: &Runqueue) -> bool {
     if rq.switched_from.load(Ordering::Acquire).is_null() { return false; }
     // SAFETY: the non-null token proves a preceding switch still owns both
     // the outgoing-task handoff and its forgotten rq guard.
-    unsafe { finish_switched_from(rq); }
+    let notify_park = unsafe { finish_switched_from(rq) };
     // SAFETY: paired 1:1 with that switch's lock()+mem::forget guard.
     unsafe { rq.inner.raw_unlock(); }
+    // Wake park controllers only after rq unlock; waking one can enqueue it
+    // and therefore must not recurse into this runqueue's raw lock.
+    if notify_park { crate::live::kthread::note_schedule_out(); }
     true
 }
 

@@ -83,6 +83,14 @@ impl Ring {
         self.len -= 1;
         w
     }
+
+    fn push_front(&mut self, w: Work) -> bool {
+        if self.len == WORK_CAPACITY { return false; }
+        self.head = (self.head + WORK_CAPACITY - 1) % WORK_CAPACITY;
+        self.items[self.head] = Some(w);
+        self.len += 1;
+        true
+    }
 }
 
 const EMPTY: Spinlock<Ring, WorkClass> = Spinlock::new(Ring::new());
@@ -124,16 +132,62 @@ fn this_cpu() -> usize {
 /// # C: O(1)
 /// # Ctx: any, including hard IRQ
 pub fn queue_work_on(cpu: usize, func: WorkFn, arg: usize) -> bool {
-    if cpu >= MAX_CPUS {
-        return false;
+    if cpu >= MAX_CPUS { return false; }
+    let work = Work { func, arg };
+    #[cfg(target_os = "oxide-kernel")]
+    {
+        // Keep the old ACTIVE observation live through the ring commit. CPU
+        // down clears ACTIVE and waits this RCU read side before evacuating
+        // the closed pool. An explicitly inactive target is served by the
+        // first active pool, matching Linux's disassociated worker-pool shape.
+        if let Some(_placement) = cpu::smp::placement_guard(cpu as u32) {
+            return enqueue_exact(cpu, work);
+        }
+        for target in 0..MAX_CPUS {
+            if let Some(_placement) = cpu::smp::placement_guard(target as u32) {
+                return enqueue_exact(target, work);
+            }
+        }
+        false
     }
-    let queued = QUEUE[cpu].lock_irqsave::<WqIrq>().push(Work { func, arg });
+    #[cfg(not(target_os = "oxide-kernel"))]
+    { enqueue_exact(cpu, work) }
+}
+
+fn enqueue_exact(cpu: usize, work: Work) -> bool {
+    let queued = QUEUE[cpu].lock_irqsave::<WqIrq>().push(work);
     if queued {
         // Wake outside the ring lock: the worker's first act is to take it.
         WAIT[cpu].wake_one();
         MANAGER_WAIT[cpu].wake_one();
     }
     queued
+}
+
+/// Move a closed CPU's pending pool to active workers. The ACTIVE grace has
+/// ended before this is called, so no old target publisher can append behind
+/// the scan. A full survivor queue restores the source head for retry.
+/// # C: O(pending * active CPUs)
+pub(crate) fn evacuate_offline(cpu: usize) -> bool {
+    if cpu >= MAX_CPUS || cpu::smp::is_active(cpu as u32) { return false; }
+    evacuate_offline_with(cpu, |work| queue_work_on(cpu, work.func, work.arg))
+}
+
+fn evacuate_offline_with(cpu: usize, mut enqueue: impl FnMut(Work) -> bool) -> bool {
+    if ACTIVE[cpu].load(Ordering::Acquire) != 0 { return false; }
+    loop {
+        let Some(work) = QUEUE[cpu].lock_irqsave::<WqIrq>().pop() else { return true; };
+        if enqueue(work) { continue; }
+        let restored = QUEUE[cpu].lock_irqsave::<WqIrq>().push_front(work);
+        hal::kassert!(restored, "closed workqueue lost its evacuated head");
+        return false;
+    }
+}
+
+/// Whether a closed pool owns neither queued nor executing work. # C: O(1)
+pub(crate) fn offline_quiescent(cpu: usize) -> bool {
+    cpu < MAX_CPUS && ACTIVE[cpu].load(Ordering::Acquire) == 0
+        && pending_on(cpu) == 0
 }
 
 /// Queue on the calling CPU (Linux `queue_work` on the bound workqueue).
@@ -194,6 +248,10 @@ unsafe fn drain(cpu: usize) {
 extern "C" fn kworker(arg: usize) -> ! {
     let my_cpu = if arg < MAX_CPUS { arg } else { 0 };
     loop {
+        if let Some(me) = super::current() {
+            // SAFETY: no queue lock or work item is owned at loop head.
+            unsafe { super::kthread::park_if_requested(me); }
+        }
         if pending_on(my_cpu) != 0 {
             // SAFETY: process-context kthread, IRQs enabled, no lock held —
             // exactly the context work items are promised.
@@ -225,10 +283,8 @@ fn spawn_worker(cpu: usize) -> Result<(), super::SpawnError> {
     // SAFETY: the manager runs only after this CPU has a live runqueue, and
     // kworker is the static process-context entrypoint pinned below.
     let arc = unsafe { super::spawn_kernel_thread(tid, "kworker", kworker, cpu) }?;
-    if cpu < 64 {
-        super::update_affinity(&arc, Some(cpu::CpuMask::of(cpu)), None);
-        arc.no_setaffinity.store(true, Ordering::Release);
-    }
+    super::update_affinity(&arc, Some(cpu::CpuMask::of(cpu)), None);
+    arc.no_setaffinity.store(true, Ordering::Release);
     drop(arc);
     WORKERS[cpu].fetch_add(1, Ordering::Release);
     Ok(())
@@ -238,6 +294,10 @@ fn spawn_worker(cpu: usize) -> Result<(), super::SpawnError> {
 extern "C" fn kworker_manager(arg: usize) -> ! {
     let cpu = if arg < MAX_CPUS { arg } else { 0 };
     loop {
+        if let Some(me) = super::current() {
+            // SAFETY: manager loop head owns no workqueue lock.
+            unsafe { super::kthread::park_if_requested(me); }
+        }
         let deficit = worker_deficit(pending_on(cpu), ACTIVE[cpu].load(Ordering::Acquire), WORKERS[cpu].load(Ordering::Acquire));
         for _ in 0..deficit { if spawn_worker(cpu).is_err() { break; } }
         // SAFETY: the manager owns no queue lock; work start and queue commit
@@ -263,11 +323,9 @@ pub fn spawn_kworkers() -> Result<(), super::SpawnError> {
         // SAFETY: boot path after install_default_runqueue + AP bring-up; the
         // manager is a static process-context entrypoint pinned below.
         let arc = unsafe { super::spawn_kernel_thread(tid, "kworkermgr", kworker_manager, n) }?;
-        if n < 64 {
-            super::update_affinity(&arc, Some(cpu::CpuMask::of(n as usize)), None);
-            // Linux `kthread_bind` -> PF_NO_SETAFFINITY (see ksoftirqd).
-            arc.no_setaffinity.store(true, Ordering::Release);
-        }
+        super::update_affinity(&arc, Some(cpu::CpuMask::of(n as usize)), None);
+        // Linux `kthread_bind` -> PF_NO_SETAFFINITY (see ksoftirqd).
+        arc.no_setaffinity.store(true, Ordering::Release);
         drop(arc);
     }
     Ok(())
@@ -382,5 +440,31 @@ mod tests {
         assert_eq!(pending_on(MAX_CPUS), 0);
         assert_eq!(completed_on(MAX_CPUS), 0);
         assert_eq!(dropped_on(MAX_CPUS), 0);
+    }
+
+    #[test]
+    fn offline_pool_evacuation_preserves_fifo_work() {
+        const C: usize = 5;
+        reset(C);
+        assert!(queue_work_on(C, noop, 10));
+        assert!(queue_work_on(C, noop, 20));
+        assert!(!offline_quiescent(C),
+            "positive control: parking workers alone leaves queued work behind");
+        let mut moved = std::vec::Vec::new();
+        assert!(evacuate_offline_with(C, |work| { moved.push(work.arg); true }));
+        assert_eq!(moved, std::vec![10, 20]);
+        assert!(offline_quiescent(C));
+    }
+
+    #[test]
+    fn failed_pool_evacuation_restores_the_source_head() {
+        const C: usize = 6;
+        reset(C);
+        assert!(queue_work_on(C, noop, 10));
+        assert!(queue_work_on(C, noop, 20));
+        assert!(!evacuate_offline_with(C, |_| false));
+        let mut queue = QUEUE[C].lock_irqsave::<WqIrq>();
+        assert_eq!(queue.pop().map(|work| work.arg), Some(10));
+        assert_eq!(queue.pop().map(|work| work.arg), Some(20));
     }
 }

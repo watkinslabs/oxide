@@ -109,18 +109,22 @@ fn read_epoll_event(ev: &[u8; 12]) -> (u32, u64) {
 }
 
 /// Publish a listener fd exactly the way `net::sock::ops::listen`'s AF_UNIX
-/// branch wires readiness: `listener.register_subs(&subs)`, and the SAME
+/// branch wires readiness: `listener.register_poll_subs(&subs)`, and the SAME
 /// `subs` shared with the inode epoll actually subscribes into.
 fn listener_file(listener: &Arc<UnixListener>) -> Arc<File> {
     let subs = Arc::new(PollSubscribers::new());
-    listener.register_subs(&subs);
+    let sock = Arc::new(net::sock::InetSocket::new_unix());
+    *sock.kind.lock() = net::sock::SockKind::UnixListener(listener.clone());
     let ino = NEXT_INO.fetch_add(1, Ordering::Relaxed);
     let inode = InodeBuilder::new(ino, mk_mode(FileType::Socket, 0o600),
         default_inode_ops(), Arc::new(ListenerPollOps(Arc::clone(listener))))
         .poll_subs_arc(subs)
         .build();
     let dentry = Dentry::new_root(Arc::clone(&inode));
-    File::new(inode, dentry, OpenFlags::O_RDWR)
+    let file = File::new(inode, dentry, OpenFlags::O_RDWR);
+    assert!(net::bind_file(&file, &sock));
+    assert!(file.inode().poll_subscribers_arc().is_some());
+    file
 }
 
 #[test]

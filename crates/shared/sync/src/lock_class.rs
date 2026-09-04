@@ -139,6 +139,10 @@ decl_lock_class! {
     // sits immediately above TaskList; readers release it before pinning a
     // candidate task's mm.
     MmTaskIndex  = 101,
+    // PI futex/rtmutex waiter tree. Held while taking the owner's TaskPi then
+    // runqueue lock so top-donor selection and publication are one transaction.
+    // Wakeups are queued and performed only after this lock is released.
+    RtMutexWait  = 104,
     // Linux task_struct::pi_lock equivalent. It serializes a task's wake
     // state and affinity selection before the selected runqueue is acquired,
     // so it must rank below Runqueue (the ttwu lock order is task -> rq).
@@ -241,4 +245,3 @@ decl_lock_class! {
     // call `crng::fill` with its own lock held.
     Crng         = 207,
 }
-

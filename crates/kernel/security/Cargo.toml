@@ -16,12 +16,17 @@ cmdline = { path = "../cmdline" }
 lsm-framework = { package = "lsm", path = "../lsm" }
 kernfs  = { path = "../../kernel/kernfs" }
 namespace-identity = { path = "../../kernel/namespace-identity" }
+nscg    = { path = "../../kernel/nscg" }
 pmm     = { path = "../../kernel/mm-pmm" }
 sched   = { path = "../../kernel/sched" }
+selinux-runtime = { path = "../../kernel/selinux-runtime" }
 sync    = { path = "../../shared/sync" }
 syscall = { path = "../../kernel/syscall" }
 uaccess = { path = "../../kernel/uaccess" }
 vfs     = { path = "../../kernel/vfs" }
+
+[dev-dependencies]
+selinux = { path = "../selinux", features = ["test-policy"] }
 
 [lints]
 workspace = true

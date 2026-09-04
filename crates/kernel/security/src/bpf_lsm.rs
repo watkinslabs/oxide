@@ -18,7 +18,8 @@ mod hooks;
 #[path = "bpf_lsm/registry.rs"]
 mod registry;
 
-pub use hooks::{HOOKS, Hook, Ret, SLOT_BYTES, Spec, context_bytes, hook_by_stub_name, spec};
+pub use hooks::{Arg, ArgType, HOOKS, Hook, Ret, SLOT_BYTES, Spec, context_bytes,
+                hook_by_stub_name, spec, task_struct};
 pub use registry::{register, run, unregister};
 
 /// Common LSM dispatcher provider for BPF's `file_open` hook.
@@ -37,4 +38,45 @@ pub fn file_open(inode: &InodeRef) -> Result<(), i64> {
         0 => Ok(()),
         refusal => Err(refusal),
     }
+}
+
+fn task_view(target: &sched::Task) -> [u8; task_struct::SIZE] {
+    use core::sync::atomic::Ordering;
+    let mut bytes = [0u8; task_struct::SIZE];
+    let pid = target.tid as i32;
+    let raw_tgid = target.tgid.load(Ordering::Acquire);
+    let tgid = if raw_tgid == 0 { target.tid } else { raw_tgid } as i32;
+    bytes[task_struct::PID..task_struct::PID + task_struct::WORD]
+        .copy_from_slice(&pid.to_ne_bytes());
+    bytes[task_struct::TGID..task_struct::TGID + task_struct::WORD]
+        .copy_from_slice(&tgid.to_ne_bytes());
+    bytes
+}
+
+fn task_bpf_answer(hook: Hook, target: &sched::Task, tail: &[u64]) -> Result<(), i64> {
+    let view = task_view(target);
+    let base = view.as_ptr() as usize as u64;
+    debug_assert!(tail.len() <= 1);
+    let mut args = [base, 0];
+    if let Some(value) = tail.first() { args[1] = *value; }
+    match registry::run_task(hook, &args[..1 + tail.len()], base, &view) {
+        0 => Ok(()),
+        refusal => Err(refusal),
+    }
+}
+
+/// Common LSM dispatcher provider for BPF's `task_setnice` hook.
+/// # C: O(attached programs × instructions run)
+pub(crate) fn task_setnice_hook(_caller: &sched::Task, target: &sched::Task, nice: i32)
+    -> Result<(), i64>
+{
+    task_bpf_answer(Hook::TaskSetNice, target, &[nice as i64 as u64])
+}
+
+/// Common LSM dispatcher provider for BPF's `task_setscheduler` hook.
+/// # C: O(attached programs × instructions run)
+pub(crate) fn task_setscheduler_hook(_caller: &sched::Task, target: &sched::Task)
+    -> Result<(), i64>
+{
+    task_bpf_answer(Hook::TaskSetScheduler, target, &[])
 }

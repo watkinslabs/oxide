@@ -33,7 +33,7 @@ extern crate self as sched;
 // copy is a plain memcpy, which is exactly what the tests want to drive.
 pub mod useraccess { pub use ipc::useraccess::*; }
 
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
@@ -141,6 +141,10 @@ pub enum SchedPolicy { Normal, Fifo, Rr, Idle }
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum SchedClass { Deadline, Rt { prio: u8, policy: SchedPolicy }, Normal { weight: u32 }, Idle }
 
+pub mod deadline {
+    pub fn dl_time_before(a: u64, b: u64) -> bool { (a.wrapping_sub(b) as i64) < 0 }
+}
+
 #[derive(Copy, Clone)]
 pub struct SchedUclamp;
 
@@ -173,11 +177,23 @@ impl SchedClass {
 // harness compiles is production code end to end.
 #[path = "../../sched/src/pi_prio.rs"] pub mod pi_prio;
 #[path = "../../sched/src/live/pi_boost.rs"] pub mod pi_boost;
+#[path = "futex_core_hosted/pi_support.rs"] mod pi_support;
+pub use pi_support::{PiBlockedOn, TaskPiState, rq_locate, schedule};
 
 pub mod runqueue {
     use super::*;
-    pub fn set_class(task: &Arc<Task>, new: SchedClass) { task.set_sched_class(new); }
-    pub fn requeue_current_class(_task: &Arc<Task>) {}
+    pub struct Runqueue;
+    pub type RqIrq = sync::NoopIrq;
+    pub unsafe fn global_for(_cpu: u32) -> Option<&'static Runqueue> { None }
+    pub fn set_normal_class(task: &Arc<Task>, new: SchedClass) {
+        task.set_normal_sched_class(new);
+        crate::pi_boost::notify_waiter_change(task);
+    }
+    pub fn mutate_effective<F>(task: &Arc<Task>, mutate: F) where F: FnOnce(&Task) {
+        mutate(task);
+    }
+    pub fn mutate_effective_if<P, M>(task: &Arc<Task>, _moves_queue: P, mutate: M)
+    where P: FnOnce(&Task) -> bool, M: FnOnce(&Task) { mutate(task); }
 }
 
 #[derive(Copy, Clone, Eq, PartialEq)]
@@ -192,6 +208,7 @@ pub enum WaitState { Interruptible }
 /// arms for `futex_wait_restart`. Values must track the real
 /// `crates/kernel/sched/src/task/restart.rs`.
 pub mod task {
+    pub use crate::{PiBlockedOn, TaskPiState};
     pub mod restart {
         pub const RESTART_FUTEX: u32 = 3;
         pub const RESTART_ARGS: usize = 6;
@@ -241,11 +258,17 @@ impl RestartBlockMock {
 
 pub struct Task {
     pub tid: u32,
+    pub exiting: AtomicBool,
     pub futex_uaddr: AtomicU64,
     pub wakeup_deadline_ns: AtomicU64,
     pub restart_block: RestartBlockMock,
+    pub pi_lock: sync::Spinlock<TaskPiState, sync::TaskPi>,
     normal_class: std::sync::RwLock<SchedClass>,
     effective_class: std::sync::RwLock<SchedClass>,
+    top_donor: std::sync::Mutex<Option<Weak<Task>>>,
+    top_key: std::sync::Mutex<Option<pi_prio::PiDonorKey>>,
+    dl_deadline: AtomicU64,
+    dl_special: AtomicBool,
     state: AtomicU8,
     signal_pending: AtomicBool,
     mm_root: u64,
@@ -256,11 +279,16 @@ impl Task {
     pub fn new(tid: u32, mm_root: u64) -> Self {
         Self {
             tid,
+            exiting: AtomicBool::new(false),
             futex_uaddr: AtomicU64::new(0),
             wakeup_deadline_ns: AtomicU64::new(0),
             restart_block: RestartBlockMock::default(),
+            pi_lock: sync::Spinlock::new(TaskPiState::new()),
             normal_class: std::sync::RwLock::new(SchedClass::Normal { weight: 1024 }),
             effective_class: std::sync::RwLock::new(SchedClass::Normal { weight: 1024 }),
+            top_donor: std::sync::Mutex::new(None), top_key: std::sync::Mutex::new(None),
+            dl_deadline: AtomicU64::new(0),
+            dl_special: AtomicBool::new(false),
             state: AtomicU8::new(0),
             signal_pending: AtomicBool::new(false),
             mm_root,
@@ -279,10 +307,15 @@ impl Task {
     }
     pub fn sched_class(&self) -> SchedClass { *self.effective_class.read().unwrap() }
     pub fn normal_sched_class(&self) -> SchedClass { *self.normal_class.read().unwrap() }
-    pub fn sched_is_boosted(&self) -> bool { self.sched_class() != self.normal_sched_class() }
+    pub fn sched_is_boosted(&self) -> bool { self.top_donor.lock().unwrap().is_some() }
     pub fn set_sched_class(&self, c: SchedClass) { *self.effective_class.write().unwrap() = c; }
-    pub fn restore_normal_sched_class(&self) { self.set_sched_class(self.normal_sched_class()); }
-    pub fn set_normal_sched_class(&self, c: SchedClass) { *self.normal_class.write().unwrap() = c; }
+    pub fn set_sched_class_unlocked(&self, c: SchedClass) { self.set_sched_class(c); }
+    pub fn restore_normal_sched_class(&self) { self.set_pi_top_task_unlocked(None); }
+    pub fn restore_normal_sched_class_unlocked(&self) { self.restore_normal_sched_class(); }
+    pub fn set_normal_sched_class(&self, c: SchedClass) {
+        *self.normal_class.write().unwrap() = c;
+        self.recompute_effective();
+    }
     pub fn set_normal_sched_class_policy(&self, c: SchedClass, _policy: u32) {
         let unboosted = self.sched_class() == self.normal_sched_class();
         self.set_normal_sched_class(c);
@@ -292,9 +325,42 @@ impl Task {
                                      _clamp: SchedUclamp, _reset: bool) {
         self.set_normal_sched_class_policy(c, policy);
     }
+    pub fn set_pi_top_task_unlocked(&self,
+        donor: Option<(&Arc<Task>, pi_prio::PiDonorKey)>) {
+        *self.top_donor.lock().unwrap() = donor.map(|(task, _)| Arc::downgrade(task));
+        *self.top_key.lock().unwrap() = donor.map(|(_, key)| key);
+        self.recompute_effective();
+    }
+    pub fn pi_top_task_unlocked(&self) -> Option<Arc<Task>> {
+        self.top_donor.lock().unwrap().as_ref().and_then(Weak::upgrade)
+    }
+    pub fn configured_dl_deadline(&self) -> u64 { self.dl_deadline.load(Ordering::Acquire) }
+    pub fn configured_dl_special(&self) -> bool { false }
+    pub fn effective_dl_deadline(&self) -> u64 {
+        let own = self.dl_deadline.load(Ordering::Acquire);
+        let Some(key) = *self.top_key.lock().unwrap() else { return own };
+        if matches!(pi_prio::class_with_key(self.normal_sched_class(), own, key), SchedClass::Deadline)
+            && matches!(key.class, SchedClass::Deadline)
+            && (!matches!(self.normal_sched_class(), SchedClass::Deadline)
+                || deadline::dl_time_before(key.deadline, own)) {
+            key.deadline
+        } else { own }
+    }
+    pub fn effective_dl_special(&self) -> bool { false }
+    pub fn pi_donor_key_unlocked(&self) -> pi_prio::PiDonorKey {
+        pi_prio::PiDonorKey { class: self.sched_class(), deadline: self.effective_dl_deadline(),
+            special: self.effective_dl_special() }
+    }
+    fn recompute_effective(&self) {
+        let base = self.normal_sched_class();
+        let own = self.dl_deadline.load(Ordering::Acquire);
+        let key = *self.top_key.lock().unwrap();
+        self.set_sched_class(key.map_or(base, |key| pi_prio::class_with_key(base, own, key)));
+    }
     fn is_sleeping(&self) -> bool { self.state.load(Ordering::Acquire) == 1 }
     /// SAFETY: test-only mock; no real address space, single fixed `mm_root`.
     pub unsafe fn mm_ref(&self) -> Option<MmRef> { Some(MmRef { root_pa: self.mm_root }) }
+    pub fn clone_mm(&self) -> Option<MmRef> { Some(MmRef { root_pa: self.mm_root }) }
     pub fn set_signal_pending(&self, v: bool) { self.signal_pending.store(v, Ordering::Release); }
 }
 
@@ -315,6 +381,8 @@ pub mod live {
             TASKS.lock().unwrap().as_ref().and_then(|m| m.get(&tid).cloned())
         }
         pub fn lookup_by_vpid(tid: u32) -> Option<Arc<Task>> { lookup(tid) }
+        pub fn resolve_user_pid(tid: u32) -> Option<Arc<Task>> { lookup(tid) }
+        pub fn display_vtid(tid: u32) -> u64 { tid as u64 }
     }
 
     thread_local! {
@@ -343,6 +411,8 @@ pub mod live {
     pub fn interruptible_work_pending_self() -> bool {
         current().is_some_and(|task| task.signal_pending.load(Ordering::Acquire))
     }
+
+    pub fn cond_resched() -> bool { std::thread::yield_now(); true }
 
     /// SAFETY: test-only mock of the real scheduler's block-until-woken.
     pub unsafe fn schedule() { std::thread::park(); }

@@ -4,7 +4,10 @@
 // Reference: Linux's `__sched_setscheduler` and `__setparam_fair`.
 
 use super::*;
+use alloc::sync::Arc;
 use crate::sched_attr as sa;
+use crate::sched_attr::SchedAttr;
+use sched::Task;
 
 /// A privileged, same-owner caller so every test below reaches the rule it is
 /// about rather than stopping at `EPERM`.
@@ -221,14 +224,14 @@ fn the_reported_rr_interval_is_the_enforced_quantum() {
 fn entering_an_rt_policy_reloads_a_full_quantum() {
     let caller = root_caller();
     let t = normal(2, 0);
-    t.test_set_sched_rt_timeslice(1);
+    sched::hosted_test::set_rt_timeslice(&t, 1);
 
     assert_eq!(setattr(&caller, &t, &attr(SCHED_RR, 40, 0)), 0);
     assert_eq!(t.sched_rt_entity_snapshot().time_slice,
         sched::sched_enc::RR_TIMESLICE_TICKS);
 
     // Draining the quantum and switching away then back re-arms it in full.
-    t.test_set_sched_rt_timeslice(1);
+    sched::hosted_test::set_rt_timeslice(&t, 1);
     assert_eq!(setattr(&caller, &t, &attr(SCHED_NORMAL, 0, 0)), 0);
     assert_eq!(setattr(&caller, &t, &attr(SCHED_FIFO, 40, 0)), 0);
     assert_eq!(t.sched_rt_entity_snapshot().time_slice,

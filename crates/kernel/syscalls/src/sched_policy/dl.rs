@@ -5,7 +5,7 @@
 // Ungated so the errno ORDER and the admission arithmetic are reachable from
 // `cargo test`; the slot files and the runqueue commit stay thin.
 
-use sched::deadline::bw::{self, BwChange, DL_BW};
+use sched::deadline::bw::{Admission, DL_BW};
 use sched::deadline::DlParams;
 use syscall::errno::Errno;
 
@@ -63,16 +63,18 @@ pub fn setaffinity_allowed(is_dl: bool, span: cpu::CpuMask, new_mask: cpu::CpuMa
 /// answer, not a permission or argument one.
 /// # C: O(1)
 pub fn admit(want_dl: bool, is_dl: bool, cur: &DlParams, want: &DlParams)
-    -> Result<BwChange, i64>
+    -> Result<Admission, i64>
 {
-    bw::plan(DL_BW.bw(), DL_BW.capacity(), DL_BW.total_bw(), want_dl, is_dl,
-             cur.bw, want.bw, want.is_special() || cur.is_special())
+    DL_BW.admit(DL_BW.capacity(), want_dl, is_dl, cur.bw, want.bw,
+                want.is_special() || cur.is_special())
         .map_err(|()| err(Errno::Ebusy))
 }
 
-/// Commit an admission plan to the ledger.
+/// Finish an admission already committed atomically by [`admit`].
+/// Kept as the syscall transaction handoff until its caller consumes the
+/// committed result directly.
 /// # C: O(1)
-pub fn commit(change: BwChange) { DL_BW.apply(change); }
+pub fn commit(_admission: Admission) {}
 
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
 #[path = "dl/tests.rs"]

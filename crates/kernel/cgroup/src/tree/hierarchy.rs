@@ -7,6 +7,7 @@ use super::bpf_types::CgroupBpfAttachType;
 use super::controllers::{CORE_FILES, NONROOT_FILES, controller_files, ctrl_bit};
 use super::types::{KResult, Node, ROOT, Tree};
 use vfs::Ino;
+use vfs::InodeRef;
 
 impl Tree {
     /// Resolve a relative cgroup path ("" or "a/b/c") to a node id.
@@ -82,6 +83,7 @@ impl Tree {
             let n = self.nodes.get(&id).ok_or(VfsError::Enoent)?;
             if !n.children.is_empty() || self.dying.values().any(|d| d.parent == Some(id))
                 || !n.procs.is_empty() || n.threads != 0
+                || n.fork_pins != 0
                 || n.memory.total() != 0 || n.swap_current != 0 {
                 return Err(VfsError::Ebusy);
             }
@@ -170,6 +172,19 @@ impl Tree {
         let ino = self.alloc_ino()?;
         self.nodes.get_mut(&id).ok_or(VfsError::Enoent)?.file_inos.insert(name.to_string(), ino);
         Ok(ino)
+    }
+
+    /// Canonical materialized control-file inode, if one exists. # C: O(log n)
+    pub fn file_object(&self, id: u64, name: &str) -> Option<InodeRef> {
+        self.nodes.get(&id)?.file_objects.get(name).cloned()
+    }
+
+    /// Publish one canonical control-file inode; a racing publisher reuses the
+    /// winner so permission and security state have one owner. # C: O(log n)
+    pub fn publish_file_object(&mut self, id: u64, name: &str, inode: InodeRef)
+        -> KResult<InodeRef> {
+        let n = self.nodes.get_mut(&id).ok_or(VfsError::Enoent)?;
+        Ok(n.file_objects.entry(name.to_string()).or_insert(inode).clone())
     }
 
     /// Live cgroup node addressed by `ino`, if any. # C: O(nodes · files)

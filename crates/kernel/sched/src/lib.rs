@@ -26,6 +26,7 @@ extern crate std;
 
 pub mod bh;
 pub mod cfs;
+mod eevdf;
 pub mod deadline;
 pub mod dl;
 pub mod clock;
@@ -88,6 +89,8 @@ pub mod nt_exception;
 pub mod rlimit;
 pub mod ioport;
 pub mod ioprio;
+mod class_queue;
+mod intrusive_tree;
 pub mod rt;
 pub mod session;
 pub mod ucounts;
@@ -115,21 +118,19 @@ pub mod hrtimeout;
 pub use preempt::{rcu_read_lock, rcu_read_unlock};
 pub use sync::{call_rcu, note_qs as rcu_note_qs, rcu_barrier, rcu_process_callbacks, synchronize_rcu};
 
-pub use cfs::CfsRunqueue;
-pub use dl::DlRunqueue;
 pub use deadline::{DlEntity, DlParams};
 pub use task::current_ioprio;
 pub use task::set_comm_hook;
 pub use cmdline::argv_to_cmdline;
-pub use rt::{RtRunqueue, RT_PRIO_COUNT};
 pub use registry::kernel_stack_bytes_snapshot;
 pub use runqueue::RunqueueInner;
+pub use sched_enc::{SchedUpdate, SchedUpdateResult};
 pub use task::{cap, securebits, ArchFpuBuf, Creds, FairPriority, GroupList, LoadWeight,
     NtFixedPriority, PosixRtPriority, PosixTimer, PrioritySnapshot, SaHandler, SchedUclamp,
     SchedClassId, SchedEntity, SchedPriority, SchedRtEntity, TaskPolicy,
     SigActions, SignalPending, SchedClass, SchedPolicy, SigInfo,
     SyscallSnapshot, interruptible_work_pending, SleepWake, WaitOutcome, WaitState,
-    signal_pending_state, Task, TaskState, TASK_COMM_LEN, SUID_DUMP_DISABLE,
+    signal_pending_state, PiBlockedOn, Task, TaskPiState, TaskState, TASK_COMM_LEN, SUID_DUMP_DISABLE,
     SUID_DUMP_ROOT, SUID_DUMP_USER, RT_QUEUE_CAP, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK};
 
 /// Maximum size in bytes of a per-arch HAL `Context` record (per
@@ -246,6 +247,8 @@ pub mod live;
 #[cfg(target_os = "oxide-kernel")] pub mod compat;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))] pub mod cred;
 pub mod hung_task;
+#[cfg(all(feature = "hosted", not(target_os = "oxide-kernel")))]
+pub mod hosted_test;
 pub mod vfork_completion;
 pub mod park_site;
 pub mod pkey_rights;

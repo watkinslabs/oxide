@@ -178,7 +178,8 @@ fn clone_without_new_flags_inherits_exact_owners() {
 
     s272_unshare::apply_new_namespaces(&child, parent.namespace_snapshot().unwrap(),
         parent.network_namespace_snapshot(), 0,
-        false, s272_unshare::NamespaceChange::CloneChild { share_vm: false }).unwrap();
+        false, s272_unshare::NamespaceChange::CloneChild {
+            share_vm: false, cgid: cgroup::ROOT_CGROUP }).unwrap();
 
     assert_same_set(&before, &child.namespace_snapshot().unwrap());
     assert!(Arc::ptr_eq(&parent_network, &child.network_namespace_snapshot().unwrap()));
@@ -196,7 +197,8 @@ fn clone_replaces_every_supported_nonnetwork_owner_and_final_release_drops_them(
     s272_unshare::apply_new_namespaces(&child, parent.namespace_snapshot().unwrap(),
         parent.network_namespace_snapshot(),
         s272_unshare::ns_bits_from_flags(ALL_SUPPORTED_NONNET_FLAGS),
-        false, s272_unshare::NamespaceChange::CloneChild { share_vm: false }).unwrap();
+        false, s272_unshare::NamespaceChange::CloneChild {
+            share_vm: false, cgid: cgroup::ROOT_CGROUP }).unwrap();
     let replacement = child.namespace_snapshot().unwrap();
     for (old, new) in [
         (&parent_set.cgroup, &replacement.cgroup), (&parent_set.ipc, &replacement.ipc),
@@ -241,6 +243,7 @@ fn clone_replaces_every_supported_nonnetwork_owner_and_final_release_drops_them(
     let mount = Arc::downgrade(&replacement.mount);
     drop(replacement);
     child.release_namespaces();
+    drop(child);
 
     for (kind, id, weak) in identities {
         assert!(weak.upgrade().is_none(), "released {kind:?} owner");
@@ -271,7 +274,8 @@ fn unshare_pid_is_for_children_until_the_next_clone() {
     let child = task(906);
     s272_unshare::apply_new_namespaces(&child, parent.namespace_snapshot().unwrap(),
         parent.network_namespace_snapshot(), 0,
-        false, s272_unshare::NamespaceChange::CloneChild { share_vm: false }).unwrap();
+        false, s272_unshare::NamespaceChange::CloneChild {
+            share_vm: false, cgid: cgroup::ROOT_CGROUP }).unwrap();
     assert!(NamespaceRef::ptr_eq(&owner(&child, NamespaceKind::Pid), &pending));
     assert!(NamespaceRef::ptr_eq(&child.pid_namespace_for_children().unwrap(), &pending));
     child.alloc_pid_mappings(&[], true).unwrap();
@@ -312,7 +316,8 @@ fn time_for_children_enters_only_without_clone_vm() {
     let fork_child = task(909);
     s272_unshare::apply_new_namespaces(&fork_child, parent_set.clone(),
         parent.network_namespace_snapshot(), 0,
-        false, s272_unshare::NamespaceChange::CloneChild { share_vm: false }).unwrap();
+        false, s272_unshare::NamespaceChange::CloneChild {
+            share_vm: false, cgid: cgroup::ROOT_CGROUP }).unwrap();
     let fork_set = fork_child.namespace_snapshot().unwrap();
     assert!(NamespaceRef::ptr_eq(&fork_set.time, &parent_set.time_for_children));
     assert!(NamespaceRef::ptr_eq(&fork_set.time, &fork_set.time_for_children));
@@ -321,7 +326,8 @@ fn time_for_children_enters_only_without_clone_vm() {
     let vm_child = task(915);
     s272_unshare::apply_new_namespaces(&vm_child, parent_set.clone(),
         parent.network_namespace_snapshot(), 0,
-        false, s272_unshare::NamespaceChange::CloneChild { share_vm: true }).unwrap();
+        false, s272_unshare::NamespaceChange::CloneChild {
+            share_vm: true, cgid: cgroup::ROOT_CGROUP }).unwrap();
     let vm_set = vm_child.namespace_snapshot().unwrap();
     assert!(NamespaceRef::ptr_eq(&vm_set.time, &parent_set.time));
     assert!(NamespaceRef::ptr_eq(&vm_set.time_for_children, &parent_set.time_for_children));

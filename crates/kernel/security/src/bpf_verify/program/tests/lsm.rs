@@ -29,6 +29,10 @@ fn verify_lsm(insns: &[u8]) -> Result<(), VerifyError> {
     verify_lsm_program(Hook::FileOpen, insns, &[])
 }
 
+fn verify_task_nice(insns: &[u8]) -> Result<(), VerifyError> {
+    verify_lsm_program(Hook::TaskSetNice, insns, &[])
+}
+
 /// `r0 = value; exit`
 fn exits_with(value: i32) -> alloc::vec::Vec<u8> {
     cat(&[raw(MOV_IMM, 0, 0, 0, value), raw(EXIT, 0, 0, 0, 0)])
@@ -142,6 +146,28 @@ fn reads_context(opcode: u8, off: i16) -> alloc::vec::Vec<u8> {
         raw(EXIT, 0, 0, 0, 0),
     ]);
     assert!(verify_lsm(&p).is_err());
+}
+
+#[test] fn task_pointer_admits_exactly_the_published_fields() {
+    use crate::bpf_lsm::task_struct as task;
+    for off in [task::PID, task::TGID] {
+        let p = cat(&[
+            raw(LDX_DW, 2, 1, ARG0, 0),
+            raw(LDX_W, 3, 2, off as i16, 0),
+            raw(MOV_IMM, 0, 0, 0, 0),
+            raw(EXIT, 0, 0, 0, 0),
+        ]);
+        assert_eq!(verify_task_nice(&p), Ok(()), "task field {off}");
+    }
+    for off in [1, task::SIZE] {
+        let p = cat(&[
+            raw(LDX_DW, 2, 1, ARG0, 0),
+            raw(LDX_W, 3, 2, off as i16, 0),
+            raw(MOV_IMM, 0, 0, 0, 0),
+            raw(EXIT, 0, 0, 0, 0),
+        ]);
+        assert_eq!(verify_task_nice(&p), Err(VerifyError::UnsafeContextAccess));
+    }
 }
 
 #[test] fn context_addressing_stops_at_the_published_size() {

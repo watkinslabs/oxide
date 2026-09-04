@@ -42,9 +42,10 @@ fn rt_fifo_within_priority() {
 fn rt_remove_by_tid() {
     let mut q = RtRunqueue::new();
     q.enqueue(rt(1, 30));
-    q.enqueue(rt(2, 30));
+    let removed = rt(2, 30);
+    q.enqueue(Arc::clone(&removed));
     q.enqueue(rt(3, 60));
-    let t = q.remove(2).unwrap();
+    let t = q.remove(&removed).unwrap();
     assert_eq!(t.tid, 2);
     assert_eq!(q.nr_running(), 2);
     assert_eq!(q.pick_highest().unwrap().tid, 3);
@@ -54,8 +55,9 @@ fn rt_remove_by_tid() {
 #[test]
 fn rt_remove_clears_bitmap_when_bucket_empty() {
     let mut q = RtRunqueue::new();
-    q.enqueue(rt(1, 50));
-    q.remove(1).unwrap();
+    let task = rt(1, 50);
+    q.enqueue(Arc::clone(&task));
+    q.remove(&task).unwrap();
     assert!(!q.has_runnable());
 }
 
@@ -83,6 +85,23 @@ fn cfs_pick_leftmost_lowest_vruntime() {
     assert_eq!(q.pick_leftmost().unwrap().tid, 1);
     assert_eq!(q.pick_leftmost().unwrap().tid, 3);
     assert!(q.pick_leftmost().is_none());
+}
+
+#[test]
+fn cfs_eevdf_rejects_ineligible_late_vruntime() {
+    let mut q = CfsRunqueue::new();
+    let early = normal(1, 100, 1024);
+    let eligible = normal(2, 200, 1024);
+    let late = normal(3, 300, 1024);
+    q.enqueue(Arc::clone(&early));
+    q.enqueue(Arc::clone(&eligible));
+    q.enqueue(Arc::clone(&late));
+    // The virtual deadline is deliberately controlled here so this test
+    // isolates EEVDF eligibility from the default-slice calculation.
+    early.sched.se.deadline.store(900, Ordering::Release);
+    eligible.sched.se.deadline.store(500, Ordering::Release);
+    late.sched.se.deadline.store(1, Ordering::Release);
+    assert_eq!(q.pick_leftmost().unwrap().tid, 2);
 }
 
 #[test]
@@ -124,8 +143,9 @@ fn cfs_ties_disambiguated_by_tid() {
 fn cfs_remove_by_tid() {
     let mut q = CfsRunqueue::new();
     q.enqueue(normal(1, 10, 1024));
-    q.enqueue(normal(2, 20, 1024));
-    let t = q.remove(2).unwrap();
+    let removed = normal(2, 20, 1024);
+    q.enqueue(Arc::clone(&removed));
+    let t = q.remove(&removed).unwrap();
     assert_eq!(t.tid, 2);
     assert_eq!(q.nr_running(), 1);
     assert_eq!(q.pick_leftmost().unwrap().tid, 1);
@@ -164,12 +184,12 @@ fn rq_idle_only_when_no_runnable_invariant_7() {
 }
 
 #[test]
-fn rq_enqueue_idle_panics() {
+fn rq_enqueue_idle_is_rejected() {
     let mut rq = RunqueueInner::new(0, idle(0));
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rq.enqueue(idle(99));
-    }));
-    assert!(result.is_err(), "enqueueing an Idle-class task must panic");
+    let task = idle(99);
+    assert!(!rq.enqueue(Arc::clone(&task)));
+    assert!(!task.on_rq.load(Ordering::Acquire));
+    assert!(!task.on_class_rq.load(Ordering::Acquire));
 }
 
 #[test]
@@ -262,8 +282,9 @@ fn cfs_rotation_is_round_robin_for_equal_weight() {
         "equal-weight tasks must round-robin in stable order");
 }
 
-// Linux `__schedule`'s `prepare_task(next)` store order: `on_cpu` goes up
-// BEFORE the task leaves the tree (`on_rq` goes down), paired against
+// Linux keeps task `on_rq == QUEUED` while a running runnable entity is off
+// its class tree. `on_cpu` goes up before class-tree membership goes down,
+// paired against
 // `try_to_wake_up`'s `smp_load_acquire(&p->on_cpu)`:
 //
 //   __schedule() (switch to task 'p')      try_to_wake_up()
@@ -278,23 +299,27 @@ fn cfs_rotation_is_round_robin_for_equal_weight() {
 use crate::task::PendingWake;
 
 #[test]
-fn claiming_pick_publishes_on_cpu_and_clears_on_rq() {
+fn claiming_pick_preserves_on_rq_and_clears_class_membership() {
     let mut rq = RunqueueInner::new(0, idle(0));
     let t = normal(30, 0, 1024);
     rq.enqueue(Arc::clone(&t));
     assert!(t.on_rq.load(Ordering::Acquire));
+    assert!(t.on_class_rq.load(Ordering::Acquire));
 
     let (picked, already) = rq.pick_next_task_claim();
 
     assert_eq!(picked.tid, 30);
     assert!(!already, "nobody owned this task before the pick");
     assert!(picked.on_cpu.load(Ordering::Acquire), "prepare_task(next) did not publish on_cpu");
-    assert!(!picked.on_rq.load(Ordering::Acquire), "the pick must take it out of the tree");
+    assert!(picked.on_rq.is_queued(Ordering::Acquire),
+        "a running runnable task must remain canonically queued");
+    assert!(!picked.on_class_rq.load(Ordering::Acquire),
+        "the pick must take the entity out of its class tree");
 }
 
 /// The window the store order closes: at EVERY point observable by a
-/// concurrent wake-list drain, the task being switched to must look
-/// "executing" (Defer), never "safe to enqueue" (Ready).
+/// concurrent wake-list drain, the task being switched to remains runnable,
+/// so another wake is redundant rather than safe to enqueue.
 #[test]
 fn a_task_being_switched_to_is_never_reported_enqueueable() {
     let mut rq = RunqueueInner::new(0, idle(0));
@@ -306,22 +331,22 @@ fn a_task_being_switched_to_is_never_reported_enqueueable() {
 
     let (picked, _) = rq.pick_next_task_claim();
 
-    // After the pick: executing, so a drain defers it to the owner CPU.
-    assert!(matches!(picked.pending_wake(core::ptr::null_mut()), PendingWake::Defer),
+    // After the pick: canonically queued and executing, so a drain drops it.
+    assert!(matches!(picked.pending_wake(core::ptr::null_mut()), PendingWake::Drop),
         "a task mid-switch-to was reported ready to enqueue on another CPU");
 }
 
-/// Reproduces the pre-fix order literally — pick first, publish `on_cpu`
-/// after — and shows the reader falsely observes Ready in between. Without
-/// this, the test above could pass against a broken probe.
+/// Reproduces the old split-source model by clearing canonical `on_rq` when
+/// the class tree removes the entity. The wake probe must expose that window.
 #[test]
 fn probe_detects_the_pre_fix_pick_then_claim_window() {
     let mut rq = RunqueueInner::new(0, idle(0));
     let t = normal(32, 0, 1024);
     rq.enqueue(Arc::clone(&t));
 
-    // Pre-fix body: `pick_next_task()` (clears on_rq), THEN set on_cpu.
+    // Pre-fix body: class pick incorrectly clears task on_rq before on_cpu.
     let picked = rq.pick_next_task();
+    picked.on_rq.store(false, Ordering::Release);
     assert!(matches!(picked.pending_wake(core::ptr::null_mut()), PendingWake::Ready),
         "probe failed to observe the falsely-enqueueable window Linux warns about");
     picked.on_cpu.store(true, Ordering::Release);

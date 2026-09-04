@@ -1,6 +1,7 @@
 // Security crate per `27`. Owns:
 //   - seccomp cBPF interpreter (`security::seccomp`)
 //   - bpf(2) MAP_CREATE / PROG_LOAD admit (`security::bpf`)
+//   - stacked task-priority and scheduler-policy hooks (`security::lsm`)
 //
 // Capability bits live on `sched::Creds` (the workspace `sched`
 // crate); has_cap_for / user-NS scoping live in `crates/nscg`.
@@ -34,6 +35,7 @@ mod bpf_layout;
 pub mod socket_filter;
 pub mod network;
 pub mod lsm;
+mod task_policy;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Error { Inval, Perm }
@@ -59,6 +61,7 @@ pub unsafe fn init() -> KResult<()> {
         params.selection(lsm_framework::modules::BUILTIN_ORDER),
     );
     lsm::register_device_permission(bpf::cgroup_device_inode_permission);
+    task_policy::register();
     vfs::set_device_permission_hook(lsm::device_permission);
     lsm::register_open(bpf_lsm::open_hook);
     Ok(())

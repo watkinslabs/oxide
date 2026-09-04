@@ -23,7 +23,7 @@ const STOP_SPIN_BUDGET: u64 = 200_000_000;
 /// proceed, matching the architecture shutdown contract. # C: O(spin budget)
 #[cfg(target_os = "oxide-kernel")]
 pub fn stop_other_cpus(me: usize) -> bool {
-    let requested = targets(super::online_cpumask(), me);
+    let requested = targets(super::live_cpumask(), me);
     if requested.is_empty() { return true; }
     hal::smp_call::call_function_many(requested.as_words(), hal::smp_call::CallKind::Stop, 0, false);
     let mut spun = 0u64;

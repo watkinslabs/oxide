@@ -16,7 +16,9 @@ fn ns_file(owner: NamespaceRef) -> Arc<vfs::File> {
 }
 
 fn task(tid: u32, name: &'static str) -> sched::Task {
-    sched::Task::new(tid, name, sched::SchedClass::Normal { weight: 1024 })
+    let task = sched::Task::new(tid, name, sched::SchedClass::Normal { weight: 1024 });
+    task.set_state(sched::TaskState::Sleeping);
+    task
 }
 
 fn proc_ns_file(source: &sched::Task, kind: NsKind) -> Arc<vfs::File> {
@@ -114,6 +116,12 @@ fn exercise_identity_close_reuse(kind: NsKind, identity_kind: NamespaceKind, tid
     assert!(file_weak.upgrade().is_none(), "setns drops File pin after exact install");
     destination.mark_done();
     assert_eq!(destination.state(), sched::TaskState::Zombie);
+    if kind == NsKind::User {
+        assert!(original_weak.upgrade().is_some(),
+            "zombie credentials retain immutable user_ns until final task release");
+        drop(source);
+        drop(destination);
+    }
     assert!(original_weak.upgrade().is_none(), "destination exit drops final exact owner");
     assert!(namespace_identity::lookup(identity_kind, original_id).is_none(),
         "weak id index disappears only after final owner drop");

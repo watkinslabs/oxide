@@ -80,7 +80,9 @@ impl Task {
                 thread_group,
                 name: Spinlock::new(Task::pack_spawn_name(name)),
                 state:    AtomicU8::new(TaskState::Runnable as u8),
-                on_rq:    AtomicBool::new(false),
+                on_rq:    crate::task::TaskOnRq::new(false),
+                on_class_rq: AtomicBool::new(false),
+                class_rq_owner: AtomicU64::new(0),
                 on_cpu:   AtomicBool::new(false),
                 need_resched: AtomicBool::new(false),
                 frozen:   AtomicBool::new(false),
@@ -103,6 +105,8 @@ impl Task {
                 oom_victim: AtomicBool::new(false),
                 wake_next: core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
                 on_wake_list: AtomicBool::new(false),
+                wake_seq: AtomicU64::new(0),
+                wake_done: AtomicU64::new(0),
                 cpu:      AtomicU16::new(u16::MAX),
                 in_iowait: AtomicBool::new(false),
                 vtime_start_ns: AtomicU64::new(0),
@@ -133,7 +137,7 @@ impl Task {
                 sched: crate::task::TaskSched::new(class, crate::sched_enc::RR_TIMESLICE_TICKS,
                     crate::sched_enc::UCLAMP_CAPACITY_SCALE),
                 mempolicy: [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)],
-                pi_lock: Spinlock::new(()),
+                pi_lock: Spinlock::new(crate::task::TaskPiState::new()),
                 #[cfg(feature = "debug-watchdog")]
                 wake_diag_phase: AtomicU8::new(WakeDiagPhase::None as u8),
                 #[cfg(feature = "debug-watchdog")]

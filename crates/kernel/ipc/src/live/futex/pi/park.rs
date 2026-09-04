@@ -34,6 +34,7 @@ pub(super) fn park_for_grant(me: &Arc<Task>, grant: &AtomicU32, key: Key, tid: u
         sched::hrtimeout::disarm_current();
         match grant_kind(grant) {
             Grant::Owner | Grant::OwnerDied => return Ok(()),
+            Grant::OwnerFault => return Err(-(Errno::Efault.as_i32() as i64)),
             Grant::Pending => {}
         }
         if deadline_ns != 0 && now_monotonic_ns() >= deadline_ns {

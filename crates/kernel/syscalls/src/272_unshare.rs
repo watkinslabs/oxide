@@ -22,7 +22,7 @@ const CGROUP_BIT: u32 = 6;
 const TIME_BIT:   u32 = 7;
 
 #[derive(Copy, Clone, Eq, PartialEq)]
-pub(crate) enum NamespaceChange { CloneChild { share_vm: bool }, Unshare }
+pub(crate) enum NamespaceChange { CloneChild { share_vm: bool, cgid: u64 }, Unshare }
 
 #[inline]
 fn ns_bit_for_clone(clone_flag: u64) -> Option<u32> {
@@ -174,6 +174,12 @@ pub(crate) fn apply_new_namespaces(task: &sched::Task,
     inherited_network: Option<network_namespace::NetworkNamespaceRef>, bits: u64, private_fs: bool,
     change: NamespaceChange) -> Result<(), Errno>
 {
+    // Linux rejects a second pending PID transition before allocating any
+    // replacement namespace; keeping this gate first makes the failure
+    // transactional and leaves the namespace registry unchanged.
+    if has_bit(bits, PID_BIT) && !NamespaceRef::ptr_eq(&snapshot.pid, &snapshot.pid_for_children) {
+        return Err(Errno::Einval);
+    }
     let current_user = snapshot.user.clone();
     if has_bit(bits, USER_BIT) {
         snapshot.user = allocate_identity(NamespaceKind::User, &current_user,
@@ -220,9 +226,11 @@ pub(crate) fn apply_new_namespaces(task: &sched::Task,
         snapshot.ipc = allocate_identity(NamespaceKind::Ipc, &owner_user, None)?;
     }
     if has_bit(bits, CGROUP_BIT) {
-        // Linux `copy_cgroup_ns` pins the CREATING task's `css_set`, so the
-        // cgroup it currently sits in becomes the new namespace's `/`.
-        let root = cgroup::cgroup_path_of(cgroup_key(task));
+        let cgid = match change {
+            NamespaceChange::CloneChild { cgid, .. } => cgid,
+            NamespaceChange::Unshare => cgroup::cgroup_of(cgroup_key(task)),
+        };
+        let root = cgroup::path_of_cgroup(cgid).ok_or(Errno::Enodev)?;
         let namespace = allocate_identity(NamespaceKind::Cgroup, &owner_user, None)?;
         nscg::cgroup_ns::allocate(&namespace, root).map_err(|_| Errno::Eio)?;
         snapshot.cgroup = namespace;
@@ -234,9 +242,6 @@ pub(crate) fn apply_new_namespaces(task: &sched::Task,
         snapshot.time_for_children = namespace;
     }
     if has_bit(bits, PID_BIT) {
-        if !NamespaceRef::ptr_eq(&snapshot.pid, &snapshot.pid_for_children) {
-            return Err(Errno::Einval);
-        }
         let parent = snapshot.pid.clone();
         let namespace = allocate_identity(NamespaceKind::Pid, &owner_user, Some(parent))?;
         snapshot.pid_for_children = namespace.clone();
@@ -247,7 +252,7 @@ pub(crate) fn apply_new_namespaces(task: &sched::Task,
     } else if matches!(change, NamespaceChange::CloneChild { .. }) {
         snapshot.pid = snapshot.pid_for_children.clone();
     }
-    if matches!(change, NamespaceChange::CloneChild { share_vm: false })
+    if matches!(change, NamespaceChange::CloneChild { share_vm: false, .. })
         && !NamespaceRef::ptr_eq(&snapshot.time, &snapshot.time_for_children)
     {
         nscg::time_ns::freeze(&snapshot.time_for_children).map_err(|_| Errno::Eio)?;
@@ -315,3 +320,7 @@ fn cgroup_key(task: &sched::Task) -> u64 {
 fn remap_task_fs_paths(task: &sched::Task, mount_map: &[(u64, u64)]) {
     task.remap_fs_mount_ids(mount_map);
 }
+
+#[cfg(test)]
+#[path = "272_unshare/tests.rs"]
+mod tests;

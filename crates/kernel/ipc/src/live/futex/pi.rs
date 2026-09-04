@@ -4,6 +4,7 @@
 //!
 //! Module manifest:
 //! - `state`: the PI-state table, waiter entries, grant slots, boost plumbing.
+//! - `graph`: task-owned PI waiter linkage and transitive chain propagation.
 //! - `lock`: `futex_lock_pi` / trylock, owner attach, waiter unqueue.
 //! - `park`: the block-until-granted loop and its wake classification.
 //! - `unlock`: `futex_unlock_pi` and the ownership handoff.
@@ -15,6 +16,7 @@
 //! non-gated `sched::pi_prio`. Both are hosted-tested.
 
 mod exit;
+mod graph;
 mod lock;
 mod park;
 mod requeue;

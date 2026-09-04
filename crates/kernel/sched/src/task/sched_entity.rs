@@ -1,7 +1,10 @@
 //! Canonical fair and real-time task entities per `13a§6`.
 
+use core::cell::UnsafeCell;
 use core::sync::atomic::{fence, AtomicBool, AtomicI64, AtomicU16, AtomicU32,
     AtomicU64, Ordering};
+
+use super::{RtRunNode, TreeRunNode};
 
 pub const MIN_NICE: i8 = -20;
 pub const MAX_NICE: i8 = 19;
@@ -215,6 +218,9 @@ impl AtomicLoadWeight {
 }
 
 pub struct SchedEntityState {
+    /// Embedded allocation-free fair ready-tree node. `CfsRunqueue` claims a
+    /// unique `class_rq_owner` before access and clears links before release.
+    run_node: UnsafeCell<TreeRunNode>,
     pub load: AtomicLoadWeight,
     pub deadline: AtomicU64,
     pub min_vruntime: AtomicU64,
@@ -248,6 +254,7 @@ pub struct SchedEntityState {
 impl SchedEntityState {
     pub(super) fn new(se: SchedEntity) -> Self {
         Self {
+            run_node: UnsafeCell::new(TreeRunNode::new()),
             load: AtomicLoadWeight::new(se.load), deadline: AtomicU64::new(se.deadline),
             min_vruntime: AtomicU64::new(se.min_vruntime), min_slice: AtomicU64::new(se.min_slice),
             max_slice: AtomicU64::new(se.max_slice), on_rq: AtomicBool::new(se.on_rq),
@@ -270,6 +277,18 @@ impl SchedEntityState {
             avg_util: AtomicU64::new(se.avg.util_avg),
             avg_util_est: AtomicU32::new(se.avg.util_est),
         }
+    }
+
+    /// # SAFETY: caller owns the claiming `CfsRunqueue`; its identity excludes
+    /// every other class queue until all embedded links have been cleared.
+    pub(crate) unsafe fn run_node_mut(&self) -> &mut TreeRunNode {
+        // SAFETY: upheld by the queue's atomic claim and exclusive `&mut self`.
+        unsafe { &mut *self.run_node.get() }
+    }
+
+    /// # SAFETY: caller owns the claiming `CfsRunqueue` against tree mutation.
+    pub(crate) unsafe fn run_node(&self) -> &TreeRunNode {
+        unsafe { &*self.run_node.get() }
     }
 
     pub fn snapshot(&self) -> SchedEntity {
@@ -306,6 +325,9 @@ impl SchedEntityState {
 }
 
 pub struct SchedRtEntityState {
+    /// Embedded allocation-free RT FIFO link. `RtRunqueue` atomically claims
+    /// class-queue membership before access and clears the link before release.
+    run_node: UnsafeCell<RtRunNode>,
     pub timeout: AtomicU64,
     pub watchdog_stamp: AtomicU64,
     pub time_slice: AtomicU32,
@@ -315,9 +337,22 @@ pub struct SchedRtEntityState {
 
 impl SchedRtEntityState {
     pub(super) fn new(rt: SchedRtEntity) -> Self {
-        Self { timeout: AtomicU64::new(rt.timeout), watchdog_stamp: AtomicU64::new(rt.watchdog_stamp),
+        Self { run_node: UnsafeCell::new(RtRunNode::new()), timeout: AtomicU64::new(rt.timeout),
+            watchdog_stamp: AtomicU64::new(rt.watchdog_stamp),
             time_slice: AtomicU32::new(rt.time_slice), on_rq: AtomicBool::new(rt.on_rq),
             on_list: AtomicBool::new(rt.on_list) }
+    }
+
+    /// # SAFETY: caller owns the claiming `RtRunqueue`; its identity excludes
+    /// every other class queue until the embedded link has been cleared.
+    pub(crate) unsafe fn run_node_mut(&self) -> &mut RtRunNode {
+        // SAFETY: upheld by the queue's atomic claim and exclusive `&mut self`.
+        unsafe { &mut *self.run_node.get() }
+    }
+
+    /// # SAFETY: caller owns the claiming `RtRunqueue` against list mutation.
+    pub(crate) unsafe fn run_node(&self) -> &RtRunNode {
+        unsafe { &*self.run_node.get() }
     }
 
     pub fn snapshot(&self) -> SchedRtEntity {
@@ -327,6 +362,14 @@ impl SchedRtEntityState {
             on_rq: self.on_rq.load(Ordering::Acquire), on_list: self.on_list.load(Ordering::Acquire) }
     }
 }
+
+// SAFETY: the only embedded-node accessors are crate-private and unsafe. Their
+// class queues atomically claim sole membership, mutate through exclusive queue
+// ownership, clear every link, then release the claim. Other fields are atomic.
+unsafe impl Sync for SchedEntityState {}
+// SAFETY: the unsafe embedded-link accessors obey the same atomic class-queue
+// claim/exclusive-owner/clear-before-release protocol. Other fields are atomic.
+unsafe impl Sync for SchedRtEntityState {}
 
 #[cfg(test)]
 mod tests {

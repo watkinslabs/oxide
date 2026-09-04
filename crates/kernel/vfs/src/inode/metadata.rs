@@ -337,6 +337,12 @@ impl Inode {
         if let Some(h) = &self.owner_persist { h.persist_owner(uid, gid); }
         Ok(())
     }
+    /// Update an already materialized inode after its backing filesystem has
+    /// persisted ownership. The caller owns the persistence decision. # C: O(1)
+    pub fn refresh_owner(&self, uid: u32, gid: u32) {
+        self.i_uid.store(uid, Ordering::Relaxed);
+        self.i_gid.store(gid, Ordering::Relaxed);
+    }
     /// Project-id field write. # C: O(1)
     pub fn set_projid(&self, projid: u32) { self.i_projid.store(projid, Ordering::Relaxed); }
     /// utimes field write (Linux `inode_set_atime_to_ts` and friends). # C: O(1)

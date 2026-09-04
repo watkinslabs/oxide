@@ -43,6 +43,11 @@ pub mod avc;
 pub mod services;
 pub mod status;
 pub mod server;
+#[cfg(feature = "test-policy")]
+#[path = "tests/fixture.rs"]
+mod test_policy_fixture;
+#[cfg(feature = "test-policy")]
+pub mod test_policy;
 
 pub use context::{Context, ValidContext};
 pub use error::{Error, Result};

@@ -51,8 +51,27 @@ pub fn attach_tid_into(cgid: u64, tid: u64) -> KResult<()> {
     Ok(())
 }
 
+/// Child inherits the parent's committed cgroup on fork. # C: O(log n)
+pub fn inherit(child_pid: u64, parent_pid: u64) -> u64 {
+    let mut tree = TREE.lock();
+    if !tree.is_mounted() { return crate::ROOT_CGROUP; }
+    let cgid = tree.cgroup_of(parent_pid);
+    let _ = tree.add_proc(cgid, child_pid);
+    cgid
+}
+
+/// Charge a new thread to its process's committed cgroup. # C: O(log n)
+pub fn charge_thread(parent_pid: u64, tid: u64) -> u64 {
+    let mut tree = TREE.lock();
+    if !tree.is_mounted() { return crate::ROOT_CGROUP; }
+    tree.add_thread(parent_pid, tid);
+    tree.cgroup_of(tid)
+}
+
+/// Whether canonical membership contains this process or thread. # C: O(log n)
+pub fn contains_task(tid: u64) -> bool { TREE.lock().contains_task(tid) }
+
 /// Move a live process and all its threads under one hierarchy lock.
-/// Scheduler migration serialization supplies the process leader identity.
 /// # C: O(threads)
 pub fn migrate_process(cgid: u64, tgid: u64) -> KResult<u64> {
     let mut tree = TREE.lock();
