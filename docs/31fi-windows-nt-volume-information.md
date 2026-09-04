@@ -22,10 +22,14 @@ FROZEN 2026-09-01. Dep: 01,02,16,31h,52,53. Provides native NtQueryVolumeInforma
 | FileFsDeviceInformation | disk device identity |
 | FileFsSizeInformation | f_blocks, f_bavail, f_bsize |
 | FileFsFullSizeInformation | f_blocks, f_bavail, f_bsize |
+| FileFsFullSizeInformationEx | f_blocks, f_bfree, f_bavail, f_bsize |
 | FileFsVolumeInformation | f_fsid |
 | FileFsAttributeInformation | filesystem identity and name limits |
 
-Allocation units use the VFS block size with 512-byte sectors. Attribute
+Extended full-size information exposes actual and caller-available allocation
+units, derives used and caller-total units from those canonical counters, and
+reports zero for pool/reserve fields that `SbStatFs` does not model. Allocation
+units use the VFS block size with 512-byte sectors. Attribute
 filesystem names map known CDFS, UDF, and FAT32 identities; other filesystems
 use the NTFS-compatible name expected by the runtime provider.
 
