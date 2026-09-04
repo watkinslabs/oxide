@@ -1,6 +1,6 @@
 # Scheduler priority unification
 
-Snapshot: `origin/main` `fa595d012` after PR #7145. `MERGED` means only the
+Snapshot: `origin/main` `d9f3504e3` after PR #7146. `MERGED` means only the
 behavior named in that row landed; it does not mean the complete `docs/13`
 model is implemented.
 
@@ -18,7 +18,7 @@ model is implemented.
 | Status | Branch | Change | Exit evidence |
 |---|---|---|---|
 | IN-PROGRESS | `B3321-deadline-pi-entity` | `KI-0326`: replace scalar deadline donation with effective donor-entity ownership for ready-node ordering, CBS runtime charging, throttling, replenishment, and deboost | Fair/RT owner executes against donor budget and ready node; timeout/handoff/deboost restore the owner entity; focused deadline/PI and transaction controls |
-| OPEN | unclaimed | `KI-0327`: prevent any CPU from selecting a runnable task whose execution ownership is still held by another CPU | Barrier-controlled wake/migrate/switch-tail regression plus both-architecture final smoke |
+| IN-PROGRESS | `B3325-scheduler-smp-ownership` | `KI-0327`: prevent any CPU from selecting a runnable task whose execution ownership is still held by another CPU | Barrier-controlled wake/migrate/switch-tail regression plus both-architecture final smoke |
 | OPEN | unclaimed | `KI-0329`: connect nested fair task groups to per-CPU child runqueues and schedulable parent entities | Production call-site proof; nested unequal-share and attach/reweight/exit transaction controls |
 | OPEN | unclaimed | `KI-0330`: complete native quantum, variable-priority boost/decay, and process-wide scheduling configuration | Tick-driven same-level rotation, exhaustive level transitions, process transaction rollback, and native ABI integration controls |
 | IN-PROGRESS | `B3318-windows-thread-information` | Rebase native thread-information and affinity operations onto canonical scheduler transactions without field-level shadow mutations | Native ABI/error tests and coherent affinity races |
