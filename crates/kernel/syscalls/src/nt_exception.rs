@@ -39,6 +39,9 @@ fn capture_context() -> Option<[u8; CONTEXT_BYTES]> {
 fn capture_context() -> Option<[u8; CONTEXT_BYTES]> { None }
 
 fn publish(current: &sched::Task, record: [u8; EXCEPTION_RECORD_BYTES], mut context: [u8; CONTEXT_BYTES], first_chance: bool) -> u64 {
+    if !sched::nt_exception::exception_record_link_valid(&record, |address| hal::UserVirtAddr::new(address).is_some()) {
+        return STATUS_INVALID_PARAMETER;
+    }
     if !sched::nt_exception::prepare_dispatch_context(&record, &mut context) { return STATUS_INVALID_PARAMETER; }
     let pending = Pending { record, context, first_chance };
     if !pending.is_valid() { return STATUS_INVALID_PARAMETER; }
