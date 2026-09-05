@@ -51,6 +51,12 @@
 #   git config core.hooksPath .githooks
 set -uo pipefail
 
+repo=$(git rev-parse --show-toplevel)
+if ! "$repo/tools/worktree-guard.sh"; then
+    echo "pre-push: REJECTED — one active worktree is required" >&2
+    exit 1
+fi
+
 # Read pushed refs from stdin (git's pre-push protocol).
 remote_ref_lines="$(cat)"
 
