@@ -10,6 +10,7 @@ const STATUS_FAILURE_MASK: u64 = 0x8000_0000;
 pub const WM_KEYDOWN: u32 = 0x0100;
 pub const WM_KEYUP: u32 = 0x0101;
 pub const WM_CHAR: u32 = 0x0102;
+pub const WM_TIMER: u32 = 0x0113;
 pub const WM_QUIT: u32 = 0x0012;
 pub const VK_BACK: u16 = 0x08;
 pub const VK_TAB: u16 = 0x09;
@@ -201,6 +202,16 @@ impl User32 {
         invoke(NtService::PostQuitMessage, [exit_code as u64, 0, 0, 0, 0, 0]).map(|_| ())
     }
 
+    /// Arm or replace a window/thread timer owned by the native window manager. # C: O(N_timers) plus kernel service
+    pub fn set_timer(&self, hwnd: Option<u64>, id: u64, timeout_ms: u32, proc: u64) -> Result<u64, WindowError> {
+        invoke(NtService::SetWindowTimer, timer_args(hwnd, id, timeout_ms as u64, proc))
+    }
+
+    /// Cancel the exact window/thread timer identity in the native window manager. # C: O(N_timers) plus kernel service
+    pub fn kill_timer(&self, hwnd: Option<u64>, id: u64) -> Result<bool, WindowError> {
+        invoke(NtService::KillWindowTimer, timer_args(hwnd, id, 0, 0)).map(|value| value != 0)
+    }
+
     /// Set the current thread's focus window and return the previous HWND. # C: O(1) plus kernel service
     pub fn set_focus(&self, hwnd: u64) -> Result<u64, WindowError> {
         invoke(NtService::SetFocusWindow, [hwnd, 0, 0, 0, 0, 0])
@@ -337,6 +348,10 @@ fn classify_get_message(message: NtWindowMessage) -> GetMessageResult {
 
 fn text_copy_capacity(buffer_len: usize) -> usize { buffer_len.saturating_sub(1) }
 
+fn timer_args(hwnd: Option<u64>, id: u64, timeout_ms: u64, proc: u64) -> [u64; 6] {
+    [hwnd.unwrap_or(0), id, timeout_ms, proc, 0, 0]
+}
+
 fn invoke(service: NtService, args: [u64; 6]) -> Result<u64, WindowError> {
     let result = unsafe { libc::syscall(service.entry() as libc::c_long, args[0], args[1], args[2], args[3], args[4], args[5]) };
     if result == -1 { return Err(WindowError::Host(io::Error::last_os_error())); }
@@ -374,6 +389,8 @@ mod tests {
         assert_eq!(NtService::PostQuitMessage.entry(), 0x4e54_0000_0000_0213);
         assert_eq!(NtService::SetFocusWindow.entry(), 0x4e54_0000_0000_0214);
         assert_eq!(NtService::InjectKey.entry(), 0x4e54_0000_0000_0215);
+        assert_eq!(NtService::SetWindowTimer.entry(), 0x4e54_0000_0000_021b);
+        assert_eq!(NtService::KillWindowTimer.entry(), 0x4e54_0000_0000_021c);
     }
 
     #[test]
@@ -442,5 +459,12 @@ mod tests {
     #[test]
     fn window_dc_client_uses_the_wine_getdc_lease_ordinals() {
         assert_eq!([(WINE_GET_DC, 0x13eb), (WINE_GET_DC_EX, 0x13ec), (WINE_RELEASE_DC, 0x1509)], [(0x13eb, 0x13eb), (0x13ec, 0x13ec), (0x1509, 0x1509)]);
+    }
+
+    #[test]
+    fn window_timers_preserve_thread_target_and_callback_abi() {
+        assert_eq!(timer_args(None, 7, 250, 0xfeed), [0, 7, 250, 0xfeed, 0, 0]);
+        assert_eq!(timer_args(Some(41), 9, 0, 0), [41, 9, 0, 0, 0, 0]);
+        assert_eq!(WM_TIMER, 0x0113);
     }
 }
