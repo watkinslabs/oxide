@@ -270,11 +270,19 @@ impl Registry {
     pub fn open_key(&self, root: Root, subkey: &str) -> Result<String, Error> {
         let path = join_path(root.name(), subkey)?;
         let identity = canonical(&path);
-        if self.keys.contains_key(&identity) { Ok(identity) } else { Err(Error::MissingKey) }
+        if root == Root::Classes { if self.classes_view_exists(&identity) { Ok(identity) } else { Err(Error::MissingKey) } }
+        else if self.keys.contains_key(&identity) { Ok(identity) } else { Err(Error::MissingKey) }
     }
 
     /// Create all missing path components and return the canonical key handle. # C: O(depth log N)
     pub fn create_key(&mut self, root: Root, subkey: &str) -> Result<String, Error> {
+        if root == Root::Classes {
+            let path = join_path(root.name(), subkey)?;
+            let relative = path.split_once('\\').map_or("", |(_, rest)| rest);
+            let backing = classes_backing_path("HKCU", relative);
+            self.create_backing_key(&backing)?;
+            return Ok(canonical(&path));
+        }
         let path = join_path(root.name(), subkey)?;
         let mut current = root.name().to_string();
         for component in path.split('\\').skip(1) {
@@ -299,12 +307,18 @@ impl Registry {
     /// Open a key relative to an existing opaque handle. # C: O(depth log N)
     pub fn open_relative_handle(&mut self, parent: KeyHandle, subkey: &str) -> Result<KeyHandle, Error> {
         let path = self.live_handle_path(parent)?;
-        let child = join_path(&path, subkey)?; if self.keys.contains_key(&canonical(&child)) { self.allocate_handle(canonical(&child)) } else { Err(Error::MissingKey) }
+        let child = canonical(&join_path(&path, subkey)?);
+        if child.starts_with("HKCR\\") && self.classes_view_exists(&child) || self.keys.contains_key(&child) { self.allocate_handle(child) } else { Err(Error::MissingKey) }
     }
 
     /// Create a key relative to an existing opaque handle. # C: O(depth log N)
     pub fn create_relative_handle(&mut self, parent: KeyHandle, subkey: &str) -> Result<KeyHandle, Error> {
         let path = self.live_handle_path(parent)?;
+        if path == "HKCR" || path.starts_with("HKCR\\") {
+            let child = join_path(&path, subkey)?;
+            let relative = child.split_once('\\').map_or("", |(_, rest)| rest);
+            return self.create_handle(Root::Classes, relative);
+        }
         let child = self.create_relative_path(&path, subkey)?; self.allocate_handle(child)
     }
 
@@ -347,7 +361,8 @@ impl Registry {
         if self.deleted.contains(&key) { return Ok(()); }
         let path = self.handles.get(&key).cloned().ok_or(Error::MissingKey)?;
         if is_root(&path) || !self.subkeys(&path)?.is_empty() { return Err(Error::InvalidPath); }
-        self.keys.remove(&path).ok_or(Error::MissingKey)?;
+        let backing = if path.starts_with("HKCR\\") { classes_backing_path("HKCU", path.strip_prefix("HKCR\\").unwrap_or("")) } else { path.clone() };
+        self.keys.remove(&canonical(&backing)).ok_or(Error::MissingKey)?;
         self.deleted.insert(key);
         Ok(())
     }
@@ -365,6 +380,7 @@ impl Registry {
     /// Enumerate values through an opaque key handle in stable display order. # C: O(N_values)
     pub fn values_handle(&self, key: KeyHandle) -> Result<Vec<(String, Value)>, Error> {
         let path = self.handles.get(&key).ok_or(Error::MissingKey)?;
+        if path == "HKCR" || path.starts_with("HKCR\\") { return self.classes_values(path); }
         let values = &self.keys.get(path).ok_or(Error::MissingKey)?.values;
         let mut out = values.values().map(|(name, value)| (name.clone(), value.clone())).collect::<Vec<_>>();
         out.sort_by_key(|(name, _)| canonical(name)); Ok(out)
@@ -383,6 +399,7 @@ impl Registry {
     /// Return the canonical display path retained by the registry owner. # C: O(log N)
     pub fn path_for_handle(&self, key: KeyHandle) -> Result<String, Error> {
         let path = self.live_handle_path(key)?;
+        if path == "HKCR" || path.starts_with("HKCR\\") { if self.classes_view_exists(&path) { return Ok(path); } return Err(Error::Deleted); }
         Ok(self.keys.get(&path).ok_or(Error::Deleted)?.path.clone())
     }
 
@@ -414,28 +431,75 @@ impl Registry {
         Ok(canonical(&path))
     }
 
+    fn create_backing_key(&mut self, path: &str) -> Result<(), Error> {
+        let root = path.split_once('\\').map_or(path, |(root, _)| root);
+        let mut current = root.to_string();
+        for component in path.split('\\').skip(1) {
+            if component.is_empty() { return Err(Error::InvalidPath); }
+            current.push('\\'); current.push_str(component); let identity = canonical(&current);
+            self.keys.entry(identity).or_insert_with(|| Key { path: current.clone(), values: BTreeMap::new() });
+        }
+        Ok(())
+    }
+
+    fn classes_view_exists(&self, path: &str) -> bool {
+        if path == "HKCR" { return true; }
+        let relative = path.strip_prefix("HKCR\\").unwrap_or("");
+        ["HKCU", "HKLM"].iter().any(|root| self.keys.contains_key(&canonical(&classes_backing_path(root, relative))))
+    }
+
+    fn classes_subkeys(&self, key: &str) -> Result<Vec<String>, Error> {
+        if !self.classes_view_exists(key) { return Err(Error::MissingKey); }
+        let relative = key.strip_prefix("HKCR").unwrap_or("").trim_start_matches('\\');
+        let mut names = BTreeMap::new();
+        for root in ["HKCU", "HKLM"] {
+            let backing = classes_backing_path(root, relative);
+            if let Ok(children) = self.subkeys(&canonical(&backing)) { for child in children { names.insert(canonical(&child), child); } }
+        }
+        Ok(names.into_values().collect())
+    }
+
+    fn classes_values(&self, key: &str) -> Result<Vec<(String, Value)>, Error> {
+        if !self.classes_view_exists(key) { return Err(Error::MissingKey); }
+        let relative = key.strip_prefix("HKCR").unwrap_or("").trim_start_matches('\\');
+        let mut values = BTreeMap::new();
+        for root in ["HKCU", "HKLM"] {
+            let backing = classes_backing_path(root, relative);
+            if let Some(key) = self.keys.get(&canonical(&backing)) { for (name, value) in key.values.values() { values.entry(canonical(name)).or_insert_with(|| (name.clone(), value.clone())); } }
+        }
+        Ok(values.into_values().collect())
+    }
+
     /// Set or replace one typed value. # C: O(log N)
     pub fn set_value(&mut self, key: &str, name: &str, value: Value) -> Result<(), Error> {
         if name.contains('\\') || name.contains('\0') { return Err(Error::InvalidPath); }
-        let entry = self.keys.get_mut(key).ok_or(Error::MissingKey)?;
+        let backing = if key == "HKCR" || key.starts_with("HKCR\\") { classes_backing_path("HKCU", key.strip_prefix("HKCR").unwrap_or("").trim_start_matches('\\')) } else { key.to_string() };
+        let entry = self.keys.get_mut(&canonical(&backing)).ok_or(Error::MissingKey)?;
         entry.values.insert(canonical(name), (name.to_string(), value));
         Ok(())
     }
 
     /// Query one typed value by case-insensitive name. # C: O(log N)
     pub fn query_value(&self, key: &str, name: &str) -> Result<Value, Error> {
+        if key == "HKCR" || key.starts_with("HKCR\\") {
+            let relative = key.strip_prefix("HKCR").unwrap_or("").trim_start_matches('\\');
+            let user = classes_backing_path("HKCU", relative); let machine = classes_backing_path("HKLM", relative);
+            return self.keys.get(&canonical(&user)).and_then(|key| key.values.get(&canonical(name))).or_else(|| self.keys.get(&canonical(&machine)).and_then(|key| key.values.get(&canonical(name)))).map(|(_, value)| value.clone()).ok_or(Error::MissingValue);
+        }
         self.keys.get(key).ok_or(Error::MissingKey)?.values.get(&canonical(name)).map(|(_, value)| value.clone()).ok_or(Error::MissingValue)
     }
 
     /// Delete one value by its case-insensitive canonical name. # C: O(log N)
     pub fn delete_value(&mut self, key: &str, name: &str) -> Result<(), Error> {
         if name.contains('\\') || name.contains('\0') { return Err(Error::InvalidPath); }
-        let entry = self.keys.get_mut(key).ok_or(Error::MissingKey)?;
+        let backing = if key == "HKCR" || key.starts_with("HKCR\\") { classes_backing_path("HKCU", key.strip_prefix("HKCR").unwrap_or("").trim_start_matches('\\')) } else { key.to_string() };
+        let entry = self.keys.get_mut(&canonical(&backing)).ok_or(Error::MissingKey)?;
         if entry.values.remove(&canonical(name)).is_some() { Ok(()) } else { Err(Error::MissingValue) }
     }
 
     /// Enumerate child keys in stable display order. # C: O(N_keys)
     pub fn subkeys(&self, key: &str) -> Result<Vec<String>, Error> {
+        if key == "HKCR" || key.starts_with("HKCR\\") { return self.classes_subkeys(key); }
         let parent = self.keys.get(key).ok_or(Error::MissingKey)?.path.clone();
         let prefix = format!("{}\\", parent);
         let mut out = Vec::new();
@@ -548,6 +612,10 @@ impl Registry {
 fn relative_for_target(target: &str, relative: &str) -> String {
     let target = target.split_once('\\').map_or("", |(_, rest)| rest);
     if target.is_empty() { relative.to_string() } else if relative.is_empty() { target.to_string() } else { format!("{}\\{}", target, relative) }
+}
+
+fn classes_backing_path(root: &str, relative: &str) -> String {
+    if relative.is_empty() { format!("{}\\Software\\Classes", root) } else { format!("{}\\Software\\Classes\\{}", root, relative) }
 }
 
 fn canonical(text: &str) -> String { text.to_ascii_uppercase() }
@@ -796,6 +864,25 @@ mod tests {
         let mut bytes = Vec::new(); bytes.extend_from_slice(MAGIC); put_u32(&mut bytes, 1);
         put_bytes(&mut bytes, b"HKLMX\\Software").unwrap(); put_u32(&mut bytes, 0);
         assert_eq!(Registry::decode(&bytes), Err(Error::InvalidFile));
+    }
+
+    #[test]
+    fn classes_root_merges_user_over_machine_and_writes_user_classes() {
+        let mut registry = Registry::new();
+        let machine = registry.create_key(Root::LocalMachine, r"Software\Classes\Oxide").unwrap();
+        registry.set_value(&machine, "Owner", Value { kind: ValueType::String, data: b"machine".to_vec() }).unwrap();
+        let machine_only = registry.create_key(Root::LocalMachine, r"Software\Classes\MachineOnly").unwrap();
+        registry.set_value(&machine_only, "Present", Value { kind: ValueType::Dword, data: vec![1, 0, 0, 0] }).unwrap();
+        let user = registry.create_key(Root::CurrentUser, r"Software\Classes\Oxide").unwrap();
+        registry.set_value(&user, "Owner", Value { kind: ValueType::String, data: b"user".to_vec() }).unwrap();
+        let view = registry.open_handle(Root::Classes, "Oxide").unwrap();
+        assert_eq!(registry.query_value_handle(view, "owner").unwrap().data, b"user");
+        assert_eq!(registry.values_handle(view).unwrap(), vec![("Owner".into(), Value { kind: ValueType::String, data: b"user".to_vec() })]);
+        assert_eq!(registry.subkeys(&canonical("HKCR")).unwrap(), vec!["MachineOnly", "Oxide"]);
+        let value = Value { kind: ValueType::Binary, data: vec![7, 8] };
+        registry.set_value_handle(view, "WrittenThroughHkcr", value.clone()).unwrap();
+        assert_eq!(registry.query_value(&user, "writtenthroughhkcr"), Ok(value));
+        assert_eq!(registry.query_value(&machine, "writtenthroughhkcr"), Err(Error::MissingValue));
     }
 
     #[test]
