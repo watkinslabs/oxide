@@ -132,7 +132,8 @@ pub fn dispatch_native(call: NtCall) -> Option<u64> {
 pub(crate) fn read_registry_hive(cur: &sched::Task, attributes: u64) -> Result<alloc::vec::Vec<u8>, u64> {
     if !cur.is_nt_personality() { return Err(STATUS_INVALID_PARAMETER); }
     let path = object_path(attributes).ok_or(STATUS_INVALID_PARAMETER)?;
-    let lookup = crate::pathresolve::resolve_at_path(crate::pathresolve::AT_FDCWD, &path, vfs::LookupFlags::default())
+    let lookup = crate::pathresolve::resolve_at_path(crate::pathresolve::AT_FDCWD, &path,
+        crate::nt_path::windows_lookup_flags())
         .map_err(|_| STATUS_OBJECT_NAME_NOT_FOUND)?;
     if lookup.inode.file_type() != vfs::FileType::Regular { return Err(STATUS_INVALID_PARAMETER); }
     let stat = vfs::generic_fillattr(&lookup.inode, &vfs::IDENTITY);
@@ -421,7 +422,7 @@ fn query_attributes(attributes: u64, information: u64) -> u64 {
     if attributes == 0 || information == 0 { return STATUS_ACCESS_VIOLATION; }
     let Some(path) = object_path(attributes) else { return STATUS_INVALID_PARAMETER; };
     let lookup = crate::pathresolve::resolve_at_path(crate::pathresolve::AT_FDCWD, &path,
-        vfs::LookupFlags { case_insensitive: true, ..Default::default() });
+        crate::nt_path::windows_lookup_flags());
     let Ok(vp) = lookup else { return STATUS_OBJECT_NAME_NOT_FOUND; };
     let file_type = vp.inode.file_type();
     if file_type != vfs::FileType::Regular && file_type != vfs::FileType::Directory { return STATUS_INVALID_INFO_CLASS; }
@@ -440,7 +441,7 @@ fn query_full_attributes(attributes: u64, information: u64) -> u64 {
     if attributes == 0 || information == 0 { return STATUS_ACCESS_VIOLATION; }
     let Some(path) = object_path(attributes) else { return STATUS_INVALID_PARAMETER; };
     let lookup = crate::pathresolve::resolve_at_path(crate::pathresolve::AT_FDCWD, &path,
-        vfs::LookupFlags { case_insensitive: true, ..Default::default() });
+        crate::nt_path::windows_lookup_flags());
     let Ok(vp) = lookup else { return STATUS_OBJECT_NAME_NOT_FOUND; };
     let file_type = vp.inode.file_type();
     if file_type != vfs::FileType::Regular && file_type != vfs::FileType::Directory { return STATUS_INVALID_INFO_CLASS; }
@@ -559,12 +560,12 @@ fn open_path(cur: &sched::Task, output: u64, desired: u32, attrs: u64, options: 
     if options & FILE_DIRECTORY_FILE != 0 { flags |= vfs::OpenFlags::O_DIRECTORY; }
     if options & FILE_NON_DIRECTORY_FILE != 0 && path.ends_with('/') { return STATUS_INVALID_PARAMETER; }
     let lookup = crate::pathresolve::resolve_at_path(crate::pathresolve::AT_FDCWD, &path,
-        vfs::LookupFlags { case_insensitive: true, ..Default::default() });
+        crate::nt_path::windows_lookup_flags());
     let (inode, dentry, mnt_id, created) = match lookup {
         Ok(_vp) if disposition.rejects_existing() => return STATUS_OBJECT_NAME_COLLISION,
         Ok(vp) => (vp.inode, vp.dentry, vp.mnt_id, false),
         Err(rv) if disposition.allows_missing() && rv == -(Errno::Enoent.as_i32() as i64) => {
-            let mut parent_flags = vfs::LookupFlags { case_insensitive: true, ..Default::default() };
+            let mut parent_flags = crate::nt_path::windows_lookup_flags();
             parent_flags.parent = true;
             let Ok(parent) = crate::pathresolve::resolve_parent_at_flags(crate::pathresolve::AT_FDCWD, &path, parent_flags) else {
                 return STATUS_OBJECT_NAME_NOT_FOUND;
@@ -1096,10 +1097,8 @@ fn object_name(attrs: u64) -> Option<(u64, String)> {
 
 fn utf16_string(bytes: &[u8]) -> Option<String> {
     if bytes.len() & 1 != 0 { return None; }
-    let mut out = String::new();
-    for pair in bytes.chunks_exact(2) {
-        let c = u16::from_ne_bytes([pair[0], pair[1]]);
-        out.push(core::char::from_u32(c as u32)?);
-    }
-    Some(out)
+    let units = bytes.chunks_exact(2)
+        .map(|pair| u16::from_ne_bytes([pair[0], pair[1]]))
+        .collect::<alloc::vec::Vec<_>>();
+    crate::nt_path::decode_utf16(&units)
 }
