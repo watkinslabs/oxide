@@ -211,31 +211,48 @@ fn query_process_image_information(target: &sched::Task, info: syscall::UserPtr<
     }
     if info.as_u64() == 0 { return Some(STATUS_ACCESS_VIOLATION); }
     let peb = target.nt_peb();
-    let image = read_u64(peb.checked_add(0x10)?)?;
-    let nt = image.checked_add(read_u32(image.checked_add(0x3c)?)? as u64)?;
-    if read_u32(nt)? != 0x0000_4550 { return Some(STATUS_INVALID_PARAMETER); }
-    let machine = read_u32(nt.checked_add(4)?)? as u16;
-    let sections = read_u32(nt.checked_add(6)?)? as usize;
-    let optional_size = read_u32(nt.checked_add(20)?)? as usize;
-    let optional = nt.checked_add(24)?;
-    if read_u32(optional)? & 0xffff != 0x020b || optional_size < 112 { return Some(STATUS_INVALID_PARAMETER); }
-    let entry = image.checked_add(read_u32(optional.checked_add(16)?)? as u64)?;
-    let preferred = read_u64(optional.checked_add(24)?)?;
-    let stack = read_u64(optional.checked_add(72)?)?;
-    let commit = read_u64(optional.checked_add(80)?)?;
+    let Some(peb_image_address) = peb.checked_add(0x10) else { return Some(STATUS_INVALID_PARAMETER); };
+    let Some(image) = read_u64(peb_image_address) else { return Some(STATUS_INVALID_PARAMETER); };
+    let Some(dos_offset_address) = image.checked_add(0x3c) else { return Some(STATUS_INVALID_PARAMETER); };
+    let Some(dos_offset) = read_u32(dos_offset_address) else { return Some(STATUS_INVALID_PARAMETER); };
+    let Some(nt) = image.checked_add(dos_offset as u64) else { return Some(STATUS_INVALID_PARAMETER); };
+    let Some(signature) = read_u32(nt) else { return Some(STATUS_INVALID_PARAMETER); };
+    if signature != 0x0000_4550 { return Some(STATUS_INVALID_PARAMETER); }
+    let Some(machine_address) = nt.checked_add(4) else { return Some(STATUS_INVALID_PARAMETER); };
+    let Some(machine) = read_u16(machine_address) else { return Some(STATUS_INVALID_PARAMETER); };
+    let Some(section_count_address) = nt.checked_add(6) else { return Some(STATUS_INVALID_PARAMETER); };
+    let Some(sections) = read_u16(section_count_address) else { return Some(STATUS_INVALID_PARAMETER); };
+    let Some(optional_size_address) = nt.checked_add(20) else { return Some(STATUS_INVALID_PARAMETER); };
+    let Some(optional_size) = read_u16(optional_size_address) else { return Some(STATUS_INVALID_PARAMETER); };
+    let Some(optional) = nt.checked_add(24) else { return Some(STATUS_INVALID_PARAMETER); };
+    let Some(magic) = read_u16(optional) else { return Some(STATUS_INVALID_PARAMETER); };
+    if magic != 0x020b || optional_size < 112 { return Some(STATUS_INVALID_PARAMETER); }
+    let Some(entry_address) = optional.checked_add(16) else { return Some(STATUS_INVALID_PARAMETER); };
+    let Some(entry_rva) = read_u32(entry_address) else { return Some(STATUS_INVALID_PARAMETER); };
+    let Some(entry) = image.checked_add(entry_rva as u64) else { return Some(STATUS_INVALID_PARAMETER); };
+    let Some(preferred_address) = optional.checked_add(24) else { return Some(STATUS_INVALID_PARAMETER); };
+    let Some(preferred) = read_u64(preferred_address) else { return Some(STATUS_INVALID_PARAMETER); };
+    let Some(stack_address) = optional.checked_add(72) else { return Some(STATUS_INVALID_PARAMETER); };
+    let Some(stack) = read_u64(stack_address) else { return Some(STATUS_INVALID_PARAMETER); };
+    let Some(commit_address) = optional.checked_add(80) else { return Some(STATUS_INVALID_PARAMETER); };
+    let Some(commit) = read_u64(commit_address) else { return Some(STATUS_INVALID_PARAMETER); };
+    let Some(subsystem) = read_u16_at(optional, 68) else { return Some(STATUS_INVALID_PARAMETER); };
+    let Some(subsystem_minor) = read_u16_at(optional, 50) else { return Some(STATUS_INVALID_PARAMETER); };
+    let Some(subsystem_major) = read_u16_at(optional, 48) else { return Some(STATUS_INVALID_PARAMETER); };
+    let Some(os_major) = read_u16_at(optional, 40) else { return Some(STATUS_INVALID_PARAMETER); };
+    let Some(os_minor) = read_u16_at(optional, 42) else { return Some(STATUS_INVALID_PARAMETER); };
+    let Some(image_characteristics) = read_u16_at(nt, 22) else { return Some(STATUS_INVALID_PARAMETER); };
+    let Some(dll_characteristics) = read_u16_at(optional, 70) else { return Some(STATUS_INVALID_PARAMETER); };
+    let Some(loader_flags) = read_u32_at(optional, 104) else { return Some(STATUS_INVALID_PARAMETER); };
+    let Some(image_size) = read_u32_at(optional, 56) else { return Some(STATUS_INVALID_PARAMETER); };
+    let Some(checksum) = read_u32_at(optional, 64) else { return Some(STATUS_INVALID_PARAMETER); };
     let facts = nt_process_image_policy::Facts {
         transfer: entry, maximum_stack: stack, committed_stack: commit,
-        subsystem: read_u32(optional.checked_add(68)?)? & 0xffff,
-        subsystem_minor: (read_u32(optional.checked_add(48)?)? >> 16) as u16,
-        subsystem_major: (read_u32(optional.checked_add(48)?)? & 0xffff) as u16,
-        os_major: (read_u32(optional.checked_add(40)?)? & 0xffff) as u16,
-        os_minor: (read_u32(optional.checked_add(40)?)? >> 16) as u16,
-        image_characteristics: (read_u32(nt.checked_add(20)?)? >> 16) as u16,
-        dll_characteristics: (read_u32(optional.checked_add(70)?)? >> 16) as u16,
-        machine, contains_code: image_contains_code(nt, optional_size, sections),
+        subsystem: subsystem as u32, subsystem_minor, subsystem_major, os_major, os_minor,
+        image_characteristics, dll_characteristics,
+        machine, contains_code: image_contains_code(nt, usize::from(optional_size), usize::from(sections)),
         image_flags: ((image != preferred) as u8) << 2 | (image <= u32::MAX as u64) as u8,
-        loader_flags: read_u32(optional.checked_add(88)?)?,
-        image_size: read_u32(optional.checked_add(56)?)?, checksum: read_u32(optional.checked_add(64)?)?,
+        loader_flags, image_size, checksum,
     };
     if uaccess::copy_to_user(info.as_u64(), &nt_process_image_policy::encode(facts)).is_err() {
         return Some(STATUS_INVALID_PARAMETER);
@@ -313,7 +330,14 @@ fn image_contains_code(nt: u64, optional_size: usize, count: usize) -> bool {
 }
 
 fn read_u32(address: u64) -> Option<u32> { uaccess::get_user_u32(address).ok() }
+fn read_u16(address: u64) -> Option<u16> {
+    let mut bytes = [0u8; 2];
+    uaccess::copy_from_user(&mut bytes, address).ok()?;
+    Some(u16::from_ne_bytes(bytes))
+}
 fn read_u64(address: u64) -> Option<u64> { uaccess::get_user_u64(address).ok() }
+fn read_u16_at(base: u64, offset: u64) -> Option<u16> { read_u16(base.checked_add(offset)?) }
+fn read_u32_at(base: u64, offset: u64) -> Option<u32> { read_u32(base.checked_add(offset)?) }
 
 fn query_process_vm_counters(target: &sched::Task, info: syscall::UserPtr<u8>, length: u32,
     return_length: Option<syscall::UserPtr<u32>>) -> Option<u64> {

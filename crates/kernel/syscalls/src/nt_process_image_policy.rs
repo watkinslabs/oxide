@@ -65,11 +65,18 @@ mod tests {
         assert_eq!(BYTES, 64);
         assert_eq!(u64::from_ne_bytes(out[0..8].try_into().unwrap()), 0x1400_1234);
         assert_eq!(u64::from_ne_bytes(out[16..24].try_into().unwrap()), 0x800000);
+        assert_eq!(u16::from_ne_bytes(out[36..38].try_into().unwrap()), 2);
         assert_eq!(u16::from_ne_bytes(out[38..40].try_into().unwrap()), 6);
+        assert_eq!(u16::from_ne_bytes(out[40..42].try_into().unwrap()), 10);
+        assert_eq!(u16::from_ne_bytes(out[42..44].try_into().unwrap()), 0);
+        assert_eq!(u16::from_ne_bytes(out[44..46].try_into().unwrap()), 0x22);
+        assert_eq!(u16::from_ne_bytes(out[46..48].try_into().unwrap()), 0x160);
         assert_eq!(u16::from_ne_bytes(out[48..50].try_into().unwrap()), 0x8664);
         assert_eq!(out[50], 1);
         assert_eq!(out[51], 4);
+        assert_eq!(u32::from_ne_bytes(out[52..56].try_into().unwrap()), 7);
         assert_eq!(u32::from_ne_bytes(out[56..60].try_into().unwrap()), 0x9000);
+        assert_eq!(u32::from_ne_bytes(out[60..64].try_into().unwrap()), 0x12345678);
     }
 
     #[test]
