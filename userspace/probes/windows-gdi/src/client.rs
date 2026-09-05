@@ -76,6 +76,13 @@ impl Gdi {
         invoke(NtService::BlitGdiSurface, [dc, pixels.as_ptr() as u64, width as u64, height as u64, stride as u64, packed]).map(|_| ())
     }
 
+    /// Copy one source DC into a destination DC using the supported SRCCOPY operation. # C: O(width*height) plus kernel service
+    pub fn bitblt(&self, dst: u64, dst_x: i32, dst_y: i32, src: u64, src_x: i32, src_y: i32, width: i32, height: i32) -> Result<(), GdiError> {
+        let dst_origin = (dst_x as u64 & 0xffff_ffff) | ((dst_y as u64 & 0xffff_ffff) << 32);
+        let src_origin = (src_x as u64 & 0xffff_ffff) | ((src_y as u64 & 0xffff_ffff) << 32);
+        invoke(NtService::BitBltGdiSurface, [dst, src, dst_origin, src_origin, width as u64, height as u64]).map(|_| ())
+    }
+
     /// Submit one userspace-rasterized text tile to its native device context. # C: O(width*height) plus kernel service
     pub fn draw_raster(&self, dc: u64, x: i32, y: i32, surface: &crate::RasterSurface) -> Result<(), GdiError> {
         self.blit_surface(dc, x, y, surface.width, surface.height, surface.width, &surface.pixels)

@@ -304,6 +304,7 @@ pub enum NtService {
     EndWindowPaint = 526,
     FillGdiRect = 527,
     BlitGdiSurface = 528,
+    BitBltGdiSurface = 546,
     PresentGdiSurface = 529,
     PresentGdiWindow = 530,
     PresentGdiWindowRegion = 544,
@@ -412,6 +413,7 @@ pub enum NtGdiCall {
     GetTextExtent { dc: u32, count: u32, extent: UserPtr<NtGdiTextExtent>, text: UserPtr<u16> },
     FillRect { dc: u32, left: i32, top: i32, right: i32, bottom: i32, color: u32 },
     BlitSurface { dc: u32, pixels: UserPtr<u8>, x: i32, y: i32, width: u32, height: u32, stride: u32 },
+    BitBltSurface { dst: u32, src: u32, dst_x: i32, dst_y: i32, src_x: i32, src_y: i32, width: i32, height: i32 },
     PresentSurface { dc: u32, x: i32, y: i32 },
     PresentWindow { hwnd: u32, dc: u32 },
     PresentWindowRegion { hwnd: u32, dc: u32, left: i32, top: i32, right: i32, bottom: i32 },
@@ -805,6 +807,7 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 526 { return Some(NtCall { service: NtService::EndWindowPaint, args }); }
     if service == 527 { return Some(NtCall { service: NtService::FillGdiRect, args }); }
     if service == 528 { return Some(NtCall { service: NtService::BlitGdiSurface, args }); }
+    if service == 546 { return Some(NtCall { service: NtService::BitBltGdiSurface, args }); }
     if service == 529 { return Some(NtCall { service: NtService::PresentGdiSurface, args }); }
     if service == 530 { return Some(NtCall { service: NtService::PresentGdiWindow, args }); }
     if service == 544 { return Some(NtCall { service: NtService::PresentGdiWindowRegion, args }); }
@@ -1245,6 +1248,7 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
         NtService::NtMakePermanentObject => Err(Errno::Enosys),
         NtService::RtlDeNormalizeProcessParams => Err(Errno::Enosys),
         NtService::NtQueryValueKey | NtService::NtQueryVolumeInformationFile | NtService::NtQueueApcThread | NtService::NtQueueApcThreadEx2 | NtService::NtRaiseException | NtService::NtReadFileScatter | NtService::NtReadVirtualMemory | NtService::NtRemoveIoCompletionEx | NtService::NtResetWriteWatch | NtService::NtResumeThread | NtService::NtSaveKey | NtService::NtSetContextThread | NtService::NtSetInformationObject | NtService::NtSetInformationToken | NtService::NtSetInformationVirtualMemory | NtService::NtSetSystemInformation | NtService::NtSetSystemTime | NtService::NtSetValueKey | NtService::NtSuspendThread | NtService::NtTestAlert | NtService::NtContinue | NtService::NtUnloadKey | NtService::NtWriteVirtualMemory | NtService::NtYieldExecution => Err(Errno::Enosys),
+        NtService::BitBltGdiSurface => Err(Errno::Enosys),
         NtService::LdrGetDllPath => Err(Errno::Enosys),
         NtService::LdrSetDefaultDllDirectories => Err(Errno::Enosys),
         NtService::LdrUnloadDll => Err(Errno::Enosys),
@@ -1336,6 +1340,7 @@ pub fn decode_gdi(call: NtCall) -> Result<NtGdiCall, Errno> {
         NtService::GetGdiTextExtent => Ok(NtGdiCall::GetTextExtent { dc: a.a0 as u32, text: UserPtr::new(a.a1)?, count: a.a2 as u32, extent: UserPtr::new(a.a3)? }),
         NtService::FillGdiRect => Ok(NtGdiCall::FillRect { dc: a.a0 as u32, left: a.a1 as i32, top: a.a2 as i32, right: a.a3 as i32, bottom: a.a4 as i32, color: a.a5 as u32 }),
         NtService::BlitGdiSurface => Ok(NtGdiCall::BlitSurface { dc: a.a0 as u32, pixels: UserPtr::new(a.a1)?, x: a.a5 as i32, y: (a.a5 >> 32) as i32, width: a.a2 as u32, height: a.a3 as u32, stride: a.a4 as u32 }),
+        NtService::BitBltGdiSurface => Ok(NtGdiCall::BitBltSurface { dst: a.a0 as u32, src: a.a1 as u32, dst_x: a.a2 as i32, dst_y: (a.a2 >> 32) as i32, src_x: a.a3 as i32, src_y: (a.a3 >> 32) as i32, width: a.a4 as i32, height: a.a5 as i32 }),
         NtService::PresentGdiSurface => Ok(NtGdiCall::PresentSurface { dc: a.a0 as u32, x: a.a1 as i32, y: a.a2 as i32 }),
         NtService::PresentGdiWindow => Ok(NtGdiCall::PresentWindow { hwnd: a.a0 as u32, dc: a.a1 as u32 }),
         NtService::PresentGdiWindowRegion => Ok(NtGdiCall::PresentWindowRegion { hwnd: a.a0 as u32, dc: a.a1 as u32, left: a.a2 as i32, top: a.a3 as i32, right: a.a4 as i32, bottom: a.a5 as i32 }),
