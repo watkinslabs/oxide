@@ -32,11 +32,18 @@ pub(crate) fn decode_utf16(units: &[u16]) -> Option<String> {
 /// `C:\\foo` would silently open a different file than Windows does.
 pub fn normalize_path(raw: &str) -> Option<String> {
     if raw.chars().any(|c| c == '\0') { return None; }
-    let path = raw
-        .strip_prefix("\\??\\")
-        .or_else(|| raw.strip_prefix("\\DosDevices\\"))
-        .unwrap_or(raw);
-    let path = path.replace('\\', "/");
+    let path = raw.replace('\\', "/");
+    let path = path
+        .strip_prefix("/??/")
+        .or_else(|| path.strip_prefix("/DosDevices/"))
+        .unwrap_or(&path);
+    let path = if path.get(..4).is_some_and(|prefix| prefix.eq_ignore_ascii_case("UNC/")) {
+        return normalize_unc(&path[4..]);
+    } else if path.get(..8).is_some_and(|prefix| prefix.eq_ignore_ascii_case("//?/UNC/"))
+        || path.get(..8).is_some_and(|prefix| prefix.eq_ignore_ascii_case("//./UNC/")) {
+        return normalize_unc(&path[7..]);
+    } else { path };
+    if path.starts_with("//") { return normalize_unc(&path[2..]); }
     let bytes = path.as_bytes();
     if bytes.len() >= 2 && bytes[1] == b':' {
         if !bytes[0].is_ascii_alphabetic() || bytes.get(2) != Some(&b'/') {
@@ -53,12 +60,36 @@ pub fn normalize_path(raw: &str) -> Option<String> {
     lexical_normalize(&path)
 }
 
+fn normalize_unc(path: &str) -> Option<String> {
+    let mut components = path.split('/').filter(|part| !part.is_empty());
+    let server = components.next()?;
+    let share = components.next()?;
+    if matches!(server, "." | "..") || matches!(share, "." | "..") { return None; }
+    let suffix_parts = components.collect::<alloc::vec::Vec<_>>();
+    let mut translated = String::from("/windows/unc/");
+    translated.push_str(server);
+    translated.push('/');
+    translated.push_str(share);
+    let suffix = suffix_parts.join("/");
+    if !suffix.is_empty() {
+        let suffix = lexical_normalize(&suffix)?;
+        if suffix == ".." || suffix.starts_with("../") { return None; }
+        if suffix != "." { translated.push('/'); translated.push_str(suffix.trim_start_matches('/')); }
+    }
+    Some(translated)
+}
+
 /// Render a canonical VFS path in the DOS spelling exposed by NT file
-/// information replies.  The `/windows/<drive>/` mount is the single drive
-/// mapping owned by this layer; other absolute paths retain their root while
-/// adopting Windows separators.
+/// information replies.  The drive and UNC mounts are owned by this layer;
+/// other absolute paths retain their root while adopting Windows separators.
 pub fn render_windows_path(path: &str) -> Option<String> {
     if path.as_bytes().contains(&0) { return None; }
+    if let Some(rest) = path.strip_prefix("/windows/unc/") {
+        if rest.is_empty() { return None; }
+        let mut output = String::from("\\\\");
+        output.push_str(&rest.replace('/', "\\"));
+        return Some(output);
+    }
     if let Some(rest) = path.strip_prefix("/windows/") {
         let mut parts = rest.splitn(2, '/');
         let drive = parts.next()?;
@@ -121,6 +152,25 @@ mod tests {
     }
 
     #[test]
+    fn maps_dos_and_nt_unc_paths_to_one_canonical_vfs_root() {
+        assert_eq!(normalize_path(r"\\server\Share\Games\data.pak"),
+            Some(String::from("/windows/unc/server/Share/Games/data.pak")));
+        assert_eq!(normalize_path(r"\??\UNC\server\Share\Games\data.pak"),
+            Some(String::from("/windows/unc/server/Share/Games/data.pak")));
+        assert_eq!(normalize_path(r"\\?\UNC\server\Share\Games\data.pak"),
+            Some(String::from("/windows/unc/server/Share/Games/data.pak")));
+        assert_eq!(normalize_path(r"\\server\Share\Games\.\Demo\..\data.pak"),
+            Some(String::from("/windows/unc/server/Share/Games/data.pak")));
+    }
+
+    #[test]
+    fn rejects_unc_paths_without_server_and_share() {
+        assert_eq!(normalize_path(r"\\"), None);
+        assert_eq!(normalize_path(r"\\server"), None);
+        assert_eq!(normalize_path(r"\\server\..\data"), None);
+    }
+
+    #[test]
     fn preserves_non_drive_absolute_paths() {
         assert_eq!(normalize_path(r"\Device\Null"), Some(String::from("/Device/Null")));
         assert_eq!(normalize_path(r"\DosDevices\C:\"),
@@ -161,6 +211,12 @@ mod tests {
     fn renders_canonical_drive_paths_for_nt_replies() {
         assert_eq!(render_windows_path("/windows/c/Games/data.pak"), Some(String::from(r"C:\Games\data.pak")));
         assert_eq!(render_windows_path("/windows/d"), Some(String::from(r"D:\")));
+    }
+
+    #[test]
+    fn renders_canonical_unc_paths_for_nt_replies() {
+        assert_eq!(render_windows_path("/windows/unc/server/Share/data.pak"),
+            Some(String::from(r"\\server\Share\data.pak")));
     }
 
     #[test]
