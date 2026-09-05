@@ -1,5 +1,22 @@
 //! Pure CLIENT_ID and process-handle access decisions for the NT adapter.
 
+// These are the process-create bits Wine passes to NtCreateUserProcess. The
+// native path names the supported contract instead of silently dropping bits.
+pub const PROCESS_CREATE_FLAGS_INHERIT_HANDLES: u32 = 0x0000_0004;
+pub const PROCESS_CREATE_FLAGS_SUSPENDED: u32 = 0x0000_0200;
+pub const PROCESS_CREATE_FLAGS_SUPPORTED: u32 =
+    PROCESS_CREATE_FLAGS_INHERIT_HANDLES | PROCESS_CREATE_FLAGS_SUSPENDED;
+
+/// Validate process-create flags implemented by the native x86-64 path. # C: O(1)
+pub fn valid_process_create_flags(flags: u32) -> bool {
+    flags & !PROCESS_CREATE_FLAGS_SUPPORTED == 0
+}
+
+/// Preserve initial suspension from either NT create flag. # C: O(1)
+pub fn initial_thread_suspended(process_flags: u32, thread_flags: u32) -> bool {
+    process_flags & PROCESS_CREATE_FLAGS_SUSPENDED != 0 || thread_flags & 1 != 0
+}
+
 /// Validate the process-scoped CLIENT_ID shape used by NtOpenProcess. # C: O(1)
 pub fn valid_process_client_id(process_id: u64, thread_id: u64) -> bool {
     process_id != 0 && process_id <= u32::MAX as u64 && thread_id == 0
@@ -53,5 +70,21 @@ mod tests {
         assert!(thread_belongs_to_process(41, 41));
         assert!(!thread_belongs_to_process(42, 41));
         assert!(!thread_belongs_to_process(0, 0));
+    }
+
+    #[test]
+    fn process_create_accepts_wine_inheritance_and_suspension_bits_only() {
+        assert!(valid_process_create_flags(0));
+        assert!(valid_process_create_flags(PROCESS_CREATE_FLAGS_INHERIT_HANDLES));
+        assert!(valid_process_create_flags(PROCESS_CREATE_FLAGS_SUSPENDED));
+        assert!(valid_process_create_flags(PROCESS_CREATE_FLAGS_SUPPORTED));
+        assert!(!valid_process_create_flags(PROCESS_CREATE_FLAGS_SUPPORTED | 1));
+    }
+
+    #[test]
+    fn process_create_suspension_is_preserved_from_both_layers() {
+        assert!(!initial_thread_suspended(0, 0));
+        assert!(initial_thread_suspended(PROCESS_CREATE_FLAGS_SUSPENDED, 0));
+        assert!(initial_thread_suspended(0, 1));
     }
 }

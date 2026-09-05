@@ -26,7 +26,9 @@ const PARAM_ENVIRONMENT_OFF: u64 = 0x80;
 pub fn dispatch(call: NtCall, stack: [u64; 5]) -> u64 {
     let Ok(c) = syscall::nt::decode_user_process(call, stack) else { return INVALID_PARAMETER; };
     let Some(cur) = sched::live::current() else { return INVALID_PARAMETER; };
-    if !cur.is_nt_personality() || c.process_flags != 0 || c.thread_flags & !CREATE_SUSPENDED != 0
+    if !cur.is_nt_personality()
+        || !crate::nt_process_policy::valid_process_create_flags(c.process_flags as u32)
+        || c.thread_flags & !CREATE_SUSPENDED != 0
         || !crate::nt_process_handles::valid_object_attributes(c.process_attributes)
         || !crate::nt_process_handles::valid_object_attributes(c.thread_attributes)
         || read_u64(c.create_info.as_u64()) != Some(PS_CREATE_INFO_SIZE) {
@@ -114,7 +116,7 @@ pub fn dispatch(call: NtCall, stack: [u64; 5]) -> u64 {
         }
     }
     sched::live::publish_new_task(&child);
-    if c.thread_flags & CREATE_SUSPENDED != 0 { let _ = child.nt_suspend(); }
+    if crate::nt_process_policy::initial_thread_suspended(c.process_flags as u32, c.thread_flags as u32) { let _ = child.nt_suspend(); }
     else { sched::live::wake_new_task(&child); }
     SUCCESS
 }
