@@ -15,6 +15,56 @@ pub const X64_EXCEPTION_RECORD_OFFSET: u64 = 0x4f0;
 pub const X64_EXCEPTION_MACHINE_FRAME_OFFSET: u64 = 0x590;
 pub const X64_EXCEPTION_FRAME_BYTES: u64 = 0x5c0;
 
+/// Bytes the fixed Wine x86-64 Unix-call stub removes before issuing `syscall`.
+pub const X64_UNIX_CALL_PUSH_BYTES: u64 = 16;
+/// Bytes between the syscall-time stack pointer and the caller's continuation:
+/// two restored registers, the return address, and no callee-owned storage.
+pub const X64_UNIX_CALL_RETURN_BYTES: u64 = 24;
+
+/// Validated handoff from the published Unixlib table to one NT dispatch.
+/// `syscall_rsp` is the live user stack after Wine's two register saves;
+/// `return_rsp` is the stack pointer after those saves and the `ret`.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct X64UnixCallHandoff {
+    pub handle: u64,
+    pub code: u32,
+    pub args: u64,
+    pub callable: u64,
+    pub return_rip: u64,
+    pub syscall_rsp: u64,
+    pub return_rsp: u64,
+}
+
+/// The sole return channel for one completed native Unixlib call.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct X64UnixCallReturn {
+    pub call: X64UnixCallHandoff,
+    pub status: u64,
+}
+
+/// Build the typed x86-64 call/return transaction after the ELF table lookup.
+/// This validates only ABI/frame facts; the caller owns descriptor membership
+/// and executable-range validation before supplying `callable`.
+pub fn prepare_x64_unix_call(handle: u64, code: u64, args: u64, callable: u64,
+    return_rip: u64, syscall_rsp: u64, user_va_end: u64) -> Option<X64UnixCallHandoff> {
+    if handle == 0 || code > u32::MAX as u64 || callable == 0 || return_rip == 0
+        || return_rip >= user_va_end || syscall_rsp == 0 || syscall_rsp & 15 != 0 {
+        return None;
+    }
+    let return_rsp = syscall_rsp.checked_add(X64_UNIX_CALL_RETURN_BYTES)?;
+    if return_rsp >= user_va_end || syscall_rsp < X64_UNIX_CALL_PUSH_BYTES {
+        return None;
+    }
+    Some(X64UnixCallHandoff { handle, code: code as u32, args, callable,
+        return_rip, syscall_rsp, return_rsp })
+}
+
+/// Complete one validated Unix-call transaction with the NTSTATUS returned by
+/// its canonical slot. No alternate return channel or callback is permitted.
+pub fn complete_x64_unix_call(call: X64UnixCallHandoff, status: u64) -> X64UnixCallReturn {
+    X64UnixCallReturn { call, status }
+}
+
 /// Windows x64 rejects an unwind target below the active stack frame.  Keep
 /// this arithmetic independent of the kernel so the target-gated transfer
 /// path and hosted contract test use one decision.
@@ -392,6 +442,30 @@ mod tests {
         assert_eq!(&bytes[..11], &[0x57, 0x56, 0x48, 0x89, 0xcf, 0x48, 0x89, 0xd6, 0x4c, 0x89, 0xc2]);
         assert!(bytes.windows(2).any(|window| window == [0x0f, 0x05]));
         assert_eq!(&bytes[bytes.len() - 5..], &[0x0f, 0x05, 0x5e, 0x5f, 0xc3]);
+    }
+
+    #[test]
+    fn unix_call_handoff_binds_table_target_to_the_x64_return_lifecycle() {
+        let call = prepare_x64_unix_call(
+            0xfeed, 7, 0x7fff_0000_2000, 0x7f00_0000_4100,
+            0x7fff_0000_1234, 0x7fff_0000_1ff0, 0x0000_8000_0000_0000,
+        ).expect("valid Wine frame");
+        assert_eq!(call.code, 7);
+        assert_eq!(call.callable, 0x7f00_0000_4100);
+        assert_eq!(call.return_rsp, call.syscall_rsp + X64_UNIX_CALL_RETURN_BYTES);
+        assert_eq!(complete_x64_unix_call(call, 0), X64UnixCallReturn { call, status: 0 });
+    }
+
+    #[test]
+    fn unix_call_handoff_rejects_frame_and_fixed_abi_violations() {
+        let end = 0x0000_8000_0000_0000;
+        let valid = (0xfeed, 7, 0x2000, 0x4100, 0x1200, 0x2000);
+        assert!(prepare_x64_unix_call(valid.0, valid.1, valid.2, valid.3, valid.4, valid.5, end).is_some());
+        assert!(prepare_x64_unix_call(0, valid.1, valid.2, valid.3, valid.4, valid.5, end).is_none());
+        assert!(prepare_x64_unix_call(valid.0, u64::from(u32::MAX) + 1, valid.2, valid.3, valid.4, valid.5, end).is_none());
+        assert!(prepare_x64_unix_call(valid.0, valid.1, valid.2, valid.3, valid.4, valid.5 + 8, end).is_none());
+        assert!(prepare_x64_unix_call(valid.0, valid.1, valid.2, valid.3, end, valid.5, end).is_none());
+        assert!(prepare_x64_unix_call(valid.0, valid.1, valid.2, 0, valid.4, valid.5, end).is_none());
     }
 
     #[test]
