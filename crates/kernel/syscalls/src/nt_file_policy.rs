@@ -19,6 +19,7 @@ const STATUS_OBJECT_NAME_NOT_FOUND: u64 = 0xc000_0034;
 const STATUS_OBJECT_NAME_COLLISION: u64 = 0xc000_0035;
 const STATUS_ACCESS_DENIED: u64 = 0xc000_0022;
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
+pub(crate) const FILE_DISPOSITION_INFORMATION_SIZE: u32 = 1;
 const NT_FILETIME_EPOCH_SECONDS: i64 = 11_644_473_600;
 
 const FILE_READ_DATA: u32 = 0x0001;
@@ -113,6 +114,14 @@ pub(crate) const fn delete_on_close_access_valid(options: u32, desired: u32) -> 
     options & FILE_DELETE_ON_CLOSE == 0 || desired & DELETE_ACCESS != 0
 }
 
+/// `DoDeleteFile` is a one-byte BOOLEAN; every nonzero value requests delete.
+/// The length screen precedes handle lookup in the NT set-information path.
+pub(crate) const fn disposition_information_valid(length: u32) -> bool {
+    length >= FILE_DISPOSITION_INFORMATION_SIZE
+}
+
+pub(crate) const fn disposition_requests_delete(value: u8) -> bool { value != 0 }
+
 /// Decode a Windows FILETIME field for `FileBasicInformation`. Zero and
 /// `-1` are the NT leave-unchanged values; every other value is a positive
 /// count of 100-ns intervals since 1601 and is converted to the VFS's signed
@@ -170,6 +179,16 @@ mod tests {
         assert!(delete_on_close_access_valid(0, 0));
         assert!(!delete_on_close_access_valid(FILE_DELETE_ON_CLOSE, 0));
         assert!(delete_on_close_access_valid(FILE_DELETE_ON_CLOSE, DELETE_ACCESS));
+    }
+
+    #[test]
+    fn disposition_uses_one_byte_boolean_and_accepts_any_nonzero_value() {
+        assert!(!disposition_information_valid(0));
+        assert!(disposition_information_valid(1));
+        assert!(disposition_information_valid(8));
+        assert!(!disposition_requests_delete(0));
+        assert!(disposition_requests_delete(1));
+        assert!(disposition_requests_delete(u8::MAX));
     }
 
     #[test]
