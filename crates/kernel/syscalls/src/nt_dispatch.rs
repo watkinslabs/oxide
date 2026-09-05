@@ -1146,8 +1146,8 @@ pub fn dispatch(call: NtCall) -> u64 {
                 }
                 let deadline = match wait_deadline(timeout) { Ok(deadline) => deadline, Err(status) => return status };
                 // SAFETY: wait table and object Arcs remain alive for the complete wait.
-                let timer_deadline = waitables.iter().filter_map(|object| object.timer_deadline()).min().unwrap_or(u64::MAX);
-                let wait_deadline = deadline.min(timer_deadline);
+                let timer_deadline = waitables.iter().filter_map(|object| object.timer_deadline()).min();
+                let wait_deadline = sched::nt_object::merge_wait_deadline(deadline, timer_deadline);
                 let mut pulse_index = None;
                 let all_ready = || {
                     if wait_type == 0 {
@@ -1172,7 +1172,7 @@ pub fn dispatch(call: NtCall) -> u64 {
                     unsafe { sched::live::wait_event_interruptible_until_user_apc(table.waiters(), wait_deadline,
                         timekeeper::monotonic_ns, || cur.nt_apc_queue.has_pending(), all_ready) }
                 } else { unsafe { sched::live::wait_event_interruptible_until(table.waiters(), wait_deadline, timekeeper::monotonic_ns, all_ready) }.into() };
-                let outcome = if matches!(outcome, sched::NtWaitOutcome::TimedOut) && timer_deadline <= deadline
+                let outcome = if matches!(outcome, sched::NtWaitOutcome::TimedOut) && timer_deadline.is_some_and(|timer| deadline == 0 || timer <= deadline)
                     && waitables.iter().any(|object| object.is_signaled_at(cur.tid as u64, timekeeper::monotonic_ns())) {
                     sched::NtWaitOutcome::Ready
                 } else { outcome };

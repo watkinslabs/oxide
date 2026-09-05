@@ -6,6 +6,17 @@ use crate::live::WaitList;
 
 const DISARMED: u64 = u64::MAX;
 
+/// Combine a caller timeout with an armed timer expiry. Zero means no caller
+/// timeout; it must not hide the timer's own absolute deadline. # C: O(1)
+pub fn merge_wait_deadline(wait_deadline: u64, timer_deadline: Option<u64>) -> u64 {
+    match (wait_deadline, timer_deadline) {
+        (0, Some(timer)) => timer,
+        (0, None) => 0,
+        (wait, Some(timer)) => wait.min(timer),
+        (wait, None) => wait,
+    }
+}
+
 pub struct NtTimer {
     manual_reset: bool,
     due_ns: AtomicU64,
@@ -43,6 +54,11 @@ impl NtTimer {
 
     pub fn due_ns(&self) -> u64 { self.due_ns.load(Ordering::Acquire) }
 
+    /// Return the armed absolute expiry, omitting the disarmed sentinel. # C: O(1)
+    pub fn deadline(&self) -> Option<u64> {
+        match self.due_ns() { DISARMED => None, due => Some(due) }
+    }
+
     pub fn is_signaled_at(&self, now_ns: u64) -> bool {
         if self.signaled.load(Ordering::Acquire) { return true; }
         let due = self.due_ns.load(Ordering::Acquire);
@@ -66,10 +82,10 @@ impl NtTimer {
         loop {
             let current = now();
             if self.try_wait_at(current) { return crate::WaitOutcome::Ready; }
-            let timer_deadline = self.due_ns();
-            let wake_at = deadline_ns.min(timer_deadline);
+            let timer_deadline = self.deadline();
+            let wake_at = merge_wait_deadline(deadline_ns, timer_deadline);
             let outcome = unsafe { crate::live::wait_event_interruptible_until(&self.waiters, wake_at, &now, || self.try_wait_at(now())) };
-            if matches!(outcome, crate::WaitOutcome::TimedOut) && wake_at == timer_deadline { continue; }
+            if matches!(outcome, crate::WaitOutcome::TimedOut) && timer_deadline == Some(wake_at) { continue; }
             return outcome;
         }
     }
@@ -82,11 +98,12 @@ impl NtTimer {
         loop {
             let current = now();
             if self.try_wait_at(current) { return crate::NtWaitOutcome::Ready; }
-            let wake_at = deadline_ns.min(self.due_ns());
+            let timer_deadline = self.deadline();
+            let wake_at = merge_wait_deadline(deadline_ns, timer_deadline);
             // SAFETY: forwarded to the scheduler alertable wait contract.
             let outcome = unsafe { crate::live::wait_event_interruptible_until_user_apc(
                 &self.waiters, wake_at, &now, &mut apc, || self.try_wait_at(now())) };
-            if matches!(outcome, crate::NtWaitOutcome::TimedOut) && wake_at == self.due_ns() { continue; }
+            if matches!(outcome, crate::NtWaitOutcome::TimedOut) && timer_deadline == Some(wake_at) { continue; }
             return outcome;
         }
     }
