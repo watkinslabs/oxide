@@ -746,10 +746,11 @@ fn validate_builtin_unwind(args: u64) -> u64 {
 
 #[cfg(target_os = "oxide-kernel")]
 fn load_so_dll(args: u64) -> u64 {
-    let Ok(module_output) = load_so_dll_output_address(args) else { return STATUS_INVALID_PARAMETER; };
-    // The process catalog is the canonical Wine builtin source in Oxide. Its
-    // PE image loader owns mapping, imports, PEB publication, and attach order.
-    crate::nt_loader_dir::load(args, module_output)
+    if load_so_dll_output_address(args).is_err() { return STATUS_INVALID_PARAMETER; }
+    // A Wine unixlib is an ELF ET_DYN object. The request carries neither its
+    // VFS source nor a native dependency provider, so routing it through the
+    // PE catalog would turn a malformed ownership boundary into a false load.
+    STATUS_NOT_IMPLEMENTED
 }
 
 #[cfg(not(target_os = "oxide-kernel"))]
@@ -830,6 +831,15 @@ mod tests {
     fn load_so_dll_rejects_request_envelope_overflow_before_loader_dispatch() {
         assert_eq!(load_so_dll_output_address(u64::MAX - 23), Err(STATUS_INVALID_PARAMETER));
         assert_eq!(load_so_dll_output_address(0), Err(STATUS_INVALID_PARAMETER));
+    }
+
+    #[test]
+    fn load_so_dll_abi_carries_no_native_elf_source_or_dependency_provider() {
+        // Wine's request is exactly UNICODE_STRING plus void **module. The
+        // source path, dependency closure, and lifecycle owner are outside it.
+        assert_eq!(core::mem::size_of::<syscall::nt_wine_unix::WineLoadSoDllParams>(), WINE_LOAD_SO_DLL_PARAMS_BYTES as usize);
+        assert_eq!(core::mem::offset_of!(syscall::nt_wine_unix::WineLoadSoDllParams, module), WINE_LOAD_SO_DLL_MODULE_OFFSET as usize);
+        assert_eq!(load_so_dll_output_address(0x1000), Ok(0x1010));
     }
 
     #[test]
