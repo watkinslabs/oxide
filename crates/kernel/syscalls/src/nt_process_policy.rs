@@ -7,6 +7,11 @@ pub const PROCESS_CREATE_FLAGS_SUSPENDED: u32 = 0x0000_0200;
 pub const PROCESS_CREATE_FLAGS_SUPPORTED: u32 =
     PROCESS_CREATE_FLAGS_INHERIT_HANDLES | PROCESS_CREATE_FLAGS_SUSPENDED;
 
+/// Select general handle-table inheritance from the NT create flags. # C: O(1)
+pub const fn inherits_process_handles(flags: u32) -> bool {
+    flags & PROCESS_CREATE_FLAGS_INHERIT_HANDLES != 0
+}
+
 /// Validate process-create flags implemented by the native x86-64 path. # C: O(1)
 pub fn valid_process_create_flags(flags: u32) -> bool {
     flags & !PROCESS_CREATE_FLAGS_SUPPORTED == 0
@@ -86,5 +91,12 @@ mod tests {
         assert!(!initial_thread_suspended(0, 0));
         assert!(initial_thread_suspended(PROCESS_CREATE_FLAGS_SUSPENDED, 0));
         assert!(initial_thread_suspended(0, 1));
+    }
+
+    #[test]
+    fn process_create_inherits_handles_only_when_wine_requests_it() {
+        assert!(!inherits_process_handles(0));
+        assert!(inherits_process_handles(PROCESS_CREATE_FLAGS_INHERIT_HANDLES));
+        assert!(inherits_process_handles(PROCESS_CREATE_FLAGS_SUPPORTED));
     }
 }
