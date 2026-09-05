@@ -185,6 +185,9 @@ pub fn serve_connection<S: Read + Write>(stream: &mut S, store: &mut RegistrySto
         if length == 0 || length > MAX_FRAME { return Err(io::Error::new(io::ErrorKind::InvalidData, "registry frame exceeds bound")); }
         let mut frame = vec![0u8; length]; stream.read_exact(&mut frame)?;
         let response = decode_request(&frame).map_or_else(Response::Failure, |request| store.execute(request));
+        if store.is_dirty() {
+            store.flush().map_err(|error| io::Error::new(io::ErrorKind::Other, format!("registry commit failed: {error:?}")))?;
+        }
         let encoded = encode_response(&response).map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "registry response exceeds bound"))?;
         if encoded.len() > u32::MAX as usize { return Err(io::Error::new(io::ErrorKind::InvalidData, "registry response too large")); }
         stream.write_all(&(encoded.len() as u32).to_le_bytes())?; stream.write_all(&encoded)?; stream.flush()?;
@@ -494,7 +497,7 @@ impl Registry {
         let mut registry = Self::new();
         for _ in 0..records {
             let path = text(get_bytes(&bytes, &mut at).ok_or(Error::InvalidFile)?)?;
-            let root = if path.starts_with("HKLM") { Root::LocalMachine } else if path.starts_with("HKCU") { Root::CurrentUser } else if path.starts_with("HKCR") { Root::Classes } else { return Err(Error::InvalidFile) };
+            let root = persisted_root(&path).ok_or(Error::InvalidFile)?;
             let key = registry.create_key(root, path.split_once('\\').map_or("", |(_, rest)| rest))?;
             let values = get_u32(&bytes, &mut at).ok_or(Error::InvalidFile)?; if values > MAX_RECORDS { return Err(Error::InvalidFile); }
             for _ in 0..values {
@@ -549,6 +552,11 @@ fn relative_for_target(target: &str, relative: &str) -> String {
 
 fn canonical(text: &str) -> String { text.to_ascii_uppercase() }
 fn is_root(path: &str) -> bool { matches!(path, "HKLM" | "HKCU" | "HKCR") }
+fn persisted_root(path: &str) -> Option<Root> {
+    let (root, suffix) = path.split_once('\\').map_or((path, ""), |(root, suffix)| (root, suffix));
+    if suffix.is_empty() && !is_root(root) { return None; }
+    match root { "HKLM" => Some(Root::LocalMachine), "HKCU" => Some(Root::CurrentUser), "HKCR" => Some(Root::Classes), _ => None }
+}
 fn root_handle(root: Root) -> u64 { match root { Root::LocalMachine => HKEY_LOCAL_MACHINE, Root::CurrentUser => HKEY_CURRENT_USER, Root::Classes => HKEY_CLASSES_ROOT } }
 fn join_path(root: &str, subkey: &str) -> Result<String, Error> {
     if subkey.contains('\0') || subkey.split('\\').any(str::is_empty) { return if subkey.is_empty() { Ok(root.to_string()) } else { Err(Error::InvalidPath) }; }
@@ -737,6 +745,57 @@ mod tests {
         fs::remove_file(&path).unwrap();
         let store = RegistryStore::open(&path).unwrap();
         drop(store); let _ = fs::remove_file(path); let _ = fs::remove_file(lock_path);
+    }
+
+    #[test]
+    fn failed_commit_keeps_dirty_state_and_can_be_retried() {
+        let path = std::env::temp_dir().join(format!("oxide-registry-commit-failure-{}", std::process::id()));
+        let lock_path = path.with_extension("oxide-registry.lock");
+        let _ = fs::remove_file(&path); let _ = fs::remove_dir(&path); let _ = fs::remove_file(&lock_path);
+        let mut store = RegistryStore::open(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        let key = store.registry_mut().create_handle(Root::CurrentUser, "Software\\Failure").unwrap();
+        store.registry_mut().set_value_handle(key, "State", Value { kind: ValueType::Dword, data: vec![7, 0, 0, 0] }).unwrap();
+        assert!(store.flush().is_err());
+        assert!(store.is_dirty(), "a failed atomic replacement must not report a commit");
+        fs::remove_dir(&path).unwrap(); store.flush().unwrap(); assert!(!store.is_dirty());
+        drop(store);
+        let restored = RegistryStore::open(&path).unwrap();
+        let restored_key = restored.registry().open_key(Root::CurrentUser, "software\\failure").unwrap();
+        assert_eq!(restored.registry().query_value(&restored_key, "state").unwrap().data, vec![7, 0, 0, 0]);
+        drop(restored); let _ = fs::remove_file(path); let _ = fs::remove_file(lock_path);
+    }
+
+    #[test]
+    fn one_commit_durable_before_connection_loss_and_both_roots_survive_restart() {
+        let path = std::env::temp_dir().join(format!("oxide-registry-connection-loss-{}", std::process::id()));
+        let lock_path = path.with_extension("oxide-registry.lock");
+        let _ = fs::remove_file(&path); let _ = fs::remove_file(&lock_path);
+        let mut store = RegistryStore::open(&path).unwrap();
+        let mut request = Vec::new(); request.push(registry_wire::CREATE); request.push(1); put_bytes(&mut request, b"Software\\UserState").unwrap();
+        let framed = (request.len() as u32).to_le_bytes();
+        let mut input = framed.to_vec(); input.extend_from_slice(&request);
+        let mut stream = std::io::Cursor::new(input);
+        serve_connection(&mut stream, &mut store).unwrap();
+        drop(store);
+        let mut restored = RegistryStore::open(&path).unwrap();
+        let user = restored.registry().open_key(Root::CurrentUser, "software\\userstate").unwrap();
+        assert!(restored.registry().open_key(Root::LocalMachine, "software\\userstate").is_err());
+        let machine = restored.registry_mut().create_handle(Root::LocalMachine, "Software\\MachineState").unwrap();
+        restored.registry_mut().set_value_handle(machine, "Ready", Value { kind: ValueType::Dword, data: vec![1, 0, 0, 0] }).unwrap();
+        restored.flush().unwrap(); drop(restored);
+        let final_store = RegistryStore::open(&path).unwrap();
+        assert!(final_store.registry().open_key(Root::CurrentUser, "software\\userstate").is_ok());
+        assert!(final_store.registry().open_key(Root::LocalMachine, "software\\machinestate").is_ok());
+        drop(final_store); let _ = fs::remove_file(path); let _ = fs::remove_file(lock_path);
+        let _ = user;
+    }
+
+    #[test]
+    fn persisted_root_names_require_a_real_root_boundary() {
+        let mut bytes = Vec::new(); bytes.extend_from_slice(MAGIC); put_u32(&mut bytes, 1);
+        put_bytes(&mut bytes, b"HKLMX\\Software").unwrap(); put_u32(&mut bytes, 0);
+        assert_eq!(Registry::decode(&bytes), Err(Error::InvalidFile));
     }
 
     #[test]

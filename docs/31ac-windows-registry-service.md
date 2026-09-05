@@ -25,7 +25,7 @@ FROZEN 2026-08-31. Dep:`01`,`03`,`29a`,`31ab`,`52`,`53`. Provides: one userspace
   to the native table handle; null, closed, wrong-kind, and unrepresentable
   values return `STATUS_INVALID_HANDLE` and never reach the registry owner.
 - The userspace `Advapi` adapter exposes the initial `RegOpenKeyExW`, `RegCreateKeyExW`, `RegQueryValueExW`, `RegSetValueExW`, `RegEnumKeyExW`, `RegEnumValueW`, and `RegCloseKey` behavior over the client; it preserves query-size probes, short-buffer `ERROR_MORE_DATA`, default values, no-more-item results, and reserved-argument validation. `RegQueryInfoKeyW` maps the same canonical key metadata to Windows character and byte units.
-- `registryd` exposes that interface over a bounded length-prefixed Unix stream and flushes the same store after each client connection; framing errors never become registry success.
+- `registryd` exposes that interface over a bounded length-prefixed Unix stream. Each successful mutation is atomically committed before its response is sent, and the same store is flushed again at client-session end; framing errors never become registry success.
 - The native Notepad smoke starts one `registryd` instance for the runtime
   session and exposes its endpoint as `OXIDE_REGISTRY_SOCKET`; the database path
   is `OXIDE_REGISTRY_DATABASE` and remains owned by the service.
