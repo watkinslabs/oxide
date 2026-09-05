@@ -298,7 +298,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
                 }
                 NtWindowCall::EndPaint { hwnd } => {
                     let Some(window) = valid_window(hwnd) else { return Some(STATUS_INVALID_HANDLE); };
-                    (Some(if state.get(window).is_some() { STATUS_SUCCESS } else { STATUS_INVALID_HANDLE }), None, None)
+                    (Some(match state.end_paint(window) { Ok(()) => STATUS_SUCCESS, Err(_) => STATUS_INVALID_HANDLE }), None, None)
                 }
             }
         };

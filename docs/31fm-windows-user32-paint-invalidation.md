@@ -13,7 +13,10 @@ owned by the existing Linux DRM/framebuffer stack.
 - Repeated invalidation for one window coalesces into one bounding region and
   one `WM_PAINT` notification.
 - `BeginPaint` consumes the pending region and copies it to the caller.
-- `EndPaint` validates the HWND and closes the paint transaction boundary.
+- `BeginPaint` opens one canonical per-window paint transaction, including
+  when no update region is pending; a second begin is rejected until `EndPaint`.
+- `EndPaint` validates the HWND and closes that transaction boundary; an
+  unmatched end is rejected and cannot silently acknowledge a paint.
 - Destroying a window removes its pending dirty region.
 
 ## 2
