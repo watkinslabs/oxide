@@ -28,26 +28,11 @@ fn launch(args: &mut impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
     let image = PathBuf::from(&values[0]);
     let windows_path = values[1].as_os_str().as_bytes();
     let command_line = values[2].as_os_str().as_bytes();
-    let config = windows_runtime::ProtonLaunchConfig {
-        architecture: windows_runtime::WindowsArchitecture::X86_64,
-        prefix: PathBuf::from(&values[4]), runtime: PathBuf::from(&values[5]),
-        dll_catalog: PathBuf::from(&values[6]), unixlib: PathBuf::from(&values[7]),
-        nls: PathBuf::from(&values[8]), registry_socket: PathBuf::from(&values[9]),
-        registry_database: PathBuf::from(&values[10]), dxvk: PathBuf::from(&values[11]),
-        vkd3d: match windows_runtime::Vkd3dProtonRuntime::from_path(PathBuf::from(&values[12])) {
-            Ok(runtime) => runtime,
-            Err(error) => { eprintln!("windows-runtime phase=preflight operation=vkd3d_admission outcome=fail error={error:?}"); return ExitCode::from(1); }
-        }, faudio: PathBuf::from(&values[13]),
-    };
-    match config.validate() {
-        Ok(()) => {},
-        Err(error) => { eprintln!("windows-runtime phase=preflight operation=launch_config outcome=fail error={error:?}"); return ExitCode::from(1); }
-    }
-    match RuntimeRequest::preflight(&image, windows_path, &config.dll_catalog, &config.unixlib, &config.nls, &config.registry_socket, &config.registry_database) {
+    match RuntimeRequest::preflight(&image, windows_path, &PathBuf::from(&values[6]), &PathBuf::from(&values[7]), &PathBuf::from(&values[8]), &PathBuf::from(&values[9]), &PathBuf::from(&values[10])) {
         Ok(report) => eprintln!("windows-runtime phase=preflight operation=boot_artifact outcome=pass image_bytes={} modules={} execution=not_attempted", report.image_bytes, report.module_count),
         Err(error) => { eprintln!("windows-runtime phase=preflight operation=boot_artifact outcome=fail error={error}"); return ExitCode::from(1); }
     }
-    let request = match RuntimeRequest::from_launch_config(&image, windows_path, command_line, &config) {
+    let request = match RuntimeRequest::from_windows_launch(&image, windows_path, command_line, &PathBuf::from(&values[4]), &PathBuf::from(&values[5]), &PathBuf::from(&values[6]), &PathBuf::from(&values[7]), &PathBuf::from(&values[8]), &PathBuf::from(&values[9]), &PathBuf::from(&values[10])) {
         Ok(request) => request,
         Err(error) => { eprintln!("windows-runtime phase=preflight operation=build_handoff outcome=fail error={error:?}"); return ExitCode::from(1); }
     };

@@ -247,6 +247,32 @@ pub struct RuntimeRequest {
 }
 
 impl RuntimeRequest {
+    /// Build a native Win32 launch without requiring optional graphics/audio
+    /// Proton components. The base profile still owns and validates every
+    /// path that can influence the NT handoff.
+    /// # C: O(path bytes + PE + DLL catalog bytes)
+    pub fn from_windows_launch(image_path: &Path, windows_path: &[u8], command_line: &[u8], prefix: &Path, runtime: &Path, dll_catalog: &Path, unixlib: &Path, nls: &Path, registry_socket: &Path, registry_database: &Path) -> Result<Self, BuildError> {
+        for (field, path) in [("prefix", prefix), ("runtime", runtime), ("dll_catalog", dll_catalog), ("unixlib", unixlib)] {
+            let bytes = path.as_os_str().as_bytes();
+            if bytes.is_empty() || bytes.contains(&0) || !path.is_absolute() || !path.is_dir() {
+                return Err(BuildError::InvalidLaunchConfiguration { field });
+            }
+        }
+        if !nls.is_absolute() || !nls.is_file() || !registry_database.is_absolute() || !registry_database.is_file() {
+            return Err(BuildError::InvalidLaunchConfiguration { field: "launch resources" });
+        }
+        if !registry_socket.is_absolute() || !fs::metadata(registry_socket).map(|metadata| metadata.file_type().is_socket()).unwrap_or(false) || UnixStream::connect(registry_socket).is_err() {
+            return Err(BuildError::InvalidLaunchConfiguration { field: "registry_socket" });
+        }
+        let environment = [
+            ("WINEPREFIX".into(), prefix.to_string_lossy().into_owned()),
+            ("WINEARCH".into(), "win64".into()),
+            ("STEAM_COMPAT_TOOL_PATHS".into(), runtime.to_string_lossy().into_owned()),
+            ("OXIDE_NT_PERSONALITY".into(), "native".into()),
+        ];
+        Self::from_paths_with_environment(image_path, windows_path, command_line, dll_catalog, environment)
+    }
+
     /// Admit one explicit Proton launch and produce the existing NT handoff.
     /// # C: O(PE + DLL catalog bytes)
     pub fn from_launch_config(image_path: &Path, windows_path: &[u8], command_line: &[u8], config: &ProtonLaunchConfig) -> Result<Self, BuildError> {
@@ -525,6 +551,7 @@ fn validate_import_closure(root: &[u8], modules: &[ModuleBuffer]) -> Result<(), 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::net::UnixListener;
 
     fn environment_text(bytes: &[u8]) -> String {
         let units = bytes.chunks_exact(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]])).collect::<Vec<_>>();
@@ -641,6 +668,39 @@ mod tests {
         };
         assert!(matches!(config.validate(), Err(BuildError::InvalidLaunchConfiguration { field: "dll_catalog" })));
         fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn native_windows_launch_does_not_require_proton_components() {
+        let Some(root) = wine_root() else { return };
+        let base = std::env::temp_dir().join(format!("oxide-native-launch-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("prefix")).unwrap();
+        fs::create_dir_all(base.join("runtime")).unwrap();
+        fs::create_dir_all(base.join("unix")).unwrap();
+        fs::write(base.join("locale.nls"), [1]).unwrap();
+        fs::write(base.join("registry.db"), [1]).unwrap();
+        let socket = base.join("registry.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let request = RuntimeRequest::from_windows_launch(
+            &root.join("notepad.exe"), b"C:\\notepad.exe", b"C:\\notepad.exe",
+            &base.join("prefix"), &base.join("runtime"), root, &base.join("unix"),
+            &base.join("locale.nls"), &socket, &base.join("registry.db"),
+        ).unwrap();
+        assert!(request.module_count() >= 8);
+        drop(listener);
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn native_windows_launch_rejects_relative_runtime_paths() {
+        let result = RuntimeRequest::from_windows_launch(
+            Path::new("missing.exe"), b"C:\\missing.exe", b"C:\\missing.exe",
+            Path::new("prefix"), Path::new("/runtime"), Path::new("/dlls"),
+            Path::new("/unix"), Path::new("/locale.nls"), Path::new("/registry.sock"),
+            Path::new("/registry.db"),
+        );
+        assert!(matches!(result, Err(BuildError::InvalidLaunchConfiguration { field: "prefix" })));
     }
 
     fn wine_root() -> Option<&'static Path> {
