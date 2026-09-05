@@ -19,6 +19,10 @@ static MAX_NS: AtomicU64 = AtomicU64::new(0);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Stats { pub count: u64, pub total_ns: u64, pub min_ns: Option<u64>, pub max_ns: u64 }
 
+/// Saturating addition used by both the checked model and production atomics.
+/// # C: O(1)
+const fn saturating_add(value: u64, delta: u64) -> u64 { value.saturating_add(delta) }
+
 impl Stats {
     /// Empty aggregate before the first observed transition. # C: O(1)
     pub const fn empty() -> Self { Self { count: 0, total_ns: 0, min_ns: None, max_ns: 0 } }
@@ -45,8 +49,8 @@ pub fn start() -> u64 { now_ns() }
 #[cfg(all(target_os = "oxide-kernel", feature = "debug-syscost"))]
 pub fn record(start_ns: u64) {
     let elapsed_ns = now_ns().saturating_sub(start_ns);
-    COUNT.fetch_add(1, Ordering::Relaxed);
-    TOTAL_NS.fetch_add(elapsed_ns, Ordering::Relaxed);
+    atomic_saturating_add(&COUNT, 1);
+    atomic_saturating_add(&TOTAL_NS, elapsed_ns);
     let mut old = MIN_NS.load(Ordering::Relaxed);
     while elapsed_ns < old {
         match MIN_NS.compare_exchange_weak(old, elapsed_ns, Ordering::Relaxed, Ordering::Relaxed) {
@@ -57,6 +61,18 @@ pub fn record(start_ns: u64) {
     let mut old = MAX_NS.load(Ordering::Relaxed);
     while elapsed_ns > old {
         match MAX_NS.compare_exchange_weak(old, elapsed_ns, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => break,
+            Err(value) => old = value,
+        }
+    }
+}
+
+#[cfg(all(target_os = "oxide-kernel", feature = "debug-syscost"))]
+fn atomic_saturating_add(atom: &AtomicU64, delta: u64) {
+    let mut old = atom.load(Ordering::Relaxed);
+    loop {
+        let next = saturating_add(old, delta);
+        match atom.compare_exchange_weak(old, next, Ordering::Relaxed, Ordering::Relaxed) {
             Ok(_) => break,
             Err(value) => old = value,
         }
@@ -78,7 +94,7 @@ pub fn dump() {
 
 #[cfg(test)]
 mod tests {
-    use super::Stats;
+    use super::{saturating_add, Stats};
 
     #[test]
     fn empty_stats_have_no_minimum() { assert_eq!(Stats::empty(), Stats::empty()); }
@@ -92,5 +108,12 @@ mod tests {
         assert_eq!(stats.total_ns, u64::MAX);
         assert_eq!(stats.min_ns, Some(9));
         assert_eq!(stats.max_ns, u64::MAX);
+    }
+
+    #[test]
+    fn production_addition_contract_saturates_without_wrapping() {
+        assert_eq!(saturating_add(u64::MAX - 2, 1), u64::MAX - 1);
+        assert_eq!(saturating_add(u64::MAX - 2, 3), u64::MAX);
+        assert_eq!(saturating_add(u64::MAX, 1), u64::MAX);
     }
 }
