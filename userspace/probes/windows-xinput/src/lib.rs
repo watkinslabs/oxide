@@ -30,6 +30,7 @@ pub const GAMEPAD_LEFT_THUMB: u16 = 0x0040;
 pub const GAMEPAD_RIGHT_THUMB: u16 = 0x0080;
 pub const GAMEPAD_LEFT_SHOULDER: u16 = 0x0100;
 pub const GAMEPAD_RIGHT_SHOULDER: u16 = 0x0200;
+pub const GAMEPAD_GUIDE: u16 = 0x0400;
 pub const GAMEPAD_A: u16 = 0x1000;
 pub const GAMEPAD_B: u16 = 0x2000;
 pub const GAMEPAD_X: u16 = 0x4000;
@@ -86,6 +87,7 @@ const BTN_TL: u16 = 0x136;
 const BTN_TR: u16 = 0x137;
 const BTN_SELECT: u16 = 0x13a;
 const BTN_START: u16 = 0x13b;
+const BTN_MODE: u16 = 0x13c;
 const BTN_THUMBL: u16 = 0x13d;
 const BTN_THUMBR: u16 = 0x13e;
 const BTN_DPAD_UP: u16 = 0x220;
@@ -134,6 +136,7 @@ pub fn evdev_report(input: &EvdevGamepadState) -> Result<NativeGamepadReport, XI
         buttons: button(BTN_DPAD_UP, GAMEPAD_DPAD_UP) | button(BTN_DPAD_DOWN, GAMEPAD_DPAD_DOWN)
             | button(BTN_DPAD_LEFT, GAMEPAD_DPAD_LEFT) | button(BTN_DPAD_RIGHT, GAMEPAD_DPAD_RIGHT)
             | button(BTN_START, GAMEPAD_START) | button(BTN_SELECT, GAMEPAD_BACK)
+            | button(BTN_MODE, GAMEPAD_GUIDE)
             | button(BTN_THUMBL, GAMEPAD_LEFT_THUMB) | button(BTN_THUMBR, GAMEPAD_RIGHT_THUMB)
             | button(BTN_TL, GAMEPAD_LEFT_SHOULDER) | button(BTN_TR, GAMEPAD_RIGHT_SHOULDER)
             | button(BTN_SOUTH, GAMEPAD_A) | button(BTN_EAST, GAMEPAD_B)
@@ -182,6 +185,13 @@ impl XInputStateTracker {
     /// # C: O(1)
     pub const fn state(&self) -> XInputState { self.state }
 
+    /// Return the ordinary XInput projection, which hides the Guide button.
+    /// The extended XInput surface uses `state()` and preserves it. # C: O(1)
+    pub const fn state_without_guide(&self) -> XInputState {
+        XInputState { packet_number: self.state.packet_number,
+            gamepad: XInputGamepad { buttons: self.state.gamepad.buttons & !GAMEPAD_GUIDE, ..self.state.gamepad } }
+    }
+
     /// Return whether the cached controller state is connected.
     /// # C: O(1)
     pub const fn is_connected(&self) -> bool { self.state.packet_number != 0 }
@@ -190,7 +200,8 @@ impl XInputStateTracker {
 const fn known_buttons() -> u16 {
     GAMEPAD_DPAD_UP | GAMEPAD_DPAD_DOWN | GAMEPAD_DPAD_LEFT | GAMEPAD_DPAD_RIGHT
         | GAMEPAD_START | GAMEPAD_BACK | GAMEPAD_LEFT_THUMB | GAMEPAD_RIGHT_THUMB
-        | GAMEPAD_LEFT_SHOULDER | GAMEPAD_RIGHT_SHOULDER | GAMEPAD_A | GAMEPAD_B | GAMEPAD_X | GAMEPAD_Y
+        | GAMEPAD_LEFT_SHOULDER | GAMEPAD_RIGHT_SHOULDER | GAMEPAD_GUIDE
+        | GAMEPAD_A | GAMEPAD_B | GAMEPAD_X | GAMEPAD_Y
 }
 
 fn normalize_trigger(axis: NativeAxis) -> Option<u8> {
@@ -307,9 +318,20 @@ mod tests {
         assert_eq!(tracker.state().packet_number, 1);
     }
 
+    #[test]
+    fn guide_button_is_preserved_for_extended_and_hidden_for_ordinary_xinput() {
+        let mut tracker = XInputStateTracker::default();
+        let mut report = report();
+        report.buttons |= GAMEPAD_GUIDE;
+        tracker.update(Some(report)).unwrap();
+        assert_ne!(tracker.state().gamepad.buttons & GAMEPAD_GUIDE, 0);
+        assert_eq!(tracker.state_without_guide().gamepad.buttons & GAMEPAD_GUIDE, 0);
+        assert_eq!(tracker.state_without_guide().packet_number, tracker.state().packet_number);
+    }
+
     fn evdev_state() -> EvdevGamepadState {
         let mut state = EvdevGamepadState { key_bits: [0; EVDEV_KEY_WORDS], abs: [None; EVDEV_ABS_AXES] };
-        for code in [BTN_DPAD_UP, BTN_DPAD_DOWN, BTN_DPAD_LEFT, BTN_DPAD_RIGHT, BTN_START, BTN_SELECT,
+        for code in [BTN_DPAD_UP, BTN_DPAD_DOWN, BTN_DPAD_LEFT, BTN_DPAD_RIGHT, BTN_START, BTN_SELECT, BTN_MODE,
                      BTN_THUMBL, BTN_THUMBR, BTN_TL, BTN_TR, BTN_SOUTH, BTN_EAST, BTN_NORTH, BTN_WEST] {
             state.key_bits[code as usize / 64] |= 1u64 << (code as usize % 64);
         }
@@ -326,7 +348,7 @@ mod tests {
         assert_eq!(report.buttons, GAMEPAD_DPAD_UP | GAMEPAD_DPAD_DOWN | GAMEPAD_DPAD_LEFT
             | GAMEPAD_DPAD_RIGHT | GAMEPAD_START | GAMEPAD_BACK | GAMEPAD_LEFT_THUMB
             | GAMEPAD_RIGHT_THUMB | GAMEPAD_LEFT_SHOULDER | GAMEPAD_RIGHT_SHOULDER
-            | GAMEPAD_A | GAMEPAD_B | GAMEPAD_X | GAMEPAD_Y);
+            | GAMEPAD_GUIDE | GAMEPAD_A | GAMEPAD_B | GAMEPAD_X | GAMEPAD_Y);
         assert_eq!(report.left_trigger.value, 25);
         assert_eq!(report.thumb_ly.value, 25);
         assert_eq!(report.thumb_ry.value, -25);
