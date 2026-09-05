@@ -43,6 +43,33 @@ pub use dwarf::{encoded_pointer, find_fde, records as dwarf_records, sleb128, ul
 pub use cfa::{evaluate as evaluate_cfa, evaluate_frame, CfaContext};
 pub use sections::{eh_frame, find as find_section, publish_eh_frame, PublishedEhFrame, SectionView};
 pub use hash::{elf_hash, gnu_hash, lookup_sysv, lookup_gnu};
+
+use alloc::vec::Vec;
+
+/// One runtime-admitted native object. Bytes and their absolute source name
+/// stay together until the ELF owner consumes the complete closure.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnixlibSource { pub name: Vec<u8>, pub path: Vec<u8>, pub image: Vec<u8> }
+
+/// Process-owned source catalog for Wine builtin ELF modules.
+#[derive(Clone, Default)]
+pub struct UnixlibCatalog { objects: Vec<UnixlibSource> }
+
+impl UnixlibCatalog {
+    /// Create an empty native-object source catalog. # C: O(1)
+    pub fn new() -> Self { Self { objects: Vec::new() } }
+    /// Admit one copied source with an absolute path and unique loader name. # C: O(image)
+    pub fn add(&mut self, name: &[u8], path: &[u8], image: &[u8]) -> Result<(), ()> {
+        if name.is_empty() || path.first() != Some(&b'/') || image.is_empty()
+            || name.iter().any(|v| *v == 0) || path.iter().any(|v| *v == 0)
+            || self.objects.iter().any(|object| object.name == name) { return Err(()); }
+        self.objects.push(UnixlibSource { name: name.to_vec(), path: path.to_vec(), image: image.to_vec() }); Ok(())
+    }
+    /// Return the runtime-owned source matching one dependency name. # C: O(N)
+    pub fn load(&self, name: &[u8]) -> Option<&UnixlibSource> { self.objects.iter().find(|object| object.name == name) }
+    /// Return all admitted source objects for process handoff. # C: O(1)
+    pub fn objects(&self) -> &[UnixlibSource] { &self.objects }
+}
 pub use dynamic::{
     parse_dynamic, read_strtab, read_strtab_bytes, DynEntry, DynInfo,
     DT_NULL, DT_NEEDED, DT_STRTAB, DT_SYMTAB, DT_RELA, DT_JMPREL, DT_HASH, DT_GNU_HASH,

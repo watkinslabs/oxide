@@ -68,6 +68,12 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     }
 }
 
+/// Hand the fixed Wine Unixlib request to the canonical process loader owner.
+/// # C: O(loaded modules + native dependency closure)
+pub(crate) fn load_unixlib(name_descriptor: u64, module_output: u64) -> u64 {
+    dynamic::load_unixlib(name_descriptor, module_output)
+}
+
 fn add_ref(flags: u32, module: u64) -> u64 {
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !cur.is_nt_personality() || module == 0 { return STATUS_INVALID_PARAMETER; }

@@ -2372,6 +2372,7 @@ dependencies = [
  "cpu",
  "cpufreq",
  "cpuidle",
+ "elf",
  "hal",
  "hal-aarch64",
  "hal-x86_64",

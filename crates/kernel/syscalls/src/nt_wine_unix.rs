@@ -782,10 +782,7 @@ fn load_so_dll(args: u64) -> u64 {
     if !load_so_dll_request_valid(name_length, name_maximum, name_buffer, module_output) {
         return STATUS_INVALID_PARAMETER;
     }
-    // A Wine unixlib is an ELF ET_DYN object. The request carries neither its
-    // VFS source nor a native dependency provider, so routing it through the
-    // PE catalog would turn a malformed ownership boundary into a false load.
-    STATUS_NOT_IMPLEMENTED
+    crate::nt_loader_dir::load_unixlib(args, module_output)
 }
 
 #[cfg(not(target_os = "oxide-kernel"))]

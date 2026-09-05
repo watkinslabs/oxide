@@ -28,10 +28,13 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     let Some(environment_len) = read_u32(base.checked_add(56).unwrap_or(0)) else { return Some(STATUS_INVALID_PARAMETER); };
     let Some(modules_ptr) = read_u64(base.checked_add(64).unwrap_or(0)) else { return Some(STATUS_INVALID_PARAMETER); };
     let Some(module_count) = read_u32(base.checked_add(72).unwrap_or(0)) else { return Some(STATUS_INVALID_PARAMETER); };
+    let Some(unixlibs_ptr) = read_u64(base.checked_add(80).unwrap_or(0)) else { return Some(STATUS_INVALID_PARAMETER); };
+    let Some(unixlib_count) = read_u32(base.checked_add(88).unwrap_or(0)) else { return Some(STATUS_INVALID_PARAMETER); };
     if image_len == 0 || image_len > MAX_IMAGE_BYTES || path_len == 0 || path_len > 32 * 1024
         || command_len == 0 || command_len > 32 * 1024 || command_ptr == 0
         || environment_len == 0 || environment_len > 1024 * 1024 || environment_ptr == 0
-        || module_count > MAX_MODULES || (module_count != 0 && modules_ptr == 0) { return Some(STATUS_INVALID_PARAMETER); }
+        || module_count > MAX_MODULES || unixlib_count > MAX_MODULES
+        || (module_count != 0 && modules_ptr == 0) || (unixlib_count != 0 && unixlibs_ptr == 0) { return Some(STATUS_INVALID_PARAMETER); }
     let Some(image) = copy_bytes(image_ptr, image_len).ok().flatten() else { return Some(STATUS_INVALID_PARAMETER); };
     let Some(path_bytes) = copy_bytes(path_ptr, path_len as u64).ok().flatten() else { return Some(STATUS_INVALID_PARAMETER); };
     let Ok(path) = String::from_utf8(path_bytes) else { return Some(STATUS_INVALID_PARAMETER); };
@@ -51,9 +54,25 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         let Some(blob) = copy_bytes(blob_ptr, blob_len).ok().flatten() else { return Some(STATUS_INVALID_PARAMETER); };
         if catalog.add(&name, &blob).is_err() { return Some(STATUS_INVALID_PARAMETER); }
     }
+    let mut unixlibs = elf::UnixlibCatalog::new();
+    for index in 0..unixlib_count as u64 {
+        let Some(record) = unixlibs_ptr.checked_add(index.checked_mul(48).unwrap_or(u64::MAX)) else { return Some(STATUS_INVALID_PARAMETER); };
+        let Some(name_ptr) = read_u64(record) else { return Some(STATUS_INVALID_PARAMETER); };
+        let Some(name_len) = read_u32(record.checked_add(8).unwrap_or(0)) else { return Some(STATUS_INVALID_PARAMETER); };
+        let Some(path_ptr) = read_u64(record.checked_add(16).unwrap_or(0)) else { return Some(STATUS_INVALID_PARAMETER); };
+        let Some(path_len) = read_u32(record.checked_add(24).unwrap_or(0)) else { return Some(STATUS_INVALID_PARAMETER); };
+        let Some(image_ptr) = read_u64(record.checked_add(32).unwrap_or(0)) else { return Some(STATUS_INVALID_PARAMETER); };
+        let Some(image_len) = read_u64(record.checked_add(40).unwrap_or(0)) else { return Some(STATUS_INVALID_PARAMETER); };
+        if name_len == 0 || name_len > 512 || path_len == 0 || path_len > 32 * 1024 || image_len == 0 || image_len > MAX_IMAGE_BYTES { return Some(STATUS_INVALID_PARAMETER); }
+        let Some(name) = copy_bytes(name_ptr, name_len as u64).ok().flatten() else { return Some(STATUS_INVALID_PARAMETER); };
+        let Some(path) = copy_bytes(path_ptr, path_len as u64).ok().flatten() else { return Some(STATUS_INVALID_PARAMETER); };
+        let Some(image) = copy_bytes(image_ptr, image_len).ok().flatten() else { return Some(STATUS_INVALID_PARAMETER); };
+        if unixlibs.add(&name, &path, &image).is_err() { return Some(STATUS_INVALID_PARAMETER); }
+    }
     match crate::pe_exec::try_commit_with_catalog_and_environment(cur, path.as_bytes(), &image, &catalog, &command_line, &environment) {
         Ok(()) => {
             cur.thread_group.set_nt_module_catalog(alloc::sync::Arc::new(catalog));
+            cur.thread_group.set_nt_unixlib_catalog(alloc::sync::Arc::new(unixlibs));
             Some(STATUS_SUCCESS)
         },
         Err(error) if error == -(syscall::errno::Errno::Enomem.as_i32() as i64) => Some(STATUS_NO_MEMORY),
