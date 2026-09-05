@@ -96,6 +96,7 @@ mod nt_wine_window;
 mod nt_milestone;
 mod nt_wine_unix;
 mod nt_wine_unwind;
+mod nt_unwind_policy;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_heap;
 #[cfg(target_os = "oxide-kernel")]

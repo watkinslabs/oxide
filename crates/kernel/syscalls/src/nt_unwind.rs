@@ -59,6 +59,19 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         if !pe::nt_stub::valid_x64_unwind_target(current_rsp, frame) {
             return Some(STATUS_INVALID_UNWIND_TARGET);
         }
+        let Some(mm) = cur.clone_mm() else { return Some(STATUS_INVALID_PARAMETER); };
+        let Some(code) = hal::UserVirtAddr::new(target_ip).and_then(|address| mm.find_vma(address)) else {
+            return Some(STATUS_INVALID_PARAMETER);
+        };
+        let Some(stack_word) = frame.checked_add(8).and_then(hal::UserVirtAddr::new) else {
+            return Some(STATUS_INVALID_PARAMETER);
+        };
+        let Some(stack) = mm.find_vma(stack_word) else { return Some(STATUS_INVALID_PARAMETER); };
+        if !crate::nt_unwind_policy::valid_x64_unwind_transfer(target_ip, stack_word.as_u64(),
+            |_| code.prot.contains(vmm::VmaProt::EXEC),
+            |_| stack.prot.contains(vmm::VmaProt::WRITE)) {
+            return Some(STATUS_INVALID_PARAMETER);
+        }
         // SAFETY: current_pt_regs is the live syscall frame owned by this
         // running task; RtlUnwind replaces its user return state atomically.
         let regs = unsafe { &mut *regs };
