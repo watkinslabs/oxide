@@ -256,6 +256,7 @@ impl User32 {
 
     /// Read one window's UTF-16 title/control text. # C: O(N_text) plus usercopy
     pub fn get_window_text(&self, hwnd: u64, text: &mut [u16]) -> Result<usize, WindowError> {
+        if text_copy_capacity(text.len()) == 0 && text.is_empty() { return Ok(0); }
         invoke(NtService::GetWindowText, [hwnd, text.as_mut_ptr() as u64, text.len() as u64, 0, 0, 0]).map(|length| length as usize)
     }
 
@@ -315,6 +316,8 @@ fn translate_virtual_key(key: u16, shift: bool, caps_lock: bool) -> Option<u16> 
 fn classify_get_message(message: NtWindowMessage) -> GetMessageResult {
     if message.message == WM_QUIT { GetMessageResult::Quit(message) } else { GetMessageResult::Message(message) }
 }
+
+fn text_copy_capacity(buffer_len: usize) -> usize { buffer_len.saturating_sub(1) }
 
 fn invoke(service: NtService, args: [u64; 6]) -> Result<u64, WindowError> {
     let result = unsafe { libc::syscall(service.entry() as libc::c_long, args[0], args[1], args[2], args[3], args[4], args[5]) };
@@ -409,5 +412,12 @@ mod tests {
         classes.register_class_ex_w(&name, 0x1400).unwrap();
         assert!(matches!(classes.atom(&different), Err(ClassError::UnknownClass)));
         assert!(matches!(classes.atom(&unterminated), Err(ClassError::UnterminatedName)));
+    }
+
+    #[test]
+    fn zero_text_buffer_is_a_noop_and_nonzero_buffer_reserves_a_terminator() {
+        assert_eq!(text_copy_capacity(0), 0);
+        assert_eq!(text_copy_capacity(1), 0);
+        assert_eq!(text_copy_capacity(8), 7);
     }
 }
