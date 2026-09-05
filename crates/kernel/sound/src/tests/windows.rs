@@ -52,3 +52,33 @@ fn rejects_invalid_windows_geometry_and_formats() {
     assert_eq!(StreamGeometry::from_frames(format(), 8, 9), Err(StreamError::PeriodExceedsBuffer));
     assert_eq!(StreamGeometry::from_frames(format(), MAX_BUFFER_FRAMES + 1, 1), Err(StreamError::BufferTooLarge));
 }
+
+#[test]
+fn stream_lifecycle_matches_wasapi_start_stop_reset_contract() {
+    let f = format();
+    let g = StreamGeometry::from_frames(f, 8, 4).unwrap();
+    let mut stream = AudioStream::with_format(f, g, AudioDirection::Render);
+    assert_eq!(stream.state(), StreamState::Initialized);
+    assert_eq!(stream.start(), Ok(()));
+    assert_eq!(stream.start(), Err(StreamError::AlreadyStarted));
+    assert_eq!(stream.reset(), Err(StreamError::NotStopped));
+    assert_eq!(stream.stop(), Ok(()));
+    assert_eq!(stream.stop(), Ok(()));
+    assert_eq!(stream.reset(), Ok(()));
+    assert_eq!(stream.state(), StreamState::Stopped);
+    assert_eq!(stream.format(), Some(f));
+}
+
+#[test]
+fn invalidated_endpoint_rejects_all_client_lifecycle_operations() {
+    let g = StreamGeometry::from_frames(format(), 8, 4).unwrap();
+    let mut stream = AudioStream::new(g, AudioDirection::Capture);
+    stream.invalidate();
+    assert_eq!(stream.state(), StreamState::Invalidated);
+    assert_eq!(stream.start(), Err(StreamError::Invalidated));
+    assert_eq!(stream.stop(), Err(StreamError::Invalidated));
+    assert_eq!(stream.reset(), Err(StreamError::Invalidated));
+    assert_eq!(stream.client_write(1), Err(StreamError::Invalidated));
+    assert_eq!(stream.client_read(1), Err(StreamError::Invalidated));
+    assert_eq!(stream.render_get_buffer(1), Err(StreamError::Invalidated));
+}
