@@ -98,6 +98,21 @@ impl Vkd3dProtonRuntime {
         }
         Ok(())
     }
+
+    /// Validate the component identity and prove its canonical directory is
+    /// owned by the configured Proton runtime before launch admission reads
+    /// any PE catalog.
+    /// # C: O(path bytes + identity bytes)
+    pub fn validate_owned_by(&self, runtime: &Path) -> Result<(), BuildError> {
+        self.validate()?;
+        let runtime = fs::canonicalize(runtime).map_err(|_| BuildError::InvalidLaunchConfiguration { field: "runtime" })?;
+        let component = fs::canonicalize(&self.path).map_err(|_| BuildError::InvalidLaunchConfiguration { field: "vkd3d ownership" })?;
+        if !runtime.is_absolute() || !runtime.is_dir() || !component.is_absolute() || !component.is_dir()
+            || component == runtime || !component.starts_with(&runtime) {
+            return Err(BuildError::InvalidLaunchConfiguration { field: "vkd3d ownership" });
+        }
+        Ok(())
+    }
 }
 
 /// Immutable per-game Proton/Wine launch admission record.
@@ -151,11 +166,11 @@ impl ProtonLaunchConfig {
         if !self.nls.is_file() || !self.registry_database.is_file() {
             return Err(BuildError::InvalidLaunchConfiguration { field: "launch resources" });
         }
+        self.vkd3d.validate_owned_by(&self.runtime)?;
         let dxvk = DxvkRuntimeAdmission::admit(&self.dxvk, &self.runtime)?;
         if !fs::metadata(&self.registry_socket).map(|metadata| metadata.file_type().is_socket()).unwrap_or(false) || UnixStream::connect(&self.registry_socket).is_err() {
             return Err(BuildError::InvalidLaunchConfiguration { field: "registry_socket" });
         }
-        self.vkd3d.validate()?;
         Ok(dxvk)
     }
 
@@ -637,6 +652,24 @@ mod tests {
         let mut malformed = valid;
         malformed.version = "v3.0".into();
         assert!(matches!(malformed.validate(), Err(BuildError::InvalidLaunchConfiguration { field: "vkd3d identity" })));
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn vkd3d_launch_admission_requires_runtime_owned_component() {
+        let base = std::env::temp_dir().join(format!("oxide-vkd3d-ownership-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let runtime = base.join("proton");
+        let owned = runtime.join("lib64/vkd3d-proton");
+        let external = base.join("staged-vkd3d-proton");
+        fs::create_dir_all(&owned).unwrap();
+        fs::create_dir_all(&external).unwrap();
+        let identity = "0123456789012345678901234567890123456789";
+        for path in [&owned, &external] { fs::write(path.join("version"), format!("v3.0.1 {identity}\n")).unwrap(); }
+        let valid = Vkd3dProtonRuntime { path: owned, version: "v3.0.1".into(), identity: identity.into() };
+        assert!(valid.validate_owned_by(&runtime).is_ok());
+        let outside = Vkd3dProtonRuntime { path: external, version: "v3.0.1".into(), identity: identity.into() };
+        assert!(matches!(outside.validate_owned_by(&runtime), Err(BuildError::InvalidLaunchConfiguration { field: "vkd3d ownership" })));
         fs::remove_dir_all(base).unwrap();
     }
 
