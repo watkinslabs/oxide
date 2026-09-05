@@ -1,6 +1,6 @@
 # Known issues
 
-**Live issue count: 298** — 295 `OPEN`, 3 `IN-PROGRESS`.
+**Live issue count: 297** — 294 `OPEN`, 3 `IN-PROGRESS`.
 
 | Id | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|---|
