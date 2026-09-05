@@ -111,6 +111,9 @@ pub struct VirtioInputDev {
     pub(crate) pending_values: Vec<InputValue>,
     pub(crate) abs_values: [i32; ABS_CNT],
     pub(crate) mt_state: Option<MtState>,
+    pub(crate) connected: bool,
+    pub(crate) controller_packet: u32,
+    pub(crate) controller_dirty: bool,
     pub(crate) raw_events: alloc::collections::VecDeque<RawInputEvent>,
     pub(crate) raw_dropped: u64,
 }
@@ -182,6 +185,9 @@ impl VirtioInputDev {
             pending_values: Vec::new(),
             abs_values: [0; ABS_CNT],
             mt_state: None,
+            connected: true,
+            controller_packet: 0,
+            controller_dirty: false,
             raw_events: alloc::collections::VecDeque::new(),
             raw_dropped: 0,
         }
@@ -260,9 +266,17 @@ pub fn push_evdev_event(id: u32, ev_type: u16, code: u16, value: i32) -> bool {
         let Some(dev) = devs.iter_mut().find(|dev| dev.evdev_id == id) else {
             return false;
         };
+        if !dev.connected { return false; }
+        let controller_event = dev.controller_event(ev_type, code);
         let Some(accepted) = dev.accept_event(ev_type, code, value) else {
             return false;
         };
+        if controller_event { dev.controller_dirty = true; }
+        if ev_type == crate::EV_SYN && code == crate::SYN_REPORT && dev.controller_dirty {
+            let next = dev.controller_packet.wrapping_add(1);
+            dev.controller_packet = if next == 0 { 1 } else { next };
+            dev.controller_dirty = false;
+        }
         let _ = dev.publish_raw(ev_type, code, accepted.value);
         let native_key = (ev_type == crate::EV_KEY && code < crate::BTN_LEFT)
             .then_some((code, accepted.value));
@@ -366,6 +380,9 @@ pub fn disconnect_device(device_key: impl Into<InputDeviceKey>) -> Option<u32> {
     let (evdev_id, is_pointer, packet) = {
         let mut devices = DEVICES.lock();
         let dev = devices.iter_mut().find(|dev| dev.device_key == device_key)?;
+        dev.connected = false;
+        dev.controller_packet = 0;
+        dev.controller_dirty = false;
         let packet = release_state(dev, false);
         dev.raw_events.clear();
         (dev.evdev_id, dev.is_pointer, packet)
