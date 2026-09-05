@@ -1003,7 +1003,11 @@ impl ImportResolver for RejectImports {
     }
 }
 pub fn initial_entry_state(image: &PeLoadedImage, stack_top: u64) -> Result<PeEntryState, pe::Error> {
-    let rsp = stack_top.checked_sub(process_env::X64_SHADOW_SPACE).ok_or(pe::Error::Einval)? & !0xf;
+    // A direct image entry has no caller-generated return address. Reserve
+    // its slot anyway so the image observes the Windows x64 callee-entry
+    // alignment and its 32-byte home area remains above RSP.
+    let rsp = stack_top.checked_sub(process_env::X64_SHADOW_SPACE + process_env::X64_RETURN_SLOT).ok_or(pe::Error::Einval)?;
+    let rsp = (rsp & !0xf) | 8;
     Ok(PeEntryState { rip: image.entry, rsp: UserVirtAddr::new(rsp).ok_or(pe::Error::Einval)?, gs_base: UserVirtAddr::new(0).ok_or(pe::Error::Einval)?, personality: ExecutionPersonality::Nt })
 }
 pub fn initial_entry_state_with_environment(image: &PeLoadedImage, stack_top: u64, env: &process_env::NtProcessEnvironment) -> Result<PeEntryState, pe::Error> {
@@ -1028,7 +1032,7 @@ fn validate_entry_context(as_: &AddressSpace, image: &PeLoadedImage,
         || stack_vma.end.as_u64() != stack_top || !stack_vma.prot.contains(VmaProt::READ | VmaProt::WRITE)
         || !matches!(stack_vma.backing, VmaBacking::Anonymous) { return Err(pe::Error::Einval); }
     let rsp = state.rsp.as_u64();
-    if rsp < stack_base || rsp.checked_add(process_env::X64_SHADOW_SPACE).ok_or(pe::Error::Einval)? > stack_top { return Err(pe::Error::Einval); }
+    if rsp < stack_base || rsp.checked_add(process_env::X64_SHADOW_SPACE + process_env::X64_RETURN_SLOT).ok_or(pe::Error::Einval)? > stack_top { return Err(pe::Error::Einval); }
     let env_end = env.base.as_u64().checked_add(env.bytes as u64).ok_or(pe::Error::Einval)?;
     for address in [env.peb.as_u64(), env.teb.as_u64()] {
         if address < env.base.as_u64() || address >= env_end || as_.find_vma(UserVirtAddr::new(address).ok_or(pe::Error::Einval)?).is_none() { return Err(pe::Error::Einval); }

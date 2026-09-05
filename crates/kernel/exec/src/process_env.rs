@@ -9,6 +9,7 @@ pub mod runtime;
 pub use publish::{publish_module, publish_modules};
 
 pub const X64_SHADOW_SPACE: u64 = 32;
+pub const X64_RETURN_SLOT: u64 = 8;
 #[cfg(test)]
 const PAGE: usize = 4096;
 pub const THREAD_TEB_BYTES: usize = 0x4000;
