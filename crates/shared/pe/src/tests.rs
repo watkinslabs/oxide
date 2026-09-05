@@ -266,6 +266,31 @@ fn follows_x64_chained_runtime_function_and_rejects_a_chain_cycle() {
 }
 
 #[test]
+fn returns_bounded_x64_language_handler_and_opaque_data_start() {
+    let mut b = image(); let dir = OPT + 112 + IMAGE_DIRECTORY_ENTRY_EXCEPTION * 8;
+    b[dir..dir + 4].copy_from_slice(&0x1100u32.to_le_bytes()); b[dir + 4..dir + 8].copy_from_slice(&12u32.to_le_bytes());
+    b[0x500..0x50c].copy_from_slice(&[0x00, 0x10, 0, 0, 0x60, 0x10, 0, 0, 0xf0, 0x11, 0, 0]);
+    b[0x5f0..0x5f8].copy_from_slice(&[9, 2, 1, 0, 2, 0, 0, 0]);
+    b[0x5f8..0x5fc].copy_from_slice(&0x11e0u32.to_le_bytes());
+    let parsed = parse(&b).unwrap(); let function = parsed.exception_function_for(0x1040).unwrap().unwrap();
+    assert_eq!(parsed.unwind_handler(function).unwrap(), Some(UnwindHandler { handler_rva: 0x11e0, data_rva: 0x11fc }));
+
+    let mut invalid = b; invalid[0x5f8..0x5fc].copy_from_slice(&0x4000u32.to_le_bytes());
+    let parsed = parse(&invalid).unwrap();
+    assert_eq!(parsed.unwind_handler(function), Err(Error::Einval));
+}
+
+#[test]
+fn rejects_x64_unwind_handler_chain_flag_combination() {
+    let mut b = image(); let dir = OPT + 112 + IMAGE_DIRECTORY_ENTRY_EXCEPTION * 8;
+    b[dir..dir + 4].copy_from_slice(&0x1100u32.to_le_bytes()); b[dir + 4..dir + 8].copy_from_slice(&12u32.to_le_bytes());
+    b[0x500..0x50c].copy_from_slice(&[0x00, 0x10, 0, 0, 0x60, 0x10, 0, 0, 0xf0, 0x11, 0, 0]);
+    b[0x5f0..0x5f4].copy_from_slice(&[0x29, 2, 1, 0]);
+    let parsed = parse(&b).unwrap();
+    assert_eq!(parsed.exception_functions(), Err(Error::Einval));
+}
+
+#[test]
 fn unwinds_x64_saved_register_and_return_address_through_reader() {
     let mut b = image();
     let dir = OPT + 112 + IMAGE_DIRECTORY_ENTRY_EXCEPTION * 8;
