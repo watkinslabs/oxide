@@ -119,26 +119,31 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         return Some(0);
     }
     if call.service == NtService::RtlCreateTimerQueue {
-        if call.args.a0 == 0 { return Some(STATUS_INVALID_PARAMETER); }
-        return Some(STATUS_NOT_IMPLEMENTED);
+        return Some(create_timer_queue(call));
     }
     if call.service == NtService::RtlDeleteTimer {
         let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
         if !cur.is_nt_personality() || call.args.a0 == 0 || call.args.a1 == 0 { return Some(STATUS_INVALID_PARAMETER); }
-        let mut waits = cur.thread_group.nt_callbacks.lock();
-        let Some(index) = waits.iter().position(|wait| wait.token == call.args.a1) else { return Some(STATUS_INVALID_HANDLE); };
-        waits.swap_remove(index); return Some(0);
+        let mut callbacks = cur.thread_group.nt_callbacks.lock();
+        let Some(index) = callbacks.iter().position(|entry| entry.token == call.args.a1
+            && matches!(entry.kind, sched::nt_callback::RegistrationKind::Timer { queue, .. } if queue == call.args.a0)) else {
+            return Some(STATUS_INVALID_HANDLE);
+        };
+        callbacks.swap_remove(index);
+        if call.args.a2 != 0 && call.args.a2 != u64::MAX {
+            let table = cur.thread_group.nt_handles();
+            let event = sched::nt_object::NtHandle::from_raw(call.args.a2 as u32);
+            if let Some(object) = table.get(event, SYNCHRONIZE_ACCESS) {
+                if let Some(event) = object.event() { event.set(); }
+            }
+        }
+        return Some(0);
     }
     if call.service == NtService::RtlDeleteTimerQueueEx {
-        if call.args.a0 == 0 { return Some(STATUS_INVALID_HANDLE); }
-        return Some(STATUS_NOT_IMPLEMENTED);
+        return Some(delete_timer_queue(call));
     }
     if call.service == NtService::RtlUpdateTimer {
-        if call.args.a0 == 0 || call.args.a1 == 0 { return Some(STATUS_INVALID_HANDLE); }
-        // Timer-queue callback state is distinct from native waitable timers;
-        // its callback execution path must be owned before an update can
-        // mutate a live queue entry safely.
-        return Some(STATUS_NOT_IMPLEMENTED);
+        return Some(update_timer(call));
     }
     if call.service != NtService::RtlCreateTimer { return None; }
     let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
@@ -148,10 +153,13 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     let token = cur.thread_group.nt_wait_next.fetch_add(1, core::sync::atomic::Ordering::Relaxed)
         .checked_add(0x4000_0000_0000_0000).unwrap_or(0);
     if token == 0 { return Some(STATUS_INVALID_PARAMETER); }
+    let queue = match ensure_timer_queue(&cur, call.args.a0) { Some(queue) => queue, None => return Some(STATUS_INVALID_HANDLE) };
+    let flags = crate::nt_dispatch::stack_argument(6).unwrap_or(0);
+    if flags > u32::MAX as u64 { return Some(STATUS_INVALID_PARAMETER); }
     cur.thread_group.nt_callbacks.lock().push(sched::nt_callback::Registration {
         token, callback: call.args.a2, context: call.args.a3,
         kind: sched::nt_callback::RegistrationKind::Timer {
-            due_ms: call.args.a4 as u32, period_ms: call.args.a5 as u32,
+            queue, due_ms: call.args.a4 as u32, period_ms: call.args.a5 as u32, flags: flags as u32,
         },
     });
     if uaccess::put_user_u64(call.args.a1, token).is_err() {
@@ -169,6 +177,69 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         cur.nt_apc_queue.request_delivery();
     }
     Some(0)
+}
+
+fn next_token(cur: &sched::Task, prefix: u64) -> Option<u64> {
+    cur.thread_group.nt_wait_next.fetch_add(1, core::sync::atomic::Ordering::Relaxed)
+        .checked_add(prefix).filter(|token| *token != 0)
+}
+
+fn ensure_timer_queue(cur: &sched::Task, raw: u64) -> Option<u64> {
+    if raw != 0 {
+        let callbacks = cur.thread_group.nt_callbacks.lock();
+        return callbacks.iter().any(|entry| entry.token == raw
+            && matches!(entry.kind, sched::nt_callback::RegistrationKind::TimerQueue)).then_some(raw);
+    }
+    let mut callbacks = cur.thread_group.nt_callbacks.lock();
+    if let Some(queue) = callbacks.iter().find(|entry|
+        matches!(entry.kind, sched::nt_callback::RegistrationKind::TimerQueue)).map(|entry| entry.token) { return Some(queue); }
+    let token = next_token(cur, 0x1000_0000_0000_0000)?;
+    callbacks.push(sched::nt_callback::Registration { token, callback: 0, context: 0,
+        kind: sched::nt_callback::RegistrationKind::TimerQueue });
+    Some(token)
+}
+
+fn create_timer_queue(call: NtCall) -> u64 {
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() || call.args.a0 == 0 { return STATUS_INVALID_PARAMETER; }
+    let Some(token) = next_token(&cur, 0x1000_0000_0000_0000) else { return STATUS_INVALID_PARAMETER; };
+    cur.thread_group.nt_callbacks.lock().push(sched::nt_callback::Registration { token, callback: 0,
+        context: 0, kind: sched::nt_callback::RegistrationKind::TimerQueue });
+    if uaccess::put_user_u64(call.args.a0, token).is_err() {
+        cur.thread_group.nt_callbacks.lock().retain(|entry| entry.token != token);
+        return STATUS_INVALID_PARAMETER;
+    }
+    0
+}
+
+fn delete_timer_queue(call: NtCall) -> u64 {
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() || call.args.a0 == 0 { return STATUS_INVALID_HANDLE; }
+    let mut callbacks = cur.thread_group.nt_callbacks.lock();
+    let exists = callbacks.iter().any(|entry| entry.token == call.args.a0
+        && matches!(entry.kind, sched::nt_callback::RegistrationKind::TimerQueue));
+    if !exists { return STATUS_INVALID_HANDLE; }
+    callbacks.retain(|entry| entry.token != call.args.a0
+        && !matches!(entry.kind, sched::nt_callback::RegistrationKind::Timer { queue, .. } if queue == call.args.a0));
+    if call.args.a1 != 0 && call.args.a1 != u64::MAX {
+        let event = sched::nt_object::NtHandle::from_raw(call.args.a1 as u32);
+        if let Some(object) = cur.thread_group.nt_handles().get(event, SYNCHRONIZE_ACCESS) {
+            if let Some(event) = object.event() { event.set(); }
+        }
+    }
+    0
+}
+
+fn update_timer(call: NtCall) -> u64 {
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() || call.args.a0 == 0 || call.args.a1 == 0
+        || call.args.a2 > u32::MAX as u64 || call.args.a3 > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
+    let mut callbacks = cur.thread_group.nt_callbacks.lock();
+    let Some(entry) = callbacks.iter_mut().find(|entry| entry.token == call.args.a1) else { return STATUS_INVALID_HANDLE; };
+    let sched::nt_callback::RegistrationKind::Timer { queue, due_ms, period_ms, .. } = &mut entry.kind else { return STATUS_INVALID_HANDLE; };
+    if *queue != call.args.a0 { return STATUS_INVALID_HANDLE; }
+    *due_ms = call.args.a2 as u32; *period_ms = call.args.a3 as u32;
+    0
 }
 
 fn register(call: NtCall) -> u64 {
