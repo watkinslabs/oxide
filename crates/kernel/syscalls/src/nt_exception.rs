@@ -40,7 +40,9 @@ fn capture_context() -> Option<[u8; CONTEXT_BYTES]> { None }
 
 fn publish(current: &sched::Task, record: [u8; EXCEPTION_RECORD_BYTES], mut context: [u8; CONTEXT_BYTES], first_chance: bool) -> u64 {
     if !sched::nt_exception::prepare_dispatch_context(&record, &mut context) { return STATUS_INVALID_PARAMETER; }
-    current.nt_exception.publish(Pending { record, context, first_chance }).map_or(STATUS_UNSUCCESSFUL, |_| STATUS_SUCCESS)
+    let pending = Pending { record, context, first_chance };
+    if !pending.is_valid() { return STATUS_INVALID_PARAMETER; }
+    current.nt_exception.publish(pending).map_or(STATUS_UNSUCCESSFUL, |_| STATUS_SUCCESS)
 }
 
 #[cfg(target_arch = "x86_64")]

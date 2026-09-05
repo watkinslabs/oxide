@@ -173,24 +173,24 @@ unsafe fn deliver_nt_apc(_regs: *mut UserRegs) -> bool { false }
 unsafe fn deliver_nt_exception(regs: *mut UserRegs) -> bool {
     let Some(task) = sched::live::current() else { return false; };
     if !task.is_nt_personality() { return false; }
-    let Some(pending) = task.nt_exception.peek() else { return false; };
+    let Some(pending) = task.nt_exception.begin_delivery() else { return false; };
     let context_rsp = u64::from_le_bytes(pending.context[0x98..0xa0].try_into().unwrap());
-    let Some(frame) = pe::nt_stub::x64_exception_frame(context_rsp, 0) else { return false; };
-    if !uaccess::access_ok(frame.stack, pe::nt_stub::X64_EXCEPTION_FRAME_BYTES as usize) { return false; }
-    let Some(ntdll) = crate::nt_loader_proc::module_base_by_name(&task, b"ntdll.dll") else { return false; };
-    let Some(dispatcher) = crate::nt_loader_proc::resolve_exported_routine_by_name(&task, ntdll, b"KiUserExceptionDispatcher") else { return false; };
-    if uaccess::copy_to_user(frame.context, &pending.context).is_err() || uaccess::copy_to_user(frame.exception_record, &pending.record).is_err() { return false; }
+    let Some(frame) = pe::nt_stub::x64_exception_frame(context_rsp, 0) else { let _ = task.nt_exception.abort_delivery(); return false; };
+    if !uaccess::access_ok(frame.stack, pe::nt_stub::X64_EXCEPTION_FRAME_BYTES as usize) { let _ = task.nt_exception.abort_delivery(); return false; }
+    let Some(ntdll) = crate::nt_loader_proc::module_base_by_name(&task, b"ntdll.dll") else { let _ = task.nt_exception.abort_delivery(); return false; };
+    let Some(dispatcher) = crate::nt_loader_proc::resolve_exported_routine_by_name(&task, ntdll, b"KiUserExceptionDispatcher") else { let _ = task.nt_exception.abort_delivery(); return false; };
+    if uaccess::copy_to_user(frame.context, &pending.context).is_err() || uaccess::copy_to_user(frame.exception_record, &pending.record).is_err() { let _ = task.nt_exception.abort_delivery(); return false; }
     for (offset, value) in [(0u64, u64::from_le_bytes(pending.context[0xf8..0x100].try_into().unwrap())),
         (8, 0x33), (16, u64::from_le_bytes(pending.context[0x44..0x48].try_into().unwrap())),
         (24, context_rsp), (32, 0x2b)] {
-        let Some(address) = frame.machine_frame.checked_add(offset) else { return false; };
-        if uaccess::put_user_u64(address, value).is_err() { return false; }
+        let Some(address) = frame.machine_frame.checked_add(offset) else { let _ = task.nt_exception.abort_delivery(); return false; };
+        if uaccess::put_user_u64(address, value).is_err() { let _ = task.nt_exception.abort_delivery(); return false; }
     }
     // SAFETY: the return frame is the active syscall frame owned by this task; all user frame writes completed above.
     let regs = unsafe { &mut *regs };
     regs.rip = dispatcher;
     regs.rsp = frame.stack;
-    let _ = task.nt_exception.take();
+    let _ = task.nt_exception.complete_delivery();
     true
 }
 
