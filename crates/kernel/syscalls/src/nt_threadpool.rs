@@ -22,9 +22,10 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::TpSimpleTryPost {
         let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
         if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
-        // Simple-post objects are retained by the native pool for callback
-        // execution; no detached callback state is created without that owner.
-        return Some(post_work(&cur, call.args.a0, call.args.a1, call.args.a2));
+        #[cfg(target_arch = "x86_64")]
+        { return Some(post_simple_work(&cur, call.args.a0, call.args.a1)); }
+        #[cfg(target_arch = "aarch64")]
+        { return Some(STATUS_NOT_IMPLEMENTED); }
     }
     if call.service == NtService::TpPostWork {
         let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
@@ -393,14 +394,23 @@ fn allocate_work(cur: &sched::Task, out: u64, callback: u64, userdata: u64, envi
     0
 }
 
-fn post_work(cur: &sched::Task, callback: u64, userdata: u64, environment: u64) -> u64 {
-    if callback == 0 { return STATUS_INVALID_PARAMETER; }
+#[cfg(target_arch = "x86_64")]
+fn post_simple_work(cur: &sched::Task, callback: u64, userdata: u64) -> u64 {
+    if callback == 0 || !uaccess::access_ok(callback, 1) { return STATUS_INVALID_PARAMETER; }
     let Some(token) = next_token(cur, 0x6000_0000_0000_0000) else { return STATUS_NO_MEMORY; };
     cur.thread_group.nt_callbacks.lock().push(sched::nt_callback::Registration {
         token, callback, context: userdata,
-        kind: sched::nt_callback::RegistrationKind::Work { pool: 0, environment, queued: true },
+        kind: sched::nt_callback::RegistrationKind::Work { pool: 0, environment: 0, queued: true },
     });
-    0
+    let status = spawn_user_callback_thread(cur, callback, token, userdata, 0);
+    if status != STATUS_SUCCESS {
+        cur.thread_group.nt_callbacks.lock().retain(|entry| entry.token != token);
+    } else {
+        // Wine's simple object is released automatically once its one
+        // callback has been submitted; the child owns the copied arguments.
+        cur.thread_group.nt_callbacks.lock().retain(|entry| entry.token != token);
+    }
+    status
 }
 
 /// Start one Wine `RtlQueueWorkItem` callback in a real NT user thread.
