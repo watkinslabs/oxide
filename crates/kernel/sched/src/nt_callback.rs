@@ -4,6 +4,22 @@ use alloc::vec::Vec;
 
 const MAX_DEPTH: usize = 64;
 
+/// Process-owned native callback registration. The variant carries the
+/// schedule contract instead of exposing an untyped positional tuple to ABI
+/// adapters.
+pub enum RegistrationKind {
+    Wait { object: u64, timeout_ms: u32, flags: u32 },
+    Timer { due_ms: u32, period_ms: u32 },
+    Callback,
+}
+
+pub struct Registration {
+    pub token: u64,
+    pub callback: u64,
+    pub context: u64,
+    pub kind: RegistrationKind,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Completion { pub kind: u64, pub argument: u64 }
 

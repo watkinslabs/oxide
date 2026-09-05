@@ -97,8 +97,8 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
         if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
         if call.args.a0 == 0 { return Some(STATUS_INVALID_HANDLE); }
-        let mut waits = cur.thread_group.nt_waits.lock();
-        let Some(index) = waits.iter().position(|wait| wait.0 == call.args.a0) else { return Some(STATUS_INVALID_HANDLE); };
+        let mut waits = cur.thread_group.nt_callbacks.lock();
+        let Some(index) = waits.iter().position(|wait| wait.token == call.args.a0) else { return Some(STATUS_INVALID_HANDLE); };
         waits.swap_remove(index); return Some(0);
     }
     if call.service == NtService::RtlDeregisterWaitEx {
@@ -112,8 +112,8 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
             if object.kind() != sched::nt_object::NtObjectType::Event { return Some(STATUS_INVALID_HANDLE); }
             Some(object)
         };
-        let mut waits = cur.thread_group.nt_waits.lock();
-        let Some(index) = waits.iter().position(|wait| wait.0 == call.args.a0) else { return Some(STATUS_INVALID_HANDLE); };
+        let mut waits = cur.thread_group.nt_callbacks.lock();
+        let Some(index) = waits.iter().position(|wait| wait.token == call.args.a0) else { return Some(STATUS_INVALID_HANDLE); };
         waits.swap_remove(index);
         if let Some(event) = completion { let _ = event.signal_for_wait(cur.tid as u64); }
         return Some(0);
@@ -125,8 +125,8 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RtlDeleteTimer {
         let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
         if !cur.is_nt_personality() || call.args.a0 == 0 || call.args.a1 == 0 { return Some(STATUS_INVALID_PARAMETER); }
-        let mut waits = cur.thread_group.nt_waits.lock();
-        let Some(index) = waits.iter().position(|wait| wait.0 == call.args.a1) else { return Some(STATUS_INVALID_HANDLE); };
+        let mut waits = cur.thread_group.nt_callbacks.lock();
+        let Some(index) = waits.iter().position(|wait| wait.token == call.args.a1) else { return Some(STATUS_INVALID_HANDLE); };
         waits.swap_remove(index); return Some(0);
     }
     if call.service == NtService::RtlDeleteTimerQueueEx {
@@ -148,10 +148,14 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     let token = cur.thread_group.nt_wait_next.fetch_add(1, core::sync::atomic::Ordering::Relaxed)
         .checked_add(0x4000_0000_0000_0000).unwrap_or(0);
     if token == 0 { return Some(STATUS_INVALID_PARAMETER); }
-    cur.thread_group.nt_waits.lock().push((token, 0, call.args.a2, call.args.a3,
-        call.args.a4 as u32, call.args.a5 as u32));
+    cur.thread_group.nt_callbacks.lock().push(sched::nt_callback::Registration {
+        token, callback: call.args.a2, context: call.args.a3,
+        kind: sched::nt_callback::RegistrationKind::Timer {
+            due_ms: call.args.a4 as u32, period_ms: call.args.a5 as u32,
+        },
+    });
     if uaccess::put_user_u64(call.args.a1, token).is_err() {
-        cur.thread_group.nt_waits.lock().retain(|entry| entry.0 != token);
+        cur.thread_group.nt_callbacks.lock().retain(|entry| entry.token != token);
         return Some(STATUS_INVALID_PARAMETER);
     }
     // A zero due time is the one dispatch that can be completed without a
@@ -181,13 +185,18 @@ fn register(call: NtCall) -> u64 {
     if call.args.a5 as u32 & !WT_SUPPORTED != 0 { return STATUS_INVALID_PARAMETER; }
     let sequence = cur.thread_group.nt_wait_next.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     let Some(token) = sequence.checked_add(0x8000_0000_0000_0000) else { return STATUS_INVALID_PARAMETER; };
-    cur.thread_group.nt_waits.lock().push((token, call.args.a1, call.args.a2, call.args.a3, call.args.a4 as u32, call.args.a5 as u32));
-    if uaccess::put_user_u64(call.args.a0, token).is_err() { let mut waits = cur.thread_group.nt_waits.lock(); waits.retain(|wait| wait.0 != token); return STATUS_INVALID_PARAMETER; }
+    cur.thread_group.nt_callbacks.lock().push(sched::nt_callback::Registration {
+        token, callback: call.args.a2, context: call.args.a3,
+        kind: sched::nt_callback::RegistrationKind::Wait {
+            object: call.args.a1, timeout_ms: call.args.a4 as u32, flags: call.args.a5 as u32,
+        },
+    });
+    if uaccess::put_user_u64(call.args.a0, token).is_err() { let mut waits = cur.thread_group.nt_callbacks.lock(); waits.retain(|wait| wait.token != token); return STATUS_INVALID_PARAMETER; }
     if object.is_signaled_at(cur.tid as u64, timekeeper::monotonic_ns())
         && object.try_wait_at(cur.tid as u64, timekeeper::monotonic_ns()) {
         if cur.nt_apc_queue.push(sched::nt_apc::Apc { routine: call.args.a2,
             argument1: call.args.a3, argument2: 0, argument3: 0, flags: 0 }).is_err() {
-            cur.thread_group.nt_waits.lock().retain(|wait| wait.0 != token);
+            cur.thread_group.nt_callbacks.lock().retain(|wait| wait.token != token);
             return STATUS_INVALID_PARAMETER;
         }
         cur.nt_apc_queue.request_delivery();
@@ -205,9 +214,12 @@ fn allocate_callback(call: NtCall, timer: bool) -> u64 {
     // The process thread-group owns the opaque object until a corresponding
     // release operation exists. It is not a success-only pointer: callback
     // code/context are retained for the later wait/timer dispatch path.
-    cur.thread_group.nt_waits.lock().push((token, 0, call.args.a1, call.args.a2, 0, 0));
+    cur.thread_group.nt_callbacks.lock().push(sched::nt_callback::Registration {
+        token, callback: call.args.a1, context: call.args.a2,
+        kind: sched::nt_callback::RegistrationKind::Callback,
+    });
     if uaccess::put_user_u64(call.args.a0, token).is_err() {
-        cur.thread_group.nt_waits.lock().retain(|entry| entry.0 != token);
+        cur.thread_group.nt_callbacks.lock().retain(|entry| entry.token != token);
         return STATUS_INVALID_PARAMETER;
     }
     0

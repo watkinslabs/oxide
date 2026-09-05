@@ -92,8 +92,8 @@ pub struct ThreadGroup {
     /// Adjacent compatible allocations may share one VMA, so a heap free must
     /// use this size rather than the containing VMA's size.
     pub nt_heap_user_info: Spinlock<Vec<(u64, u32, u64, usize)>, TaskListClass>,
-    /// Process-local registered NT waits: `(token, object, callback, context, timeout_ms, flags)`.
-    pub nt_waits: Spinlock<Vec<(u64, u64, u64, u64, u32, u32)>, TaskListClass>,
+    /// Process-owned native callback registrations and their typed schedules.
+    pub nt_callbacks: Spinlock<Vec<crate::nt_callback::Registration>, TaskListClass>,
     pub nt_wait_next: AtomicU64,
     pub nt_io_completion: Spinlock<Option<Arc<crate::nt_object::NtCompletionPort>>, TaskListClass>,
     pub nt_search_path_mode: AtomicU32,
@@ -273,7 +273,7 @@ impl ThreadGroup {
             nt_atoms: Spinlock::new(Vec::new()), nt_atom_table: Spinlock::new(false),
             nt_heap_lock: Spinlock::new(None),
             nt_heap_user_info: Spinlock::new(Vec::new()),
-            nt_waits: Spinlock::new(Vec::new()), nt_wait_next: AtomicU64::new(1),
+            nt_callbacks: Spinlock::new(Vec::new()), nt_wait_next: AtomicU64::new(1),
             nt_io_completion: Spinlock::new(None),
             nt_search_path_mode: AtomicU32::new(0),
             nt_default_dll_search_flags: AtomicU32::new(0),
