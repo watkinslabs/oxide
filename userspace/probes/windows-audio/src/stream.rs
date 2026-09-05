@@ -16,7 +16,18 @@ pub enum StreamError {
     BufferTooLarge,
     InvalidFrameCount,
     WouldBlock,
+    BufferOperationPending,
+    OutOfOrder,
+    InvalidBufferSize,
+    WrongDirection,
+    AlreadyStarted,
+    NotStopped,
+    Invalidated,
+    Closed,
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StreamState { Initialized, Running, Stopped, Invalidated, Closed }
 
 /// Actual frame geometry returned after a duration-based stream request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -66,20 +77,31 @@ impl StreamGeometry {
 /// Bounded endpoint queue matching WASAPI padding/available-frame semantics.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AudioStream {
+    format: Option<NativePcmFormat>,
     geometry: StreamGeometry,
     direction: AudioDirection,
     queued_frames: u32,
+    state: StreamState,
+    render_loan: Option<u32>,
 }
 
 impl AudioStream {
     /// Create an empty render or capture endpoint queue.
     /// # C: O(1)
     pub const fn new(geometry: StreamGeometry, direction: AudioDirection) -> Self {
-        Self { geometry, direction, queued_frames: 0 }
+        Self { format: None, geometry, direction, queued_frames: 0, state: StreamState::Initialized, render_loan: None }
+    }
+
+    /// Create an endpoint while retaining its negotiated native format.
+    /// # C: O(1)
+    pub const fn with_format(format: NativePcmFormat, geometry: StreamGeometry, direction: AudioDirection) -> Self {
+        Self { format: Some(format), geometry, direction, queued_frames: 0, state: StreamState::Initialized, render_loan: None }
     }
 
     pub const fn geometry(self) -> StreamGeometry { self.geometry }
     pub const fn direction(self) -> AudioDirection { self.direction }
+    pub const fn format(self) -> Option<NativePcmFormat> { self.format }
+    pub const fn state(self) -> StreamState { self.state }
 
     /// Frames currently padded in the endpoint buffer.
     /// # C: O(1)
@@ -92,6 +114,8 @@ impl AudioStream {
     /// Queue render frames or make capture frames available to the client.
     /// # C: O(1)
     pub fn client_write(&mut self, frames: u32) -> Result<(), StreamError> {
+        self.ensure_open()?;
+        if self.render_loan.is_some() { return Err(StreamError::BufferOperationPending); }
         if frames > self.available_frames() { return Err(StreamError::WouldBlock); }
         self.queued_frames += frames;
         Ok(())
@@ -100,6 +124,8 @@ impl AudioStream {
     /// Consume render frames or remove capture frames from the client queue.
     /// # C: O(1)
     pub fn client_read(&mut self, frames: u32) -> Result<(), StreamError> {
+        self.ensure_open()?;
+        if self.render_loan.is_some() { return Err(StreamError::BufferOperationPending); }
         if frames > self.queued_frames { return Err(StreamError::WouldBlock); }
         self.queued_frames -= frames;
         Ok(())
@@ -111,6 +137,84 @@ impl AudioStream {
         match self.direction {
             AudioDirection::Render => self.client_read(frames),
             AudioDirection::Capture => self.client_write(frames),
+        }
+    }
+
+    /// Start the endpoint; a running endpoint cannot be started twice.
+    /// # C: O(1)
+    pub fn start(&mut self) -> Result<(), StreamError> {
+        match self.state {
+            StreamState::Invalidated => Err(StreamError::Invalidated),
+            StreamState::Closed => Err(StreamError::Closed),
+            StreamState::Running => Err(StreamError::AlreadyStarted),
+            StreamState::Initialized | StreamState::Stopped => { self.state = StreamState::Running; Ok(()) }
+        }
+    }
+
+    /// Stop the endpoint and cancel an outstanding render reservation.
+    /// # C: O(1)
+    pub fn stop(&mut self) -> Result<(), StreamError> {
+        self.ensure_open()?;
+        self.state = StreamState::Stopped;
+        self.render_loan = None;
+        Ok(())
+    }
+
+    /// Reset a stopped endpoint and clear client-visible padding.
+    /// # C: O(1)
+    pub fn reset(&mut self) -> Result<(), StreamError> {
+        match self.state {
+            StreamState::Invalidated => Err(StreamError::Invalidated),
+            StreamState::Closed => Err(StreamError::Closed),
+            StreamState::Running => Err(StreamError::NotStopped),
+            StreamState::Initialized | StreamState::Stopped => { self.queued_frames = 0; self.render_loan = None; Ok(()) }
+        }
+    }
+
+    /// Permanently reject operations after native endpoint removal.
+    /// # C: O(1)
+    pub fn invalidate(&mut self) {
+        if self.state == StreamState::Closed { return; }
+        self.state = StreamState::Invalidated;
+        self.queued_frames = 0;
+        self.render_loan = None;
+    }
+
+    /// Release the endpoint; no operation can revive a closed stream.
+    /// # C: O(1)
+    pub fn close(&mut self) {
+        self.state = StreamState::Closed;
+        self.queued_frames = 0;
+        self.render_loan = None;
+    }
+
+    /// Reserve a render region before submitting its written portion.
+    /// # C: O(1)
+    pub fn render_get_buffer(&mut self, frames: u32) -> Result<(), StreamError> {
+        self.ensure_open()?;
+        if self.direction != AudioDirection::Render { return Err(StreamError::WrongDirection); }
+        if self.render_loan.is_some() { return Err(StreamError::OutOfOrder); }
+        if frames > self.available_frames() { return Err(StreamError::BufferTooLarge); }
+        self.render_loan = Some(frames);
+        Ok(())
+    }
+
+    /// Commit only the valid portion of the outstanding render region.
+    /// # C: O(1)
+    pub fn render_release_buffer(&mut self, written_frames: u32) -> Result<(), StreamError> {
+        self.ensure_open()?;
+        let Some(reserved) = self.render_loan else { return Err(StreamError::OutOfOrder); };
+        if written_frames > reserved { return Err(StreamError::InvalidBufferSize); }
+        self.render_loan = None;
+        self.queued_frames += written_frames;
+        Ok(())
+    }
+
+    fn ensure_open(&self) -> Result<(), StreamError> {
+        match self.state {
+            StreamState::Invalidated => Err(StreamError::Invalidated),
+            StreamState::Closed => Err(StreamError::Closed),
+            StreamState::Initialized | StreamState::Running | StreamState::Stopped => Ok(()),
         }
     }
 }
@@ -169,5 +273,53 @@ mod tests {
         assert_eq!(capture.device_advance(1), Err(StreamError::WouldBlock));
         assert!(capture.client_read(4).is_ok());
         assert_eq!(capture.current_padding(), 4);
+    }
+
+    #[test]
+    fn render_buffer_loan_commits_only_after_valid_release() {
+        let geometry = StreamGeometry::from_frames(format(), 8, 4).unwrap();
+        let mut render = AudioStream::with_format(format(), geometry, AudioDirection::Render);
+        assert_eq!(render.state(), StreamState::Initialized);
+        assert!(render.render_get_buffer(4).is_ok());
+        assert_eq!(render.render_get_buffer(1), Err(StreamError::OutOfOrder));
+        assert_eq!(render.render_release_buffer(5), Err(StreamError::InvalidBufferSize));
+        assert_eq!(render.current_padding(), 0);
+        assert!(render.render_release_buffer(3).is_ok());
+        assert_eq!(render.current_padding(), 3);
+        assert_eq!(render.format(), Some(format()));
+    }
+
+    #[test]
+    fn invalidation_and_close_are_terminal_for_stream_clients() {
+        let geometry = StreamGeometry::from_frames(format(), 8, 4).unwrap();
+        let mut invalidated = AudioStream::with_format(format(), geometry, AudioDirection::Capture);
+        invalidated.invalidate();
+        assert_eq!(invalidated.state(), StreamState::Invalidated);
+        assert_eq!(invalidated.start(), Err(StreamError::Invalidated));
+        assert_eq!(invalidated.client_write(1), Err(StreamError::Invalidated));
+        assert_eq!(invalidated.client_read(1), Err(StreamError::Invalidated));
+
+        let mut closed = AudioStream::with_format(format(), geometry, AudioDirection::Render);
+        closed.start().unwrap();
+        closed.render_get_buffer(2).unwrap();
+        closed.close();
+        assert_eq!(closed.state(), StreamState::Closed);
+        assert_eq!(closed.current_padding(), 0);
+        assert_eq!(closed.stop(), Err(StreamError::Closed));
+        assert_eq!(closed.render_release_buffer(0), Err(StreamError::Closed));
+        closed.invalidate();
+        assert_eq!(closed.state(), StreamState::Closed);
+    }
+
+    #[test]
+    fn stream_start_stop_reset_has_explicit_ordering() {
+        let geometry = StreamGeometry::from_frames(format(), 8, 4).unwrap();
+        let mut stream = AudioStream::with_format(format(), geometry, AudioDirection::Render);
+        stream.start().unwrap();
+        assert_eq!(stream.start(), Err(StreamError::AlreadyStarted));
+        assert_eq!(stream.reset(), Err(StreamError::NotStopped));
+        stream.stop().unwrap();
+        stream.reset().unwrap();
+        assert_eq!(stream.state(), StreamState::Stopped);
     }
 }
