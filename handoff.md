@@ -1,11 +1,11 @@
 # Windows compatibility handoff
 
-Status: ACTIVE. Snapshot: 2026-09-05. Base: `origin/main` at `72c70f74b`.
+Status: MERGED. Snapshot: 2026-09-05. Current `origin/main`: `f601d5124`.
 
-## Current lane
+## Completed lane
 
-Branch: `F1597-canonical-registry-hive-transactions`.
-Worktree: `/tmp/oxide-F1597-canonical-registry-hive-transactions`.
+Branch: `F1597-canonical-registry-hive-transactions` (merged as PR #7472).
+Worktree: removed after merge. Primary is detached at `origin/main`.
 
 This lane completes the canonical registry owner path for `NtSaveKey`,
 `NtLoadKey`, and relative hive loading. The kernel syscall layer remains a
@@ -25,7 +25,7 @@ added.
 These are contract/build results. No graphical or headless boot was run in
 this lane. The single visible boot remains final verification only.
 
-## Before commit / merge
+## Follow-up before the next implementation lane
 
 1. Inspect the complete diff and confirm the hive write path handles an
    existing longer destination correctly; add truncation through the VFS
@@ -34,10 +34,8 @@ this lane. The single visible boot remains final verification only.
    atomic failure, and durable save. Do not broaden the wire protocol with
    aliases for the removed export/import names.
 3. Re-run the tests and both target checks.
-4. Commit only the intended files plus this handoff, push the feature branch
-   with documented gate skips, open a PR, merge it, delete the remote and
-   local feature branch, and fast-forward the detached primary checkout to
-   the resulting `origin/main`.
+4. Start the next lane from freshly fetched `origin/main`; do not reuse the
+   completed branch or its removed worktree.
 
 ## Dependency-ordered work plan
 
@@ -96,7 +94,7 @@ milestones. Do not use another boot as an exploratory test.
 ## Resume commands
 
 ```sh
-cd /tmp/oxide-F1597-canonical-registry-hive-transactions
+cd /home/nd/oxide/kernel
 git status --short --branch
 git diff --check
 cargo test --manifest-path userspace/probes/Cargo.toml -p windows-registry
