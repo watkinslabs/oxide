@@ -113,6 +113,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
                             if hwnd != 0 {
                                 let Some(window) = ipc::win32_window::WindowId::from_raw(hwnd as u32) else { return Some(STATUS_INVALID_HANDLE); };
                                 if state.destroy(window).is_err() { return Some(STATUS_INVALID_HANDLE); }
+                                crate::nt_gdi::destroy_window_dc_for_current(hwnd as u32);
                             }
                             STATUS_SUCCESS
                         }
@@ -142,7 +143,8 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
                             if callback != STATUS_NOT_SUPPORTED { return Some(STATUS_INVALID_HANDLE); }
                         }
                     }
-                    (Some(match state.destroy(window) { Ok(_) => STATUS_SUCCESS, Err(_) => STATUS_INVALID_HANDLE }), None, None)
+                    let result = match state.destroy(window) { Ok(_) => { crate::nt_gdi::destroy_window_dc_for_current(hwnd as u32); STATUS_SUCCESS }, Err(_) => STATUS_INVALID_HANDLE };
+                    (Some(result), None, None)
                 }
                 NtWindowCall::Post { hwnd, message, wparam, lparam } => {
                     if hwnd > u32::MAX as u64 { return Some(STATUS_INVALID_HANDLE); }
@@ -355,7 +357,9 @@ fn destroy_window_for_current(hwnd: u64) {
     let mut entries = GUI.lock();
     entries.retain(|entry| entry.group.upgrade().is_some());
     if let Some(index) = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group))) {
+        let windows = entries[index].state.destruction_order(ipc::win32_window::WindowId::from_raw(hwnd as u32).unwrap()).unwrap_or_default();
         let _ = entries[index].state.destroy(ipc::win32_window::WindowId::from_raw(hwnd as u32).unwrap());
+        for window in windows { crate::nt_gdi::destroy_window_dc_for_current(window.raw()); }
     }
 }
 

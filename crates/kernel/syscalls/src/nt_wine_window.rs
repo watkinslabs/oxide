@@ -292,10 +292,10 @@ pub fn dispatch(call: NtCall) -> u64 {
         }
         WINE_BEGIN_PAINT => begin_paint(&args, native, gdi),
         WINE_END_PAINT => end_paint(&args, native, gdi),
-        WINE_GET_DC => create_window_dc(args[0], 0, gdi),
-        WINE_GET_DC_EX => create_window_dc(args[0], args[2], gdi),
+        WINE_GET_DC => create_window_dc(args[0], 0),
+        WINE_GET_DC_EX => create_window_dc(args[0], args[2]),
         WINE_CREATE_COMPATIBLE_DC => gdi(NtService::CreateCompatibleDc, SyscallArgs { a0: DEFAULT_WINDOW_SURFACE_WIDTH, a1: DEFAULT_WINDOW_SURFACE_HEIGHT, a2: 0, a3: 0, a4: 0, a5: 0 }),
-        WINE_RELEASE_DC => win_bool(gdi(NtService::DeleteGdiObject, SyscallArgs { a0: args[1], a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 })),
+        WINE_RELEASE_DC => release_window_dc(args[0], args[1]),
         WINE_DELETE_OBJECT => gdi(NtService::DeleteGdiObject, SyscallArgs { a0: args[0], a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 }),
         WINE_GET_TEXT_METRICS => win_bool(gdi(NtService::GetGdiTextMetrics, SyscallArgs { a0: args[0], a1: args[1], a2: 0, a3: 0, a4: 0, a5: 0 })),
         WINE_GET_TEXT_EXTENT_EX => win_bool(gdi(NtService::GetGdiTextExtent, SyscallArgs { a0: args[0], a1: args[1], a2: args[2], a3: args[6], a4: 0, a5: 0 })),
@@ -316,8 +316,7 @@ fn draw_menu_bar_temp(args: &[u64; 17]) -> u64 {
 }
 
 #[cfg(target_os = "oxide-kernel")]
-fn create_window_dc<F>(hwnd: u64, flags: u64, gdi: F) -> u64
-where F: Fn(NtService, SyscallArgs) -> u64 {
+fn create_window_dc(hwnd: u64, flags: u64) -> u64 {
     // Wine's GetDCEx accepts a null clip region; region ownership is not
     // represented by the native GDI surface yet, so reject that shape rather
     // than silently drawing with the wrong clipping contract.
@@ -331,7 +330,13 @@ where F: Fn(NtService, SyscallArgs) -> u64 {
         let (Some(width), Some(height)) = (width, height) else { return STATUS_INVALID_PARAMETER; };
         (width, height)
     };
-    gdi(NtService::CreateCompatibleDc, SyscallArgs { a0: width, a1: height, a2: 0, a3: 0, a4: 0, a5: 0 })
+    crate::nt_gdi::acquire_window_dc_for_current(hwnd as u32, width as i32, height as i32)
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn release_window_dc(hwnd: u64, dc: u64) -> u64 {
+    let (Some(hwnd), Some(dc)) = (u32::try_from(hwnd).ok(), u32::try_from(dc).ok()) else { return STATUS_INVALID_PARAMETER; };
+    crate::nt_gdi::release_window_dc_for_current(hwnd, dc)
 }
 
 #[cfg(target_os = "oxide-kernel")]
@@ -402,8 +407,8 @@ pub fn dispatch_raw(ordinal: u64, args: SyscallArgs) -> Option<u64> {
         let packed = [args.a0, args.a1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
         return Some(end_paint(&packed, native, gdi));
     }
-    if ordinal == WINE_GET_DC { return Some(create_window_dc(args.a0, 0, gdi)); }
-    if ordinal == WINE_GET_DC_EX { return Some(create_window_dc(args.a0, args.a2, gdi)); }
+    if ordinal == WINE_GET_DC { return Some(create_window_dc(args.a0, 0)); }
+    if ordinal == WINE_GET_DC_EX { return Some(create_window_dc(args.a0, args.a2)); }
     if ordinal == WINE_RELEASE_DC { return Some(win_bool(gdi(NtService::DeleteGdiObject, SyscallArgs { a0: args.a1, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 }))); }
     if ordinal == WINE_SET_WINDOW_POS {
         let right = (args.a2 as i32).checked_add(args.a4 as i32);

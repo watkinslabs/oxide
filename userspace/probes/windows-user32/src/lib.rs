@@ -22,6 +22,9 @@ const WINE_SET_MENU: u64 = 0x1569;
 const WINE_DESTROY_MENU: u64 = 0x1382;
 const WINE_DRAW_MENU_BAR: u64 = 0x139b;
 const WINE_CALL_ONE_PARAM: u64 = 0x133d;
+const WINE_GET_DC: u64 = 0x13eb;
+const WINE_GET_DC_EX: u64 = 0x13ec;
+const WINE_RELEASE_DC: u64 = 0x1509;
 const WINE_THUNKED_MENU_ITEM_INFO: u64 = 0x15d0;
 const CALL_ONE_PARAM_GET_MENU_ITEM_COUNT: u64 = 4;
 const MENUITEMINFO_BYTES: usize = 80;
@@ -298,6 +301,21 @@ impl User32 {
     pub fn end_paint(&self, hwnd: u64) -> Result<(), WindowError> {
         invoke(NtService::EndWindowPaint, [hwnd, 0, 0, 0, 0, 0]).map(|_| ())
     }
+
+    /// Acquire the canonical display DC for a window, retained across leases. # C: O(N_windows + N_gdi)
+    pub fn get_dc(&self, hwnd: u64) -> Result<u64, WindowError> {
+        invoke(NtService::WineSyscall, [WINE_GET_DC, hwnd, 0, 0, 0, 0])
+    }
+
+    /// Acquire a window DC with the supported Wine clip flags. # C: O(N_windows + N_gdi)
+    pub fn get_dc_ex(&self, hwnd: u64, clip_region: u64, flags: u32) -> Result<u64, WindowError> {
+        invoke(NtService::WineSyscall, [WINE_GET_DC_EX, hwnd, clip_region, flags as u64, 0, 0])
+    }
+
+    /// Release one GetDC lease without deleting the canonical DC object. # C: O(N_windows + N_gdi)
+    pub fn release_dc(&self, hwnd: u64, dc: u64) -> Result<(), WindowError> {
+        invoke(NtService::WineSyscall, [WINE_RELEASE_DC, hwnd, dc, 0, 0, 0]).map(|_| ())
+    }
 }
 
 fn translate_virtual_key(key: u16, shift: bool, caps_lock: bool) -> Option<u16> {
@@ -419,5 +437,10 @@ mod tests {
         assert_eq!(text_copy_capacity(0), 0);
         assert_eq!(text_copy_capacity(1), 0);
         assert_eq!(text_copy_capacity(8), 7);
+    }
+
+    #[test]
+    fn window_dc_client_uses_the_wine_getdc_lease_ordinals() {
+        assert_eq!([(WINE_GET_DC, 0x13eb), (WINE_GET_DC_EX, 0x13ec), (WINE_RELEASE_DC, 0x1509)], [(0x13eb, 0x13eb), (0x13ec, 0x13ec), (0x1509, 0x1509)]);
     }
 }
