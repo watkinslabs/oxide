@@ -9,8 +9,10 @@ extern crate alloc;
 mod dns;
 mod select;
 mod readiness;
+mod ipv6_options;
 
 pub use dns::addrinfo_error;
+pub use ipv6_options::{Ipv6OnlyOptions, Ipv6OnlyOptionError, IPV6_V6ONLY};
 pub use select::{project_select, SelectProjection, SocketReadiness};
 pub use select::{READY_ACCEPT, READY_CONNECT_ERROR, READY_ERROR, READY_HUP, READY_OOB,
     READY_READ, READY_RESET, READY_WRITE};
@@ -53,6 +55,18 @@ pub const AI_NUMERICHOST: u32 = 0x0004;
 pub const AI_V4MAPPED: u32 = 0x0008;
 pub const AI_ALL: u32 = 0x0100;
 pub const AI_ADDRCONFIG: u32 = 0x0400;
+pub const SOCK_RAW: u32 = 3;
+pub const IPPROTO_IPV6: u32 = 41;
+
+/// Canonical hint tuple passed to the native resolver after applying the
+/// Windows compatibility rules. # C: O(1)
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NormalizedAddrInfoHints {
+    pub family: u16,
+    pub socket_type: u32,
+    pub protocol: u32,
+    pub flags: u32,
+}
 
 /// The Winsock error number returned by `WSAGetLastError`.
 /// # C: O(1)
@@ -151,22 +165,38 @@ pub const fn validate_addrinfo_hints(family: u16, socket_type: u32, protocol: u3
     if flags & !(AI_PASSIVE | AI_CANONNAME | AI_NUMERICHOST | AI_V4MAPPED | AI_ALL | AI_ADDRCONFIG) != 0 {
         return Err(WsaError::InvalidArgument);
     }
-    if socket_type != 0 && socket_type != 1 && socket_type != 2 {
+    if socket_type != 0 && socket_type != 1 && socket_type != 2 && socket_type != SOCK_RAW {
         return Err(WsaError::SocketTypeNotSupported);
     }
-    if protocol != 0 && protocol != 6 && protocol != 17 {
+    if protocol != 0 && protocol != 6 && protocol != 17 && protocol != IPPROTO_IPV6 {
         return Err(WsaError::ProtocolNotSupported);
-    }
-    if socket_type == 1 && protocol != 0 && protocol != 6 {
-        return Err(WsaError::WrongProtocol);
-    }
-    if socket_type == 2 && protocol != 0 && protocol != 17 {
-        return Err(WsaError::WrongProtocol);
     }
     if flags & AI_ALL != 0 && flags & AI_V4MAPPED == 0 {
         return Err(WsaError::InvalidArgument);
     }
     Ok(())
+}
+
+/// Apply Wine-compatible hint normalization before invoking the native
+/// resolver. Contradictory TCP/UDP type hints are ignored, while the IPv6
+/// protocol selector is metadata rather than a resolver protocol. # C: O(1)
+pub const fn normalize_addrinfo_hints(family: u16, socket_type: u32, protocol: u32,
+    flags: u32) -> Result<NormalizedAddrInfoHints, WsaError> {
+    match validate_addrinfo_hints(family, socket_type, protocol, flags) {
+        Ok(()) => {}
+        Err(error) => return Err(error),
+    }
+    let mut normalized_type = socket_type;
+    let mut normalized_protocol = protocol;
+    if normalized_protocol == IPPROTO_IPV6 { normalized_protocol = 0; }
+    if normalized_protocol == 6 && normalized_type != 0 && normalized_type != 1 {
+        normalized_type = 0;
+    }
+    if normalized_protocol == 17 && normalized_type != 0 && normalized_type != 2 {
+        normalized_type = 0;
+    }
+    Ok(NormalizedAddrInfoHints { family, socket_type: normalized_type,
+        protocol: normalized_protocol, flags })
 }
 
 /// Construct a zero-initialized IPv4 endpoint with network-order port/address.
@@ -216,8 +246,23 @@ mod tests {
     fn addrinfo_hints_reject_unsupported_combinations() {
         assert!(validate_addrinfo_hints(AF_UNSPEC, 1, 6, AI_NUMERICHOST).is_ok());
         assert_eq!(validate_addrinfo_hints(999, 0, 0, 0), Err(WsaError::AddressFamilyNotSupported));
-        assert_eq!(validate_addrinfo_hints(AF_INET, 1, 17, 0), Err(WsaError::WrongProtocol));
         assert_eq!(validate_addrinfo_hints(AF_INET6, 0, 0, AI_ALL), Err(WsaError::InvalidArgument));
         assert_eq!(validate_addrinfo_hints(AF_INET, 99, 0, 0), Err(WsaError::SocketTypeNotSupported));
+    }
+
+    #[test]
+    fn ipv6_protocol_is_resolver_metadata_and_contradictory_types_are_ignored() {
+        let hints = normalize_addrinfo_hints(AF_INET6, 2, IPPROTO_IPV6, 0).unwrap();
+        assert_eq!(hints.protocol, 0);
+        assert_eq!(hints.socket_type, 2);
+        let tcp = normalize_addrinfo_hints(AF_UNSPEC, 2, 6, 0).unwrap();
+        assert_eq!(tcp.socket_type, 0);
+        let udp = normalize_addrinfo_hints(AF_UNSPEC, 1, 17, 0).unwrap();
+        assert_eq!(udp.socket_type, 0);
+    }
+
+    #[test]
+    fn raw_socket_hint_is_admitted_for_native_resolution() {
+        assert!(validate_addrinfo_hints(AF_INET6, SOCK_RAW, 0, AI_NUMERICHOST).is_ok());
     }
 }
