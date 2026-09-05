@@ -14,7 +14,9 @@ use syscall::nt_exec::{NtExecModule, NtExecRequest};
 use syscall::UserPtr;
 
 mod preflight;
+mod dxvk;
 pub use preflight::{BootArtifactReport, PreflightError};
+pub use dxvk::DxvkRuntimeAdmission;
 
 const MAX_IMAGE_BYTES: u64 = 1 << 31;
 
@@ -102,6 +104,7 @@ impl ProtonLaunchConfig {
         if !self.nls.is_file() || !self.registry_database.is_file() {
             return Err(BuildError::InvalidLaunchConfiguration { field: "launch resources" });
         }
+        DxvkRuntimeAdmission::admit(&self.dxvk, &self.runtime)?;
         if !fs::metadata(&self.registry_socket).map(|metadata| metadata.file_type().is_socket()).unwrap_or(false) || UnixStream::connect(&self.registry_socket).is_err() {
             return Err(BuildError::InvalidLaunchConfiguration { field: "registry_socket" });
         }
