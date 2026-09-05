@@ -68,6 +68,7 @@ mod nt_process_image_policy;
 mod nt_process_create;
 mod nt_process_memory;
 mod nt_process_memory_policy;
+mod nt_vulkan_policy;
 mod nt_system_time;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_timer;
@@ -128,6 +129,8 @@ mod nt_format;
 mod nt_window;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_gdi;
+#[cfg(target_os = "oxide-kernel")]
+mod nt_vulkan;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_unwind;
 #[cfg(target_os = "oxide-kernel")]

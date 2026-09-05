@@ -332,6 +332,8 @@ pub enum NtService {
     /// Keep a named NT object in its namespace after its handles close.
     NtMakePermanentObject = 543,
     RtlDeNormalizeProcessParams = 545,
+    /// Query the primary DRM driver's native Vulkan admission contract.
+    QueryVulkanCapability = 547,
 }
 impl NtService {
     /// Return the tagged entry selector emitted by an NTDLL syscall stub.
@@ -811,6 +813,7 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 529 { return Some(NtCall { service: NtService::PresentGdiSurface, args }); }
     if service == 530 { return Some(NtCall { service: NtService::PresentGdiWindow, args }); }
     if service == 544 { return Some(NtCall { service: NtService::PresentGdiWindowRegion, args }); }
+    if service == 547 { return Some(NtCall { service: NtService::QueryVulkanCapability, args }); }
     if service == 531 { return Some(NtCall { service: NtService::PostQuitMessage, args }); }
     if service == 532 { return Some(NtCall { service: NtService::SetFocusWindow, args }); }
     if service == 533 { return Some(NtCall { service: NtService::InjectKey, args }); }
@@ -1257,7 +1260,7 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
         NtService::NtAdjustPrivilegesToken => Err(Errno::Enosys),
         NtService::NtAllocateLocallyUniqueId => Err(Errno::Enosys),
         NtService::NtCancelIoFile | NtService::NtCancelIoFileEx => Err(Errno::Enosys),
-        NtService::NtCancelSynchronousIoFile | NtService::NtCompareObjects | NtService::NtConvertBetweenAuxiliaryCounterAndPerformanceCounter | NtService::NtCreateNamedPipeFile | NtService::NtCreateSectionEx | NtService::NtCreateSymbolicLinkObject | NtService::NtCreateUserProcess | NtService::NtDelayExecution | NtService::NtDeleteKey | NtService::NtDeleteValueKey | NtService::NtDuplicateToken | NtService::NtEnumerateKey | NtService::NtEnumerateValueKey | NtService::NtFilterToken | NtService::NtFlushBuffersFile | NtService::NtFlushInstructionCache | NtService::NtFlushKey | NtService::NtMakeTemporaryObject | NtService::NtMapViewOfSectionEx | NtService::NtNotifyChangeDirectoryFile | NtService::NtNotifyChangeKey | NtService::NtOpenEvent | NtService::NtOpenKeyEx | NtService::NtOpenMutant | NtService::NtOpenProcess | NtService::NtOpenSection | NtService::NtOpenSemaphore | NtService::NtOpenSymbolicLinkObject | NtService::NtOpenThread | NtService::NtOpenTimer | NtService::NtPrivilegeCheck | NtService::NtPulseEvent | NtService::NtQueryAttributesFile | NtService::NtQueryDefaultLocale | NtService::NtQueryDefaultUILanguage | NtService::NtQueryDirectoryObject | NtService::NtQueryFullAttributesFile | NtService::NtQueryInstallUILanguage | NtService::NtQueryKey | NtService::NtQuerySymbolicLinkObject | NtService::NtUnmapViewOfSectionEx | NtService::NtWriteFileGather | NtService::SetWindowText | NtService::SetWindowTimer | NtService::KillWindowTimer | NtService::GetWindowRect | NtService::SetWindowRect | NtService::CreateCompatibleDc | NtService::DeleteGdiObject | NtService::CreateFontIndirect | NtService::SelectGdiFont | NtService::GetGdiTextMetrics | NtService::GetGdiTextExtent | NtService::GetWindowText | NtService::GetClientRect | NtService::ShowWindow | NtService::InvalidateWindow | NtService::BeginWindowPaint | NtService::EndWindowPaint | NtService::FillGdiRect | NtService::BlitGdiSurface | NtService::PresentGdiSurface | NtService::PresentGdiWindow | NtService::PresentGdiWindowRegion | NtService::PostQuitMessage | NtService::SetFocusWindow | NtService::InjectKey | NtService::RelayCall | NtService::GetParent | NtService::WineSyscall | NtService::WineUnixCall => Err(Errno::Enosys),
+        NtService::NtCancelSynchronousIoFile | NtService::NtCompareObjects | NtService::NtConvertBetweenAuxiliaryCounterAndPerformanceCounter | NtService::NtCreateNamedPipeFile | NtService::NtCreateSectionEx | NtService::NtCreateSymbolicLinkObject | NtService::NtCreateUserProcess | NtService::NtDelayExecution | NtService::NtDeleteKey | NtService::NtDeleteValueKey | NtService::NtDuplicateToken | NtService::NtEnumerateKey | NtService::NtEnumerateValueKey | NtService::NtFilterToken | NtService::NtFlushBuffersFile | NtService::NtFlushInstructionCache | NtService::NtFlushKey | NtService::NtMakeTemporaryObject | NtService::NtMapViewOfSectionEx | NtService::NtNotifyChangeDirectoryFile | NtService::NtNotifyChangeKey | NtService::NtOpenEvent | NtService::NtOpenKeyEx | NtService::NtOpenMutant | NtService::NtOpenProcess | NtService::NtOpenSection | NtService::NtOpenSemaphore | NtService::NtOpenSymbolicLinkObject | NtService::NtOpenThread | NtService::NtOpenTimer | NtService::NtPrivilegeCheck | NtService::NtPulseEvent | NtService::NtQueryAttributesFile | NtService::NtQueryDefaultLocale | NtService::NtQueryDefaultUILanguage | NtService::NtQueryDirectoryObject | NtService::NtQueryFullAttributesFile | NtService::NtQueryInstallUILanguage | NtService::NtQueryKey | NtService::NtQuerySymbolicLinkObject | NtService::NtUnmapViewOfSectionEx | NtService::NtWriteFileGather | NtService::SetWindowText | NtService::SetWindowTimer | NtService::KillWindowTimer | NtService::GetWindowRect | NtService::SetWindowRect | NtService::CreateCompatibleDc | NtService::DeleteGdiObject | NtService::CreateFontIndirect | NtService::SelectGdiFont | NtService::GetGdiTextMetrics | NtService::GetGdiTextExtent | NtService::GetWindowText | NtService::GetClientRect | NtService::ShowWindow | NtService::InvalidateWindow | NtService::BeginWindowPaint | NtService::EndWindowPaint | NtService::FillGdiRect | NtService::BlitGdiSurface | NtService::PresentGdiSurface | NtService::PresentGdiWindow | NtService::PresentGdiWindowRegion | NtService::PostQuitMessage | NtService::SetFocusWindow | NtService::InjectKey | NtService::RelayCall | NtService::GetParent | NtService::WineSyscall | NtService::WineUnixCall | NtService::QueryVulkanCapability => Err(Errno::Enosys),
     }
 }
 /// Decode thread context calls after validating their output pointer.
@@ -1346,6 +1349,26 @@ pub fn decode_gdi(call: NtCall) -> Result<NtGdiCall, Errno> {
         NtService::PresentGdiWindowRegion => Ok(NtGdiCall::PresentWindowRegion { hwnd: a.a0 as u32, dc: a.a1 as u32, left: a.a2 as i32, top: a.a3 as i32, right: a.a4 as i32, bottom: a.a5 as i32 }),
         _ => Err(Errno::Enosys),
     }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum NtVulkanCall {
+    QueryCapability { info: UserPtr<NtVulkanCapability>, length: u32 },
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct NtVulkanCapability {
+    pub version: u32,
+    pub flags: u32,
+    pub max_width: u32,
+    pub max_height: u32,
+    pub format_mask: u64,
+}
+
+pub fn decode_vulkan(call: NtCall) -> Result<NtVulkanCall, Errno> {
+    if call.service != NtService::QueryVulkanCapability { return Err(Errno::Enosys); }
+    Ok(NtVulkanCall::QueryCapability { info: UserPtr::new(call.args.a0)?, length: call.args.a1 as u32 })
 }
 
 /// Validate the outer pointer for an NT file request record. Nested pointers are validated after the record is copied. # C: O(1)

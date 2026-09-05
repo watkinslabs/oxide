@@ -1,0 +1,16 @@
+[package]
+name = "windows-vulkan"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "windows-vulkan-smoke"
+path = "src/main.rs"
+
+[dependencies]
+libc = { workspace = true }
+syscall = { path = "../../../crates/kernel/syscall" }
