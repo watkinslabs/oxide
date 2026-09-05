@@ -37,6 +37,8 @@ struct GuiEntry { group: Weak<sched::thread_group::ThreadGroup>, state: ipc::win
 static GUI: Spinlock<Vec<GuiEntry>, GuiLockClass> = Spinlock::new(Vec::new());
 #[cfg(target_os = "oxide-kernel")]
 static USER_ATOMS: Spinlock<ipc::win32_window::UserAtomTable, GuiLockClass> = Spinlock::new(ipc::win32_window::UserAtomTable::new());
+#[cfg(target_os = "oxide-kernel")]
+static CLIPBOARD: Spinlock<ipc::win32_window::ClipboardManager, GuiLockClass> = Spinlock::new(ipc::win32_window::ClipboardManager::new());
 
 /// Register one system-wide message name in the canonical user atom table.
 /// # C: O(N_user_atoms * N_name)
@@ -45,6 +47,30 @@ pub fn register_window_message_for_current(name: &[u16]) -> Option<u16> {
     let cur = sched::live::current()?;
     if !cur.is_nt_personality() { return None; }
     USER_ATOMS.lock().register(name)
+}
+
+/// Admit the raw Wine `OpenClipboard` operation against the shared
+/// window-station owner. # C: O(N_process_gui_states + N_windows)
+#[cfg(target_os = "oxide-kernel")]
+pub fn open_clipboard_for_current(hwnd: u64) -> bool {
+    let Some(cur) = sched::live::current() else { return false; };
+    if !cur.is_nt_personality() || hwnd > u32::MAX as u64 { return false; }
+    let window = if hwnd == 0 { None } else {
+        let Some(window) = ipc::win32_window::WindowId::from_raw(hwnd as u32) else { return false; };
+        let mut entries = GUI.lock();
+        entries.retain(|entry| entry.group.upgrade().is_some());
+        if !entries.iter().any(|entry| entry.state.get(window).is_some()) { return false; }
+        Some(window)
+    };
+    CLIPBOARD.lock().open(cur.tid as u64, window)
+}
+
+/// Release the shared clipboard lock from its opening thread. # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+pub fn close_clipboard_for_current() -> bool {
+    let Some(cur) = sched::live::current() else { return false; };
+    if !cur.is_nt_personality() { return false; }
+    CLIPBOARD.lock().close(cur.tid as u64)
 }
 
 /// Resolve a visible window rectangle from the current NT process's canonical HWND state. # C: O(N_process_gui_states + N_windows)
