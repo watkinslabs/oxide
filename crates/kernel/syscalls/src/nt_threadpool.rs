@@ -1,7 +1,6 @@
 //! Native NT thread-pool and timer-queue lifecycle boundaries.
 #![cfg(target_os = "oxide-kernel")]
 use syscall::nt::{NtCall, NtService};
-#[cfg(target_arch = "x86_64")]
 const STATUS_SUCCESS: u64 = 0;
 const STATUS_INVALID_HANDLE: u64 = 0xc000_0008;
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
@@ -42,6 +41,17 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         { return Some(spawn_user_callback_thread(&cur, callback.0, call.args.a0, callback.1, 0)); }
         #[cfg(target_arch = "aarch64")]
         { return Some(STATUS_NOT_IMPLEMENTED); }
+    }
+    if call.service == NtService::TpReleaseWork {
+        let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
+        if !cur.is_nt_personality() || call.args.a0 == 0 { return Some(STATUS_INVALID_PARAMETER); }
+        let mut callbacks = cur.thread_group.nt_callbacks.lock();
+        let Some(index) = callbacks.iter().position(|entry| entry.token == call.args.a0
+            && matches!(entry.kind, sched::nt_callback::RegistrationKind::Work { .. })) else {
+            return Some(STATUS_INVALID_HANDLE);
+        };
+        callbacks.swap_remove(index);
+        return Some(STATUS_SUCCESS);
     }
     if call.service == NtService::TpSetPoolStackInformation {
         let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
