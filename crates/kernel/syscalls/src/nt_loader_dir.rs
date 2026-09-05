@@ -442,16 +442,35 @@ fn copy_full_name(source_descriptor: u64, destination: u64) -> u64 {
     let source_buffer = u64::from_le_bytes(source[8..16].try_into().unwrap());
     let maximum = u16::from_le_bytes([target[2], target[3]]) as usize;
     let target_buffer = u64::from_le_bytes(target[8..16].try_into().unwrap());
-    if source_len & 1 != 0 || source_len != 0 && source_buffer == 0 { return STATUS_INVALID_PARAMETER; }
-    let copied = core::cmp::min(source_len, maximum);
-    if copied != 0 {
+    if source_len & 1 != 0 || maximum & 1 != 0 || source_len != 0 && source_buffer == 0 { return STATUS_INVALID_PARAMETER; }
+    let mut source_units = Vec::new();
+    if source_len != 0 {
+        source_units.resize(source_len / 2, 0);
         let mut bytes = Vec::new();
-        bytes.resize(copied, 0);
-        if uaccess::copy_from_user(&mut bytes, source_buffer).is_err() || target_buffer == 0 || uaccess::copy_to_user(target_buffer, &bytes).is_err() { return STATUS_INVALID_PARAMETER; }
+        bytes.resize(source_len, 0);
+        if uaccess::copy_from_user(&mut bytes, source_buffer).is_err() { return STATUS_INVALID_PARAMETER; }
+        for (index, unit) in source_units.iter_mut().enumerate() { *unit = u16::from_le_bytes([bytes[index * 2], bytes[index * 2 + 1]]); }
     }
-    if copied < maximum && maximum >= copied.saturating_add(2) && target_buffer != 0 && uaccess::copy_to_user(target_buffer.saturating_add(copied as u64), &[0, 0]).is_err() { return STATUS_INVALID_PARAMETER; }
+    let copy_result = elf_load::process_env::runtime::bounded_module_name(&source_units, maximum / 2);
+    let copied = match copy_result {
+        elf_load::process_env::runtime::WideCopyResult::Complete { copied, terminated } => {
+            if terminated && target_buffer == 0 { return STATUS_INVALID_PARAMETER; }
+            copied * 2
+        }
+        elf_load::process_env::runtime::WideCopyResult::Truncated { copied } => copied * 2,
+    };
+    if copied != 0 {
+        if target_buffer == 0 { return STATUS_INVALID_PARAMETER; }
+        let bytes = &source_units[..copied / 2];
+        let mut encoded = Vec::new();
+        encoded.reserve(copied);
+        for unit in bytes { encoded.extend_from_slice(&unit.to_le_bytes()); }
+        if uaccess::copy_to_user(target_buffer, &encoded).is_err() { return STATUS_INVALID_PARAMETER; }
+    }
+    if matches!(copy_result, elf_load::process_env::runtime::WideCopyResult::Complete { terminated: true, .. })
+        && uaccess::copy_to_user(target_buffer.saturating_add(copied as u64), &[0, 0]).is_err() { return STATUS_INVALID_PARAMETER; }
     if uaccess::copy_to_user(destination, &(copied as u16).to_le_bytes()).is_err() { return STATUS_INVALID_PARAMETER; }
-    if maximum < source_len { STATUS_BUFFER_TOO_SMALL } else { STATUS_SUCCESS }
+    if matches!(copy_result, elf_load::process_env::runtime::WideCopyResult::Truncated { .. }) { STATUS_BUFFER_TOO_SMALL } else { STATUS_SUCCESS }
 }
 
 fn read_u64_checked(address: u64) -> Option<u64> {
