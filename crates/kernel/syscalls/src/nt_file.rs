@@ -428,7 +428,7 @@ fn query_attributes(attributes: u64, information: u64) -> u64 {
     put_i64(&mut out, 8, filetime(stat.atime));
     put_i64(&mut out, 16, filetime(stat.mtime));
     put_i64(&mut out, 24, filetime(stat.ctime));
-    let file_attributes = crate::nt_file_policy::file_attributes(stat.mode, file_type == vfs::FileType::Directory);
+    let file_attributes = vp.inode.windows_attributes().raw();
     out[32..36].copy_from_slice(&file_attributes.to_ne_bytes());
     if uaccess::copy_to_user(information, &out).is_err() { STATUS_ACCESS_VIOLATION } else { STATUS_SUCCESS }
 }
@@ -449,7 +449,7 @@ fn query_full_attributes(attributes: u64, information: u64) -> u64 {
     put_i64(&mut out, 24, filetime(stat.ctime));
     put_i64(&mut out, 32, stat.size as i64);
     put_i64(&mut out, 40, stat.size as i64);
-    let file_attributes = crate::nt_file_policy::file_attributes(stat.mode, file_type == vfs::FileType::Directory);
+    let file_attributes = vp.inode.windows_attributes().raw();
     out[48..52].copy_from_slice(&file_attributes.to_ne_bytes());
     if uaccess::copy_to_user(information, &out).is_err() { STATUS_ACCESS_VIOLATION } else { STATUS_SUCCESS }
 }
@@ -721,7 +721,7 @@ fn query_information_values(cur: &sched::Task, handle: u32, io_status: u64, info
     let Some(file) = object.file() else { return STATUS_INVALID_HANDLE; };
     let stat = vfs::generic_fillattr(file.inode(), &vfs::IDENTITY);
     let is_directory = file.inode().file_type() == vfs::FileType::Directory;
-    let file_attributes = crate::nt_file_policy::file_attributes(stat.mode, is_directory);
+    let file_attributes = file.inode().windows_attributes().raw();
     let path = String::from_utf8(file.dentry().absolute_path()).ok()
         .and_then(|path| crate::nt_path::render_windows_path(&path));
     let name: alloc::vec::Vec<u16> = path.as_deref().unwrap_or("").encode_utf16().collect();
@@ -846,11 +846,15 @@ fn set_information_values(cur: &sched::Task, handle: u32, io_status: u64, inform
         let Ok(mtime) = read_u64_at(information, 16) else { return STATUS_INVALID_PARAMETER; };
         let Ok(change) = read_u64_at(information, 24) else { return STATUS_INVALID_PARAMETER; };
         let Ok(attributes) = read_u32_at(information, 32) else { return STATUS_INVALID_PARAMETER; };
-        let current_attributes = if file.inode().file_type() == vfs::FileType::Directory { 0x10 } else { 0x80 };
-        if crate::nt_file_policy::file_basic_unsupported_fields(
-            creation as i64, change as i64, attributes, current_attributes) {
+        if crate::nt_file_policy::file_basic_unsupported_fields(creation as i64, change as i64) {
             return STATUS_NOT_SUPPORTED;
         }
+        let is_directory = file.inode().file_type() == vfs::FileType::Directory;
+        let Some(windows_attributes) = vfs::WindowsFileAttributes::from_raw(attributes, is_directory)
+            .or_else(|| (attributes == 0).then(|| vfs::WindowsFileAttributes::initial(is_directory, false))) else {
+            return STATUS_INVALID_PARAMETER;
+        };
+        if attributes != 0 { file.inode().set_windows_attributes(windows_attributes); }
         let mut ia = vfs::Iattr { ctime: vfs::Timespec64::ZERO, ..Default::default() };
         if let Some(value) = crate::nt_file_policy::filetime_to_timespec(atime as i64) {
             ia.valid |= vfs::ATTR_ATIME | vfs::ATTR_ATIME_SET; ia.atime = value;

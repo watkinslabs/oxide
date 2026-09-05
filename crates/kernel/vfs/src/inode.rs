@@ -14,6 +14,7 @@ mod fileattr_shmem;
 mod flags;
 mod file_lock;
 mod windows_share;
+mod windows_attributes;
 mod helpers;
 mod locking;
 mod metadata;
@@ -51,6 +52,9 @@ pub use file_lock::{
 pub use windows_share::{mapping_claim, WindowsFileShare, WindowsShareContext, DELETE,
     FILE_APPEND_DATA, FILE_EXECUTE, FILE_READ_DATA, FILE_WRITE_DATA, GENERIC_ALL,
     GENERIC_READ, GENERIC_WRITE, SHARE_DELETE, SHARE_READ, SHARE_WRITE};
+pub use windows_attributes::{WindowsFileAttributes, FILE_ATTRIBUTE_ARCHIVE,
+    FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_HIDDEN, FILE_ATTRIBUTE_READONLY,
+    FILE_ATTRIBUTE_SYSTEM};
 pub use helpers::{
     generic_update_time, get_next_ino, inode_inc_iversion, inode_init_owner,
     inode_init_owner_idmap, inode_maybe_inc_iversion, inode_owner_or_capable,

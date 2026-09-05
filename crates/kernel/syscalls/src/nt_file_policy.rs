@@ -26,10 +26,7 @@ const FILE_READ_DATA: u32 = 0x0001;
 const FILE_WRITE_DATA: u32 = 0x0002;
 const FILE_APPEND_DATA: u32 = 0x0004;
 const UNSUPPORTED_FILE_ACCESS: u32 = 0x0008;
-const FILE_ATTRIBUTE_READONLY: u32 = 0x0000_0001;
-const FILE_ATTRIBUTE_ARCHIVE: u32 = 0x0000_0020;
-const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x1000_0000;
-const POSIX_WRITE_BITS: u32 = 0o222;
+const FILE_ATTRIBUTE_READONLY: u32 = vfs::FILE_ATTRIBUTE_READONLY;
 const FILE_DIRECTORY_INFORMATION: u32 = 1;
 const FILE_FULL_DIRECTORY_INFORMATION: u32 = 2;
 const FILE_BOTH_DIRECTORY_INFORMATION: u32 = 3;
@@ -69,14 +66,6 @@ pub(crate) const fn directory_info_layout(class: u32) -> Option<DirectoryInfoLay
             attributes: Some(56), ea_size: Some(64), file_id: Some(96) }),
         _ => None,
     }
-}
-
-/// Translate the canonical VFS mode into the DOS attributes exposed by NT.
-/// Directories keep their directory bit; read-only is meaningful for files
-/// when no POSIX write owner, group, or other bit remains. # C: O(1)
-pub(crate) const fn file_attributes(mode: u32, is_directory: bool) -> u32 {
-    let base = if is_directory { FILE_ATTRIBUTE_DIRECTORY } else { FILE_ATTRIBUTE_ARCHIVE };
-    if !is_directory && mode & POSIX_WRITE_BITS == 0 { base | FILE_ATTRIBUTE_READONLY } else { base }
 }
 
 /// NT creation time uses the VFS birth time when the owner stores one. A VFS
@@ -135,15 +124,12 @@ pub(crate) const fn filetime_to_timespec(value: i64) -> Option<Timespec64> {
     Some(Timespec64::new((seconds - NT_FILETIME_EPOCH_SECONDS as u64) as i64, nanos as u32))
 }
 
-/// Validate the fields not yet represented by the Linux-shaped inode
-/// metadata owner. Creation/change time are kernel-owned, while Windows file
-/// attributes are accepted only when they already equal the object's canonical
-/// projection; callers never receive success for a discarded request. # C: O(1)
+/// Validate the fields still owned by the NT boundary. Creation/change time
+/// remain kernel-owned; the VFS inode validates the Windows attribute word. # C: O(1)
 pub(crate) const fn file_basic_unsupported_fields(
-    creation: i64, change: i64, attributes: u32, current_attributes: u32,
+    creation: i64, change: i64,
 ) -> bool {
     (creation != 0 && creation != -1) || (change != 0 && change != -1)
-        || (attributes != 0 && attributes != current_attributes)
 }
 
 /// Preserve the Linux VFS errno distinction at the NT file boundary. # C: O(1)
@@ -202,10 +188,9 @@ mod tests {
 
     #[test]
     fn file_basic_rejects_fields_that_cannot_be_discarded() {
-        assert!(!file_basic_unsupported_fields(0, -1, 0x80, 0x80));
-        assert!(file_basic_unsupported_fields(1, 0, 0x80, 0x80));
-        assert!(file_basic_unsupported_fields(0, 1, 0x80, 0x80));
-        assert!(file_basic_unsupported_fields(0, 0, 1, 0x80));
+        assert!(!file_basic_unsupported_fields(0, -1));
+        assert!(file_basic_unsupported_fields(1, 0));
+        assert!(file_basic_unsupported_fields(0, 1));
     }
 
     #[test]
@@ -224,12 +209,9 @@ mod tests {
     }
 
     #[test]
-    fn basic_information_translation_preserves_vfs_readonly_and_birth_fallback() {
+    fn basic_information_translation_preserves_vfs_birth_fallback() {
         let stat = vfs::Kstat { mode: 0o100_444, mtime: vfs::Timespec64::from_secs(22),
             ctime: vfs::Timespec64::from_secs(99), ..Default::default() };
-        assert_eq!(file_attributes(stat.mode, false), FILE_ATTRIBUTE_ARCHIVE | FILE_ATTRIBUTE_READONLY);
-        assert_eq!(file_attributes(0o100_644, false), FILE_ATTRIBUTE_ARCHIVE);
-        assert_eq!(file_attributes(0o040_555, true), FILE_ATTRIBUTE_DIRECTORY);
         assert_eq!(creation_time(&stat), vfs::Timespec64::from_secs(22));
     }
 

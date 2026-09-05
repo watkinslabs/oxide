@@ -150,6 +150,9 @@ pub struct Inode {
     pub(super) i_flctx:        FileLockContext,
     /// One owner for NT open/share claims, paired with `inode->i_flctx`.
     pub(super) i_windows_share: super::windows_share::WindowsShareContext,
+    /// Windows `FILE_BASIC_INFORMATION.FileAttributes`, owned by the inode so
+    /// every NT handle, dentry alias, and directory enumeration sees one word.
+    pub(super) i_windows_attributes: AtomicU32,
     /// `inode->i_security`: the mandatory-access-control label this object
     /// carries, cached here because the inode is the object the label belongs
     /// to — a table elsewhere keyed by inode identity would outlive the inodes
@@ -220,6 +223,7 @@ impl Inode {
             i_rwsem: super::rwsem::InodeRwsem::new(),
             i_flctx: FileLockContext::new(),
             i_windows_share: super::windows_share::WindowsShareContext::new(),
+            i_windows_attributes: AtomicU32::new(self.i_windows_attributes.load(Ordering::Relaxed)),
             i_security: AtomicU32::new(self.i_security.load(Ordering::Relaxed)),
             i_security_class: AtomicU16::new(self.i_security_class.load(Ordering::Relaxed)),
             i_security_seq: AtomicU32::new(0),
