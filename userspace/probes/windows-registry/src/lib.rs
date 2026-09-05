@@ -108,7 +108,15 @@ impl RegistryStore {
         let fd = lock.as_raw_fd();
         // SAFETY: the descriptor belongs to the live sidecar File and remains open for the session.
         if unsafe { libc::flock(fd, libc::LOCK_EX) } != 0 { return Err(io::Error::last_os_error().into()); }
-        let registry = if path.exists() { Registry::load(path)? } else { Registry::new() };
+        let registry = match fs::symlink_metadata(path) {
+            Ok(_) => Registry::load(path)?,
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                let registry = Registry::new();
+                registry.save(path)?;
+                registry
+            }
+            Err(error) => return Err(error.into()),
+        };
         Ok(Self { registry, path: path.to_path_buf(), _lock: lock, dirty: false, subscriptions: BTreeMap::new(), next_subscription: 1 })
     }
 
@@ -766,7 +774,7 @@ mod tests {
     fn store_loads_missing_user_state_and_flushes_one_canonical_database() {
         let path = std::env::temp_dir().join(format!("oxide-registry-missing-user-{}", std::process::id()));
         let _ = std::fs::remove_file(&path);
-        let mut store = RegistryStore::open(&path).unwrap(); assert!(!store.is_dirty());
+        let mut store = RegistryStore::open(&path).unwrap(); assert!(path.is_file()); assert!(!store.is_dirty());
         let key = store.registry_mut().create_handle(Root::CurrentUser, "Software\\Oxide").unwrap();
         store.registry_mut().set_value_handle(key, "Ready", Value { kind: ValueType::Dword, data: vec![1, 0, 0, 0] }).unwrap();
         assert!(store.is_dirty()); store.flush().unwrap(); assert!(!store.is_dirty());
@@ -844,6 +852,7 @@ mod tests {
         let lock_path = path.with_extension("oxide-registry.lock");
         let _ = fs::remove_file(&path); let _ = fs::remove_dir(&path); let _ = fs::remove_file(&lock_path);
         let mut store = RegistryStore::open(&path).unwrap();
+        fs::remove_file(&path).unwrap();
         fs::create_dir(&path).unwrap();
         let key = store.registry_mut().create_handle(Root::CurrentUser, "Software\\Failure").unwrap();
         store.registry_mut().set_value_handle(key, "State", Value { kind: ValueType::Dword, data: vec![7, 0, 0, 0] }).unwrap();
