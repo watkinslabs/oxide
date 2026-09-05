@@ -446,10 +446,6 @@ fn is_dll(path: &Path) -> bool {
 /// one already-selected runtime directory, so duplicate case-insensitive names
 /// are an ambiguity rather than a precedence decision. Sorting the directory
 /// entries makes the reported pair stable despite filesystem enumeration order.
-fn stage_module_paths(dll_dir: &Path) -> Result<HashMap<Vec<u8>, PathBuf>, BuildError> {
-    stage_module_paths_from_dirs(&[dll_dir])
-}
-
 fn stage_module_paths_from_dirs(dll_dirs: &[&Path]) -> Result<HashMap<Vec<u8>, PathBuf>, BuildError> {
     let mut paths = Vec::new();
     for dll_dir in dll_dirs {
@@ -761,7 +757,7 @@ mod tests {
         fs::create_dir_all(&base).unwrap();
         fs::write(base.join("USER32.DLL"), []).unwrap();
         fs::write(base.join("user32.dll"), []).unwrap();
-        let result = stage_module_paths(&base);
+        let result = stage_module_paths_from_dirs(&[base.as_path()]);
         match result {
             Err(BuildError::AmbiguousModule { name, first, second }) => {
                 assert_eq!(name, b"user32.dll");
