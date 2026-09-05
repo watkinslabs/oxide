@@ -3,6 +3,7 @@
 use syscall::nt::{NtCall, NtService};
 const STATUS_INVALID_HANDLE: u64 = 0xc000_0008;
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
+const STATUS_NO_MEMORY: u64 = 0xc000_0017;
 const STATUS_NOT_IMPLEMENTED: u64 = 0xc000_0002;
 const SYNCHRONIZE_ACCESS: u32 = 0x0010_0000;
 const WT_EXECUTEINWAITTHREAD: u32 = 0x0000_0004;
@@ -166,17 +167,35 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         cur.thread_group.nt_callbacks.lock().retain(|entry| entry.token != token);
         return Some(STATUS_INVALID_PARAMETER);
     }
-    // A zero due time is the one dispatch that can be completed without a
-    // background timer monitor. Future and periodic timer delivery stays an
-    // explicit unsupported boundary until it has a scheduler-owned timer.
-    if call.args.a4 == 0 {
-        if cur.nt_apc_queue.push(sched::nt_apc::Apc { routine: call.args.a2,
-            argument1: call.args.a3, argument2: 0, argument3: 0, flags: 0 }).is_err() {
-            return Some(STATUS_INVALID_PARAMETER);
-        }
-        cur.nt_apc_queue.request_delivery();
+    let delay_ns = (call.args.a4 as u64).saturating_mul(1_000_000);
+    if !sched::live::queue_delayed_work_on(0, timer_work, token as usize,
+        timekeeper::monotonic_ns(), delay_ns) {
+        cur.thread_group.nt_callbacks.lock().retain(|entry| entry.token != token);
+        return Some(STATUS_NO_MEMORY);
     }
     Some(0)
+}
+
+fn timer_work(token: usize) {
+    let token = token as u64;
+    let mut target = None;
+    for task in sched::registry::snapshot() {
+        let callbacks = task.thread_group.nt_callbacks.lock();
+        let Some(entry) = callbacks.iter().find(|entry| entry.token == token) else { continue; };
+        let sched::nt_callback::RegistrationKind::Timer { period_ms, .. } = &entry.kind else { continue; };
+        target = Some((alloc::sync::Arc::clone(&task), entry.callback, entry.context, *period_ms));
+        drop(callbacks);
+        break;
+    }
+    let Some((task, callback, context, period_ms)) = target else { return; };
+    if task.nt_apc_queue.push(sched::nt_apc::Apc { routine: callback,
+        argument1: context, argument2: 1, argument3: 0, flags: 0 }).is_ok() {
+        task.nt_apc_queue.request_delivery();
+    }
+    if period_ms != 0 {
+        let _ = sched::live::queue_delayed_work_on(0, timer_work, token as usize,
+            timekeeper::monotonic_ns(), (period_ms as u64).saturating_mul(1_000_000));
+    }
 }
 
 fn next_token(cur: &sched::Task, prefix: u64) -> Option<u64> {
