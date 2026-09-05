@@ -35,13 +35,17 @@ impl RasterFont {
         let mut width = 0.0f32;
         let mut top = 0i32;
         let mut bottom = self.size.ceil() as i32;
-        for (index, decoded) in char::decode_utf16(text.iter().copied()).enumerate() {
+        let mut code_unit = 0usize;
+        for decoded in char::decode_utf16(text.iter().copied()) {
             let character = decoded.unwrap_or(char::REPLACEMENT_CHARACTER);
             let (metrics, bitmap) = self.font.rasterize(character, self.size);
             let x = width.round() as i32 + metrics.xmin;
             top = top.min(metrics.ymin);
             bottom = bottom.max(metrics.ymin + metrics.height as i32);
-            width += advances.and_then(|values| values.get(index)).copied().map(|value| value as f32).unwrap_or(metrics.advance_width);
+            let code_units = character.len_utf16();
+            let advance = advances.and_then(|values| advance_for_utf16_span(values, code_unit, code_units)).map(|value| value as f32);
+            width += advance.unwrap_or(metrics.advance_width);
+            code_unit += code_units;
             glyphs.push((x, metrics.ymin, metrics.width, metrics.height, bitmap));
         }
         let tile_width = width.ceil().max(1.0) as usize;
@@ -85,6 +89,10 @@ fn blend(foreground: u32, background: u32, alpha: u32) -> u32 {
     channel(16) << 16 | channel(8) << 8 | channel(0)
 }
 
+fn advance_for_utf16_span(advances: &[i32], start: usize, units: usize) -> Option<i32> {
+    advances.get(start..start.checked_add(units)?)?.iter().copied().try_fold(0i32, i32::checked_add)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -100,5 +108,26 @@ mod tests {
         assert_eq!(blend(0x00ff_0000, 0x0000_0000, 128), 0x0080_0000);
         assert_eq!(blend(0x0012_3456, 0x00ab_cdef, 0), 0x00ab_cdef);
         assert_eq!(blend(0x0012_3456, 0x00ab_cdef, 255), 0x0012_3456);
+    }
+
+    #[test]
+    fn ext_text_out_consumes_advances_per_utf16_code_unit() {
+        let text = [0xd83d, 0xde00, b'X' as u16];
+        let mut start = 0;
+        let mut total = 0;
+        for decoded in char::decode_utf16(text.iter().copied()) {
+            let character = decoded.unwrap_or(char::REPLACEMENT_CHARACTER);
+            let units = character.len_utf16();
+            total += advance_for_utf16_span(&[10, 20, 30], start, units).unwrap();
+            start += units;
+        }
+        assert_eq!(start, text.len());
+        assert_eq!(total, 60);
+    }
+
+    #[test]
+    fn ext_text_out_rejects_advances_shorter_than_utf16_count() {
+        assert_eq!(advance_for_utf16_span(&[10], 0, 2), None);
+        assert_eq!(advance_for_utf16_span(&[10, 20], 1, 2), None);
     }
 }
