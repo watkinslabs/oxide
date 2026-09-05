@@ -9,18 +9,22 @@ use windows_runtime::RuntimeRequest;
 
 fn main() -> ExitCode {
     let mut args = env::args_os();
-    let _program = args.next();
-    if args.next().as_deref().is_some_and(|arg| arg == std::ffi::OsStr::new("--steam-launch")) {
-        let Some(path) = args.next() else { usage(); return ExitCode::from(2); };
-        if args.next().is_some() { usage(); return ExitCode::from(2); }
-        return steam_launch(PathBuf::from(path));
+    args.next();
+    match args.next() {
+        Some(flag) if flag == std::ffi::OsStr::new("--steam-launch") => {
+            let Some(path) = args.next() else { usage(); return ExitCode::from(2); };
+            if args.next().is_some() { usage(); return ExitCode::from(2); }
+            steam_launch(PathBuf::from(path))
+        }
+        Some(flag) if flag == std::ffi::OsStr::new("--preflight") => preflight(&mut args),
+        Some(flag) if flag == std::ffi::OsStr::new("--launch") => launch(&mut args),
+        _ => { usage(); ExitCode::from(2) }
     }
-    let mut args = env::args_os(); args.next();
-    if args.next().as_deref().is_some_and(|arg| arg == std::ffi::OsStr::new("--preflight")) {
-        return preflight(&mut args);
-    }
+}
+
+fn launch(args: &mut impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
     let values = args.collect::<Vec<_>>();
-    if values.len() != 14 || values[3] != "x86_64" { usage(); return ExitCode::from(2); }
+    if !valid_launch_args(&values) { usage(); return ExitCode::from(2); }
     let image = PathBuf::from(&values[0]);
     let windows_path = values[1].as_os_str().as_bytes();
     let command_line = values[2].as_os_str().as_bytes();
@@ -63,6 +67,10 @@ fn main() -> ExitCode {
     }
 }
 
+fn valid_launch_args(values: &[std::ffi::OsString]) -> bool {
+    values.len() == 14 && values[3] == "x86_64"
+}
+
 fn steam_launch(path: PathBuf) -> ExitCode {
     let record = match windows_runtime::SteamLaunchRecord::from_path(&path) {
         Ok(record) => record,
@@ -90,4 +98,24 @@ fn preflight(args: &mut impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
 
 fn usage() {
     eprintln!("usage: windows-runtime --steam-launch <record> | --preflight <image> <dll-directory> <unixlib-directory> <nls-file> <registry-socket> <registry-database> | --launch <image> <windows-path> <command-line> x86_64 <prefix> <runtime> <dll-catalog> <unixlib> <nls-file> <registry-socket> <registry-database> <dxvk> <vkd3d> <faudio>");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::valid_launch_args;
+    use std::ffi::OsString;
+
+    #[test]
+    fn launch_flag_is_consumed_before_validating_fourteen_fields() {
+        let mut args = vec![OsString::from("image.exe"), OsString::from("C:\\image.exe"), OsString::from("image.exe"), OsString::from("x86_64")];
+        args.extend((0..10).map(|index| OsString::from(format!("field-{index}"))));
+        assert_eq!(args.len(), 14);
+        assert!(valid_launch_args(&args));
+    }
+
+    #[test]
+    fn launch_architecture_must_be_x86_64() {
+        let args = (0..14).map(|index| if index == 3 { OsString::from("aarch64") } else { OsString::from("field") }).collect::<Vec<_>>();
+        assert!(!valid_launch_args(&args));
+    }
 }
