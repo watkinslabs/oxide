@@ -24,7 +24,10 @@ fn main() -> ExitCode {
         dll_catalog: PathBuf::from(&values[6]), unixlib: PathBuf::from(&values[7]),
         nls: PathBuf::from(&values[8]), registry_socket: PathBuf::from(&values[9]),
         registry_database: PathBuf::from(&values[10]), dxvk: PathBuf::from(&values[11]),
-        vkd3d: PathBuf::from(&values[12]), faudio: PathBuf::from(&values[13]),
+        vkd3d: match windows_runtime::Vkd3dProtonRuntime::from_path(PathBuf::from(&values[12])) {
+            Ok(runtime) => runtime,
+            Err(error) => { eprintln!("windows-runtime phase=preflight operation=vkd3d_admission outcome=fail error={error:?}"); return ExitCode::from(1); }
+        }, faudio: PathBuf::from(&values[13]),
     };
     match config.validate() {
         Ok(()) => {},

@@ -903,6 +903,9 @@ The handoff consumes one immutable per-game launch record containing:
 -   Wine Unixlib and NLS resources
 -   the prefix-owned registry socket and database
 -   DXVK, vkd3d-proton, and FAudio component paths
+-   a VKD3D-Proton record containing an absolute directory, semantic version,
+    and 40-hex-digit source identity; the staged `version` record must match
+    both values
 
 The launcher rejects the record before PE/catalog reads when its architecture,
 path ownership, or registry endpoint is invalid. The kernel receives only the
