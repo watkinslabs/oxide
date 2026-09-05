@@ -276,4 +276,17 @@ mod tests {
         assert!(gdi.pixels(memory_dc).is_some());
         assert_eq!(gdi.destroy_window_dc(7), Err(GdiError::NoSuchObject));
     }
+
+    #[test]
+    fn subtree_cleanup_can_release_each_window_dc_without_releasing_memory_objects() {
+        let mut gdi = GdiManager::new();
+        let parent_dc = gdi.acquire_window_dc(7, 20, 10).unwrap();
+        let child_dc = gdi.acquire_window_dc(8, 20, 10).unwrap();
+        let memory_dc = gdi.create_dc(20, 10).unwrap();
+        assert_eq!(gdi.destroy_window_dc(8), Ok(()));
+        assert_eq!(gdi.destroy_window_dc(7), Ok(()));
+        assert!(gdi.pixels(parent_dc).is_none());
+        assert!(gdi.pixels(child_dc).is_none());
+        assert!(gdi.pixels(memory_dc).is_some());
+    }
 }

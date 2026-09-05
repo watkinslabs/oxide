@@ -104,7 +104,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     input::set_native_rel_hook(Some(route_hardware_rel));
     let group = Arc::clone(&cur.thread_group);
     loop {
-        let (result, wake, sleep) = {
+        let (result, wake, sleep, cleanup) = {
             let mut entries = GUI.lock();
             entries.retain(|entry| entry.group.upgrade().is_some());
             let index = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group)));
@@ -114,8 +114,9 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
             });
             let wait = Arc::clone(&entries[index].wait);
             let state = &mut entries[index].state;
+            let mut cleanup = Vec::new();
             state.expire_timers(timekeeper::monotonic_ns());
-            match operation {
+            let outcome = match operation {
                 NtWindowCall::DefaultProc { hwnd, message, wparam: _, lparam } => {
                     if hwnd > u32::MAX as u64 { return Some(STATUS_INVALID_HANDLE); }
                     let rect = ipc::win32_window::WindowId::from_raw(hwnd as u32).and_then(|window| state.rect(window));
@@ -124,8 +125,9 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
                         ipc::win32_window::DefaultWindowResult::RequestDestroy => {
                             if hwnd != 0 {
                                 let Some(window) = ipc::win32_window::WindowId::from_raw(hwnd as u32) else { return Some(STATUS_INVALID_HANDLE); };
+                                let windows = state.destruction_order(window).unwrap_or_default();
                                 if state.destroy(window).is_err() { return Some(STATUS_INVALID_HANDLE); }
-                                crate::nt_gdi::destroy_window_dc_for_current(hwnd as u32);
+                                cleanup.extend(windows.into_iter().map(|window| window.raw()));
                             }
                             STATUS_SUCCESS
                         }
@@ -155,7 +157,11 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
                             if callback != STATUS_NOT_SUPPORTED { return Some(STATUS_INVALID_HANDLE); }
                         }
                     }
-                    let result = match state.destroy(window) { Ok(_) => { crate::nt_gdi::destroy_window_dc_for_current(hwnd as u32); STATUS_SUCCESS }, Err(_) => STATUS_INVALID_HANDLE };
+                    let windows = state.destruction_order(window).unwrap_or_default();
+                    let result = match state.destroy(window) {
+                        Ok(_) => { cleanup.extend(windows.into_iter().map(|window| window.raw())); STATUS_SUCCESS },
+                        Err(_) => STATUS_INVALID_HANDLE,
+                    };
                     (Some(result), None, None)
                 }
                 NtWindowCall::Post { hwnd, message, wparam, lparam } => {
@@ -312,8 +318,10 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
                     let Some(window) = valid_window(hwnd) else { return Some(STATUS_INVALID_HANDLE); };
                     (Some(match state.end_paint(window) { Ok(()) => STATUS_SUCCESS, Err(_) => STATUS_INVALID_HANDLE }), None, None)
                 }
-            }
+            };
+            (outcome.0, outcome.1, outcome.2, cleanup)
         };
+        for hwnd in cleanup { crate::nt_gdi::destroy_window_dc_for_current(hwnd); }
         if let Some(wait) = wake { wait.wake_all(); }
         if let Some(result) = result { return Some(result); }
         let Some((wait, filter)) = sleep else { return Some(STATUS_NO_MORE_ENTRIES); };
@@ -366,13 +374,16 @@ fn destroy_window_for_current(hwnd: u64) {
     let Some(cur) = sched::live::current() else { return; };
     if !cur.is_nt_personality() || hwnd > u32::MAX as u64 { return; }
     let group = Arc::clone(&cur.thread_group);
-    let mut entries = GUI.lock();
-    entries.retain(|entry| entry.group.upgrade().is_some());
-    if let Some(index) = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group))) {
-        let windows = entries[index].state.destruction_order(ipc::win32_window::WindowId::from_raw(hwnd as u32).unwrap()).unwrap_or_default();
-        let _ = entries[index].state.destroy(ipc::win32_window::WindowId::from_raw(hwnd as u32).unwrap());
-        for window in windows { crate::nt_gdi::destroy_window_dc_for_current(window.raw()); }
-    }
+    let cleanup = {
+        let mut entries = GUI.lock();
+        entries.retain(|entry| entry.group.upgrade().is_some());
+        let Some(index) = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group))) else { return; };
+        let Some(window) = ipc::win32_window::WindowId::from_raw(hwnd as u32) else { return; };
+        let windows = entries[index].state.destruction_order(window).unwrap_or_default();
+        if entries[index].state.destroy(window).is_err() { return; }
+        windows.into_iter().map(|window| window.raw()).collect::<Vec<_>>()
+    };
+    for hwnd in cleanup { crate::nt_gdi::destroy_window_dc_for_current(hwnd); }
 }
 
 #[cfg(target_os = "oxide-kernel")]

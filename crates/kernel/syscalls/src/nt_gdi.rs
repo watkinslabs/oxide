@@ -20,6 +20,17 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     let operation = nt::decode_gdi(call).ok()?;
     let cur = sched::live::current()?;
     if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
+    // Snapshot GUI-owned metadata before taking GDI. GUI destruction takes
+    // GUI then performs deferred GDI cleanup; presentation must never acquire
+    // the locks in the reverse order.
+    let present = match operation {
+        NtGdiCall::PresentWindow { hwnd, .. } => super::nt_window::window_present_record_for_current(hwnd),
+        _ => None,
+    };
+    let present_region = match operation {
+        NtGdiCall::PresentWindowRegion { hwnd, .. } => super::nt_window::window_rect_for_current(hwnd),
+        _ => None,
+    };
     let group = Arc::clone(&cur.thread_group);
     let mut entries = GDI.lock();
     entries.retain(|entry| entry.group.upgrade().is_some());
@@ -40,8 +51,8 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         NtGdiCall::BlitSurface { dc, pixels, x, y, width, height, stride } => Some(blit_surface(state, dc, pixels, x, y, width, height, stride)),
         NtGdiCall::BitBltSurface { dst, src, dst_x, dst_y, src_x, src_y, width, height } => Some(match state.bitblt(dst, dst_x, dst_y, src, src_x, src_y, width, height) { Ok(()) => STATUS_SUCCESS, Err(ipc::win32_gdi::GdiError::NoSuchObject) => STATUS_INVALID_HANDLE, Err(_) => STATUS_INVALID_PARAMETER }),
         NtGdiCall::PresentSurface { dc, x, y } => Some(present_surface(state, dc, x, y)),
-        NtGdiCall::PresentWindow { hwnd, dc } => Some(present_window(state, hwnd, dc)),
-        NtGdiCall::PresentWindowRegion { hwnd, dc, left, top, right, bottom } => Some(present_window_region(state, hwnd, dc, left, top, right, bottom)),
+        NtGdiCall::PresentWindow { hwnd, dc } => Some(present_window(state, hwnd, dc, present)),
+        NtGdiCall::PresentWindowRegion { hwnd, dc, left, top, right, bottom } => Some(present_window_region(state, hwnd, dc, left, top, right, bottom, present_region)),
     }
 }
 
@@ -117,8 +128,8 @@ fn present_surface(state: &ipc::win32_gdi::GdiManager, dc: u32, x: i32, y: i32) 
     if drv_virtio_gpu::post_init::present_window_pixels(pixels, width as u32, height as u32, x, y) { STATUS_SUCCESS } else { STATUS_INVALID_PARAMETER }
 }
 
-fn present_window(state: &ipc::win32_gdi::GdiManager, hwnd: u32, dc: u32) -> u64 {
-    let Some(record) = super::nt_window::window_present_record_for_current(hwnd) else { return STATUS_INVALID_PARAMETER; };
+fn present_window(state: &ipc::win32_gdi::GdiManager, _hwnd: u32, dc: u32, record: Option<ipc::win32_window::WindowPresentRecord>) -> u64 {
+    let Some(record) = record else { return STATUS_INVALID_PARAMETER; };
     let Some((width, height, pixels)) = state.surface(dc) else { return STATUS_INVALID_HANDLE; };
     if width <= 0 || height <= 0 { return STATUS_INVALID_PARAMETER; }
     let Some(damage) = record.damage else { return STATUS_SUCCESS; };
@@ -128,8 +139,8 @@ fn present_window(state: &ipc::win32_gdi::GdiManager, hwnd: u32, dc: u32) -> u64
         damage.right as u32, damage.bottom as u32) { STATUS_SUCCESS } else { STATUS_INVALID_PARAMETER }
 }
 
-fn present_window_region(state: &ipc::win32_gdi::GdiManager, hwnd: u32, dc: u32, left: i32, top: i32, right: i32, bottom: i32) -> u64 {
-    let Some((rect, visible)) = super::nt_window::window_rect_for_current(hwnd) else { return STATUS_INVALID_HANDLE; };
+fn present_window_region(state: &ipc::win32_gdi::GdiManager, _hwnd: u32, dc: u32, left: i32, top: i32, right: i32, bottom: i32, window: Option<(ipc::win32_window::WindowRect, bool)>) -> u64 {
+    let Some((rect, visible)) = window else { return STATUS_INVALID_HANDLE; };
     if !visible || rect.right <= rect.left || rect.bottom <= rect.top || right <= left || bottom <= top { return STATUS_INVALID_PARAMETER; }
     let Some((width, height, pixels)) = state.surface(dc) else { return STATUS_INVALID_HANDLE; };
     if width <= 0 || height <= 0 || right > width || bottom > height { return STATUS_INVALID_PARAMETER; }
