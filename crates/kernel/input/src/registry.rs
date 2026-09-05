@@ -6,6 +6,7 @@ use sync::{Spinlock, TaskList as DriverLockClass};
 
 use crate::absolute::MtState;
 use crate::packet::InputValue;
+use crate::raw::RawInputEvent;
 use crate::state::OutputBatch;
 use crate::uapi::{
     ABS_CNT, CAP_BITMAP_BYTES, INPUT_EV_STORAGE_BYTES, INPUT_NAME_BYTES, INPUT_PHYS_BYTES,
@@ -110,6 +111,8 @@ pub struct VirtioInputDev {
     pub(crate) pending_values: Vec<InputValue>,
     pub(crate) abs_values: [i32; ABS_CNT],
     pub(crate) mt_state: Option<MtState>,
+    pub(crate) raw_events: alloc::collections::VecDeque<RawInputEvent>,
+    pub(crate) raw_dropped: u64,
 }
 
 impl VirtioInputDev {
@@ -179,6 +182,8 @@ impl VirtioInputDev {
             pending_values: Vec::new(),
             abs_values: [0; ABS_CNT],
             mt_state: None,
+            raw_events: alloc::collections::VecDeque::new(),
+            raw_dropped: 0,
         }
     }
 
@@ -258,6 +263,7 @@ pub fn push_evdev_event(id: u32, ev_type: u16, code: u16, value: i32) -> bool {
         let Some(accepted) = dev.accept_event(ev_type, code, value) else {
             return false;
         };
+        let _ = dev.publish_raw(ev_type, code, accepted.value);
         let native_key = (ev_type == crate::EV_KEY && code < crate::BTN_LEFT)
             .then_some((code, accepted.value));
         let native_rel = (ev_type == crate::EV_REL).then_some((code, accepted.value));
@@ -361,6 +367,7 @@ pub fn disconnect_device(device_key: impl Into<InputDeviceKey>) -> Option<u32> {
         let mut devices = DEVICES.lock();
         let dev = devices.iter_mut().find(|dev| dev.device_key == device_key)?;
         let packet = release_state(dev, false);
+        dev.raw_events.clear();
         (dev.evdev_id, dev.is_pointer, packet)
     };
     if let Some(values) = packet {
@@ -401,6 +408,18 @@ pub fn name_of(evdev_id: u32) -> Option<[u8; INPUT_NAME_BYTES]> {
 /// # C: O(N_devices + cloned device state)
 pub fn device(evdev_id: u32) -> Option<Box<VirtioInputDev>> {
     DEVICES.lock().iter().find(|d| d.evdev_id == evdev_id).cloned()
+}
+
+/// Remove up to `limit` raw events from one still-live canonical input device.
+/// # C: O(limit)
+pub fn take_raw_input(evdev_id: u32, limit: usize) -> Option<Vec<RawInputEvent>> {
+    DEVICES.lock().iter_mut().find(|dev| dev.evdev_id == evdev_id).map(|dev| dev.take_raw(limit))
+}
+
+/// Return the number of raw events discarded after one device queue filled.
+/// # C: O(N_devices)
+pub fn raw_input_dropped(evdev_id: u32) -> Option<u64> {
+    DEVICES.lock().iter().find(|dev| dev.evdev_id == evdev_id).map(|dev| dev.raw_dropped)
 }
 
 /// # C: O(1)

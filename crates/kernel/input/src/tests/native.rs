@@ -67,3 +67,62 @@ fn accepted_relative_motion_reaches_native_sink_after_state_validation() {
     crate::set_native_rel_hook(None);
     assert_eq!(crate::remove_device(key(0x00c0_0001)), Some(evdev_id));
 }
+
+#[test]
+fn raw_queue_preserves_keyboard_and_mouse_classes_from_one_device() {
+    let _serial = TEST_MUTEX.lock().unwrap_or_else(|err| err.into_inner());
+    crate::registry::clear_devices_for_tests();
+    let mut dev = test_dev(key(0x00c0_0002));
+    advertise(&mut dev.ev_bits, crate::EV_KEY);
+    advertise(&mut dev.ev_bits, crate::EV_REL);
+    advertise(&mut dev.key_bits.bits, crate::BTN_LEFT);
+    advertise(&mut dev.rel_bits.bits, crate::REL_X);
+    let (_, evdev_id) = crate::install(dev).expect("install raw input device");
+
+    assert!(crate::push_evdev_event(evdev_id, crate::EV_KEY, TEST_KEY_CODE, 1));
+    assert!(crate::push_evdev_event(evdev_id, crate::EV_KEY, crate::BTN_LEFT, 1));
+    assert!(crate::push_evdev_event(evdev_id, crate::EV_REL, crate::REL_X, -7));
+    let events = crate::take_raw_input(evdev_id, usize::MAX).expect("live device");
+    assert_eq!(events.len(), 3);
+    assert_eq!(events[0].kind, crate::RawInputKind::Keyboard);
+    assert_eq!(events[0].device_id, evdev_id);
+    assert_eq!(events[1].kind, crate::RawInputKind::Mouse);
+    assert_eq!(events[2].kind, crate::RawInputKind::Mouse);
+    assert_eq!(events[2].value, -7);
+    assert!(crate::take_raw_input(evdev_id, 1).is_some_and(|events| events.is_empty()));
+    assert_eq!(crate::remove_device(key(0x00c0_0002)), Some(evdev_id));
+}
+
+#[test]
+fn raw_queue_reports_overflow_and_drops_newest_without_corrupting_owner() {
+    let _serial = TEST_MUTEX.lock().unwrap_or_else(|err| err.into_inner());
+    crate::registry::clear_devices_for_tests();
+    let mut dev = test_dev(key(0x00c0_0003));
+    advertise(&mut dev.ev_bits, crate::EV_REL);
+    advertise(&mut dev.rel_bits.bits, crate::REL_X);
+    let (_, evdev_id) = crate::install(dev).expect("install raw input device");
+    for _ in 0..256 { assert!(crate::push_evdev_event(evdev_id, crate::EV_REL, crate::REL_X, 1)); }
+    assert!(crate::push_evdev_event(evdev_id, crate::EV_REL, crate::REL_X, 2));
+    assert_eq!(crate::raw_input_dropped(evdev_id), Some(1));
+    let events = crate::take_raw_input(evdev_id, usize::MAX).expect("live device");
+    assert_eq!(events.len(), 256);
+    assert!(events.iter().all(|event| event.value == 1));
+    assert_eq!(crate::remove_device(key(0x00c0_0003)), Some(evdev_id));
+}
+
+#[test]
+fn raw_queue_rejects_invalid_devices_and_is_invalidated_on_disconnect() {
+    let _serial = TEST_MUTEX.lock().unwrap_or_else(|err| err.into_inner());
+    crate::registry::clear_devices_for_tests();
+    assert!(crate::take_raw_input(u32::MAX, 1).is_none());
+    assert!(crate::raw_input_dropped(u32::MAX).is_none());
+    let mut dev = test_dev(key(0x00c0_0004));
+    advertise(&mut dev.ev_bits, crate::EV_REL);
+    advertise(&mut dev.rel_bits.bits, crate::REL_X);
+    let (_, evdev_id) = crate::install(dev).expect("install raw input device");
+    assert!(crate::push_evdev_event(evdev_id, crate::EV_REL, crate::REL_X, 4));
+    assert_eq!(crate::disconnect_device(key(0x00c0_0004)), Some(evdev_id));
+    assert!(crate::take_raw_input(evdev_id, 1).is_some_and(|events| events.is_empty()));
+    assert_eq!(crate::remove_device(key(0x00c0_0004)), Some(evdev_id));
+    assert!(crate::take_raw_input(evdev_id, 1).is_none());
+}
