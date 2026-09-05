@@ -30,7 +30,7 @@ pub enum HostInput {
 pub struct InputRoute { pub hit: Option<u64>, pub focus: Option<u64>, pub capture: Option<u64> }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum InputError { NoMouseTarget }
+pub enum InputError { NoMouseTarget, NoFocusTarget }
 
 /// Stateful translation boundary for host pointer events. Capture is selected
 /// by the native window owner; this type only applies that selection and keeps
@@ -43,7 +43,10 @@ impl InputTranslator {
 
     /// Translate one host event to the exact message payload user32 consumes. # C: O(1)
     pub fn translate(&mut self, event: HostInput, route: InputRoute) -> Result<NtWindowMessage, InputError> {
-        let hwnd = route.capture.or(route.hit).ok_or(InputError::NoMouseTarget)?;
+        let hwnd = match event {
+            HostInput::Wheel { .. } => route.focus.ok_or(InputError::NoFocusTarget)?,
+            _ => route.capture.or(route.hit).ok_or(InputError::NoMouseTarget)?,
+        };
         let (message, wparam) = match event {
             HostInput::Move { x, y } => { self.x = x; self.y = y; (WM_MOUSEMOVE, self.buttons as u32) }
             HostInput::Button { button, pressed } => {
@@ -118,6 +121,21 @@ mod tests {
         assert_eq!(message.message, WM_MOUSEWHEEL);
         assert_eq!(message.wparam as u16, MK_MBUTTON);
         assert_eq!((message.wparam >> 16) as u16, (-120i16) as u16);
+    }
+
+    #[test]
+    fn wheel_routes_to_keyboard_focus_instead_of_hit_or_capture() {
+        let mut input = InputTranslator::new();
+        let route = InputRoute { hit: Some(7), focus: Some(9), capture: Some(11) };
+        let message = input.translate(HostInput::Wheel { delta: 120 }, route).unwrap();
+        assert_eq!(message.hwnd, 9);
+    }
+
+    #[test]
+    fn wheel_requires_keyboard_focus() {
+        let mut input = InputTranslator::new();
+        let route = InputRoute { hit: Some(7), focus: None, capture: Some(11) };
+        assert_eq!(input.translate(HostInput::Wheel { delta: 120 }, route), Err(InputError::NoFocusTarget));
     }
 
     #[test]
