@@ -74,7 +74,82 @@ pub struct NativeGamepadReport {
 pub enum XInputAxis { LeftTrigger, RightTrigger, ThumbLx, ThumbLy, ThumbRx, ThumbRy }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum XInputNormalizationError { InvalidButtons, InvalidAxis(XInputAxis) }
+pub enum XInputNormalizationError { InvalidButtons, InvalidAxis(XInputAxis), MissingAxis(XInputAxis) }
+
+const EVDEV_KEY_WORDS: usize = 12;
+const EVDEV_ABS_AXES: usize = 64;
+const BTN_SOUTH: u16 = 0x130;
+const BTN_EAST: u16 = 0x131;
+const BTN_NORTH: u16 = 0x133;
+const BTN_WEST: u16 = 0x134;
+const BTN_TL: u16 = 0x136;
+const BTN_TR: u16 = 0x137;
+const BTN_SELECT: u16 = 0x13a;
+const BTN_START: u16 = 0x13b;
+const BTN_THUMBL: u16 = 0x13d;
+const BTN_THUMBR: u16 = 0x13e;
+const BTN_DPAD_UP: u16 = 0x220;
+const BTN_DPAD_DOWN: u16 = 0x221;
+const BTN_DPAD_LEFT: u16 = 0x222;
+const BTN_DPAD_RIGHT: u16 = 0x223;
+const ABS_X: u16 = 0x00;
+const ABS_Y: u16 = 0x01;
+const ABS_Z: u16 = 0x02;
+const ABS_RX: u16 = 0x03;
+const ABS_RY: u16 = 0x04;
+const ABS_RZ: u16 = 0x05;
+
+/// Snapshot of one canonical Linux gamepad state: key bitmap plus ABS values.
+/// Unknown keys and axes remain available to other consumers and are ignored.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EvdevGamepadState {
+    pub key_bits: [u64; EVDEV_KEY_WORDS],
+    pub abs: [Option<NativeAxis>; EVDEV_ABS_AXES],
+}
+
+impl EvdevGamepadState {
+    /// Read one button from the canonical EV_KEY bitmap.
+    /// # C: O(1)
+    pub const fn key_down(&self, code: u16) -> bool {
+        let word = code as usize / 64;
+        let bit = code as usize % 64;
+        word < EVDEV_KEY_WORDS && self.key_bits[word] & (1u64 << bit) != 0
+    }
+
+    /// Read one canonical EV_ABS sample, including its advertised range.
+    /// # C: O(1)
+    pub const fn axis(&self, code: u16) -> Option<NativeAxis> {
+        if code as usize >= EVDEV_ABS_AXES { None } else { self.abs[code as usize] }
+    }
+}
+
+/// Translate Linux's standard gamepad codes into the XInput report shape.
+/// Linux ABS_Y/ABS_RY grow down; XInput thumb Y grows up, so those ranges are
+/// mirrored before the shared normalization and validation path consumes them.
+/// # C: O(1)
+pub fn evdev_report(input: &EvdevGamepadState) -> Result<NativeGamepadReport, XInputNormalizationError> {
+    let button = |code, mask| if input.key_down(code) { mask } else { 0 };
+    let axis = |code, kind| input.axis(code).ok_or(XInputNormalizationError::MissingAxis(kind));
+    Ok(NativeGamepadReport {
+        buttons: button(BTN_DPAD_UP, GAMEPAD_DPAD_UP) | button(BTN_DPAD_DOWN, GAMEPAD_DPAD_DOWN)
+            | button(BTN_DPAD_LEFT, GAMEPAD_DPAD_LEFT) | button(BTN_DPAD_RIGHT, GAMEPAD_DPAD_RIGHT)
+            | button(BTN_START, GAMEPAD_START) | button(BTN_SELECT, GAMEPAD_BACK)
+            | button(BTN_THUMBL, GAMEPAD_LEFT_THUMB) | button(BTN_THUMBR, GAMEPAD_RIGHT_THUMB)
+            | button(BTN_TL, GAMEPAD_LEFT_SHOULDER) | button(BTN_TR, GAMEPAD_RIGHT_SHOULDER)
+            | button(BTN_SOUTH, GAMEPAD_A) | button(BTN_EAST, GAMEPAD_B)
+            | button(BTN_NORTH, GAMEPAD_X) | button(BTN_WEST, GAMEPAD_Y),
+        left_trigger: axis(ABS_Z, XInputAxis::LeftTrigger)?,
+        right_trigger: axis(ABS_RZ, XInputAxis::RightTrigger)?,
+        thumb_lx: axis(ABS_X, XInputAxis::ThumbLx)?,
+        thumb_ly: mirror_axis(axis(ABS_Y, XInputAxis::ThumbLy)?),
+        thumb_rx: axis(ABS_RX, XInputAxis::ThumbRx)?,
+        thumb_ry: mirror_axis(axis(ABS_RY, XInputAxis::ThumbRy)?),
+    })
+}
+
+fn mirror_axis(axis: NativeAxis) -> NativeAxis {
+    NativeAxis { value: (axis.min as i64 + axis.max as i64 - axis.value as i64) as i32, ..axis }
+}
 
 /// Own the cached XInput state for one native controller.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -230,5 +305,39 @@ mod tests {
         assert_eq!(tracker.state(), XInputState::default());
         tracker.update(Some(report())).unwrap();
         assert_eq!(tracker.state().packet_number, 1);
+    }
+
+    fn evdev_state() -> EvdevGamepadState {
+        let mut state = EvdevGamepadState { key_bits: [0; EVDEV_KEY_WORDS], abs: [None; EVDEV_ABS_AXES] };
+        for code in [BTN_DPAD_UP, BTN_DPAD_DOWN, BTN_DPAD_LEFT, BTN_DPAD_RIGHT, BTN_START, BTN_SELECT,
+                     BTN_THUMBL, BTN_THUMBR, BTN_TL, BTN_TR, BTN_SOUTH, BTN_EAST, BTN_NORTH, BTN_WEST] {
+            state.key_bits[code as usize / 64] |= 1u64 << (code as usize % 64);
+        }
+        for (code, value) in [(ABS_Z, 25), (ABS_RZ, 75), (ABS_X, -50), (ABS_Y, -25),
+                              (ABS_RX, 50), (ABS_RY, 25)] {
+            state.abs[code as usize] = Some(axis(value));
+        }
+        state
+    }
+
+    #[test]
+    fn canonical_evdev_gamepad_maps_buttons_axes_and_linux_y_direction() {
+        let report = evdev_report(&evdev_state()).unwrap();
+        assert_eq!(report.buttons, GAMEPAD_DPAD_UP | GAMEPAD_DPAD_DOWN | GAMEPAD_DPAD_LEFT
+            | GAMEPAD_DPAD_RIGHT | GAMEPAD_START | GAMEPAD_BACK | GAMEPAD_LEFT_THUMB
+            | GAMEPAD_RIGHT_THUMB | GAMEPAD_LEFT_SHOULDER | GAMEPAD_RIGHT_SHOULDER
+            | GAMEPAD_A | GAMEPAD_B | GAMEPAD_X | GAMEPAD_Y);
+        assert_eq!(report.left_trigger.value, 25);
+        assert_eq!(report.thumb_ly.value, 25);
+        assert_eq!(report.thumb_ry.value, -25);
+    }
+
+    #[test]
+    fn canonical_evdev_gamepad_ignores_unknown_keys_but_rejects_missing_axes() {
+        let mut state = evdev_state();
+        state.key_bits[0] = u64::MAX;
+        assert!(evdev_report(&state).is_ok());
+        state.abs[ABS_RZ as usize] = None;
+        assert_eq!(evdev_report(&state), Err(XInputNormalizationError::MissingAxis(XInputAxis::RightTrigger)));
     }
 }
