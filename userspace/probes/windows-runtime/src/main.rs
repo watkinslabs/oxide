@@ -13,27 +13,28 @@ fn main() -> ExitCode {
     if args.next().as_deref().is_some_and(|arg| arg == std::ffi::OsStr::new("--preflight")) {
         return preflight(&mut args);
     }
-    let Some(image) = args.next() else { usage(); return ExitCode::from(2); };
-    let Some(windows_path) = args.next() else { usage(); return ExitCode::from(2); };
-    let Some(dll_dir) = args.next() else { usage(); return ExitCode::from(2); };
-    if args.next().is_some() { usage(); return ExitCode::from(2); }
-
-    let image = PathBuf::from(image);
-    let dll_dir = PathBuf::from(dll_dir);
-    let windows_path = windows_path.as_os_str().as_bytes();
-    let profile = match windows_runtime::RuntimeProfile::from_environment(&dll_dir) {
-        Ok(profile) => profile,
-        Err(error) => { eprintln!("cannot resolve Windows runtime profile: {error:?}"); return ExitCode::from(1); }
+    let values = args.collect::<Vec<_>>();
+    if values.len() != 14 || values[3] != "x86_64" { usage(); return ExitCode::from(2); }
+    let image = PathBuf::from(&values[0]);
+    let windows_path = values[1].as_os_str().as_bytes();
+    let command_line = values[2].as_os_str().as_bytes();
+    let config = windows_runtime::ProtonLaunchConfig {
+        architecture: windows_runtime::WindowsArchitecture::X86_64,
+        prefix: PathBuf::from(&values[4]), runtime: PathBuf::from(&values[5]),
+        dll_catalog: PathBuf::from(&values[6]), unixlib: PathBuf::from(&values[7]),
+        nls: PathBuf::from(&values[8]), registry_socket: PathBuf::from(&values[9]),
+        registry_database: PathBuf::from(&values[10]), dxvk: PathBuf::from(&values[11]),
+        vkd3d: PathBuf::from(&values[12]), faudio: PathBuf::from(&values[13]),
     };
-    let unixlib_dir = env::var_os("OXIDE_WINE_UNIXLIB_DIR").map(PathBuf::from).unwrap_or_else(|| dll_dir.parent().unwrap_or(&dll_dir).join("x86_64-unix"));
-    let nls_path = env::var_os("OXIDE_WINE_NLS_PATH").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/usr/share/wine/nls/locale.nls"));
-    let Some(registry_socket) = env::var_os("OXIDE_REGISTRY_SOCKET").map(PathBuf::from) else { eprintln!("windows-runtime: registry preflight requires OXIDE_REGISTRY_SOCKET"); return ExitCode::from(1); };
-    let Some(registry_database) = env::var_os("OXIDE_REGISTRY_DATABASE").map(PathBuf::from) else { eprintln!("windows-runtime: registry preflight requires OXIDE_REGISTRY_DATABASE"); return ExitCode::from(1); };
-    match RuntimeRequest::preflight(&image, windows_path, &dll_dir, &unixlib_dir, &nls_path, &registry_socket, &registry_database) {
+    match config.validate() {
+        Ok(()) => {},
+        Err(error) => { eprintln!("windows-runtime: launch configuration rejected: {error:?}"); return ExitCode::from(1); }
+    }
+    match RuntimeRequest::preflight(&image, windows_path, &config.dll_catalog, &config.unixlib, &config.nls, &config.registry_socket, &config.registry_database) {
         Ok(report) => eprintln!("windows-runtime: boot-artifact preflight passed image_bytes={} modules={} execution=not_attempted", report.image_bytes, report.module_count),
         Err(error) => { eprintln!("windows-runtime: boot-artifact preflight failed: {error}"); return ExitCode::from(1); }
     }
-    let request = match RuntimeRequest::from_paths_with_environment(&image, windows_path, windows_path, &dll_dir, profile.environment().into_iter().chain(env::vars())) {
+    let request = match RuntimeRequest::from_launch_config(&image, windows_path, command_line, &config) {
         Ok(request) => request,
         Err(error) => { eprintln!("cannot build Windows handoff: {error:?}"); return ExitCode::from(1); }
     };
@@ -55,5 +56,5 @@ fn preflight(args: &mut impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
 }
 
 fn usage() {
-    eprintln!("usage: windows-runtime --preflight <image> <dll-directory> <unixlib-directory> <nls-file> <registry-socket> <registry-database> | <linux-image-path> <windows-image-path> <dll-directory>");
+    eprintln!("usage: windows-runtime --preflight <image> <dll-directory> <unixlib-directory> <nls-file> <registry-socket> <registry-database> | --launch <image> <windows-path> <command-line> x86_64 <prefix> <runtime> <dll-catalog> <unixlib> <nls-file> <registry-socket> <registry-database> <dxvk> <vkd3d> <faudio>");
 }

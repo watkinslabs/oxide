@@ -5,6 +5,8 @@ use std::fs;
 use std::io;
 use std::collections::{HashMap, HashSet};
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::FileTypeExt;
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
 use pe::catalog::ModuleCatalog;
@@ -30,6 +32,8 @@ pub enum BuildError {
     InvalidAddress,
     InvalidEnvironment,
     AmbiguousModule { name: Vec<u8>, first: PathBuf, second: PathBuf },
+    UnsupportedArchitecture,
+    InvalidLaunchConfiguration { field: &'static str },
 }
 
 impl From<io::Error> for BuildError {
@@ -37,6 +41,73 @@ impl From<io::Error> for BuildError {
 }
 
 struct ModuleBuffer { name: Box<[u8]>, image: Box<[u8]> }
+
+/// Windows architecture admitted by the native NT personality.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WindowsArchitecture { X86_64 }
+
+/// Immutable per-game Proton/Wine launch admission record.
+///
+/// The DLL catalog is a staged directory owned by the launch record; the
+/// request builder derives the kernel catalog from that directory and never
+/// consults an unrelated host search path.  Registry paths identify the one
+/// endpoint and database shared by this prefix.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProtonLaunchConfig {
+    pub architecture: WindowsArchitecture,
+    pub prefix: PathBuf,
+    pub runtime: PathBuf,
+    pub dll_catalog: PathBuf,
+    pub unixlib: PathBuf,
+    pub nls: PathBuf,
+    pub registry_socket: PathBuf,
+    pub registry_database: PathBuf,
+    pub dxvk: PathBuf,
+    pub vkd3d: PathBuf,
+    pub faudio: PathBuf,
+}
+
+impl ProtonLaunchConfig {
+    /// Validate the complete launch boundary before reading the PE catalog.
+    /// # C: O(path bytes + filesystem metadata)
+    pub fn validate(&self) -> Result<(), BuildError> {
+        if !cfg!(target_arch = "x86_64") || self.architecture != WindowsArchitecture::X86_64 {
+            return Err(BuildError::UnsupportedArchitecture);
+        }
+        let paths = [
+            ("prefix", &self.prefix), ("runtime", &self.runtime),
+            ("dll_catalog", &self.dll_catalog), ("unixlib", &self.unixlib),
+            ("nls", &self.nls), ("registry_socket", &self.registry_socket),
+            ("registry_database", &self.registry_database), ("dxvk", &self.dxvk),
+            ("vkd3d", &self.vkd3d), ("faudio", &self.faudio),
+        ];
+        for (field, path) in paths {
+            let bytes = path.as_os_str().as_bytes();
+            if bytes.is_empty() || bytes.contains(&0) || !path.is_absolute() {
+                return Err(BuildError::InvalidLaunchConfiguration { field });
+            }
+        }
+        for (field, path) in [("prefix", &self.prefix), ("runtime", &self.runtime), ("dll_catalog", &self.dll_catalog), ("unixlib", &self.unixlib)] {
+            if !path.is_dir() { return Err(BuildError::InvalidLaunchConfiguration { field }); }
+        }
+        if !self.nls.is_file() || !self.registry_database.is_file() {
+            return Err(BuildError::InvalidLaunchConfiguration { field: "launch resources" });
+        }
+        if !fs::metadata(&self.registry_socket).map(|metadata| metadata.file_type().is_socket()).unwrap_or(false) || UnixStream::connect(&self.registry_socket).is_err() {
+            return Err(BuildError::InvalidLaunchConfiguration { field: "registry_socket" });
+        }
+        Ok(())
+    }
+
+    /// Build the Wine-derived environment owned by this game launch.
+    /// # C: O(path bytes)
+    fn profile(&self) -> RuntimeProfile {
+        RuntimeProfile {
+            prefix: self.prefix.clone(), wine_runtime: self.runtime.clone(),
+            dxvk: self.dxvk.clone(), vkd3d: self.vkd3d.clone(), faudio: self.faudio.clone(),
+        }
+    }
+}
 
 /// Deterministic component selection for one Steam/Proton prefix.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -106,6 +177,13 @@ pub struct RuntimeRequest {
 }
 
 impl RuntimeRequest {
+    /// Admit one explicit Proton launch and produce the existing NT handoff.
+    /// # C: O(PE + DLL catalog bytes)
+    pub fn from_launch_config(image_path: &Path, windows_path: &[u8], command_line: &[u8], config: &ProtonLaunchConfig) -> Result<Self, BuildError> {
+        config.validate()?;
+        Self::from_paths_with_environment(image_path, windows_path, command_line, &config.dll_catalog, config.profile().environment())
+    }
+
     /// Read a PE32+ root and every non-native DLL in `dll_dir` using the Linux personality.
     /// # C: O(root + DLL directory bytes)
     pub fn from_paths(image_path: &Path, windows_path: &[u8], dll_dir: &Path) -> Result<Self, BuildError> {
@@ -409,6 +487,36 @@ mod tests {
     fn profile_rejects_nul_in_a_component_path() {
         let result = RuntimeProfile::from_environment(Path::new("/runtime\0dlls"));
         assert!(matches!(result, Err(BuildError::InvalidEnvironment)));
+    }
+
+    #[test]
+    fn launch_config_rejects_relative_paths_before_image_or_catalog_reads() {
+        let config = ProtonLaunchConfig {
+            architecture: WindowsArchitecture::X86_64,
+            prefix: PathBuf::from("prefix"), runtime: PathBuf::from("runtime"),
+            dll_catalog: PathBuf::from("dlls"), unixlib: PathBuf::from("unix"),
+            nls: PathBuf::from("locale.nls"), registry_socket: PathBuf::from("registry.sock"),
+            registry_database: PathBuf::from("registry.db"), dxvk: PathBuf::from("dxvk"),
+            vkd3d: PathBuf::from("vkd3d"), faudio: PathBuf::from("faudio"),
+        };
+        assert!(matches!(RuntimeRequest::from_launch_config(Path::new("does-not-exist.exe"), b"C:\\game.exe", b"C:\\game.exe", &config), Err(BuildError::InvalidLaunchConfiguration { field: "prefix" })));
+    }
+
+    #[test]
+    fn launch_config_rejects_missing_catalog_before_image_read() {
+        let base = std::env::temp_dir().join(format!("oxide-proton-config-{}", std::process::id()));
+        fs::create_dir_all(base.join("prefix")).unwrap(); fs::create_dir_all(base.join("runtime")).unwrap(); fs::create_dir_all(base.join("unix")).unwrap();
+        fs::write(base.join("locale.nls"), [1]).unwrap(); fs::write(base.join("registry.db"), [1]).unwrap();
+        let config = ProtonLaunchConfig {
+            architecture: WindowsArchitecture::X86_64,
+            prefix: base.join("prefix"), runtime: base.join("runtime"),
+            dll_catalog: base.join("missing-dlls"), unixlib: base.join("unix"),
+            nls: base.join("locale.nls"), registry_socket: base.join("missing.sock"),
+            registry_database: base.join("registry.db"), dxvk: base.join("dxvk"),
+            vkd3d: base.join("vkd3d"), faudio: base.join("faudio"),
+        };
+        assert!(matches!(config.validate(), Err(BuildError::InvalidLaunchConfiguration { field: "dll_catalog" })));
+        fs::remove_dir_all(base).unwrap();
     }
 
     fn wine_root() -> Option<&'static Path> {
