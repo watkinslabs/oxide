@@ -313,6 +313,20 @@ impl<'a> Image<'a> {
         match self.export_target(import)? { Some(ExportTarget::Rva(rva)) => Ok(Some(rva)), Some(ExportTarget::Forwarder(_)) => Err(Error::Unsupported), None => Ok(None) }
     }
 
+    /// Resolve one non-forwarded export only when its RVA belongs to an
+    /// executable PE section. Import and dynamic-procedure callers share this
+    /// admission rule so data exports never become callable user addresses.
+    /// # C: O(N_sections + N_export_names)
+    pub fn executable_export_rva(&self, import: &ImportThunk<'_>) -> Result<Option<u32>, Error> {
+        let Some(ExportTarget::Rva(rva)) = self.export_target(import)? else { return Ok(None); };
+        let executable = self.sections.iter().any(|section| {
+            let end = section.virtual_address.checked_add(section.virtual_size.max(section.raw_size));
+            section.characteristics.contains(SectionFlags::MEM_EXECUTE)
+                && rva >= section.virtual_address && end.is_some_and(|end| rva < end)
+        });
+        if executable { Ok(Some(rva)) } else { Err(Error::Unsupported) }
+    }
+
     /// Return the original export-table RVAs in ordinal-index order.
     /// # C: O(N_export_functions)
     pub fn export_rvas(&self) -> Result<Option<alloc::vec::Vec<u32>>, Error> {
