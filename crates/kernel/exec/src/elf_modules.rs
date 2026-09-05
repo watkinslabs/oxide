@@ -24,9 +24,20 @@ pub struct ElfRuntimeSymbol {
     pub address: u64,
 }
 
+/// Address-space-owned bounds for one Wine Unixlib function table.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct ElfUnixlibDescriptor {
+    pub table_address: u64,
+    pub entry_count: u64,
+    pub module_base: u64,
+    pub module_end: u64,
+}
+
 static MODULES: Spinlock<BTreeMap<u64, Vec<ElfRuntimeModule>>, Modules> =
     Spinlock::new(BTreeMap::new());
 static SYMBOLS: Spinlock<BTreeMap<u64, Vec<ElfRuntimeSymbol>>, Modules> =
+    Spinlock::new(BTreeMap::new());
+static UNIXLIBS: Spinlock<BTreeMap<u64, ElfUnixlibDescriptor>, Modules> =
     Spinlock::new(BTreeMap::new());
 
 pub fn register(as_: &AddressSpace, modules: &[ElfRuntimeModule]) {
@@ -66,13 +77,29 @@ pub fn append_symbols(as_: &AddressSpace, symbols: &[ElfRuntimeSymbol]) {
     }
 }
 
+/// Publish the one canonical Unixlib descriptor for an address space.
+/// # C: O(log N) for the address-space registry
+pub fn register_unixlib_descriptor(as_: &AddressSpace, descriptor: ElfUnixlibDescriptor) {
+    UNIXLIBS.lock().insert(as_.root_pa(), descriptor);
+}
+
+/// Read the Unixlib descriptor owned by an address space.
+/// # C: O(log N)
+pub fn unixlib_descriptor(root: u64) -> Option<ElfUnixlibDescriptor> {
+    UNIXLIBS.lock().get(&root).copied()
+}
+
 /// Resolve one exact ELF symbol name in the current process scope.
 /// # C: O(N_symbols)
 pub fn resolve_symbol(root: u64, name: &[u8]) -> Option<u64> {
     SYMBOLS.lock().get(&root)?.iter().find(|symbol| symbol.name == name).map(|symbol| symbol.address)
 }
 
-pub fn clear(root: u64) { MODULES.lock().remove(&root); SYMBOLS.lock().remove(&root); }
+pub fn clear(root: u64) {
+    MODULES.lock().remove(&root);
+    SYMBOLS.lock().remove(&root);
+    UNIXLIBS.lock().remove(&root);
+}
 
 #[cfg(test)]
 mod tests {
@@ -102,5 +129,17 @@ mod tests {
         assert_eq!(resolve_symbol(as_.root_pa(), b"Wine_symbol"), Some(0x4200));
         assert_eq!(resolve_symbol(as_.root_pa(), b"WINE_SYMBOL"), None);
         clear(as_.root_pa());
+    }
+
+    #[test]
+    fn unixlib_descriptor_is_scoped_to_one_address_space() {
+        let as_ = AddressSpace::new(0x7_2000).unwrap();
+        let descriptor = ElfUnixlibDescriptor { table_address: 0x4200, entry_count: 3,
+            module_base: 0x4000, module_end: 0x5000 };
+        register_unixlib_descriptor(&as_, descriptor);
+        assert_eq!(unixlib_descriptor(as_.root_pa()), Some(descriptor));
+        assert_eq!(unixlib_descriptor(as_.root_pa() + 1), None);
+        clear(as_.root_pa());
+        assert_eq!(unixlib_descriptor(as_.root_pa()), None);
     }
 }

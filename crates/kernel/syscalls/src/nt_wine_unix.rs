@@ -9,6 +9,7 @@ use crate::nt_time_common::NT_EPOCH_100NS;
 
 const STATUS_SUCCESS: u64 = 0;
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
+const STATUS_ACCESS_VIOLATION: u64 = 0xc000_0005;
 const STATUS_NOT_IMPLEMENTED: u64 = 0xc000_0002;
 #[cfg(test)]
 const STATUS_UNSUCCESSFUL: u64 = 0xc000_0001;
@@ -90,6 +91,32 @@ const WINE_OBJ_INHERIT: u32 = 0x0000_0002;
 const NT_HANDLE_INHERIT: u32 = 0x0000_0001;
 
 fn wine_arg(base: u64, offset: u64) -> Option<u64> { base.checked_add(offset) }
+
+/// Validate and locate one entry in the address-space-owned Wine Unixlib table.
+/// No table memory is read here; the returned address is only a validated slot.
+/// # C: O(log N)
+fn lookup_unixlib_entry(root: u64, table_address: u64, entry: u64) -> Result<u64, u64> {
+    let Some(descriptor) = elf_load::elf_modules::unixlib_descriptor(root) else {
+        return Err(STATUS_INVALID_PARAMETER);
+    };
+    if descriptor.entry_count == 0 || descriptor.module_base >= descriptor.module_end {
+        return Err(STATUS_INVALID_PARAMETER);
+    }
+    let table_bytes = descriptor.entry_count.checked_mul(core::mem::size_of::<u64>() as u64)
+        .ok_or(STATUS_INVALID_PARAMETER)?;
+    let table_end = descriptor.table_address.checked_add(table_bytes)
+        .ok_or(STATUS_ACCESS_VIOLATION)?;
+    if descriptor.table_address < descriptor.module_base || table_end > descriptor.module_end {
+        return Err(STATUS_ACCESS_VIOLATION);
+    }
+    if table_address != descriptor.table_address || entry >= descriptor.entry_count {
+        return Err(STATUS_ACCESS_VIOLATION);
+    }
+    let offset = entry.checked_mul(core::mem::size_of::<u64>() as u64)
+        .ok_or(STATUS_ACCESS_VIOLATION)?;
+    descriptor.table_address.checked_add(offset)
+        .ok_or(STATUS_ACCESS_VIOLATION)
+}
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 enum ServerRequest { CloseHandle, CreateEvent, EventOp, QueryEvent, Select, CreateMutex, ReleaseMutex, QueryMutex, CreateSemaphore, ReleaseSemaphore, QuerySemaphore, CreateMapping, OpenMapping, GetMappingInfo, GetImageMapAddress, MapView, MapImageView, GetImageViewInfo, UnmapView }
@@ -660,9 +687,15 @@ fn validate_builtin_unwind(args: u64) -> u64 {
 
 /// Wine's `unixlib_handle_t` is a table identity. Only the native table may
 /// consume it; arbitrary user pointers are rejected before dispatch.
-pub(crate) fn dispatch(call: NtCall) -> u64 {
+fn dispatch_for_address_space(root: u64, call: NtCall) -> u64 {
     if call.service != NtService::WineUnixCall || call.args.a0 != syscall::nt::WINE_UNIXLIB_HANDLE {
         return STATUS_INVALID_PARAMETER;
+    }
+    let Some(descriptor) = elf_load::elf_modules::unixlib_descriptor(root) else {
+        return STATUS_INVALID_PARAMETER;
+    };
+    if let Err(status) = lookup_unixlib_entry(root, descriptor.table_address, call.args.a1) {
+        return status;
     }
     match WineUnixFunction::decode(call.args.a1) {
         Some(WineUnixFunction::LoadSoDll) => load_so_dll(call.args.a2),
@@ -688,9 +721,85 @@ pub(crate) fn dispatch(call: NtCall) -> u64 {
     }
 }
 
+/// Enter the native Wine Unix-call boundary for the current address space.
+/// # C: O(log N)
+pub(crate) fn dispatch(call: NtCall) -> u64 {
+    #[cfg(target_os = "oxide-kernel")]
+    {
+        let Some(current) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+        let Some(mm) = current.clone_mm() else { return STATUS_INVALID_PARAMETER; };
+        return dispatch_for_address_space(mm.root_pa(), call);
+    }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    { dispatch_for_address_space(0, call) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn descriptor(root: u64, table_address: u64, entry_count: u64, module_base: u64, module_end: u64) {
+        let as_ = vmm::AddressSpace::new(root).unwrap();
+        elf_load::elf_modules::register_unixlib_descriptor(&as_, elf_load::elf_modules::ElfUnixlibDescriptor {
+            table_address, entry_count, module_base, module_end,
+        });
+    }
+
+    #[test]
+    fn unixlib_lookup_returns_bounded_slot_without_reading_memory() {
+        let root = 0x7_3000;
+        descriptor(root, 0x4200, 3, 0x4000, 0x5000);
+        assert_eq!(lookup_unixlib_entry(root, 0x4200, 2), Ok(0x4210));
+        elf_load::elf_modules::clear(root);
+    }
+
+    #[test]
+    fn unixlib_lookup_rejects_missing_and_out_of_range_descriptors() {
+        let root = 0x7_3100;
+        assert_eq!(lookup_unixlib_entry(root, 0x4200, 0), Err(STATUS_INVALID_PARAMETER));
+        descriptor(root, 0x3ff8, 2, 0x4000, 0x5000);
+        assert_eq!(lookup_unixlib_entry(root, 0x3ff8, 0), Err(STATUS_ACCESS_VIOLATION));
+        elf_load::elf_modules::clear(root);
+    }
+
+    #[test]
+    fn unixlib_lookup_rejects_descriptor_arithmetic_overflow() {
+        let root = 0x7_3200;
+        descriptor(root, 0x4000, u64::MAX, 0x4000, u64::MAX);
+        assert_eq!(lookup_unixlib_entry(root, 0x4000, 0), Err(STATUS_INVALID_PARAMETER));
+        elf_load::elf_modules::clear(root);
+    }
+
+    #[test]
+    fn unixlib_lookup_rejects_table_address_overflow_as_access_violation() {
+        let root = 0x7_3300;
+        descriptor(root, u64::MAX - 7, 2, u64::MAX - 7, u64::MAX);
+        assert_eq!(lookup_unixlib_entry(root, u64::MAX - 7, 0), Err(STATUS_ACCESS_VIOLATION));
+        elf_load::elf_modules::clear(root);
+    }
+
+    #[test]
+    fn unixlib_lookup_rejects_zero_count_and_past_end_entry() {
+        let root = 0x7_3400;
+        descriptor(root, 0x4200, 0, 0x4000, 0x5000);
+        assert_eq!(lookup_unixlib_entry(root, 0x4200, 0), Err(STATUS_INVALID_PARAMETER));
+        descriptor(root, 0x4ff0, 2, 0x4000, 0x5000);
+        assert_eq!(lookup_unixlib_entry(root, 0x4ff0, 2), Err(STATUS_ACCESS_VIOLATION));
+        elf_load::elf_modules::clear(root);
+    }
+
+    #[test]
+    fn wine_dispatch_validates_the_canonical_table_before_matching_a_slot() {
+        let root = 0x7_3500;
+        descriptor(root, 0x4200, 8, 0x4000, 0x5000);
+        let call = NtCall { service: NtService::WineUnixCall,
+            args: syscall::SyscallArgs { a0: syscall::nt::WINE_UNIXLIB_HANDLE,
+                a1: WineUnixFunction::WineSpawnVp as u64, a2: 0, a3: 0, a4: 0, a5: 0 } };
+        assert_eq!(dispatch_for_address_space(root, call), STATUS_NOT_IMPLEMENTED);
+        let bad = NtCall { args: syscall::SyscallArgs { a1: 8, ..call.args }, ..call };
+        assert_eq!(dispatch_for_address_space(root, bad), STATUS_ACCESS_VIOLATION);
+        elf_load::elf_modules::clear(root);
+    }
 
     #[test]
     fn rejects_non_native_unix_table_handles() {
