@@ -883,6 +883,12 @@ Run a Direct3D 11 game through DXVK.
 D3D11 -> DXVK -> Vulkan -> GPU
 ```
 
+Admission requires one immutable, x86-64 DXVK record below the owned Proton
+runtime. The record canonicalizes absolute paths, requires `d3d11.dll` and
+`dxgi.dll` as regular files with valid PE32+ identity, and requires a strict
+`major.minor.patch` version manifest. Missing, malformed, duplicated, or
+runtime-external components fail closed before the PE launch catalog is read.
+
 ## W8 ... vkd3d-proton
 
 Run a Direct3D 12 title.
