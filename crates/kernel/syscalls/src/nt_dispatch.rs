@@ -1300,6 +1300,7 @@ pub fn dispatch(call: NtCall) -> u64 {
                 const SECTION_BASIC_INFORMATION_BYTES: u32 = 24;
                 if class != 0 { return STATUS_INVALID_INFO_CLASS; }
                 if length < SECTION_BASIC_INFORMATION_BYTES { return STATUS_INFO_LENGTH_MISMATCH; }
+                if info.as_u64() == 0 { return STATUS_ACCESS_VIOLATION; }
                 let native = sched::nt_object::NtHandle::from_raw(section);
                 let Some(object) = table.get(native, SECTION_QUERY) else {
                     return if table.contains(native) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE };
