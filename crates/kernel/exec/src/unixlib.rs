@@ -15,6 +15,9 @@ use vmm::{AddressSpace, MmapPlacement, VmaBacking, VmaFlags, VmaProt};
 
 use crate::{ARCH_MACHINE, LoadError, PAGE};
 
+mod context;
+pub use context::{build_load_context, UnixlibLoadContext, UnixlibSourceObject};
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct MappedUnixlib {
     pub base: u64,
@@ -322,6 +325,29 @@ mod tests {
     }
 
     #[test]
+    fn source_context_is_dependency_first_and_root_last() {
+        let context = UnixlibLoadContext { root_name: b"root.so".to_vec(), objects: vec![
+            UnixlibSourceObject { name: b"dep.so".to_vec(), path: b"/wine/dep.so".to_vec(), file: vec![1] },
+            UnixlibSourceObject { name: b"root.so".to_vec(), path: b"/wine/root.so".to_vec(), file: vec![2] },
+        ] };
+        assert_eq!(context.validate(), Ok(()));
+    }
+
+    #[test]
+    fn source_context_rejects_duplicate_names_and_noncanonical_sources() {
+        let duplicate = UnixlibLoadContext { root_name: b"root.so".to_vec(), objects: vec![
+            UnixlibSourceObject { name: b"dep.so".to_vec(), path: b"/wine/dep.so".to_vec(), file: vec![1] },
+            UnixlibSourceObject { name: b"root.so".to_vec(), path: b"/wine/root.so".to_vec(), file: vec![2] },
+            UnixlibSourceObject { name: b"root.so".to_vec(), path: b"/wine/root-copy.so".to_vec(), file: vec![3] },
+        ] };
+        assert_eq!(duplicate.validate(), Err(LoadError::Einval));
+        let relative = UnixlibLoadContext { root_name: b"root.so".to_vec(), objects: vec![
+            UnixlibSourceObject { name: b"root.so".to_vec(), path: b"root.so".to_vec(), file: vec![1] },
+        ] };
+        assert_eq!(relative.validate(), Err(LoadError::Einval));
+    }
+
+    #[test]
     fn callable_table_registration_uses_loaded_image_bounds() {
         let as_ = AddressSpace::new(0x7_2500).unwrap();
         let image = MappedUnixlib { base: 0x40_000, end: 0x41_000 };
@@ -435,6 +461,26 @@ mod tests {
         assert!(!scope.is_empty());
         assert_eq!(scope.last().unwrap().name, b"winevulkan.so");
         assert!(scope.iter().all(|object| object.name != b""));
+    }
+
+    #[test]
+    fn source_context_carries_real_wine_paths_for_the_entire_closure() {
+        let Some(root) = installed_unixlib() else { return };
+        let root_path = b"/usr/lib64/wine/x86_64-unix/winevulkan.so";
+        let context = build_load_context(b"winevulkan.so", root_path, &root, |name| {
+            let text = core::str::from_utf8(name).ok()?;
+            let paths = [
+                alloc::format!("/usr/lib64/wine/x86_64-unix/{text}"),
+                alloc::format!("/usr/lib/wine/x86_64-unix/{text}"),
+                alloc::format!("/usr/lib64/{text}"), alloc::format!("/usr/lib/{text}"),
+                alloc::format!("/usr/lib/x86_64-linux-gnu/{text}"),
+                alloc::format!("/lib64/{text}"), alloc::format!("/lib/{text}"),
+            ];
+            paths.iter().find_map(|path| std::fs::read(path).ok().map(|file| (path.as_bytes().to_vec(), file)))
+        }).unwrap();
+        assert_eq!(context.objects.last().unwrap().name, b"winevulkan.so");
+        assert_eq!(context.objects.last().unwrap().path, root_path);
+        assert!(context.objects.iter().all(|object| object.path.first() == Some(&b'/')));
     }
 
     fn installed_unixlib() -> Option<Vec<u8>> {
