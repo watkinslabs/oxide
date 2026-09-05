@@ -33,6 +33,23 @@ fn process_handle_count_tracks_every_live_duplicate_and_close() {
 }
 
 #[test]
+fn handle_generation_wrap_retires_slot_and_keeps_stale_handle_invalid() {
+    let table = NtHandleTable::new();
+    let stale = table.insert(table.new_object(NtObjectType::Event), READ).unwrap();
+    assert!(table.close(stale));
+
+    for _ in 0..u16::MAX - 1 {
+        let handle = table.insert(table.new_object(NtObjectType::Event), READ).unwrap();
+        assert!(table.close(handle));
+    }
+
+    let current = table.insert(table.new_object(NtObjectType::Event), READ).unwrap();
+    assert_ne!(current, stale, "generation wrap must not resurrect a stale handle");
+    assert!(table.get(stale, READ).is_none(), "stale handle must remain invalid after wrap");
+    assert!(table.get(current, READ).is_some(), "the replacement handle remains usable");
+}
+
+#[test]
 fn object_handle_count_tracks_duplicates_and_final_close() {
     let table = NtHandleTable::new();
     let object = table.new_object(NtObjectType::Event);

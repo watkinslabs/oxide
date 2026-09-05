@@ -47,6 +47,7 @@ struct Entry {
     access: u32,
     flags: u32,
     generation: u16,
+    retired: bool,
 }
 
 /// Process-local native handle table.
@@ -241,9 +242,9 @@ impl NtHandleTable {
     /// Insert an object with its granted access mask and return its handle. # C: O(N)
     pub fn insert(&self, object: Arc<NtObject>, access: u32) -> Option<NtHandle> {
         let mut entries = self.entries.lock();
-        let index = entries.iter().position(|entry| entry.object.is_none()).unwrap_or(entries.len());
+        let index = entries.iter().position(|entry| entry.object.is_none() && !entry.retired).unwrap_or(entries.len());
         if index >= HANDLE_INDEX_MASK as usize { return None; }
-        if index == entries.len() { entries.push(Entry { object: None, access: 0, flags: 0, generation: 1 }); }
+        if index == entries.len() { entries.push(Entry { object: None, access: 0, flags: 0, generation: 1, retired: false }); }
         let entry = &mut entries[index];
         if entry.generation == 0 { entry.generation = 1; }
         entry.object = Some(object);
@@ -360,7 +361,7 @@ impl NtHandleTable {
             entry.access = 0;
             entry.flags = 0;
             entry.generation = entry.generation.wrapping_add(1);
-            if entry.generation == 0 { entry.generation = 1; }
+            if entry.generation == 0 { entry.retired = true; }
             object
         };
         let has_live_handle = object.as_ref().is_some_and(|object| entries.iter().any(|other|
