@@ -28,21 +28,29 @@ fn main() -> ExitCode {
     };
     match config.validate() {
         Ok(()) => {},
-        Err(error) => { eprintln!("windows-runtime: launch configuration rejected: {error:?}"); return ExitCode::from(1); }
+        Err(error) => { eprintln!("windows-runtime phase=preflight operation=launch_config outcome=fail error={error:?}"); return ExitCode::from(1); }
     }
     match RuntimeRequest::preflight(&image, windows_path, &config.dll_catalog, &config.unixlib, &config.nls, &config.registry_socket, &config.registry_database) {
-        Ok(report) => eprintln!("windows-runtime: boot-artifact preflight passed image_bytes={} modules={} execution=not_attempted", report.image_bytes, report.module_count),
-        Err(error) => { eprintln!("windows-runtime: boot-artifact preflight failed: {error}"); return ExitCode::from(1); }
+        Ok(report) => eprintln!("windows-runtime phase=preflight operation=boot_artifact outcome=pass image_bytes={} modules={} execution=not_attempted", report.image_bytes, report.module_count),
+        Err(error) => { eprintln!("windows-runtime phase=preflight operation=boot_artifact outcome=fail error={error}"); return ExitCode::from(1); }
     }
     let request = match RuntimeRequest::from_launch_config(&image, windows_path, command_line, &config) {
         Ok(request) => request,
-        Err(error) => { eprintln!("cannot build Windows handoff: {error:?}"); return ExitCode::from(1); }
+        Err(error) => { eprintln!("windows-runtime phase=preflight operation=build_handoff outcome=fail error={error:?}"); return ExitCode::from(1); }
     };
-    eprintln!("windows-runtime: execute-with-catalog modules={}", request.module_count());
-    match request.execute_raw() {
-        Ok(status) if status == 0 => { println!("Windows image committed: NTSTATUS=0x{status:08x}"); ExitCode::SUCCESS }
-        Ok(status) => { eprintln!("Windows handoff rejected: NTSTATUS=0x{status:08x}"); ExitCode::from(1) }
-        Err(error) => { eprintln!("Windows handoff failed: {error}"); ExitCode::from(1) }
+    let selector = syscall::nt::NtService::ExecuteWithCatalog.entry();
+    eprintln!("windows-runtime phase=handoff operation=execute_with_catalog outcome=attempt modules={} selector=0x{selector:016x}", request.module_count());
+    match request.execute() {
+        Ok(status) => { println!("windows-runtime phase=commit operation=execute_with_catalog outcome=committed ntstatus=0x{status:08x}"); ExitCode::SUCCESS }
+        Err(windows_runtime::ExecuteError::KernelUnavailable { selector, errno }) => {
+            eprintln!("windows-runtime phase=handoff operation=execute_with_catalog outcome=unavailable selector=0x{selector:016x} errno={errno}"); ExitCode::from(1)
+        }
+        Err(windows_runtime::ExecuteError::KernelRejected { selector, status }) => {
+            eprintln!("windows-runtime phase=handoff operation=execute_with_catalog outcome=rejected selector=0x{selector:016x} ntstatus=0x{status:016x}"); ExitCode::from(1)
+        }
+        Err(windows_runtime::ExecuteError::KernelError { selector, errno }) => {
+            eprintln!("windows-runtime phase=handoff operation=execute_with_catalog outcome=error selector=0x{selector:016x} errno={errno}"); ExitCode::from(1)
+        }
     }
 }
 
@@ -50,8 +58,8 @@ fn preflight(args: &mut impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
     let values = args.map(PathBuf::from).collect::<Vec<_>>();
     if values.len() != 6 { usage(); return ExitCode::from(2); }
     match windows_runtime::RuntimeRequest::preflight(&values[0], b"C:\\notepad.exe", &values[1], &values[2], &values[3], &values[4], &values[5]) {
-        Ok(report) => { println!("windows-runtime: PREFLIGHT PASS image_bytes={} modules={} execution=not_attempted", report.image_bytes, report.module_count); for check in report.checks.iter() { println!("windows-runtime: PREFLIGHT CHECK {check}"); } ExitCode::SUCCESS }
-        Err(error) => { eprintln!("windows-runtime: PREFLIGHT FAIL {error}"); ExitCode::from(1) }
+        Ok(report) => { println!("windows-runtime phase=preflight operation=boot_artifact outcome=pass image_bytes={} modules={} execution=not_attempted", report.image_bytes, report.module_count); for check in report.checks.iter() { println!("windows-runtime phase=preflight operation=check outcome=pass detail={check}"); } ExitCode::SUCCESS }
+        Err(error) => { eprintln!("windows-runtime phase=preflight operation=boot_artifact outcome=fail error={error}"); ExitCode::from(1) }
     }
 }
 
