@@ -9,6 +9,17 @@ use super::alloc::d_instantiate;
 use super::hash::DENTRY_HASHTABLE;
 use super::rename::d_move;
 
+/// Find the current named dentry for an inode (Linux `d_find_alias`).
+/// Anonymous and unhashed aliases are excluded: a final pathname operation
+/// must act on the inode's live `(parent,name)` cache entry, not on the stale
+/// dentry retained by an open file across `d_move`. # C: O(N_aliases)
+pub fn d_find_hashed_alias(inode: &InodeRef) -> Option<Arc<Dentry>> {
+    let sb = inode.i_sb()?;
+    sb.i_aliases(inode.ino()).into_iter().find(|d| {
+        d.is_hashed() && d.parent().is_some() && d.inode().is_some_and(|i| Arc::ptr_eq(&i, inode))
+    })
+}
+
 /// Obtain a dentry referring to `inode` without a path/parent (Linux
 /// `d_obtain_alias`). Reuses an existing live alias before allocating a new
 /// disconnected anonymous alias. # C: O(N_aliases)
