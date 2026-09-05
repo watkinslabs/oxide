@@ -46,8 +46,12 @@ pub fn find(root: u64, pc: u64) -> Option<PeRuntimeModule> {
 pub fn find_exception(root: u64, pc: u64) -> Option<u64> {
     let modules = MODULES.lock();
     let module = modules.get(&root)?.iter().find(|module| pc >= module.base && pc - module.base < module.size as u64)?;
+    let exception_end = module.exception_rva.checked_add(module.exception_size)?;
+    if exception_end > module.size || module.exception_size % 12 != 0 { return None; }
     let rva = u32::try_from(pc.checked_sub(module.base)?).ok()?;
-    let index = module.exception_functions.iter().position(|function| rva >= function.begin_rva && rva < function.end_rva)?;
+    let index = module.exception_functions.iter().position(|function|
+        runtime_function_valid(function.begin_rva, function.end_rva, function.unwind_rva, module.size)
+            && rva >= function.begin_rva && rva < function.end_rva)?;
     module.base.checked_add(module.exception_rva as u64)?.checked_add((index as u64).checked_mul(12)?)
 }
 
@@ -85,6 +89,28 @@ mod tests {
         register(&as_, &[PeRuntimeModule { base: 0x1500_0000, size: 0x4000, exception_rva: 0x2000, exception_size: 12, exception_functions: alloc::vec![RuntimeFunction { begin_rva: 0x100, end_rva: 0x180, unwind_rva: 0x300 }] }]);
         assert_eq!(find_exception(as_.root_pa(), 0x1500_0100), Some(0x1500_2000));
         assert_eq!(find_exception(as_.root_pa(), 0x1500_0180), None);
+        clear(as_.root_pa());
+    }
+
+    #[test]
+    fn exception_lookup_rejects_invalid_runtime_function_from_canonical_state() {
+        let as_ = AddressSpace::new(0xb_0000).unwrap();
+        register(&as_, &[PeRuntimeModule {
+            base: 0x1600_0000, size: 0x4000, exception_rva: 0x2000, exception_size: 12,
+            exception_functions: alloc::vec![RuntimeFunction { begin_rva: 0x100, end_rva: 0x180, unwind_rva: 0x4001 }],
+        }]);
+        assert_eq!(find_exception(as_.root_pa(), 0x1600_0120), None);
+        clear(as_.root_pa());
+    }
+
+    #[test]
+    fn exception_lookup_rejects_directory_outside_mapped_image() {
+        let as_ = AddressSpace::new(0xc_0000).unwrap();
+        register(&as_, &[PeRuntimeModule {
+            base: 0x1700_0000, size: 0x2000, exception_rva: 0x1ff8, exception_size: 12,
+            exception_functions: alloc::vec![RuntimeFunction { begin_rva: 0x100, end_rva: 0x180, unwind_rva: 0x400 }],
+        }]);
+        assert_eq!(find_exception(as_.root_pa(), 0x1700_0120), None);
         clear(as_.root_pa());
     }
 
