@@ -20,6 +20,7 @@ pub enum StreamError {
     OutOfOrder,
     InvalidBufferSize,
     WrongDirection,
+    NotRunning,
     AlreadyStarted,
     NotStopped,
     Invalidated,
@@ -134,6 +135,7 @@ impl AudioStream {
     /// Advance the native device clock, preserving the bounded queue invariant.
     /// # C: O(1)
     pub fn device_advance(&mut self, frames: u32) -> Result<(), StreamError> {
+        if self.state != StreamState::Running { return Err(StreamError::NotRunning); }
         match self.direction {
             AudioDirection::Render => self.client_read(frames),
             AudioDirection::Capture => self.client_write(frames),
@@ -262,17 +264,35 @@ mod tests {
     fn render_and_capture_never_cross_the_buffer_boundary() {
         let geometry = StreamGeometry::from_frames(format(), 8, 4).unwrap();
         let mut render = AudioStream::new(geometry, AudioDirection::Render);
+        assert_eq!(render.device_advance(1), Err(StreamError::NotRunning));
         assert!(render.client_write(8).is_ok());
         assert_eq!(render.current_padding(), 8);
         assert_eq!(render.client_write(1), Err(StreamError::WouldBlock));
+        render.start().unwrap();
         assert!(render.device_advance(4).is_ok());
         assert_eq!(render.available_frames(), 4);
 
         let mut capture = AudioStream::new(geometry, AudioDirection::Capture);
+        assert_eq!(capture.device_advance(8), Err(StreamError::NotRunning));
+        capture.start().unwrap();
         assert!(capture.device_advance(8).is_ok());
         assert_eq!(capture.device_advance(1), Err(StreamError::WouldBlock));
         assert!(capture.client_read(4).is_ok());
         assert_eq!(capture.current_padding(), 4);
+    }
+
+    #[test]
+    fn stopping_corks_device_clock_without_dropping_render_padding() {
+        let geometry = StreamGeometry::from_frames(format(), 8, 4).unwrap();
+        let mut stream = AudioStream::new(geometry, AudioDirection::Render);
+        stream.start().unwrap();
+        stream.client_write(4).unwrap();
+        stream.stop().unwrap();
+        assert_eq!(stream.device_advance(2), Err(StreamError::NotRunning));
+        assert_eq!(stream.current_padding(), 4);
+        stream.start().unwrap();
+        stream.device_advance(2).unwrap();
+        assert_eq!(stream.current_padding(), 2);
     }
 
     #[test]
