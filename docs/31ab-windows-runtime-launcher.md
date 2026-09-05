@@ -15,12 +15,16 @@ FROZEN 2026-08-31. Dep:`01`,`02`,`29a`,`31a`,`31h`,`31p`,`31y`,`52`,`53`. Provid
   PE handoff and supplies its socket/database locations through the launcher
   environment; registry state is not copied into the kernel.
 - A Steam game launch uses one `oxide-steam-launch-v1` record containing the
-  app id, image, Windows command line, and every owned Proton component path.
+  app id, image, Windows command line, compatibility-data root, and every
+  owned Proton component path.
   The launcher rejects duplicate, unknown, missing, relative, or stale
   record-owned inputs before reading the PE image; it then uses the same
   `ProtonLaunchConfig` and NT handoff as other Windows launches, adding the
   record's app id as both `SteamAppId` and `SteamGameId` in that launch's
   environment block.
+- `compat_data` is a canonical directory containing the canonical `pfx`
+  prefix; the handoff rejects a prefix outside that root and exports the
+  canonical data root as `STEAM_COMPAT_DATA_PATH`.
 
 ## 2 Tests
 
@@ -33,3 +37,5 @@ FROZEN 2026-08-31. Dep:`01`,`02`,`29a`,`31a`,`31h`,`31p`,`31y`,`52`,`53`. Provid
   duplicate, unknown, and missing fields fail closed; invalid paths fail
   before image/catalog reads; `--steam-launch` reaches the existing tagged
   handoff and reports Linux-host unavailability honestly.
+- a valid compatibility root canonicalizes into one handoff, while a prefix
+  outside that root fails before PE/catalog reads.
