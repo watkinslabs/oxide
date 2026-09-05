@@ -24,6 +24,7 @@ const STATUS_END_OF_FILE: u64 = 0xc000_0011;
 const FILE_READ_DATA: u32 = 0x0001;
 const FILE_WRITE_DATA: u32 = 0x0002;
 const FILE_READ_ATTRIBUTES: u32 = 0x0080;
+const FILE_WRITE_ATTRIBUTES: u32 = 0x0100;
 const FILE_LIST_DIRECTORY: u32 = 0x0001;
 const FILE_APPEND_DATA: u32 = 0x0004;
 const SYNCHRONIZE_ACCESS: u32 = 0x0010_0000;
@@ -817,7 +818,11 @@ fn set_information_values(cur: &sched::Task, handle: u32, io_status: u64, inform
     if io_status == 0 || information == 0 || (class != FILE_DISPOSITION_INFORMATION && length < 8) { return STATUS_INVALID_PARAMETER; }
     let native = sched::nt_object::NtHandle::from_raw(handle);
     let table = cur.thread_group.nt_handles();
-    let required = if class == FILE_DISPOSITION_INFORMATION { DELETE_ACCESS } else { FILE_WRITE_DATA };
+    let required = match class {
+        FILE_BASIC_INFORMATION => FILE_WRITE_ATTRIBUTES,
+        FILE_DISPOSITION_INFORMATION => DELETE_ACCESS,
+        _ => FILE_WRITE_DATA,
+    };
     let Some(object) = table.get(native, required) else {
         return if table.contains(native) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE };
     };
@@ -831,6 +836,35 @@ fn set_information_values(cur: &sched::Task, handle: u32, io_status: u64, inform
         return STATUS_SUCCESS;
     }
     let Some(file) = object.file() else { return STATUS_INVALID_HANDLE; };
+    if class == FILE_BASIC_INFORMATION {
+        if length < 40 { return STATUS_INVALID_PARAMETER; }
+        let Ok(creation) = read_u64(information) else { return STATUS_INVALID_PARAMETER; };
+        let Ok(atime) = read_u64_at(information, 8) else { return STATUS_INVALID_PARAMETER; };
+        let Ok(mtime) = read_u64_at(information, 16) else { return STATUS_INVALID_PARAMETER; };
+        let Ok(change) = read_u64_at(information, 24) else { return STATUS_INVALID_PARAMETER; };
+        let Ok(attributes) = read_u32_at(information, 32) else { return STATUS_INVALID_PARAMETER; };
+        let current_attributes = if file.inode().file_type() == vfs::FileType::Directory { 0x10 } else { 0x80 };
+        if crate::nt_file_policy::file_basic_unsupported_fields(
+            creation as i64, change as i64, attributes, current_attributes) {
+            return STATUS_NOT_SUPPORTED;
+        }
+        let mut ia = vfs::Iattr { ctime: vfs::Timespec64::ZERO, ..Default::default() };
+        if let Some(value) = crate::nt_file_policy::filetime_to_timespec(atime as i64) {
+            ia.valid |= vfs::ATTR_ATIME | vfs::ATTR_ATIME_SET; ia.atime = value;
+        }
+        if let Some(value) = crate::nt_file_policy::filetime_to_timespec(mtime as i64) {
+            ia.valid |= vfs::ATTR_MTIME | vfs::ATTR_MTIME_SET; ia.mtime = value;
+        }
+        if ia.valid != 0 {
+            let cred = crate::pathresolve::current_cred();
+            if vfs::notify_change_mnt(file.inode(), file.mnt_id(), &mut ia, &cred,
+                                      vfs::inode_times::realtime_now_ns()).is_err() {
+                return STATUS_ACCESS_DENIED;
+            }
+        }
+        write_io_status(io_status, STATUS_SUCCESS, 0);
+        return STATUS_SUCCESS;
+    }
     if class == FILE_RENAME_INFORMATION { return set_rename_information(file.as_ref(), information, length, io_status); }
     if class == FILE_DISPOSITION_INFORMATION {
         let Ok(delete) = read_u32(information) else { return STATUS_INVALID_PARAMETER; };
