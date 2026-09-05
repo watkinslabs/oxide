@@ -27,6 +27,7 @@ pub mod mmsg_batch;
 // The one owner of "which message ABI does this call speak" plus both shapes.
 pub mod msg_layout;
 pub mod nt_dispatch;
+mod nt_system_info;
 mod nt_process_parameters;
 mod nt_process_policy;
 mod nt_directory_abi;
