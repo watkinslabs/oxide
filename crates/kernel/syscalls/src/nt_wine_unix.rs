@@ -386,11 +386,17 @@ fn server_map_image_view(args: u64, table: &sched::nt_object::NtHandleTable) -> 
     } else {
         vmm::VmaBacking::KernelBytes { data: section.bytes(), off: offset as usize }
     };
-    match mm.mmap_with_may_at(vmm::MmapPlacement::FixedNoReplace(base), round_mapping_size(size), vmm::VmaProt::READ | vmm::VmaProt::EXEC, vmm::VmaProt::READ | vmm::VmaProt::WRITE | vmm::VmaProt::EXEC, vmm::VmaFlags::PRIVATE, backing) {
-        Ok(_) => server_reply(args, STATUS_SUCCESS),
-        Err(vmm::MmapError::Exists) => server_reply(args, STATUS_CONFLICTING_ADDRESSES),
-        Err(vmm::MmapError::Vmm(_)) => server_reply(args, STATUS_NO_MEMORY),
+    let mapped_size = round_mapping_size(size);
+    let mapped = match mm.mmap_with_may_at(vmm::MmapPlacement::FixedNoReplace(base), mapped_size, vmm::VmaProt::READ | vmm::VmaProt::EXEC, vmm::VmaProt::READ | vmm::VmaProt::WRITE | vmm::VmaProt::EXEC, vmm::VmaFlags::PRIVATE | vmm::VmaFlags::NT_SECTION_VIEW, backing) {
+        Ok(mapped) => mapped,
+        Err(vmm::MmapError::Exists) => return server_reply(args, STATUS_CONFLICTING_ADDRESSES),
+        Err(vmm::MmapError::Vmm(_)) => return server_reply(args, STATUS_NO_MEMORY),
+    };
+    if !mm.set_mapping_origin(mapped) {
+        let _ = mm.munmap(mapped, mapped_size);
+        return server_reply(args, STATUS_NO_MEMORY);
     }
+    server_reply(args, STATUS_SUCCESS)
 }
 
 #[cfg(target_os = "oxide-kernel")]
@@ -422,8 +428,8 @@ fn server_unmap_view(args: u64) -> u64 {
     let Some(mm) = (unsafe { cur.mm_ref() }).map(|mm| mm.clone()) else { return STATUS_INVALID_PARAMETER; };
     let Some(base) = hal::UserVirtAddr::new(base_raw) else { return STATUS_INVALID_PARAMETER; };
     let Some(vma) = mm.find_vma(base) else { return STATUS_MEMORY_NOT_ALLOCATED; };
-    if vma.start != base { return STATUS_INVALID_PARAMETER; }
-    if mm.munmap(vma.start, (vma.end.as_u64() - vma.start.as_u64()) as usize).is_ok() { STATUS_SUCCESS } else { STATUS_MEMORY_NOT_ALLOCATED }
+    if vma.start != base || !vma.flags.contains(vmm::VmaFlags::NT_SECTION_VIEW) || vma.mapping_origin.is_none() { return STATUS_MEMORY_NOT_ALLOCATED; }
+    if mm.unmap_mapping_origin(vma.mapping_origin.unwrap()).is_ok() { STATUS_SUCCESS } else { STATUS_MEMORY_NOT_ALLOCATED }
 }
 
 #[cfg(target_os = "oxide-kernel")]
