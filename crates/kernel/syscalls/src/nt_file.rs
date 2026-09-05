@@ -46,6 +46,7 @@ const DELETE_ACCESS: u32 = 0x0001_0000;
 const FILE_INTERNAL_INFORMATION: u32 = 6;
 const FILE_EA_INFORMATION: u32 = 7;
 const FILE_ACCESS_INFORMATION: u32 = 8;
+const FILE_MODE_INFORMATION: u32 = 16;
 const FILE_NAME_INFORMATION: u32 = 9;
 const FILE_ALIGNMENT_INFORMATION: u32 = 17;
 const FILE_ALL_INFORMATION: u32 = 18;
@@ -745,6 +746,19 @@ fn query_information_values(cur: &sched::Task, handle: u32, io_status: u64, info
         return STATUS_SUCCESS;
     }
     let Some(file) = object.file() else { return STATUS_INVALID_HANDLE; };
+    if class == FILE_MODE_INFORMATION {
+        if length < core::mem::size_of::<u32>() as u32 {
+            write_io_status(io_status, STATUS_INFO_LENGTH_MISMATCH, 0);
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        let mode = object.file_info().map_or(0, |info| crate::nt_file_policy::file_mode_from_options(info.options));
+        if uaccess::put_user_u32(information, mode).is_err() {
+            write_io_status(io_status, STATUS_ACCESS_VIOLATION, 0);
+            return STATUS_ACCESS_VIOLATION;
+        }
+        write_io_status(io_status, STATUS_SUCCESS, core::mem::size_of::<u32>() as u64);
+        return STATUS_SUCCESS;
+    }
     let stat = vfs::generic_fillattr(file.inode(), &vfs::IDENTITY);
     let is_directory = file.inode().file_type() == vfs::FileType::Directory;
     let file_attributes = file.inode().windows_attributes().raw();

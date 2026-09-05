@@ -32,6 +32,13 @@ const FILE_FULL_DIRECTORY_INFORMATION: u32 = 2;
 const FILE_BOTH_DIRECTORY_INFORMATION: u32 = 3;
 const FILE_NAMES_INFORMATION: u32 = 12;
 const FILE_ID_BOTH_DIRECTORY_INFORMATION: u32 = 37;
+const FILE_WRITE_THROUGH: u32 = 0x0000_0002;
+const FILE_SEQUENTIAL_ONLY: u32 = 0x0000_0004;
+const FILE_NO_INTERMEDIATE_BUFFERING: u32 = 0x0000_0008;
+const FILE_SYNCHRONOUS_IO_ALERT: u32 = 0x0000_0010;
+const FILE_SYNCHRONOUS_IO_NONALERT: u32 = 0x0000_0020;
+#[cfg(test)]
+const FILE_NON_DIRECTORY_OPTION: u32 = 0x0000_0040;
 
 /// Translate `FILE_ATTRIBUTE_READONLY` on a newly-created NT node into the
 /// mode passed to the canonical VFS create owner. # C: O(1)
@@ -39,6 +46,14 @@ pub(crate) const fn creation_mode(file_attributes: u32, directory: bool) -> u32 
     if directory {
         if file_attributes & FILE_ATTRIBUTE_READONLY != 0 { 0o555 } else { 0o777 }
     } else if file_attributes & FILE_ATTRIBUTE_READONLY != 0 { 0o444 } else { 0o666 }
+}
+
+/// Return the open-option bits exposed by FileModeInformation; creation,
+/// naming, and access options are intentionally absent from this result.
+pub(crate) const fn file_mode_from_options(options: u32) -> u32 {
+    options & (FILE_WRITE_THROUGH | FILE_SEQUENTIAL_ONLY
+        | FILE_NO_INTERMEDIATE_BUFFERING | FILE_SYNCHRONOUS_IO_ALERT
+        | FILE_SYNCHRONOUS_IO_NONALERT)
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -230,6 +245,14 @@ mod tests {
         assert_eq!(creation_mode(FILE_ATTRIBUTE_READONLY, true), 0o555);
         assert_eq!(creation_mode(0, false), 0o666);
         assert_eq!(creation_mode(0, true), 0o777);
+    }
+
+    #[test]
+    fn file_mode_reports_only_windows_mode_options() {
+        let mode = file_mode_from_options(FILE_WRITE_THROUGH | FILE_SEQUENTIAL_ONLY
+            | FILE_NO_INTERMEDIATE_BUFFERING | FILE_SYNCHRONOUS_IO_ALERT
+            | FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_OPTION);
+        assert_eq!(mode, 0x3e);
     }
 
 }
