@@ -17,6 +17,7 @@ pub enum StreamError {
     InvalidFrameCount,
     WouldBlock,
     BufferOperationPending,
+    BufferEmpty,
     OutOfOrder,
     InvalidBufferSize,
     WrongDirection,
@@ -84,19 +85,20 @@ pub struct AudioStream {
     queued_frames: u32,
     state: StreamState,
     render_loan: Option<u32>,
+    capture_loan: Option<u32>,
 }
 
 impl AudioStream {
     /// Create an empty render or capture endpoint queue.
     /// # C: O(1)
     pub const fn new(geometry: StreamGeometry, direction: AudioDirection) -> Self {
-        Self { format: None, geometry, direction, queued_frames: 0, state: StreamState::Initialized, render_loan: None }
+        Self { format: None, geometry, direction, queued_frames: 0, state: StreamState::Initialized, render_loan: None, capture_loan: None }
     }
 
     /// Create an endpoint while retaining its negotiated native format.
     /// # C: O(1)
     pub const fn with_format(format: NativePcmFormat, geometry: StreamGeometry, direction: AudioDirection) -> Self {
-        Self { format: Some(format), geometry, direction, queued_frames: 0, state: StreamState::Initialized, render_loan: None }
+        Self { format: Some(format), geometry, direction, queued_frames: 0, state: StreamState::Initialized, render_loan: None, capture_loan: None }
     }
 
     pub const fn geometry(self) -> StreamGeometry { self.geometry }
@@ -117,7 +119,7 @@ impl AudioStream {
     pub fn client_write(&mut self, frames: u32) -> Result<(), StreamError> {
         self.ensure_open()?;
         if self.direction != AudioDirection::Render { return Err(StreamError::WrongDirection); }
-        if self.render_loan.is_some() { return Err(StreamError::BufferOperationPending); }
+        if self.render_loan.is_some() || self.capture_loan.is_some() { return Err(StreamError::BufferOperationPending); }
         if frames > self.available_frames() { return Err(StreamError::WouldBlock); }
         self.queued_frames += frames;
         Ok(())
@@ -128,7 +130,7 @@ impl AudioStream {
     pub fn client_read(&mut self, frames: u32) -> Result<(), StreamError> {
         self.ensure_open()?;
         if self.direction != AudioDirection::Capture { return Err(StreamError::WrongDirection); }
-        if self.render_loan.is_some() { return Err(StreamError::BufferOperationPending); }
+        if self.render_loan.is_some() || self.capture_loan.is_some() { return Err(StreamError::BufferOperationPending); }
         if frames > self.queued_frames { return Err(StreamError::WouldBlock); }
         self.queued_frames -= frames;
         Ok(())
@@ -139,7 +141,7 @@ impl AudioStream {
     pub fn device_advance(&mut self, frames: u32) -> Result<(), StreamError> {
         self.ensure_open()?;
         if self.state != StreamState::Running { return Err(StreamError::NotRunning); }
-        if self.render_loan.is_some() { return Err(StreamError::BufferOperationPending); }
+        if self.render_loan.is_some() || self.capture_loan.is_some() { return Err(StreamError::BufferOperationPending); }
         match self.direction {
             AudioDirection::Render => {
                 if frames > self.queued_frames { return Err(StreamError::WouldBlock); }
@@ -170,6 +172,7 @@ impl AudioStream {
         self.ensure_open()?;
         self.state = StreamState::Stopped;
         self.render_loan = None;
+        self.capture_loan = None;
         Ok(())
     }
 
@@ -180,7 +183,7 @@ impl AudioStream {
             StreamState::Invalidated => Err(StreamError::Invalidated),
             StreamState::Closed => Err(StreamError::Closed),
             StreamState::Running => Err(StreamError::NotStopped),
-            StreamState::Initialized | StreamState::Stopped => { self.queued_frames = 0; self.render_loan = None; Ok(()) }
+            StreamState::Initialized | StreamState::Stopped => { self.queued_frames = 0; self.render_loan = None; self.capture_loan = None; Ok(()) }
         }
     }
 
@@ -191,6 +194,7 @@ impl AudioStream {
         self.state = StreamState::Invalidated;
         self.queued_frames = 0;
         self.render_loan = None;
+        self.capture_loan = None;
     }
 
     /// Release the endpoint; no operation can revive a closed stream.
@@ -199,6 +203,7 @@ impl AudioStream {
         self.state = StreamState::Closed;
         self.queued_frames = 0;
         self.render_loan = None;
+        self.capture_loan = None;
     }
 
     /// Reserve a render region before submitting its written portion.
@@ -220,6 +225,34 @@ impl AudioStream {
         if written_frames > reserved { return Err(StreamError::InvalidBufferSize); }
         self.render_loan = None;
         self.queued_frames += written_frames;
+        Ok(())
+    }
+
+    /// Borrow the complete next capture packet without consuming it. A second
+    /// borrow is rejected until the packet is released, matching the
+    /// capture-client out-of-order rule.
+    /// # C: O(1)
+    pub fn capture_get_buffer(&mut self) -> Result<u32, StreamError> {
+        self.ensure_open()?;
+        if self.direction != AudioDirection::Capture { return Err(StreamError::WrongDirection); }
+        if self.capture_loan.is_some() { return Err(StreamError::OutOfOrder); }
+        if self.queued_frames == 0 { return Err(StreamError::BufferEmpty); }
+        self.capture_loan = Some(self.queued_frames);
+        Ok(self.queued_frames)
+    }
+
+    /// Release the borrowed capture packet; zero is an explicit no-op and the
+    /// full packet count is the only consuming release accepted.
+    /// # C: O(1)
+    pub fn capture_release_buffer(&mut self, read_frames: u32) -> Result<(), StreamError> {
+        self.ensure_open()?;
+        let Some(packet_frames) = self.capture_loan else {
+            if read_frames == 0 { return Ok(()); }
+            return Err(StreamError::OutOfOrder);
+        };
+        if read_frames != 0 && read_frames != packet_frames { return Err(StreamError::InvalidBufferSize); }
+        if read_frames != 0 { self.queued_frames -= packet_frames; }
+        self.capture_loan = None;
         Ok(())
     }
 
@@ -289,6 +322,40 @@ mod tests {
         assert!(capture.device_advance(8).is_ok());
         assert_eq!(capture.device_advance(1), Err(StreamError::WouldBlock));
         assert!(capture.client_read(4).is_ok());
+        assert_eq!(capture.current_padding(), 4);
+    }
+
+    #[test]
+    fn capture_buffer_is_borrowed_until_exact_release_and_zero_release_is_noop() {
+        let geometry = StreamGeometry::from_frames(format(), 8, 4).unwrap();
+        let mut capture = AudioStream::new(geometry, AudioDirection::Capture);
+        capture.start().unwrap();
+        capture.device_advance(4).unwrap();
+        assert_eq!(capture.capture_get_buffer(), Ok(4));
+        assert_eq!(capture.capture_get_buffer(), Err(StreamError::OutOfOrder));
+        assert_eq!(capture.client_read(1), Err(StreamError::BufferOperationPending));
+        assert_eq!(capture.capture_release_buffer(0), Ok(()));
+        assert_eq!(capture.current_padding(), 4);
+        assert_eq!(capture.capture_get_buffer(), Ok(4));
+        assert_eq!(capture.capture_release_buffer(3), Err(StreamError::InvalidBufferSize));
+        assert_eq!(capture.capture_release_buffer(4), Ok(()));
+        assert_eq!(capture.current_padding(), 0);
+        assert_eq!(capture.capture_release_buffer(0), Ok(()));
+        assert_eq!(capture.capture_get_buffer(), Err(StreamError::BufferEmpty));
+    }
+
+    #[test]
+    fn capture_buffer_ownership_is_direction_and_lifecycle_safe() {
+        let geometry = StreamGeometry::from_frames(format(), 8, 4).unwrap();
+        let mut render = AudioStream::new(geometry, AudioDirection::Render);
+        assert_eq!(render.capture_get_buffer(), Err(StreamError::WrongDirection));
+        let mut capture = AudioStream::new(geometry, AudioDirection::Capture);
+        assert_eq!(capture.capture_get_buffer(), Err(StreamError::BufferEmpty));
+        capture.start().unwrap();
+        capture.device_advance(4).unwrap();
+        capture.capture_get_buffer().unwrap();
+        capture.stop().unwrap();
+        assert_eq!(capture.capture_release_buffer(4), Err(StreamError::OutOfOrder));
         assert_eq!(capture.current_padding(), 4);
     }
 
