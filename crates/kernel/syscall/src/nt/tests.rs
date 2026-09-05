@@ -924,6 +924,7 @@ fn user_client_pfn_services_round_trip_through_the_nt_namespace() {
         assert_eq!(decode(492, args()).unwrap().service, NtService::TpSimpleTryPost);
         assert_eq!(decode(549, args()).unwrap().service, NtService::TpReleaseWork);
         assert_eq!(decode(550, args()).unwrap().service, NtService::TpReleaseTimer);
+        assert_eq!(decode(551, args()).unwrap().service, NtService::TpSetTimer);
     }
 
     #[test]

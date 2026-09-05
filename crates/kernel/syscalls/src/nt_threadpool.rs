@@ -64,6 +64,41 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         callbacks.swap_remove(index);
         return Some(STATUS_SUCCESS);
     }
+    if call.service == NtService::TpSetTimer {
+        let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
+        if !cur.is_nt_personality() || call.args.a0 == 0 { return Some(STATUS_INVALID_PARAMETER); }
+        let period = match i64::try_from(call.args.a2) {
+            Ok(value) if value >= 0 && value <= u32::MAX as i64 => value as u32,
+            _ => return Some(STATUS_INVALID_PARAMETER),
+        };
+        if i64::try_from(call.args.a3).is_err() { return Some(STATUS_INVALID_PARAMETER); }
+        let deadline = if call.args.a1 == 0 { None } else {
+            let Some(raw) = uaccess::get_user_u64(call.args.a1).ok().and_then(|value| i64::try_from(value).ok()) else {
+                return Some(STATUS_INVALID_PARAMETER);
+            };
+            Some(crate::nt_timer::timer_deadline(raw))
+        };
+        let Some(deadline) = deadline.flatten().or_else(|| (call.args.a1 == 0).then_some(0)) else {
+            return Some(STATUS_INVALID_PARAMETER);
+        };
+        let mut callbacks = cur.thread_group.nt_callbacks.lock();
+        let Some(entry) = callbacks.iter_mut().find(|entry| entry.token == call.args.a0) else {
+            return Some(STATUS_INVALID_HANDLE);
+        };
+        let sched::nt_callback::RegistrationKind::Timer { due_ms, period_ms, armed, .. } = &mut entry.kind else {
+            return Some(STATUS_INVALID_HANDLE);
+        };
+        *due_ms = 0;
+        *period_ms = period;
+        *armed = call.args.a1 != 0;
+        drop(callbacks);
+        if let Some(deadline) = (call.args.a1 != 0).then_some(deadline) {
+            let now = timekeeper::monotonic_ns();
+            if !sched::live::queue_delayed_work_on(0, timer_work, call.args.a0 as usize, now,
+                deadline.saturating_sub(now)) { return Some(STATUS_NO_MEMORY); }
+        }
+        return Some(STATUS_SUCCESS);
+    }
     if call.service == NtService::TpSetPoolStackInformation {
         let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
         if !cur.is_nt_personality() || call.args.a0 == 0 || call.args.a1 == 0 {
@@ -213,7 +248,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     cur.thread_group.nt_callbacks.lock().push(sched::nt_callback::Registration {
         token, callback: call.args.a2, context: call.args.a3,
         kind: sched::nt_callback::RegistrationKind::Timer {
-            queue, due_ms: call.args.a4 as u32, period_ms: call.args.a5 as u32, flags: flags as u32,
+            queue, due_ms: call.args.a4 as u32, period_ms: call.args.a5 as u32, flags: flags as u32, armed: true,
         },
     });
     if uaccess::put_user_u64(call.args.a1, token).is_err() {
@@ -235,7 +270,8 @@ fn timer_work(token: usize) {
     for task in sched::registry::snapshot() {
         let callbacks = task.thread_group.nt_callbacks.lock();
         let Some(entry) = callbacks.iter().find(|entry| entry.token == token) else { continue; };
-        let sched::nt_callback::RegistrationKind::Timer { period_ms, .. } = &entry.kind else { continue; };
+        let sched::nt_callback::RegistrationKind::Timer { period_ms, armed, .. } = &entry.kind else { continue; };
+        if !*armed { continue; }
         target = Some((alloc::sync::Arc::clone(&task), entry.callback, entry.context, *period_ms));
         drop(callbacks);
         break;
@@ -252,6 +288,11 @@ fn timer_work(token: usize) {
     if period_ms != 0 {
         let _ = sched::live::queue_delayed_work_on(0, timer_work, token as usize,
             timekeeper::monotonic_ns(), (period_ms as u64).saturating_mul(1_000_000));
+    } else {
+        let mut callbacks = task.thread_group.nt_callbacks.lock();
+        if let Some(entry) = callbacks.iter_mut().find(|entry| entry.token == token) {
+            if let sched::nt_callback::RegistrationKind::Timer { armed, .. } = &mut entry.kind { *armed = false; }
+        }
     }
 }
 
@@ -312,9 +353,10 @@ fn update_timer(call: NtCall) -> u64 {
         || call.args.a2 > u32::MAX as u64 || call.args.a3 > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
     let mut callbacks = cur.thread_group.nt_callbacks.lock();
     let Some(entry) = callbacks.iter_mut().find(|entry| entry.token == call.args.a1) else { return STATUS_INVALID_HANDLE; };
-    let sched::nt_callback::RegistrationKind::Timer { queue, due_ms, period_ms, .. } = &mut entry.kind else { return STATUS_INVALID_HANDLE; };
+    let sched::nt_callback::RegistrationKind::Timer { queue, due_ms, period_ms, armed, .. } = &mut entry.kind else { return STATUS_INVALID_HANDLE; };
     if *queue != call.args.a0 { return STATUS_INVALID_HANDLE; }
     *due_ms = call.args.a2 as u32; *period_ms = call.args.a3 as u32;
+    *armed = true;
     0
 }
 
@@ -362,7 +404,7 @@ fn allocate_callback(call: NtCall, timer: bool) -> u64 {
     // release operation exists. It is not a success-only pointer: callback
     // code/context are retained for the later wait/timer dispatch path.
     let kind = if timer {
-        sched::nt_callback::RegistrationKind::Timer { queue: 0, due_ms: 0, period_ms: 0, flags: 0 }
+        sched::nt_callback::RegistrationKind::Timer { queue: 0, due_ms: 0, period_ms: 0, flags: 0, armed: false }
     } else {
         sched::nt_callback::RegistrationKind::Callback
     };
