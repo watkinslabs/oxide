@@ -1,6 +1,6 @@
 # Known issues
 
-**Live issue count: 302** — 296 `OPEN`, 6 `IN-PROGRESS`.
+**Live issue count: 303** — 297 `OPEN`, 6 `IN-PROGRESS`.
 
 | Id | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|---|
@@ -308,6 +308,7 @@
 | KI-0350 | IN-PROGRESS feat/windows-process-image-info-20260905 | MISSING | med | [CLAIMED feat/windows-process-image-info-20260905 2026-09-05] Native NtQueryInformationProcess did not expose ProcessImageInformation (class 37), so Wine’s main-module setup could not obtain SECTION_IMAGE_INFORMATION from an NT PE process. | Native class 37 now validates the complete PE32+ header field set from the canonical PEB image and encodes the 64-byte SECTION_IMAGE_INFORMATION contract. Hosted policy tests pass; target-gated x86_64 and AArch64 kernel checks are required before merge. | NT runtime |
 | KI-0351 | IN-PROGRESS F1572-nt-alertable-wait-order | MISSING | med | [CLAIMED F1572-nt-alertable-wait-order 2026-09-04] NtWaitForSingleObject alertable waits check queued APC state before rechecking the canonical object predicate after wake, so simultaneous object signal and APC incorrectly return STATUS_USER_APC instead of object success. | origin/main nt_dispatch::WaitEvent calls the alertable wait loop; live::wait_event_interruptible_until_user_apc tests apc before cond after park and after wake, unlike the NT wait ordering where signaled object wins before APC and timeout. | F1572-nt-alertable-wait-order |
 | KI-0352 | OPEN | INFRA | med | Windows Notepad compatibility harness requires removed head -c fixture declaration | make test stops in tools/test-windows-notepad-harness.sh before Rust tests; origin/main has no matching declaration in tools/xtask/src/rootfs_disks/windows_notepad.rs, while the harness still requires it. | P501-windows-timer-wait-contract |
+| KI-0353 | OPEN | INFRA | med | spec-lint ratchet is already red on origin/main across 40 keys, blocking otherwise clean pushes | Pre-push on origin/main at 61da3173b reports 40 ratchet regressions across unrelated crates/docs/scratch keys; this lane adds no source changes and reproduces the same failure. | build-gates |
 
 ## Ext4 master program
 
