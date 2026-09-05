@@ -14,6 +14,11 @@ impl SurfaceFormat {
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct SurfaceDescription {
+    pub window: u64,
+    pub window_owner: u64,
+    pub device: u64,
+    pub queue: u64,
+    pub resource: u64,
     pub device_ready: bool,
     pub surface_alive: bool,
     pub present_supported: bool,
@@ -22,11 +27,18 @@ pub struct SurfaceDescription {
     pub format: SurfaceFormat,
 }
 
+/// Identity transferred from the canonical user32 owner to the Vulkan queue.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct SurfaceHandoff { pub window: u64, pub window_owner: u64, pub device: u64, pub queue: u64, pub resource: u64 }
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum HandoffResult { Submitted, Rejected }
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum SurfaceState { Ready, Acquired, Lost }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum PresentError { Unsupported, InvalidState }
+pub enum PresentError { Unsupported, InvalidState, NotOwned, QueueRejected }
 
 pub struct PresentSession {
     capability: Capability,
@@ -46,18 +58,25 @@ impl PresentSession {
         Ok(Self { capability, description, state: SurfaceState::Ready })
     }
 
-    /// Reserve the ready surface for one present operation. # C: O(1)
-    pub fn acquire(&mut self) -> Result<(), PresentError> {
+    /// Validate and reserve one canonical window/resource handoff. # C: O(1)
+    pub fn acquire(&mut self, handoff: SurfaceHandoff) -> Result<(), PresentError> {
         if self.state != SurfaceState::Ready || !self.description.surface_alive { return Err(PresentError::InvalidState); }
+        if handoff.window == 0 || handoff.window != self.description.window
+            || handoff.window_owner == 0 || handoff.window_owner != self.description.window_owner
+            || handoff.device == 0 || handoff.device != self.description.device
+            || handoff.queue == 0 || handoff.queue != self.description.queue
+            || handoff.resource == 0 || handoff.resource != self.description.resource {
+            return Err(PresentError::NotOwned);
+        }
         self.state = SurfaceState::Acquired;
         Ok(())
     }
 
-    /// Return the acquired surface to the ready state after queue submission. # C: O(1)
-    pub fn present(&mut self) -> Result<(), PresentError> {
+    /// Commit a queue submission or roll the reservation back on rejection. # C: O(1)
+    pub fn present(&mut self, result: HandoffResult) -> Result<(), PresentError> {
         if self.state != SurfaceState::Acquired || !self.description.present_supported { return Err(PresentError::InvalidState); }
         self.state = SurfaceState::Ready;
-        Ok(())
+        match result { HandoffResult::Submitted => Ok(()), HandoffResult::Rejected => Err(PresentError::QueueRejected) }
     }
 
     /// Retire a surface after the native WSI reports loss or device removal. # C: O(1)
@@ -79,20 +98,22 @@ mod tests {
     }
 
     fn surface() -> SurfaceDescription {
-        SurfaceDescription { device_ready: true, surface_alive: true, present_supported: true, width: 1280, height: 720, format: SurfaceFormat::Xrgb8888 }
+        SurfaceDescription { window: 41, window_owner: 7, device: 11, queue: 13, resource: 17, device_ready: true, surface_alive: true, present_supported: true, width: 1280, height: 720, format: SurfaceFormat::Xrgb8888 }
     }
+
+    fn handoff() -> SurfaceHandoff { SurfaceHandoff { window: 41, window_owner: 7, device: 11, queue: 13, resource: 17 } }
 
     #[test]
     fn present_requires_acquire_and_returns_to_ready() {
         let mut session = PresentSession::create(capability(), surface()).unwrap();
         assert_eq!(session.state(), SurfaceState::Ready);
-        assert_eq!(session.present(), Err(PresentError::InvalidState));
-        session.acquire().unwrap();
+        assert_eq!(session.present(HandoffResult::Submitted), Err(PresentError::InvalidState));
+        session.acquire(handoff()).unwrap();
         assert_eq!(session.state(), SurfaceState::Acquired);
-        session.present().unwrap();
+        session.present(HandoffResult::Submitted).unwrap();
         assert_eq!(session.state(), SurfaceState::Ready);
-        session.acquire().unwrap();
-        session.present().unwrap();
+        session.acquire(handoff()).unwrap();
+        session.present(HandoffResult::Submitted).unwrap();
         assert_eq!(session.state(), SurfaceState::Ready);
     }
 
@@ -110,7 +131,17 @@ mod tests {
         let mut session = PresentSession::create(capability(), surface()).unwrap();
         session.lose();
         assert_eq!(session.state(), SurfaceState::Lost);
-        assert_eq!(session.acquire(), Err(PresentError::InvalidState));
-        assert_eq!(session.present(), Err(PresentError::InvalidState));
+        assert_eq!(session.acquire(handoff()), Err(PresentError::InvalidState));
+        assert_eq!(session.present(HandoffResult::Submitted), Err(PresentError::InvalidState));
+    }
+
+    #[test]
+    fn handoff_requires_the_canonical_window_and_queue_owners() {
+        let mut session = PresentSession::create(capability(), surface()).unwrap();
+        assert_eq!(session.acquire(SurfaceHandoff { queue: 99, ..handoff() }), Err(PresentError::NotOwned));
+        assert_eq!(session.state(), SurfaceState::Ready);
+        session.acquire(handoff()).unwrap();
+        assert_eq!(session.present(HandoffResult::Rejected), Err(PresentError::QueueRejected));
+        assert_eq!(session.state(), SurfaceState::Ready);
     }
 }

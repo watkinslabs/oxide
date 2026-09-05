@@ -10,6 +10,9 @@ loader or a Direct3D translation layer.
   capability facts.
 - The NT capability record is the only device snapshot crossing into the
   Windows personality.
+- user32's process-scoped window owner supplies the canonical window identity;
+  a present request carries that identity together with the Vulkan device,
+  queue, and resource identities.
 - The userspace Vulkan façade owns surface admission and the present lifecycle;
   it stores no alternate device capability registry.
 
@@ -23,6 +26,11 @@ loader or a Direct3D translation layer.
 - A valid surface moves `Ready` → `Acquired` → `Ready` for each submission.
   `Present` without `Acquire`, duplicate `Acquire`, and operations after
   `Lost` return `InvalidState`.
+- `Acquire` rejects any window, owner, device, queue, or resource identity that
+  does not match the admitted record; it does not reserve the surface first.
+- `Present(Submitted)` commits the reservation. `Present(Rejected)` returns
+  `QueueRejected` and restores `Ready`, so a failed queue handoff cannot strand
+  ownership in the session.
 - Device removal or WSI loss moves the session to terminal `Lost`.
 
 ## 3 Translation boundary
@@ -36,8 +44,9 @@ commands.
 
 - The userspace probe consumes the native NT capability record and executes one
   admitted acquire/present cycle.
-- Hosted tests cover admission failures, acquire/present ordering, repeated
-  cycles, and terminal surface loss.
+- Hosted tests cover admission failures, owner/device/queue/resource identity,
+  acquire/present ordering, explicit queue rollback, repeated cycles, and
+  terminal surface loss.
 - A positive-control mutation of any required admission or lifecycle condition
   makes the focused test suite fail.
 - x86-64 and AArch64 GNU userspace builds compile the same ABI and state

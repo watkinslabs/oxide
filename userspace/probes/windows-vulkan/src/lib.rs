@@ -1,7 +1,7 @@
 //! Windows-process Vulkan capability façade over the tagged NT boundary.
 
 mod present;
-pub use present::{PresentError, PresentSession, SurfaceDescription, SurfaceFormat, SurfaceState};
+pub use present::{HandoffResult, PresentError, PresentSession, SurfaceDescription, SurfaceFormat, SurfaceHandoff, SurfaceState};
 
 use std::io;
 use syscall::nt::{NtService, NtVulkanCapability};
