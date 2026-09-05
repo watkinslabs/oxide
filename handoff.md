@@ -103,5 +103,6 @@ rustup run nightly-2026-05-01 cargo run --quiet -p xtask -- kernel --arch aarch6
 ```
 
 Start every subsequent feature from freshly fetched `origin/main` using
-`tools/next-branch.sh --claim`; use an isolated worktree and never edit or
-stash in the primary checkout.
+`tools/next-branch.sh --claim`. Fan-out is allowed, but each linked worktree
+must be merged, refreshed, or explicitly closed before the 2-hour guard
+expires; never stash or leave hidden WIP.

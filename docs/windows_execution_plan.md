@@ -23,7 +23,8 @@ kernel/service owner.
 Rules for every lane:
 
 - re-read the current owner and the primary reference before coding;
-- start from freshly fetched `origin/main` in a named isolated worktree;
+- start from freshly fetched `origin/main` in a named worktree; reconcile it
+  before the 2-hour worktree guard expires;
 - make the Linux-shaped owner the only source of truth;
 - test ungated decisions and run both target-aware kernel checks;
 - do not use a boot to discover a defect;
