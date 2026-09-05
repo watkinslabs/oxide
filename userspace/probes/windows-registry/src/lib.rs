@@ -94,6 +94,7 @@ pub enum Request {
     QueryPath { key: KeyHandle },
     Subscribe { key: KeyHandle, filter: u64, subtree: bool },
     PollSubscription { subscription: u64 },
+    Unsubscribe { subscription: u64 },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -160,11 +161,12 @@ impl RegistryStore {
                 let id = self.next_subscription; self.next_subscription = self.next_subscription.saturating_add(1);
                 self.subscriptions.insert(id, Subscription { key, filter, subtree, pending: false }); Response::Subscription(id)
             }
-            Request::PollSubscription { subscription } => match self.subscriptions.get_mut(&subscription) {
-                Some(state) if state.pending => { state.pending = false; Response::Notification }
-                Some(_) => Response::Success,
+            Request::PollSubscription { subscription } => match self.subscriptions.get(&subscription).map(|state| state.pending) {
+                Some(true) => { self.subscriptions.remove(&subscription); Response::Notification }
+                Some(false) => Response::Success,
                 None => Response::Failure(Error::MissingKey),
             },
+            Request::Unsubscribe { subscription } => if self.subscriptions.remove(&subscription).is_some() { Response::Success } else { Response::Failure(Error::MissingKey) },
         }
     }
 
@@ -221,6 +223,7 @@ fn decode_request(frame: &[u8]) -> Result<Request, Error> {
         registry_wire::QUERY_PATH => Request::QueryPath { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?) },
         registry_wire::SUBSCRIBE => Request::Subscribe { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?), filter: take_u64(frame, &mut at).ok_or(Error::InvalidFile)?, subtree: take_u8(frame, &mut at).ok_or(Error::InvalidFile)? != 0 },
         registry_wire::POLL_SUBSCRIPTION => Request::PollSubscription { subscription: take_u64(frame, &mut at).ok_or(Error::InvalidFile)? },
+        registry_wire::UNSUBSCRIBE => Request::Unsubscribe { subscription: take_u64(frame, &mut at).ok_or(Error::InvalidFile)? },
         _ => return Err(Error::InvalidFile),
     };
     if at == frame.len() { Ok(request) } else { Err(Error::InvalidFile) }
@@ -983,6 +986,33 @@ mod tests {
         assert_eq!(store.execute(Request::Set { key, name: "changed".into(), value: Value { kind: ValueType::Dword, data: vec![2, 0, 0, 0] } }), Response::Success);
         assert_eq!(store.execute(Request::PollSubscription { subscription }), Response::Notification);
         assert!(matches!(store.execute(Request::Subscribe { key, filter: REG_NOTIFY_CHANGE_LAST_SET, subtree: true }), Response::Subscription(_)));
+        fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn notifications_are_one_shot_and_multiple_watchers_share_a_key() {
+        let path = std::env::temp_dir().join(format!("oxide-registry-notify-lifetime-{}", std::process::id())); let _ = fs::remove_file(&path);
+        let mut store = RegistryStore::open(&path).unwrap();
+        let key = match store.execute(Request::Create { root: Root::CurrentUser, subkey: r"Software\Lifetime".into() }) { Response::Handle(key) => key, response => panic!("unexpected response: {response:?}") };
+        let first = match store.execute(Request::Subscribe { key, filter: REG_NOTIFY_CHANGE_LAST_SET, subtree: false }) { Response::Subscription(id) => id, response => panic!("unexpected response: {response:?}") };
+        let second = match store.execute(Request::Subscribe { key, filter: REG_NOTIFY_CHANGE_LAST_SET, subtree: false }) { Response::Subscription(id) => id, response => panic!("unexpected response: {response:?}") };
+        assert_ne!(first, second);
+        assert_eq!(store.execute(Request::Set { key, name: "Changed".into(), value: Value { kind: ValueType::Dword, data: vec![1, 0, 0, 0] } }), Response::Success);
+        assert_eq!(store.execute(Request::PollSubscription { subscription: first }), Response::Notification);
+        assert_eq!(store.execute(Request::PollSubscription { subscription: second }), Response::Notification);
+        assert_eq!(store.execute(Request::PollSubscription { subscription: first }), Response::Failure(Error::MissingKey));
+        assert_eq!(store.execute(Request::PollSubscription { subscription: second }), Response::Failure(Error::MissingKey));
+        fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn explicit_unsubscribe_releases_a_pending_notification() {
+        let path = std::env::temp_dir().join(format!("oxide-registry-unsubscribe-{}", std::process::id())); let _ = fs::remove_file(&path);
+        let mut store = RegistryStore::open(&path).unwrap();
+        let key = match store.execute(Request::Create { root: Root::CurrentUser, subkey: r"Software\Unsubscribe".into() }) { Response::Handle(key) => key, response => panic!("unexpected response: {response:?}") };
+        let subscription = match store.execute(Request::Subscribe { key, filter: REG_NOTIFY_CHANGE_LAST_SET, subtree: false }) { Response::Subscription(id) => id, response => panic!("unexpected response: {response:?}") };
+        assert_eq!(store.execute(Request::Unsubscribe { subscription }), Response::Success);
+        assert_eq!(store.execute(Request::Unsubscribe { subscription }), Response::Failure(Error::MissingKey));
         fs::remove_file(path).ok();
     }
 

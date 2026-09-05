@@ -104,6 +104,7 @@ fn encode_request(request: &Request) -> Result<Vec<u8>, Error> {
         Request::QueryPath { key } => { out.push(registry_wire::QUERY_PATH); put_u64(&mut out, key.raw()); }
         Request::Subscribe { key, filter, subtree } => { out.push(registry_wire::SUBSCRIBE); put_u64(&mut out, key.raw()); put_u64(&mut out, *filter); out.push(*subtree as u8); }
         Request::PollSubscription { subscription } => { out.push(registry_wire::POLL_SUBSCRIPTION); put_u64(&mut out, *subscription); }
+        Request::Unsubscribe { subscription } => { out.push(registry_wire::UNSUBSCRIBE); put_u64(&mut out, *subscription); }
     } Ok(out)
 }
 
