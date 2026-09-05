@@ -11,6 +11,9 @@ use pe::catalog::ModuleCatalog;
 use syscall::nt_exec::{NtExecModule, NtExecRequest};
 use syscall::UserPtr;
 
+mod preflight;
+pub use preflight::{BootArtifactReport, PreflightError};
+
 const MAX_IMAGE_BYTES: u64 = 1 << 31;
 
 /// Failure before the kernel handoff. No invalid catalog is submitted.
@@ -190,6 +193,12 @@ impl RuntimeRequest {
         // the complete libc syscall; the kernel copies every referenced range.
         let result = unsafe { libc::syscall(selector as libc::c_long, &self.request as *const NtExecRequest) };
         if result == -1 { Err(io::Error::last_os_error()) } else { Ok(result as u64) }
+    }
+
+    /// Inspect staged inputs without entering the NT execution selector.
+    /// # C: O(image + DLLs + resource metadata)
+    pub fn preflight(image_path: &Path, windows_path: &[u8], dll_dir: &Path, unixlib_dir: &Path, nls_path: &Path, registry_socket: &Path, registry_database: &Path) -> Result<BootArtifactReport, PreflightError> {
+        preflight::inspect(image_path, windows_path, dll_dir, unixlib_dir, nls_path, registry_socket, registry_database)
     }
 }
 
