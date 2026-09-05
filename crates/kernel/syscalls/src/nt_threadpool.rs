@@ -22,7 +22,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
         // Simple-post objects are retained by the native pool for callback
         // execution; no detached callback state is created without that owner.
-        return Some(STATUS_NOT_IMPLEMENTED);
+        return Some(post_work(&cur, call.args.a0, call.args.a1, call.args.a2));
     }
     if call.service == NtService::TpSetPoolStackInformation {
         let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
@@ -31,7 +31,13 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         }
         // Pool stack information belongs to the locked native pool object;
         // no state is mutated until that object owner exists.
-        return Some(STATUS_NOT_IMPLEMENTED);
+        let mut callbacks = cur.thread_group.nt_callbacks.lock();
+        let Some(entry) = callbacks.iter_mut().find(|entry| entry.token == call.args.a0) else { return Some(STATUS_INVALID_HANDLE); };
+        let sched::nt_callback::RegistrationKind::Pool { stack_reserve, stack_commit, .. } = &mut entry.kind else { return Some(STATUS_INVALID_HANDLE); };
+        let Some(reserve) = uaccess::get_user_u64(call.args.a1).ok() else { return Some(STATUS_INVALID_PARAMETER); };
+        let Some(commit) = uaccess::get_user_u64(call.args.a1.saturating_add(8)).ok() else { return Some(STATUS_INVALID_PARAMETER); };
+        *stack_reserve = reserve; *stack_commit = commit;
+        return Some(0);
     }
     if call.service == NtService::TpQueryPoolStackInformation {
         let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
@@ -40,7 +46,11 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         }
         // Pool stack information belongs to the locked native pool object;
         // no output structure is populated until that object owner exists.
-        return Some(STATUS_NOT_IMPLEMENTED);
+        let callbacks = cur.thread_group.nt_callbacks.lock();
+        let Some(entry) = callbacks.iter().find(|entry| entry.token == call.args.a0) else { return Some(STATUS_INVALID_HANDLE); };
+        let sched::nt_callback::RegistrationKind::Pool { stack_reserve, stack_commit, .. } = entry.kind else { return Some(STATUS_INVALID_HANDLE); };
+        if uaccess::put_user_u64(call.args.a1, stack_reserve).is_err() || uaccess::put_user_u64(call.args.a1.saturating_add(8), stack_commit).is_err() { return Some(STATUS_INVALID_PARAMETER); }
+        return Some(0);
     }
     if call.service == NtService::TpCallbackMayRunLong {
         let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
@@ -56,7 +66,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         // Work objects own callback state, pool membership, and queued-work
         // lifetime; no user-visible work pointer is published before that
         // native ownership boundary exists.
-        return Some(STATUS_NOT_IMPLEMENTED);
+        return Some(allocate_work(&cur, call.args.a0, call.args.a1, call.args.a2, call.args.a3));
     }
     if call.service == NtService::TpAllocWait {
         return Some(allocate_callback(call, false));
@@ -69,7 +79,8 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         if !cur.is_nt_personality() || call.args.a0 == 0 { return Some(STATUS_INVALID_PARAMETER); }
         // The pool owns worker threads, callback queues, and shutdown state;
         // no user-visible pool pointer is published before that owner exists.
-        return Some(STATUS_NOT_IMPLEMENTED);
+        if call.args.a1 != 0 { return Some(STATUS_INVALID_PARAMETER); }
+        return Some(allocate_pool(&cur, call.args.a0));
     }
     if call.service == NtService::TpAllocIoCompletion {
         let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
@@ -83,7 +94,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         if !cur.is_nt_personality() || call.args.a0 == 0 { return Some(STATUS_INVALID_PARAMETER); }
         // A cleanup group owns user callback objects and callback-drain state;
         // no kernel object may be returned until that ownership boundary exists.
-        return Some(STATUS_NOT_IMPLEMENTED);
+        return Some(allocate_cleanup_group(&cur, call.args.a0));
     }
     if call.service == NtService::RtlQueueWorkItem {
         let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
@@ -312,5 +323,62 @@ fn allocate_callback(call: NtCall, timer: bool) -> u64 {
         cur.thread_group.nt_callbacks.lock().retain(|entry| entry.token != token);
         return STATUS_INVALID_PARAMETER;
     }
+    0
+}
+
+/// Allocate a process-owned pool object.  The returned value is an opaque
+/// native object identity, not a success-only user pointer; all subsequent
+/// pool operations resolve it through the owning thread group.
+fn allocate_pool(cur: &sched::Task, out: u64) -> u64 {
+    if !uaccess::access_ok(out, 8) { return STATUS_INVALID_PARAMETER; }
+    let Some(token) = next_token(cur, 0x3000_0000_0000_0000) else { return STATUS_NO_MEMORY; };
+    cur.thread_group.nt_callbacks.lock().push(sched::nt_callback::Registration {
+        token, callback: 0, context: 0,
+        kind: sched::nt_callback::RegistrationKind::Pool {
+            min_threads: 0, max_threads: 0, stack_reserve: 0, stack_commit: 0,
+        },
+    });
+    if uaccess::put_user_u64(out, token).is_err() {
+        cur.thread_group.nt_callbacks.lock().retain(|entry| entry.token != token);
+        return STATUS_INVALID_PARAMETER;
+    }
+    0
+}
+
+fn allocate_cleanup_group(cur: &sched::Task, out: u64) -> u64 {
+    if !uaccess::access_ok(out, 8) { return STATUS_INVALID_PARAMETER; }
+    let Some(token) = next_token(cur, 0x5000_0000_0000_0000) else { return STATUS_NO_MEMORY; };
+    cur.thread_group.nt_callbacks.lock().push(sched::nt_callback::Registration {
+        token, callback: 0, context: 0,
+        kind: sched::nt_callback::RegistrationKind::CleanupGroup,
+    });
+    if uaccess::put_user_u64(out, token).is_err() {
+        cur.thread_group.nt_callbacks.lock().retain(|entry| entry.token != token);
+        return STATUS_INVALID_PARAMETER;
+    }
+    0
+}
+
+fn allocate_work(cur: &sched::Task, out: u64, callback: u64, userdata: u64, environment: u64) -> u64 {
+    if !uaccess::access_ok(out, 8) || callback == 0 { return STATUS_INVALID_PARAMETER; }
+    let Some(token) = next_token(cur, 0x6000_0000_0000_0000) else { return STATUS_NO_MEMORY; };
+    cur.thread_group.nt_callbacks.lock().push(sched::nt_callback::Registration {
+        token, callback, context: userdata,
+        kind: sched::nt_callback::RegistrationKind::Work { pool: 0, environment, queued: false },
+    });
+    if uaccess::put_user_u64(out, token).is_err() {
+        cur.thread_group.nt_callbacks.lock().retain(|entry| entry.token != token);
+        return STATUS_INVALID_PARAMETER;
+    }
+    0
+}
+
+fn post_work(cur: &sched::Task, callback: u64, userdata: u64, environment: u64) -> u64 {
+    if callback == 0 { return STATUS_INVALID_PARAMETER; }
+    let Some(token) = next_token(cur, 0x6000_0000_0000_0000) else { return STATUS_NO_MEMORY; };
+    cur.thread_group.nt_callbacks.lock().push(sched::nt_callback::Registration {
+        token, callback, context: userdata,
+        kind: sched::nt_callback::RegistrationKind::Work { pool: 0, environment, queued: true },
+    });
     0
 }

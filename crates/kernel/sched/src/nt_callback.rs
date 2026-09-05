@@ -11,6 +11,9 @@ pub enum RegistrationKind {
     Wait { object: u64, timeout_ms: u32, flags: u32 },
     TimerQueue,
     Timer { queue: u64, due_ms: u32, period_ms: u32, flags: u32 },
+    Pool { min_threads: u32, max_threads: u32, stack_reserve: u64, stack_commit: u64 },
+    CleanupGroup,
+    Work { pool: u64, environment: u64, queued: bool },
     Callback,
 }
 
