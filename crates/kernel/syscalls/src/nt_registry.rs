@@ -266,12 +266,15 @@ fn frame_delete_key(key: u64) -> Vec<u8> { frame_key(registry_wire::DELETE_KEY, 
 
 fn frame_key(operation: u8, key: u64) -> Vec<u8> { let mut frame = Vec::new(); frame.push(operation); frame.extend_from_slice(&key.to_le_bytes()); frame }
 
-fn frame_export(key: u64) -> Vec<u8> { frame_key(registry_wire::EXPORT, key) }
+fn frame_save_hive(key: u64) -> Vec<u8> { frame_key(registry_wire::SAVE_HIVE, key) }
 
-fn frame_import(key: u64, bytes: &[u8]) -> Vec<u8> {
-    let mut frame = frame_key(registry_wire::IMPORT, key);
-    put_bytes(&mut frame, bytes);
-    frame
+fn frame_load_hive(root: u8, parent: Option<u64>, name: &str, bytes: &[u8]) -> Vec<u8> {
+    let mut frame = Vec::new();
+    match parent {
+        Some(key) => { frame.push(registry_wire::LOAD_HIVE_RELATIVE); frame.extend_from_slice(&key.to_le_bytes()); }
+        None => { frame.push(registry_wire::LOAD_HIVE_ROOT); frame.push(root); }
+    }
+    put_text(&mut frame, name); put_bytes(&mut frame, bytes); frame
 }
 
 fn put_text(frame: &mut Vec<u8>, text: &str) { put_bytes(frame, text.as_bytes()); }
@@ -339,41 +342,23 @@ fn save_key_native(call: NtCall) -> u64 {
     };
     if file_object.kind() != sched::nt_object::NtObjectType::File { return STATUS_INVALID_HANDLE; }
     let Some(file) = file_object.file() else { return STATUS_INVALID_HANDLE; };
-    let Some(Reply::Bytes(bytes)) = transact(&frame_export(key)) else { return STATUS_UNSUCCESSFUL; };
-    if file.write(&bytes).map_or(true, |written| written != bytes.len()) { return STATUS_UNSUCCESSFUL; }
-    STATUS_SUCCESS
+    let Some(Reply::Bytes(bytes)) = transact(&frame_save_hive(key)) else { return STATUS_UNSUCCESSFUL; };
+    crate::nt_file::write_registry_hive(&file, &bytes)
 }
 
 fn load_key_native(call: NtCall) -> u64 {
     let Some(current) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !current.is_nt_personality() || call.args.a0 == 0 || call.args.a1 == 0 { return STATUS_INVALID_PARAMETER; }
     let Some((root, relative, name)) = key_name(call.args.a0, &current) else { return STATUS_INVALID_PARAMETER; };
-    let request = if let Some(parent) = relative {
-        frame_relative(registry_wire::OPEN_RELATIVE, parent, &name)
-    } else { frame_root(registry_wire::OPEN, root, &name) };
-    let target = match transact(&request) {
-        Some(Reply::Handle(handle)) => handle,
-        Some(Reply::Failure(2)) => {
-            let create = if let Some(parent) = relative {
-                frame_relative(registry_wire::CREATE_RELATIVE, parent, &name)
-            } else { frame_root(registry_wire::CREATE, root, &name) };
-            let Some(Reply::Handle(handle)) = transact(&create) else { return STATUS_OBJECT_NAME_NOT_FOUND; };
-            handle
-        }
-        Some(reply) => return reply_status(reply),
-        None => return STATUS_UNSUCCESSFUL,
-    };
     let bytes = match crate::nt_file::read_registry_hive(&current, call.args.a1) {
         Ok(bytes) => bytes,
-        Err(status) => { close_remote(target); return status; }
+        Err(status) => return status,
     };
-    let result = match transact(&frame_import(target, &bytes)) {
+    match transact(&frame_load_hive(root, relative, &name, &bytes)) {
         Some(Reply::Success) => STATUS_SUCCESS,
         Some(reply) => reply_status(reply),
         None => STATUS_UNSUCCESSFUL,
-    };
-    close_remote(target);
-    result
+    }
 }
 
 fn query_key_native(call: NtCall) -> u64 {
@@ -568,8 +553,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn export_request_targets_the_canonical_registry_owner() {
-        assert_eq!(frame_export(0x1122_3344_5566_7788), [registry_wire::EXPORT, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11]);
+    fn save_request_targets_the_canonical_registry_owner() {
+        assert_eq!(frame_save_hive(0x1122_3344_5566_7788), [registry_wire::SAVE_HIVE, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11]);
     }
 
     #[test]

@@ -99,8 +99,9 @@ fn encode_request(request: &Request) -> Result<Vec<u8>, Error> {
         Request::EnumValues { key } => { out.push(7); put_u64(&mut out, key.raw()); }
         Request::QueryKey { key } => { out.push(registry_wire::QUERY_KEY); put_u64(&mut out, key.raw()); }
         Request::Flush { key } => { out.push(11); put_u64(&mut out, key.raw()); }
-        Request::Export { key } => { out.push(registry_wire::EXPORT); put_u64(&mut out, key.raw()); }
-        Request::Import { key, bytes } => { out.push(registry_wire::IMPORT); put_u64(&mut out, key.raw()); put_bytes(&mut out, bytes)?; }
+        Request::SaveHive { key } => { out.push(registry_wire::SAVE_HIVE); put_u64(&mut out, key.raw()); }
+        Request::LoadHive { root, subkey, bytes } => { out.push(registry_wire::LOAD_HIVE_ROOT); out.push(root_code(*root)); put_text(&mut out, subkey)?; put_bytes(&mut out, bytes)?; }
+        Request::LoadHiveRelative { key, subkey, bytes } => { out.push(registry_wire::LOAD_HIVE_RELATIVE); put_u64(&mut out, key.raw()); put_text(&mut out, subkey)?; put_bytes(&mut out, bytes)?; }
         Request::QueryPath { key } => { out.push(registry_wire::QUERY_PATH); put_u64(&mut out, key.raw()); }
         Request::Subscribe { key, filter, subtree } => { out.push(registry_wire::SUBSCRIBE); put_u64(&mut out, key.raw()); put_u64(&mut out, *filter); out.push(*subtree as u8); }
         Request::PollSubscription { subscription } => { out.push(registry_wire::POLL_SUBSCRIPTION); put_u64(&mut out, *subscription); }

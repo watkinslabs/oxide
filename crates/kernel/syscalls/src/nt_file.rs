@@ -10,6 +10,7 @@ use syscall::nt::{NtCall, NtCreateFileRequest, NtFileCall, NtFileIoRequest, NtOp
 use crate::nt_file_policy::CreateDisposition;
 
 const STATUS_SUCCESS: u64 = 0;
+const STATUS_UNSUCCESSFUL: u64 = 0xc000_0001;
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 const STATUS_OBJECT_NAME_NOT_FOUND: u64 = 0xc000_0034;
 const STATUS_OBJECT_NAME_COLLISION: u64 = 0xc000_0035;
@@ -150,6 +151,20 @@ pub(crate) fn read_registry_hive(cur: &sched::Task, attributes: u64) -> Result<a
         at += count;
     }
     Ok(bytes)
+}
+
+/// Complete one bounded registry hive write before reporting NT save success.
+/// # C: O(file bytes)
+pub(crate) fn write_registry_hive(file: &vfs::File, bytes: &[u8]) -> u64 {
+    if bytes.is_empty() || bytes.len() > REGISTRY_HIVE_MAX_BYTES { return STATUS_INVALID_PARAMETER; }
+    let mut at = 0;
+    while at < bytes.len() {
+        let Ok(count) = file.write(&bytes[at..]) else { return STATUS_UNSUCCESSFUL };
+        if count == 0 { return STATUS_UNSUCCESSFUL; }
+        at += count;
+    }
+    if file.vfs_fsync(false).is_err() { return STATUS_UNSUCCESSFUL; }
+    STATUS_SUCCESS
 }
 
 fn native_fs_control(call: NtCall) -> u64 {
