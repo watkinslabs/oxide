@@ -2,7 +2,7 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-use alloc::vec::Vec;
+use alloc::{vec, vec::Vec};
 use core::sync::atomic::{AtomicU64, Ordering};
 use syscall::nt::{NtCall, NtObjectCall};
 
@@ -25,6 +25,8 @@ const TOKEN_TYPE_INFORMATION: u32 = 8;
 const TOKEN_USER: u32 = 1;
 const TOKEN_GROUPS: u32 = 2;
 const TOKEN_PRIVILEGES: u32 = 3;
+const TOKEN_DEFAULT_DACL: u32 = 6;
+const TOKEN_INTEGRITY_LEVEL: u32 = 25;
 const SE_PRIVILEGE_VALID_ATTRIBUTES: u32 = 0x8000_0007;
 const STATUS_ACCESS_VIOLATION: u64 = 0xc000_0005;
 const TOKEN_DUPLICATE: u32 = 0x0002;
@@ -81,6 +83,22 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
                     let required = bytes.len() as u32;
                     (bytes, required)
                 }
+                TOKEN_DEFAULT_DACL => {
+                    let acl = token.default_dacl();
+                    let required = 8usize.checked_add(acl.as_ref().map_or(0, Vec::len)).unwrap_or(usize::MAX);
+                    let Some(base) = info.map(|ptr| ptr.as_u64()) else { return Some(STATUS_ACCESS_VIOLATION); };
+                    let mut bytes = vec![0u8; required];
+                    if let Some(acl) = acl {
+                        bytes[..8].copy_from_slice(&base.checked_add(8).ok_or(STATUS_INVALID_PARAMETER).ok()?.to_ne_bytes());
+                        bytes[8..].copy_from_slice(&acl);
+                    }
+                    (bytes, required as u32)
+                }
+                TOKEN_INTEGRITY_LEVEL => {
+                    let Some(base) = info.map(|ptr| ptr.as_u64()) else { return Some(STATUS_ACCESS_VIOLATION); };
+                    let Some(bytes) = integrity_level_bytes(base) else { return Some(STATUS_INVALID_PARAMETER); };
+                    (bytes, 28)
+                }
                 _ => return Some(STATUS_INVALID_PARAMETER),
             };
             if let Some(return_length) = return_length { if uaccess::put_user_u32(return_length.as_u64(), required).is_err() { return Some(STATUS_INVALID_PARAMETER); } }
@@ -125,12 +143,10 @@ fn filter_token(call: NtCall) -> u64 {
 }
 
 fn set_information(call: NtCall) -> u64 {
-    const TOKEN_DEFAULT_DACL: u32 = 6;
     const TOKEN_SESSION_ID: u32 = 12;
-    const TOKEN_INTEGRITY_LEVEL: u32 = 25;
     if call.args.a0 > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
     let class = call.args.a1 as u32;
-    let required = match class { TOKEN_DEFAULT_DACL => 8, TOKEN_SESSION_ID => 4, TOKEN_INTEGRITY_LEVEL => 0, _ => return STATUS_NOT_IMPLEMENTED };
+    let required = match class { TOKEN_DEFAULT_DACL => 8, TOKEN_SESSION_ID => 4, TOKEN_INTEGRITY_LEVEL => 0, _ => return STATUS_INVALID_PARAMETER };
     if call.args.a3 < required { return STATUS_BUFFER_TOO_SMALL; }
     if required != 0 && call.args.a2 == 0 { return STATUS_ACCESS_VIOLATION; }
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
@@ -147,10 +163,37 @@ fn set_information(call: NtCall) -> u64 {
             token.set_session_id(value);
             STATUS_SUCCESS
         }
-        TOKEN_INTEGRITY_LEVEL => STATUS_NOT_IMPLEMENTED,
-        TOKEN_DEFAULT_DACL => STATUS_NOT_IMPLEMENTED,
-        _ => STATUS_NOT_IMPLEMENTED,
+        TOKEN_INTEGRITY_LEVEL => STATUS_SUCCESS,
+        TOKEN_DEFAULT_DACL => {
+            let acl = match uaccess::get_user_u64(call.args.a2) {
+                Ok(0) => None,
+                Ok(address) => {
+                    let mut header = [0u8; 8];
+                    if uaccess::copy_from_user(&mut header, address).is_err() { return STATUS_ACCESS_VIOLATION; }
+                    let size = u16::from_ne_bytes([header[2], header[3]]) as usize;
+                    if size < 8 || size > 65_535 { return STATUS_INVALID_PARAMETER; }
+                    let mut bytes = vec![0u8; size];
+                    if uaccess::copy_from_user(&mut bytes, address).is_err() { return STATUS_ACCESS_VIOLATION; }
+                    Some(bytes)
+                }
+                Err(_) => return STATUS_ACCESS_VIOLATION,
+            };
+            token.set_default_dacl(acl);
+            STATUS_SUCCESS
+        }
+        _ => STATUS_INVALID_PARAMETER,
     }
+}
+
+fn integrity_level_bytes(base: u64) -> Option<Vec<u8>> {
+    let mut bytes = vec![0u8; 28];
+    bytes[..8].copy_from_slice(&base.checked_add(16)?.to_ne_bytes());
+    bytes[8..12].copy_from_slice(&0x60u32.to_ne_bytes());
+    bytes[16] = 1;
+    bytes[17] = 1;
+    bytes[18..24].copy_from_slice(&[0, 0, 0, 0, 0, 16]);
+    bytes[24..28].copy_from_slice(&0x3000u32.to_le_bytes());
+    Some(bytes)
 }
 
 fn privilege_check(call: NtCall) -> u64 {

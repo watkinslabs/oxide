@@ -24,6 +24,7 @@ pub struct NtToken {
     gid: u32,
     groups: Spinlock<Vec<NtTokenGroup>, TaskListClass>,
     privileges: Spinlock<Vec<NtTokenPrivilege>, TaskListClass>,
+    default_dacl: Spinlock<Option<Vec<u8>>, TaskListClass>,
     session_id: AtomicU32,
 }
 
@@ -31,7 +32,7 @@ impl NtToken {
     pub fn new(uid: u32, gid: u32) -> Self {
         let mut groups = Vec::new();
         groups.push(NtTokenGroup { sid: sid(5, gid), attributes: 4 });
-        Self { uid, gid, groups: Spinlock::new(groups), privileges: Spinlock::new(Vec::new()), session_id: AtomicU32::new(0) }
+        Self { uid, gid, groups: Spinlock::new(groups), privileges: Spinlock::new(Vec::new()), default_dacl: Spinlock::new(None), session_id: AtomicU32::new(0) }
     }
     pub const fn uid(&self) -> u32 { self.uid }
     pub const fn gid(&self) -> u32 { self.gid }
@@ -117,6 +118,10 @@ impl NtToken {
         (previous, all_assigned)
     }
     pub fn privileges(&self) -> Vec<NtTokenPrivilege> { self.privileges.lock().clone() }
+    /// Snapshot the optional self-relative default ACL owned by this token. # C: O(ACL)
+    pub fn default_dacl(&self) -> Option<Vec<u8>> { self.default_dacl.lock().clone() }
+    /// Replace the token's self-relative default ACL. # C: O(ACL)
+    pub fn set_default_dacl(&self, acl: Option<Vec<u8>>) { *self.default_dacl.lock() = acl; }
     /// Clone this token while applying Wine's supported filter operation.
     /// Disabled SIDs are removed and matching privileges are disabled; the
     /// source token remains immutable from the new token's perspective.
@@ -127,7 +132,7 @@ impl NtToken {
         for privilege in &mut privileges {
             if disabled_privileges.iter().any(|disabled| disabled.luid == privilege.luid) { privilege.attributes &= !2; }
         }
-        Self { uid: self.uid, gid: self.gid, groups: Spinlock::new(groups), privileges: Spinlock::new(privileges), session_id: AtomicU32::new(self.session_id()) }
+        Self { uid: self.uid, gid: self.gid, groups: Spinlock::new(groups), privileges: Spinlock::new(privileges), default_dacl: Spinlock::new(self.default_dacl()), session_id: AtomicU32::new(self.session_id()) }
     }
     pub fn session_id(&self) -> u32 { self.session_id.load(Ordering::Acquire) }
     pub fn set_session_id(&self, value: u32) { self.session_id.store(value, Ordering::Release); }
