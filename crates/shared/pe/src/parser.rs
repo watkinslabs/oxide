@@ -19,6 +19,7 @@ const MAX_UNWIND_CHAIN: usize = 32;
 pub const RELAY_DESCRIPTOR_MAGIC: u32 = 0xdeb9_0002;
 const DIRECTORY_COUNT: usize = 16;
 const PAGE: u32 = 0x1000;
+const MAX_FORWARDER_MODULE_NAME: usize = 256;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)] pub enum Error { Enoexec, Einval, Unsupported }
 #[derive(Copy, Clone, Debug, Eq, PartialEq)] pub struct DataDirectory { pub rva: u32, pub size: u32 }
@@ -98,7 +99,21 @@ pub fn discover_owned_modules_with_builtins<'a, S: ModuleSource<'a>, F: Fn(&[u8]
     let mut modules = vec![OwnedModule { name: root_name.to_vec(), blob: root_blob.to_vec() }];
     let mut index = 0;
     while index < modules.len() {
-        let dependencies: Vec<Vec<u8>> = { let image = parse(&modules[index].blob)?; image.dependencies()?.into_iter().map(|name| name.to_vec()).collect() };
+        let dependencies: Vec<Vec<u8>> = {
+            let image = parse(&modules[index].blob)?;
+            let imports = image.imports()?;
+            let mut names: Vec<Vec<u8>> = imports.iter().map(|import| import.name.to_vec()).collect();
+            for import in imports {
+                let resolved = crate::apiset::target(import.name).unwrap_or(import.name);
+                if is_builtin(resolved) { continue; }
+                let dependency = source.load(resolved).ok_or(Error::Unsupported)?;
+                let dependency = parse(dependency)?;
+                for thunk in image.import_thunks(&import)? {
+                    if let Some(name) = dependency.forwarder_dependency(&thunk)? { names.push(name); }
+                }
+            }
+            names
+        };
         for dependency in dependencies {
             let resolved = crate::apiset::target(&dependency).unwrap_or(&dependency);
             if is_builtin(resolved) { continue; }
@@ -160,6 +175,35 @@ impl<'a> Image<'a> {
             if !out.iter().any(|name: &&[u8]| ascii_eq_ignore_case(name, import.name)) { out.push(import.name); }
         }
         Ok(out)
+    }
+
+    /// Return import and forwarded-export DLL names in loader order. A
+    /// forwarded export is a real dependency even when it is absent from the
+    /// import directory; keeping it here makes graph discovery complete before
+    /// any image is mapped. # C: O(N_imports + N_export_functions)
+    pub fn loader_dependencies(&self) -> Result<Vec<Vec<u8>>, Error> {
+        let mut out: Vec<Vec<u8>> = self.dependencies()?.into_iter().map(|name| name.to_vec()).collect();
+        let Some(exports) = self.exports()? else { return Ok(out); };
+        for index in 0..exports.function_count {
+            let ordinal = u16::try_from(exports.ordinal_base.checked_add(index).ok_or(Error::Einval)?).map_err(|_| Error::Einval)?;
+            if let Some(name) = self.forwarder_dependency(&ImportThunk::Ordinal(ordinal))? {
+                if !out.iter().any(|existing| ascii_eq_ignore_case(existing, &name)) { out.push(name); }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Resolve the DLL named by one imported symbol when its export is a
+    /// forwarder. Callers must supply an actually imported thunk; EAT data
+    /// exports are otherwise indistinguishable from forwarder bytes. # C: O(N_export_names)
+    pub fn forwarder_dependency(&self, import: &ImportThunk<'_>) -> Result<Option<Vec<u8>>, Error> {
+        let Some(ExportTarget::Forwarder(forwarder)) = self.export_target(import)? else { return Ok(None); };
+        let Some(dot) = forwarder.iter().rposition(|byte| *byte == b'.') else { return Err(Error::Einval); };
+        if dot == 0 || dot > MAX_FORWARDER_MODULE_NAME { return Err(Error::Einval); }
+        let mut name = forwarder[..dot].to_vec();
+        if !name.iter().rev().take(4).eq(b"lld.".iter()) { name.extend_from_slice(b".dll"); }
+        if name.len() > MAX_FORWARDER_MODULE_NAME { return Err(Error::Einval); }
+        Ok(Some(name))
     }
     /// Decode one descriptor's 64-bit import lookup table. # C: O(thunk count + symbol bytes)
     pub fn import_thunks(&self, import: &Import<'a>) -> Result<Vec<ImportThunk<'a>>, Error> {
