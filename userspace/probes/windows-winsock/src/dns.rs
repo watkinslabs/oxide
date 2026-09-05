@@ -75,6 +75,7 @@ pub fn resolve_addrinfo<R: NativeResolver>(owner: &R, node: Option<&[u8]>, servi
     if node.is_none() && service.is_none() { return Err(ResolveError::Native(EAI_NONAME)); }
     let hints = normalize_addrinfo_hints(family, socket_type, protocol, flags)
         .map_err(ResolveError::Invalid)?;
+    let service = normalize_service(service);
     let records = owner.resolve(node, service, hints).map_err(native_error)?;
     if records.is_empty() { return Err(ResolveError::EmptyResult); }
     if records.len() > MAX_ADDRINFO_RESULTS { return Err(ResolveError::TooManyResults); }
@@ -92,6 +93,13 @@ pub fn resolve_addrinfo<R: NativeResolver>(owner: &R, node: Option<&[u8]>, servi
     }
     if output.is_empty() { return Err(ResolveError::EmptyResult); }
     Ok(output)
+}
+
+fn normalize_service(service: Option<&[u8]>) -> Option<&[u8]> {
+    match service {
+        Some(value) if value.is_empty() => Some(b"0"),
+        other => other,
+    }
 }
 
 fn native_error(error: NativeResolverError) -> ResolveError {
@@ -150,12 +158,13 @@ mod tests {
     use super::*;
     use crate::{AI_NUMERICHOST, AF_UNSPEC};
 
-    struct Fixture { calls: core::cell::Cell<usize>, result: Result<alloc::vec::Vec<NativeAddrInfo>, NativeResolverError> }
+    struct Fixture { calls: core::cell::Cell<usize>, service: core::cell::RefCell<Option<alloc::vec::Vec<u8>>>, result: Result<alloc::vec::Vec<NativeAddrInfo>, NativeResolverError> }
 
     impl NativeResolver for Fixture {
-        fn resolve(&self, _node: Option<&[u8]>, _service: Option<&[u8]>, _hints: NormalizedAddrInfoHints)
+        fn resolve(&self, _node: Option<&[u8]>, service: Option<&[u8]>, _hints: NormalizedAddrInfoHints)
             -> Result<alloc::vec::Vec<NativeAddrInfo>, NativeResolverError> {
             self.calls.set(self.calls.get() + 1);
+            self.service.replace(service.map(alloc::vec::Vec::from));
             self.result.clone()
         }
     }
@@ -193,7 +202,7 @@ mod tests {
 
     #[test]
     fn lookup_calls_the_native_owner_and_preserves_order_and_hints() {
-        let owner = Fixture { calls: core::cell::Cell::new(0), result: Ok(alloc::vec![v4(2), v4(1)]) };
+        let owner = Fixture { calls: core::cell::Cell::new(0), service: core::cell::RefCell::new(None), result: Ok(alloc::vec![v4(2), v4(1)]) };
         let result = resolve_addrinfo(&owner, Some(b"example.test"), Some(b"https"),
             AF_UNSPEC, 1, 6, AI_NUMERICHOST).unwrap();
         assert_eq!(owner.calls.get(), 1);
@@ -205,7 +214,7 @@ mod tests {
 
     #[test]
     fn native_failure_is_translated_without_a_second_resolver_path() {
-        let owner = Fixture { calls: core::cell::Cell::new(0), result: Err(NativeResolverError::Again) };
+        let owner = Fixture { calls: core::cell::Cell::new(0), service: core::cell::RefCell::new(None), result: Err(NativeResolverError::Again) };
         assert_eq!(resolve_addrinfo(&owner, Some(b"missing.test"), None, AF_UNSPEC, 0, 0, 0),
             Err(ResolveError::Native(WSATRY_AGAIN)));
         assert_eq!(owner.calls.get(), 1);
@@ -213,7 +222,7 @@ mod tests {
 
     #[test]
     fn absent_names_and_empty_native_answers_fail_closed() {
-        let empty = Fixture { calls: core::cell::Cell::new(0), result: Ok(alloc::vec![]) };
+        let empty = Fixture { calls: core::cell::Cell::new(0), service: core::cell::RefCell::new(None), result: Ok(alloc::vec![]) };
         assert_eq!(resolve_addrinfo(&empty, None, None, AF_UNSPEC, 0, 0, 0),
             Err(ResolveError::Native(EAI_NONAME)));
         assert_eq!(empty.calls.get(), 0);
@@ -224,7 +233,7 @@ mod tests {
 
     #[test]
     fn malformed_native_records_are_rejected_before_publication() {
-        let owner = Fixture { calls: core::cell::Cell::new(0), result: Ok(alloc::vec![NativeAddrInfo {
+        let owner = Fixture { calls: core::cell::Cell::new(0), service: core::cell::RefCell::new(None), result: Ok(alloc::vec![NativeAddrInfo {
             flags: 0, socket_type: 1, protocol: 6, address: NativeAddress::V6([0; 16]), port: 53,
             canon_name: Some(alloc::vec![b'x'; MAX_CANONICAL_NAME + 1]),
         }]) };
@@ -234,9 +243,25 @@ mod tests {
 
     #[test]
     fn unsupported_hints_are_rejected_before_owner_invocation() {
-        let owner = Fixture { calls: core::cell::Cell::new(0), result: Ok(alloc::vec![v4(1)]) };
+        let owner = Fixture { calls: core::cell::Cell::new(0), service: core::cell::RefCell::new(None), result: Ok(alloc::vec![v4(1)]) };
         assert_eq!(resolve_addrinfo(&owner, Some(b"example.test"), None, 999, 0, 0, 0),
             Err(ResolveError::Invalid(WsaError::AddressFamilyNotSupported)));
         assert_eq!(owner.calls.get(), 0);
+    }
+
+    #[test]
+    fn empty_service_is_normalized_to_zero_at_native_boundary() {
+        let owner = Fixture { calls: core::cell::Cell::new(0), service: core::cell::RefCell::new(None), result: Ok(alloc::vec![v4(1)]) };
+        assert!(resolve_addrinfo(&owner, Some(b"localhost"), Some(b""), AF_UNSPEC, 1, 6, 0).is_ok());
+        assert_eq!(owner.service.borrow().as_deref(), Some(b"0".as_slice()));
+    }
+
+    #[test]
+    fn nonempty_and_absent_services_are_not_rewritten() {
+        let owner = Fixture { calls: core::cell::Cell::new(0), service: core::cell::RefCell::new(None), result: Ok(alloc::vec![v4(1)]) };
+        assert!(resolve_addrinfo(&owner, Some(b"localhost"), Some(b"https"), AF_UNSPEC, 1, 6, 0).is_ok());
+        assert_eq!(owner.service.borrow().as_deref(), Some(b"https".as_slice()));
+        assert!(resolve_addrinfo(&owner, Some(b"localhost"), None, AF_UNSPEC, 1, 6, 0).is_ok());
+        assert_eq!(*owner.service.borrow(), None);
     }
 }
