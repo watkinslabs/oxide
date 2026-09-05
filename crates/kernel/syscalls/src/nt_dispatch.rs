@@ -819,7 +819,6 @@ pub fn dispatch(call: NtCall) -> u64 {
             || uaccess::copy_to_user(call.args.a1, &(required - 2).to_ne_bytes()).is_err() { return STATUS_INVALID_PARAMETER; }
         return STATUS_SUCCESS;
     }
-    if matches!(call.service, syscall::nt::NtService::NtCreateSymbolicLinkObject | syscall::nt::NtService::NtEnumerateKey | syscall::nt::NtService::NtEnumerateValueKey | syscall::nt::NtService::NtFilterToken | syscall::nt::NtService::NtFlushKey) { return 0xc000_0002; }
     if let Some(result) = crate::nt_power::dispatch(call) { return result; }
     if let Some(result) = crate::nt_fls::dispatch(call) { return result; }
     if let Some(result) = crate::nt_format::dispatch(call) { return result; }
