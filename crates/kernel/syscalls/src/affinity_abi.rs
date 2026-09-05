@@ -89,6 +89,7 @@ pub fn getaffinity_retlen(len: usize) -> Result<usize, Errno> {
 /// Linux `sched_getaffinity`: report `p->cpus_mask & cpu_active_mask`, so a
 /// CPU that is offline never shows up as usable even though the stored mask
 /// still names it. # C: O(words)
+#[allow(dead_code)]
 pub fn reported_mask(cpus_allowed: CpuMask, active: CpuMask) -> CpuMask { cpus_allowed.intersect(active) }
 
 /// Linux `check_same_owner()` + the `CAP_SYS_NICE` override in
@@ -108,6 +109,7 @@ pub fn setaffinity_permitted(same_owner: bool, cap_sys_nice: bool) -> bool {
 /// The composition rule itself is owned by `sched::affinity` — the same owner
 /// the cgroup `cpuset.cpus` writer uses, under the other [`MaskChange`] arm —
 /// so the two writers of `cpus_allowed` cannot drift apart. # C: O(words)
+#[allow(dead_code)]
 pub fn effective_mask(want: CpuMask, cpuset: CpuMask) -> CpuMask {
     sched::affinity::compose(cpuset, want, sched::affinity::MaskChange::UserRequest)
 }
@@ -116,6 +118,7 @@ pub fn effective_mask(want: CpuMask, cpuset: CpuMask) -> CpuMask {
 /// `cpumask_any_and_distribute(new_mask, cpu_valid_mask) >= nr_cpu_ids` is
 /// EINVAL — a mask naming no *active* CPU is rejected rather than stored, since
 /// the task could never be scheduled again. # C: O(1)
+#[allow(dead_code)]
 pub fn admits_mask(eff: CpuMask, active: CpuMask) -> Result<(), Errno> {
     if eff.intersect(active).is_empty() { return Err(Errno::Einval); }
     Ok(())
@@ -136,6 +139,7 @@ pub fn admits_mask(eff: CpuMask, active: CpuMask) -> Result<(), Errno> {
 /// probe: an implementation that reports EINVAL for an empty mask before
 /// checking ownership tells an unprivileged prober that the pid exists.
 /// # C: O(1)
+#[allow(dead_code)]
 pub fn setaffinity_decide(want: CpuMask, cpuset: CpuMask, active: CpuMask, no_setaffinity: bool,
                           same_owner: bool, cap_sys_nice: bool) -> Result<CpuMask, Errno> {
     if no_setaffinity { return Err(Errno::Einval); }

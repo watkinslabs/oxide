@@ -1,5 +1,6 @@
 // Native NT syscall transition accounting. The timer is sampled at the real
 // NT entry boundary; the accumulator is separate from Linux syscall buckets.
+#![allow(dead_code)]
 
 #[cfg(all(target_os = "oxide-kernel", feature = "debug-syscost"))]
 use core::sync::atomic::{AtomicU64, Ordering};
