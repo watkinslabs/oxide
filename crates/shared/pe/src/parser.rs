@@ -41,7 +41,7 @@ impl SectionFlags {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)] pub struct TlsDirectory { pub start_raw: u64, pub end_raw: u64, pub index: u64, pub callbacks: u64, pub zero_fill: u32, pub characteristics: u32 }
 #[derive(Copy, Clone, Debug, Eq, PartialEq)] pub struct RuntimeFunction { pub begin_rva: u32, pub end_rva: u32, pub unwind_rva: u32 }
 #[derive(Copy, Clone, Debug, Eq, PartialEq)] pub struct UnwindCode { pub code_offset: u8, pub unwind_op: u8, pub op_info: u8 }
-#[derive(Debug, Eq, PartialEq)] pub struct UnwindInfo { pub version: u8, pub flags: u8, pub prolog_size: u8, pub code_count: u8, pub frame_register: u8, pub frame_offset: u8, pub codes: Vec<UnwindCode> }
+#[derive(Clone, Debug, Eq, PartialEq)] pub struct UnwindInfo { pub version: u8, pub flags: u8, pub prolog_size: u8, pub code_count: u8, pub frame_register: u8, pub frame_offset: u8, pub codes: Vec<UnwindCode> }
 #[derive(Copy, Clone, Debug, Eq, PartialEq)] pub struct UnwindHandler { pub handler_rva: u32, pub data_rva: u32 }
 /// x64 register state consumed and produced by one unwind step.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)] pub struct UnwindContext {
@@ -411,24 +411,23 @@ impl<'a> Image<'a> {
             if function.begin_rva >= function.end_rva || function.begin_rva < previous_end || function.end_rva > self.size_of_image { return Err(Error::Einval); }
             previous_end = function.end_rva; out.push(function);
         }
-        for function in &out { self.resolve_unwind_function(*function)?; }
+        for function in &out { self.unwind_chain(*function)?; }
         Ok(out)
     }
     /// Find the runtime function covering an image-relative instruction RVA.
     pub fn exception_function_for(&self, rva: u32) -> Result<Option<RuntimeFunction>, Error> {
         for function in self.exception_functions()? {
             if function.begin_rva >= function.end_rva { return Err(Error::Einval); }
-            if rva >= function.begin_rva && rva < function.end_rva { return Ok(Some(self.resolve_unwind_function(function)?)); }
+            if rva >= function.begin_rva && rva < function.end_rva { return Ok(Some(function)); }
         }
         Ok(None)
     }
     /// Decode the fixed header and unwind-code array referenced by a runtime function.
     pub fn unwind_info(&self, function: RuntimeFunction) -> Result<UnwindInfo, Error> {
-        let function = self.resolve_unwind_function(function)?;
         self.read_unwind_info(function)
     }
     fn read_unwind_info(&self, function: RuntimeFunction) -> Result<UnwindInfo, Error> {
-        if function.begin_rva >= function.end_rva || function.end_rva > self.size_of_image || function.unwind_rva & 1 != 0 { return Err(Error::Einval); }
+        if function.begin_rva >= function.end_rva || function.end_rva > self.size_of_image || function.unwind_rva & 3 != 0 { return Err(Error::Einval); }
         let header = self.rva_range(function.unwind_rva, 4)?;
         let version = header[0] & 7; let flags = header[0] >> 3;
         if version != 1 { return Err(Error::Unsupported); }
@@ -456,6 +455,7 @@ impl<'a> Image<'a> {
         Ok(Some(UnwindHandler { handler_rva, data_rva }))
     }
     fn runtime_function_at(&self, rva: u32) -> Result<RuntimeFunction, Error> {
+        if rva & 3 != 0 { return Err(Error::Einval); }
         let b = self.rva_range(rva, 12)?;
         let function = RuntimeFunction { begin_rva: u32(b, 0)?, end_rva: u32(b, 4)?, unwind_rva: u32(b, 8)? };
         if function.begin_rva >= function.end_rva || function.end_rva > self.size_of_image { return Err(Error::Einval); }
@@ -464,25 +464,28 @@ impl<'a> Image<'a> {
     /// Follow PE chained runtime-function records to the one carrying the
     /// unwind operations. The bounded walk rejects cycles and malformed
     /// handler data before any caller applies register or stack changes.
-    fn resolve_unwind_function(&self, mut function: RuntimeFunction) -> Result<RuntimeFunction, Error> {
+    fn resolve_unwind_function(&self, function: RuntimeFunction) -> Result<RuntimeFunction, Error> {
+        self.unwind_chain(function)?.last().map(|(function, _)| *function).ok_or(Error::Einval)
+    }
+    fn unwind_chain(&self, mut function: RuntimeFunction) -> Result<Vec<(RuntimeFunction, UnwindInfo)>, Error> {
+        let mut chain = Vec::new(); let mut visited = Vec::new();
         for _ in 0..MAX_UNWIND_CHAIN {
-            if function.unwind_rva & 1 != 0 {
-                function = self.runtime_function_at(function.unwind_rva & !1)?;
-                continue;
-            }
             let info = self.read_unwind_info(function)?;
-            if info.flags & UNW_FLAG_CHAININFO == 0 { return Ok(function); }
+            chain.push((function, info.clone()));
+            if info.flags & UNW_FLAG_CHAININFO == 0 { return Ok(chain); }
             let slots = ((info.code_count as u32 + 1) & !1).checked_mul(2).ok_or(Error::Einval)?;
-            let chain_rva = function.unwind_rva.checked_add(4 + slots).ok_or(Error::Einval)?;
-            function = self.runtime_function_at(chain_rva)?;
+            let target = function.unwind_rva.checked_add(4 + slots).ok_or(Error::Einval)?;
+            if visited.contains(&target) { return Err(Error::Einval); }
+            visited.push(target); function = self.runtime_function_at(target)?;
         }
         Err(Error::Einval)
     }
     /// Validate x64 unwind opcode slots and compute their stack allocation.
     /// Register restoration remains the responsibility of the runtime context.
     pub fn unwind_stack_allocation(&self, function: RuntimeFunction) -> Result<u32, Error> {
-        let function = self.resolve_unwind_function(function)?;
-        let info = self.read_unwind_info(function)?; let mut slot = 0usize; let mut bytes = 0u32;
+        let mut bytes = 0u32;
+        for (function, info) in self.unwind_chain(function)? {
+        let mut slot = 0usize;
         while slot < info.codes.len() {
             let code = info.codes[slot]; slot += 1;
             match code.unwind_op {
@@ -504,6 +507,7 @@ impl<'a> Image<'a> {
                 _ => return Err(Error::Unsupported),
             }
         }
+        }
         Ok(bytes)
     }
     /// Reconstruct the caller context for one x64 frame. The reader owns all
@@ -517,9 +521,9 @@ impl<'a> Image<'a> {
             context.rsp = context.rsp.checked_add(8).ok_or(Error::Einval)?;
             return Ok(context);
         };
-        let function = self.resolve_unwind_function(function)?;
-        let info = self.read_unwind_info(function)?;
-        let in_prolog = pc_rva >= function.begin_rva && pc_rva < function.begin_rva.saturating_add(info.prolog_size as u32);
+        let chain = self.unwind_chain(function)?;
+        for (chain_index, (function, info)) in chain.into_iter().enumerate() {
+        let in_prolog = chain_index == 0 && pc_rva >= function.begin_rva && pc_rva < function.begin_rva.saturating_add(info.prolog_size as u32);
         let prolog_offset = if in_prolog { pc_rva - function.begin_rva } else { u32::MAX };
         let mut frame = context.rsp;
         if info.frame_register != 0 {
@@ -554,7 +558,8 @@ impl<'a> Image<'a> {
                         context.rip = read(context.rsp)?;
                         context.rsp = read(context.rsp.checked_add(24).ok_or(Error::Einval)?)?;
                     } else if code.op_info > 1 { return Err(Error::Einval); }
-                    return Ok(context);
+                    if info.flags & UNW_FLAG_CHAININFO == 0 { return Ok(context); }
+                    return Err(Error::Unsupported);
                 }
                 UWOP_SAVE_XMM128 | UWOP_SAVE_XMM128_FAR => {
                     let extra = if code.unwind_op == UWOP_SAVE_XMM128 { 1 } else { 2 };
@@ -571,8 +576,10 @@ impl<'a> Image<'a> {
                 _ => return Err(Error::Unsupported),
             }
         }
+        if info.flags & UNW_FLAG_CHAININFO != 0 { continue; }
         context.rip = read(context.rsp)?;
         context.rsp = context.rsp.checked_add(8).ok_or(Error::Einval)?;
+        }
         Ok(context)
     }
     fn unwind_slot(&self, function: RuntimeFunction, slot: usize) -> Result<u16, Error> {

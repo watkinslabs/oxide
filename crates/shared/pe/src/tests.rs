@@ -308,26 +308,47 @@ fn follows_x64_chained_runtime_function_and_rejects_a_chain_cycle() {
     let mut b = image();
     let dir = OPT + 112 + IMAGE_DIRECTORY_ENTRY_EXCEPTION * 8;
     b[dir..dir + 4].copy_from_slice(&0x1100u32.to_le_bytes()); b[dir + 4..dir + 8].copy_from_slice(&12u32.to_le_bytes());
-    b[0x500..0x50c].copy_from_slice(&[0x00, 0x10, 0, 0, 0x60, 0x10, 0, 0, 0x81, 0x11, 0, 0]);
-    b[0x580..0x58c].copy_from_slice(&[0x00, 0x10, 0, 0, 0x60, 0x10, 0, 0, 0xf0, 0x11, 0, 0]);
-    b[0x5f0..0x5f6].copy_from_slice(&[1, 2, 1, 0, 2, 0x22]);
-    b[0x5e0..0x5e4].copy_from_slice(&[0x21, 0, 0, 0]);
+    b[0x500..0x50c].copy_from_slice(&[0x00, 0x10, 0, 0, 0x60, 0x10, 0, 0, 0xe0, 0x11, 0, 0]);
+    b[0x5e0..0x5f4].copy_from_slice(&[0x21, 0, 1, 0, 0, 0x22, 0, 0, 0x00, 0x10, 0, 0, 0x60, 0x10, 0, 0, 0xf8, 0x11, 0, 0]);
+    b[0x5f8..0x5fe].copy_from_slice(&[1, 2, 1, 0, 2, 0x22]);
     let parsed = parse(&b).unwrap(); let function = parsed.exception_function_for(0x1040).unwrap().unwrap();
-    assert_eq!(function.unwind_rva, 0x11f0);
-    assert_eq!(parsed.unwind_stack_allocation(function).unwrap(), 24);
+    assert_eq!(function.unwind_rva, 0x11e0);
+    assert_eq!(parsed.unwind_stack_allocation(function).unwrap(), 48);
     let context = UnwindContext { regs: [0; 16], xmm: [[0; 2]; 16], rip: 0x1040, rsp: 0x8000 };
-    let result = parsed.unwind_x64(Some(function), 0x1040, context, |address| if address == 0x8018 { Ok(0x2222) } else { Err(Error::Einval) }).unwrap();
-    assert_eq!(result.rip, 0x2222); assert_eq!(result.rsp, 0x8020);
-
-    let mut flagged = b.clone();
-    flagged[0x508..0x50c].copy_from_slice(&0x11e0u32.to_le_bytes());
-    flagged[0x5e0..0x5f0].copy_from_slice(&[0x21, 0, 0, 0, 0x00, 0x10, 0, 0, 0x60, 0x10, 0, 0, 0xf0, 0x11, 0, 0]);
-    let flagged = parse(&flagged).unwrap();
-    assert_eq!(flagged.unwind_stack_allocation(flagged.exception_function_for(0x1040).unwrap().unwrap()).unwrap(), 24);
+    let result = parsed.unwind_x64(Some(function), 0x1040, context, |address| if address == 0x8030 { Ok(0x2222) } else { Err(Error::Einval) }).unwrap();
+    assert_eq!(result.rip, 0x2222); assert_eq!(result.rsp, 0x8038);
 
     let mut cyclic = b;
-    cyclic[0x580 + 8..0x580 + 12].copy_from_slice(&0x1181u32.to_le_bytes());
+    cyclic[0x5e8 + 8..0x5e8 + 12].copy_from_slice(&0x11e1u32.to_le_bytes());
     assert_eq!(parse(&cyclic).unwrap().exception_functions(), Err(Error::Einval));
+
+    let mut malformed = image();
+    malformed[dir..dir + 4].copy_from_slice(&0x1100u32.to_le_bytes()); malformed[dir + 4..dir + 8].copy_from_slice(&12u32.to_le_bytes());
+    malformed[0x500..0x50c].copy_from_slice(&[0x00, 0x10, 0, 0, 0x60, 0x10, 0, 0, 0xe0, 0x11, 0, 0]);
+    malformed[0x5e0..0x5f4].copy_from_slice(&[0x21, 0, 0, 0, 0, 0, 0, 0, 0x00, 0x10, 0, 0, 1, 0x30, 0, 0, 0xf8, 0x11, 0, 0]);
+    assert_eq!(parse(&malformed).unwrap().exception_functions(), Err(Error::Einval));
+}
+
+#[test]
+fn applies_each_x64_chain_record_and_rejects_unaligned_chain_unwind_data() {
+    let mut b = image();
+    let dir = OPT + 112 + IMAGE_DIRECTORY_ENTRY_EXCEPTION * 8;
+    b[dir..dir + 4].copy_from_slice(&0x1100u32.to_le_bytes()); b[dir + 4..dir + 8].copy_from_slice(&12u32.to_le_bytes());
+    b[0x500..0x50c].copy_from_slice(&[0x00, 0x10, 0, 0, 0x10, 0x10, 0, 0, 0xe0, 0x11, 0, 0]);
+    b[0x5e0..0x5e4].copy_from_slice(&[0x21, 2, 1, 0]);
+    b[0x5e4..0x5e8].copy_from_slice(&[2, 0x12, 0, 0]);
+    b[0x5e8..0x5f4].copy_from_slice(&[0x10, 0x10, 0, 0, 0x60, 0x10, 0, 0, 0xf8, 0x11, 0, 0]);
+    b[0x5f8..0x5fe].copy_from_slice(&[1, 0, 1, 0, 2, 2]);
+    let parsed = parse(&b).unwrap();
+    let function = parsed.exception_function_for(0x1008).unwrap().unwrap();
+    let context = UnwindContext { regs: [0; 16], xmm: [[0; 2]; 16], rip: 0x1008, rsp: 0x8000 };
+    let result = parsed.unwind_x64(Some(function), 0x1008, context, |address| if address == 0x8018 { Ok(0x2222) } else { Err(Error::Einval) }).unwrap();
+    assert_eq!(result.rip, 0x2222); assert_eq!(result.rsp, 0x8020);
+
+    let mut malformed = b;
+    malformed[0x5f0..0x5f4].copy_from_slice(&0x11f6u32.to_le_bytes());
+    malformed[0x5f6..0x5fc].copy_from_slice(&[1, 0, 1, 0, 2, 2]);
+    assert_eq!(parse(&malformed).unwrap().exception_functions(), Err(Error::Einval));
 }
 
 #[test]
