@@ -242,6 +242,10 @@ impl NtHandleTable {
     /// Insert an object with its granted access mask and return its handle. # C: O(N)
     pub fn insert(&self, object: Arc<NtObject>, access: u32) -> Option<NtHandle> {
         let mut entries = self.entries.lock();
+        Self::insert_locked(&mut entries, object, access)
+    }
+
+    fn insert_locked(entries: &mut Vec<Entry>, object: Arc<NtObject>, access: u32) -> Option<NtHandle> {
         let index = entries.iter().position(|entry| entry.object.is_none() && !entry.retired).unwrap_or(entries.len());
         if index >= HANDLE_INDEX_MASK as usize { return None; }
         if index == entries.len() { entries.push(Entry { object: None, access: 0, flags: 0, generation: 1, retired: false }); }
@@ -375,8 +379,16 @@ impl NtHandleTable {
     }
     /// Duplicate a handle with a subset of its granted rights. # C: O(1)
     pub fn duplicate(&self, handle: NtHandle, desired_access: u32) -> Option<NtHandle> {
-        let object = self.get(handle, desired_access)?;
-        self.insert(object, desired_access)
+        let (index, generation) = handle.parts()?;
+        let mut entries = self.entries.lock();
+        let object = {
+            let entry = entries.get(index - FIRST_INDEX)?;
+            if entry.generation != generation || entry.access & desired_access != desired_access {
+                return None;
+            }
+            entry.object.clone()?
+        };
+        Self::insert_locked(&mut entries, object, desired_access)
     }
 
     /// Wake wait-multiple callers after a state-bearing object changes. # C: O(N_waiters)
