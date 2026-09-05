@@ -116,10 +116,14 @@ pub struct WindowClass { pub name: Vec<u16>, pub wndproc: u64, pub atom: u16 }
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct WindowRect { pub left: i32, pub top: i32, pub right: i32, pub bottom: i32 }
 
+/// Canonical compositor input for one visible window paint transaction.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum WindowError { NoSuchWindow, InvalidParent, ClassInUse, WrongThread, NoFocus, QueueFull, PaintActive, PaintNotActive }
+pub struct WindowPresentRecord { pub window: WindowId, pub bounds: WindowRect, pub damage: Option<WindowRect> }
 
-pub struct WindowManager { next: u32, next_atom: u16, classes: Vec<WindowClass>, windows: Vec<(WindowId, WindowRecord)>, rects: Vec<(WindowId, WindowRect)>, texts: Vec<(WindowId, Vec<u16>)>, dirty: Vec<(WindowId, WindowRect)>, painting: Vec<WindowId>, queues: Vec<(u64, MessageQueue)>, timers: Vec<WindowTimer>, focus: Option<WindowId>, cursor: (i32, i32), destroying: Vec<WindowId> }
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum WindowError { NoSuchWindow, InvalidParent, ClassInUse, WrongThread, NoFocus, QueueFull, PaintActive, PaintNotActive, NotVisible }
+
+pub struct WindowManager { next: u32, next_atom: u16, classes: Vec<WindowClass>, windows: Vec<(WindowId, WindowRecord)>, rects: Vec<(WindowId, WindowRect)>, texts: Vec<(WindowId, Vec<u16>)>, dirty: Vec<(WindowId, WindowRect)>, painting: Vec<(WindowId, Option<WindowRect>)>, queues: Vec<(u64, MessageQueue)>, timers: Vec<WindowTimer>, focus: Option<WindowId>, cursor: (i32, i32), destroying: Vec<WindowId> }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 struct WindowTimer { owner_tid: u64, hwnd: Option<WindowId>, id: u64, period_ns: u64, due_ns: u64, proc: u64 }
@@ -276,7 +280,7 @@ impl WindowManager {
     /// Mark a window client region dirty and enqueue one paint notification. # C: O(N_windows + N_dirty)
     pub fn invalidate(&mut self, id: WindowId, rect: Option<WindowRect>) -> Result<(), WindowError> {
         let area = self.client_rect(id).ok_or(WindowError::NoSuchWindow)?;
-        let requested = rect.unwrap_or(area);
+        let requested = rect.map_or(Some(area), |rect| clip_rect(rect, area)).ok_or(WindowError::InvalidParent)?;
         if let Some((_, current)) = self.dirty.iter_mut().find(|(window, _)| *window == id) {
             current.left = current.left.min(requested.left); current.top = current.top.min(requested.top);
             current.right = current.right.max(requested.right); current.bottom = current.bottom.max(requested.bottom);
@@ -291,14 +295,23 @@ impl WindowManager {
     /// Consume the current dirty region for a window. # C: O(N_dirty)
     pub fn begin_paint(&mut self, id: WindowId) -> Result<Option<WindowRect>, WindowError> {
         if self.get(id).is_none() { return Err(WindowError::NoSuchWindow); }
-        if self.painting.contains(&id) { return Err(WindowError::PaintActive); }
+        if self.painting.iter().any(|(window, _)| *window == id) { return Err(WindowError::PaintActive); }
         let region = self.dirty.iter().position(|(window, _)| *window == id).map(|index| self.dirty.remove(index).1);
-        self.painting.push(id);
+        self.painting.push((id, region));
         Ok(region)
+    }
+    /// Return the validated visible-window record for the active paint. # C: O(N_windows)
+    pub fn present_record(&self, id: WindowId) -> Result<WindowPresentRecord, WindowError> {
+        let record = self.get(id).ok_or(WindowError::NoSuchWindow)?;
+        if !record.visible { return Err(WindowError::NotVisible); }
+        let bounds = self.rect(id).ok_or(WindowError::NoSuchWindow)?;
+        if bounds.right <= bounds.left || bounds.bottom <= bounds.top { return Err(WindowError::NoSuchWindow); }
+        let damage = self.painting.iter().find(|(window, _)| *window == id).map(|(_, damage)| *damage).ok_or(WindowError::PaintNotActive)?;
+        Ok(WindowPresentRecord { window: id, bounds, damage })
     }
     /// Close one canonical paint transaction and reject unmatched EndPaint calls. # C: O(N_painting)
     pub fn end_paint(&mut self, id: WindowId) -> Result<(), WindowError> {
-        let Some(index) = self.painting.iter().position(|window| *window == id) else { return Err(WindowError::PaintNotActive); };
+        let Some(index) = self.painting.iter().position(|(window, _)| *window == id) else { return Err(WindowError::PaintNotActive); };
         self.painting.remove(index);
         Ok(())
     }
@@ -316,7 +329,7 @@ impl WindowManager {
         self.rects.retain(|(window, _)| *window != id);
         self.texts.retain(|(window, _)| *window != id);
         self.dirty.retain(|(window, _)| *window != id);
-        self.painting.retain(|window| *window != id);
+        self.painting.retain(|(window, _)| *window != id);
         self.destroying.retain(|window| *window != id);
         if self.focus == Some(id) { self.focus = None; }
         Ok(self.windows.remove(index).1)
@@ -461,6 +474,12 @@ fn same_name(left: &[u16], right: &[u16]) -> bool {
         let fold = |unit: u16| if (b'A' as u16..=b'Z' as u16).contains(&unit) { unit + 32 } else { unit };
         fold(*left) == fold(*right)
     })
+}
+
+fn clip_rect(rect: WindowRect, area: WindowRect) -> Option<WindowRect> {
+    let left = rect.left.max(area.left); let top = rect.top.max(area.top);
+    let right = rect.right.min(area.right); let bottom = rect.bottom.min(area.bottom);
+    (right > left && bottom > top).then_some(WindowRect { left, top, right, bottom })
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -850,6 +869,36 @@ mod tests {
         assert_eq!(manager.begin_paint(window), Err(WindowError::PaintActive));
         assert_eq!(manager.end_paint(window), Ok(()));
         assert_eq!(manager.end_paint(window), Err(WindowError::PaintNotActive));
+    }
+
+    #[test]
+    fn visible_paint_exposes_one_canonical_compositor_record() {
+        let mut manager = WindowManager::new();
+        let window = manager.create(9, None, 0).unwrap();
+        let bounds = WindowRect { left: 80, top: 60, right: 720, bottom: 540 };
+        manager.set_rect(window, bounds).unwrap();
+        manager.show(9, window, true).unwrap();
+        manager.begin_paint(window).unwrap();
+        manager.end_paint(window).unwrap();
+        let damage = WindowRect { left: 12, top: 8, right: 40, bottom: 24 };
+        manager.invalidate(window, Some(damage)).unwrap();
+        manager.begin_paint(window).unwrap();
+        assert_eq!(manager.present_record(window), Ok(WindowPresentRecord { window, bounds, damage: Some(damage) }));
+        manager.end_paint(window).unwrap();
+        assert_eq!(manager.present_record(window), Err(WindowError::PaintNotActive));
+    }
+
+    #[test]
+    fn compositor_record_rejects_hidden_windows_and_clips_damage() {
+        let mut manager = WindowManager::new();
+        let window = manager.create(9, None, 0).unwrap();
+        manager.set_rect(window, WindowRect { left: 0, top: 0, right: 20, bottom: 20 }).unwrap();
+        manager.invalidate(window, Some(WindowRect { left: -4, top: 2, right: 30, bottom: 40 })).unwrap();
+        assert_eq!(manager.begin_paint(window), Ok(Some(WindowRect { left: 0, top: 2, right: 20, bottom: 20 })));
+        assert_eq!(manager.present_record(window), Err(WindowError::NotVisible));
+        manager.end_paint(window).unwrap();
+        manager.show(9, window, true).unwrap();
+        assert_eq!(manager.begin_paint(window), Ok(Some(WindowRect { left: 0, top: 0, right: 20, bottom: 20 })));
     }
 
     #[test]
