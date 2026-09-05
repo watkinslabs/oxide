@@ -26,6 +26,22 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         // execution; no detached callback state is created without that owner.
         return Some(post_work(&cur, call.args.a0, call.args.a1, call.args.a2));
     }
+    if call.service == NtService::TpPostWork {
+        let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
+        if !cur.is_nt_personality() || call.args.a0 == 0 { return Some(STATUS_INVALID_PARAMETER); }
+        #[cfg(target_arch = "x86_64")]
+        let callback = {
+            let mut callbacks = cur.thread_group.nt_callbacks.lock();
+            let Some(entry) = callbacks.iter_mut().find(|entry| entry.token == call.args.a0) else { return Some(STATUS_INVALID_HANDLE); };
+            let sched::nt_callback::RegistrationKind::Work { queued, .. } = &mut entry.kind else { return Some(STATUS_INVALID_HANDLE); };
+            *queued = true;
+            (entry.callback, entry.context)
+        };
+        #[cfg(target_arch = "x86_64")]
+        { return Some(spawn_user_callback_thread(&cur, callback.0, call.args.a0, callback.1, 0)); }
+        #[cfg(target_arch = "aarch64")]
+        { return Some(STATUS_NOT_IMPLEMENTED); }
+    }
     if call.service == NtService::TpSetPoolStackInformation {
         let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
         if !cur.is_nt_personality() || call.args.a0 == 0 || call.args.a1 == 0 {
@@ -104,7 +120,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         let flags = crate::nt_dispatch::stack_argument(6).unwrap_or(0);
         if flags > u32::MAX as u64 || flags as u32 & !WT_SUPPORTED != 0 { return Some(STATUS_INVALID_PARAMETER); }
         #[cfg(target_arch = "x86_64")]
-        { return Some(spawn_rtl_work_item(&cur, call.args.a0, call.args.a1)); }
+        { return Some(spawn_user_callback_thread(&cur, call.args.a0, call.args.a1, 0, 0)); }
         #[cfg(target_arch = "aarch64")]
         { return Some(STATUS_NOT_IMPLEMENTED); }
     }
@@ -394,7 +410,7 @@ fn post_work(cur: &sched::Task, callback: u64, userdata: u64, environment: u64) 
 /// discover the work, but only a user thread may execute its instruction
 /// pointer.
 #[cfg(target_arch = "x86_64")]
-fn spawn_rtl_work_item(cur: &sched::Task, callback: u64, context: u64) -> u64 {
+fn spawn_user_callback_thread(cur: &sched::Task, callback: u64, arg1: u64, arg2: u64, arg3: u64) -> u64 {
     const STACK_SIZE: u64 = 64 * 1024;
     if !uaccess::access_ok(callback, 1) { return STATUS_INVALID_PARAMETER; }
     let Some(mm) = (unsafe { cur.mm_ref() }).map(|mm| mm.clone()) else { return STATUS_INVALID_PARAMETER; };
@@ -422,13 +438,22 @@ fn spawn_rtl_work_item(cur: &sched::Task, callback: u64, context: u64) -> u64 {
         Err(_) => { let _ = mm.munmap(stack, STACK_SIZE as usize); return STATUS_NO_MEMORY; }
     };
     let child = match unsafe { sched::live::new_nt_thread_unpublished(
-        tid, callback, user_sp, context, teb, mm.clone(), cur.thread_group.clone()) } {
+        tid, callback, user_sp, arg1, teb, mm.clone(), cur.thread_group.clone()) } {
         Ok(child) => child,
         Err(_) => {
             if let Some(teb) = hal::UserVirtAddr::new(teb) { let _ = elf_load::process_env::unmap_thread_teb(teb, &mm); }
             let _ = mm.munmap(stack, STACK_SIZE as usize); return STATUS_NO_MEMORY;
         }
     };
+    // `new_nt_thread_unpublished` seeds the first Windows argument (RCX).
+    // Thread-pool callbacks additionally receive the opaque instance/work
+    // values in RDX/R8 under the x86-64 Windows ABI.
+    unsafe {
+        let ctx = child.arch_ctx_ptr::<hal_x86_64::ContextX86_64>();
+        let regs = ((*ctx).rsp + core::mem::size_of::<u64>() as u64) as *mut hal_x86_64::PtRegs;
+        (*regs).rdx = arg2;
+        (*regs).r8 = arg3;
+    }
     sched::live::publish_new_task(&child);
     sched::live::wake_new_task(&child);
     STATUS_SUCCESS
