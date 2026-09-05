@@ -735,8 +735,7 @@ pub(crate) fn create_class_window_by_atom_for_current(atom: u16, parent: u64) ->
             entries.push(GuiEntry { group: Arc::downgrade(&group), state: ipc::win32_window::WindowManager::new(), menus: ipc::win32_menu::MenuManager::new(), wait: Arc::new(sched::live::WaitList::new()), foreground: false });
             entries.len() - 1
         });
-    let wndproc = entries[index].state.class_wndproc_by_atom(atom)?;
-    entries[index].state.create_class_atom(cur.tid as u64, parent, atom, wndproc).ok().map(|window| window.raw() as u64)
+    entries[index].state.create_class_atom(cur.tid as u64, parent, atom).ok().map(|window| window.raw() as u64)
 }
 
 /// Read the registered class name associated with one canonical HWND.

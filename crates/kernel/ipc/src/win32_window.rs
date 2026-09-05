@@ -172,10 +172,11 @@ impl WindowManager {
     /// Create a window while retaining its class identity in the owner. # C: O(N_classes + N_windows)
     pub fn create_class(&mut self, owner_tid: u64, parent: Option<WindowId>, name: &[u16]) -> Result<WindowId, WindowError> {
         let class = self.classes.iter().find(|class| same_name(&class.name, name)).cloned().ok_or(WindowError::NoSuchWindow)?;
-        self.create_class_atom(owner_tid, parent, class.atom, class.wndproc)
+        self.create_class_atom(owner_tid, parent, class.atom)
     }
     /// Create a window from a registered atom in the owner. # C: O(N_windows)
-    pub fn create_class_atom(&mut self, owner_tid: u64, parent: Option<WindowId>, atom: u16, wndproc: u64) -> Result<WindowId, WindowError> {
+    pub fn create_class_atom(&mut self, owner_tid: u64, parent: Option<WindowId>, atom: u16) -> Result<WindowId, WindowError> {
+        let wndproc = self.class_wndproc_by_atom(atom).ok_or(WindowError::NoSuchWindow)?;
         let window = self.create(owner_tid, parent, wndproc)?;
         self.windows.iter_mut().find(|(id, _)| *id == window).ok_or(WindowError::NoSuchWindow)?.1.class_atom = Some(atom);
         Ok(window)
@@ -777,11 +778,26 @@ mod tests {
         let mut manager = WindowManager::new();
         let name = [b'E' as u16, b'd' as u16, b'i' as u16, b't' as u16];
         let atom = manager.register_class(&name, 0x1400).unwrap();
-        let window = manager.create_class_atom(9, None, atom, 0x1400).unwrap();
+        let window = manager.create_class_atom(9, None, atom).unwrap();
         assert_eq!(manager.unregister_class(&name), Err(WindowError::ClassInUse));
         manager.destroy(window).unwrap();
         assert_eq!(manager.unregister_class(&name), Ok(()));
         assert_eq!(manager.class_wndproc_by_atom(atom), None);
+    }
+
+    #[test]
+    fn top_level_class_window_owns_visibility_and_message_delivery() {
+        let mut manager = WindowManager::new();
+        let atom = manager.register_class(&[b'N' as u16, b'o' as u16, b't' as u16], 0x1400).unwrap();
+        let window = manager.create_class_atom(9, None, atom).unwrap();
+        assert_eq!(manager.get(window).unwrap().wndproc, 0x1400);
+        assert_eq!(manager.show(9, window, true), Ok(false));
+        assert!(manager.get(window).unwrap().visible);
+        let message = WinMessage { hwnd: Some(window), message: WM_CLOSE, wparam: 7, lparam: -9 };
+        manager.post_to_window(window, message).unwrap();
+        assert_eq!(manager.take_for_thread(9, MessageFilter { hwnd: Some(window), first: WM_CLOSE, last: WM_CLOSE }), QueueResult::Message(message));
+        manager.destroy(window).unwrap();
+        assert_eq!(manager.post_to_window(window, message), Err(WindowError::NoSuchWindow));
     }
 
     #[test]
