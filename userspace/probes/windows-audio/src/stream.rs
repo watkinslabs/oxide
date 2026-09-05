@@ -116,6 +116,7 @@ impl AudioStream {
     /// # C: O(1)
     pub fn client_write(&mut self, frames: u32) -> Result<(), StreamError> {
         self.ensure_open()?;
+        if self.direction != AudioDirection::Render { return Err(StreamError::WrongDirection); }
         if self.render_loan.is_some() { return Err(StreamError::BufferOperationPending); }
         if frames > self.available_frames() { return Err(StreamError::WouldBlock); }
         self.queued_frames += frames;
@@ -126,6 +127,7 @@ impl AudioStream {
     /// # C: O(1)
     pub fn client_read(&mut self, frames: u32) -> Result<(), StreamError> {
         self.ensure_open()?;
+        if self.direction != AudioDirection::Capture { return Err(StreamError::WrongDirection); }
         if self.render_loan.is_some() { return Err(StreamError::BufferOperationPending); }
         if frames > self.queued_frames { return Err(StreamError::WouldBlock); }
         self.queued_frames -= frames;
@@ -136,10 +138,19 @@ impl AudioStream {
     /// # C: O(1)
     pub fn device_advance(&mut self, frames: u32) -> Result<(), StreamError> {
         if self.state != StreamState::Running { return Err(StreamError::NotRunning); }
+        self.ensure_open()?;
+        if self.render_loan.is_some() { return Err(StreamError::BufferOperationPending); }
         match self.direction {
-            AudioDirection::Render => self.client_read(frames),
-            AudioDirection::Capture => self.client_write(frames),
+            AudioDirection::Render => {
+                if frames > self.queued_frames { return Err(StreamError::WouldBlock); }
+                self.queued_frames -= frames;
+            }
+            AudioDirection::Capture => {
+                if frames > self.available_frames() { return Err(StreamError::WouldBlock); }
+                self.queued_frames += frames;
+            }
         }
+        Ok(())
     }
 
     /// Start the endpoint; a running endpoint cannot be started twice.
@@ -293,6 +304,20 @@ mod tests {
         stream.start().unwrap();
         stream.device_advance(2).unwrap();
         assert_eq!(stream.current_padding(), 2);
+    }
+
+    #[test]
+    fn client_transfer_direction_matches_endpoint_owner() {
+        let g = StreamGeometry::from_frames(format(), 8, 4).unwrap();
+        let mut render = AudioStream::new(g, AudioDirection::Render);
+        assert_eq!(render.client_read(1), Err(StreamError::WrongDirection));
+        assert!(render.client_write(1).is_ok());
+
+        let mut capture = AudioStream::new(g, AudioDirection::Capture);
+        assert_eq!(capture.client_write(1), Err(StreamError::WrongDirection));
+        capture.start().unwrap();
+        assert!(capture.device_advance(1).is_ok());
+        assert!(capture.client_read(1).is_ok());
     }
 
     #[test]
