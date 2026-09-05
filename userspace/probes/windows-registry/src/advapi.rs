@@ -24,6 +24,11 @@ impl Advapi {
         self.reg_open_key_ex_w(parent, name, 0, 0)
     }
 
+    /// Implement legacy `RegCreateKeyW` through the canonical extended create operation. # C: O(name length)
+    pub fn reg_create_key_w(&mut self, parent: u64, name: Option<&[u16]>) -> (u32, Option<u64>) {
+        self.reg_create_key_ex_w(parent, name, 0, 0, 0)
+    }
+
     /// Implement the observable `RegOpenKeyExW` contract for safe Rust callers. # C: O(name length)
     pub fn reg_open_key_ex_w(&mut self, parent: u64, name: Option<&[u16]>, options: u32, _access: u32) -> (u32, Option<u64>) {
         if options != 0 { return (ERROR_INVALID_PARAMETER, None); }
@@ -182,6 +187,28 @@ mod tests {
     fn adapter_type_decoder_accepts_only_supported_value_types() {
         assert_eq!(ValueType::decode_for_adapter(4), Some(ValueType::Dword));
         assert_eq!(ValueType::decode_for_adapter(6), None);
+    }
+
+    #[test]
+    fn create_key_wrapper_matches_predefined_root_and_invalid_handle_contract() {
+        use std::os::unix::net::UnixListener;
+        use std::thread;
+        let base = std::env::temp_dir(); let id = std::process::id();
+        let socket = base.join(format!("oxide-advapi-create-{id}.sock")); let database = base.join(format!("oxide-advapi-create-{id}.db"));
+        let _ = std::fs::remove_file(&socket); let _ = std::fs::remove_file(&database);
+        let listener = UnixListener::bind(&socket).unwrap(); let server_database = database.clone();
+        let server = thread::spawn(move || { let (mut stream, _) = listener.accept().unwrap(); let mut store = crate::RegistryStore::open(&server_database).unwrap(); crate::serve_connection(&mut stream, &mut store).unwrap(); });
+        let mut api = Advapi::connect(&socket).unwrap();
+        let name: Vec<u16> = "Software\\Oxide".encode_utf16().chain([0]).collect();
+        let (status, key) = api.reg_create_key_w(HKEY_LOCAL_MACHINE, Some(&name));
+        assert_eq!(status, ERROR_SUCCESS); let key = key.unwrap();
+        let (status, reopened) = api.reg_open_key_w(HKEY_LOCAL_MACHINE, Some(&name));
+        assert_eq!(status, ERROR_SUCCESS); assert!(reopened.is_some());
+        assert_eq!(api.reg_create_key_w(0xdead, Some(&name)), (ERROR_INVALID_HANDLE, None));
+        let bad_name: Vec<u16> = "bad\\".encode_utf16().chain([0]).collect();
+        assert_eq!(api.reg_create_key_w(HKEY_CLASSES_ROOT, Some(&bad_name)), (ERROR_INVALID_PARAMETER, None));
+        assert_eq!(api.reg_close_key(key), ERROR_SUCCESS); drop(api); server.join().unwrap();
+        let _ = std::fs::remove_file(socket); let _ = std::fs::remove_file(database);
     }
 
     #[test]
