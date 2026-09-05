@@ -73,8 +73,13 @@ pub fn dispatch(call: NtCall, stack: [u64; 5]) -> u64 {
     // no other task can observe or replace this mm before publication below.
     if let Some(mm) = unsafe { child.mm_ref() } { mm.set_exe_path(image_path.clone()); }
     if let Some(catalog) = catalog { child.thread_group.set_nt_module_catalog(catalog); }
-    if let Some(fd) = cur.clone_fd_table() {
-        unsafe { child.replace_fd_table(Some(fd)); }
+    if crate::nt_process_policy::inherits_process_handles(c.process_flags as u32) {
+        if let Some(fd) = cur.clone_fd_table() {
+            // A new NT process owns an independent descriptor snapshot. A
+            // shared Arc would make parent-side close/exec mutations visible
+            // in the child, unlike Linux fork's copied files_struct.
+            unsafe { child.replace_fd_table(Some(Arc::new(fd.fork_clone()))); }
+        }
     }
     unsafe { sched::live::arm_user_entry(&child, prepared.process.entry.rip.as_u64(),
         prepared.process.entry.rsp.as_u64()); }
