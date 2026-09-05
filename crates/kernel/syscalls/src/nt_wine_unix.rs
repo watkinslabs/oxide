@@ -112,7 +112,11 @@ fn lookup_unixlib_entry(root: u64, table_address: u64, entry: u64) -> Result<u64
     if table_address != descriptor.table_address || entry >= descriptor.entry_count {
         return Err(STATUS_ACCESS_VIOLATION);
     }
-    descriptor.entries.get(entry as usize).copied().ok_or(STATUS_ACCESS_VIOLATION)
+    let target = descriptor.entries.get(entry as usize).copied().ok_or(STATUS_ACCESS_VIOLATION)?;
+    if target == 0 || !descriptor.executable_ranges.iter().any(|(start, end)| target >= *start && target < *end) {
+        return Err(STATUS_ACCESS_VIOLATION);
+    }
+    Ok(target)
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
