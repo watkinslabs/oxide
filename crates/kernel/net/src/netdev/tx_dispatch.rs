@@ -274,6 +274,14 @@ impl TxJob {
         }
     }
 
+    /// Requested departure timestamp; zero means immediate transmission. # C: O(1)
+    fn transmit_time(&self) -> u64 {
+        match &self.0.payload {
+            TxPayload::Packet { pkt, .. } => pkt.tx.transmit_time,
+            TxPayload::Raw { .. } => 0,
+        }
+    }
+
     /// Retained packet/frame byte count for neighbour queue accounting. # C: O(1)
     pub(crate) fn packet_len(&self) -> usize {
         match &self.0.payload {
