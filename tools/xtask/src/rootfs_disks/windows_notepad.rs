@@ -8,6 +8,7 @@ use super::{dbg, probe_cargo, probe_cargo_bin};
 const IMAGE_ROOT: &str = "/usr/local/lib/oxide/windows";
 const WINDOWS_DIR: &str = "/usr/local/lib/oxide/windows/x86_64-windows";
 const UNIXLIB_DIR: &str = "/usr/local/lib/oxide/windows/x86_64-unix";
+const NOTEPAD_FIXTURE: &str = "notepad.exe";
 const NLS_PATH: &str = "/usr/local/share/oxide/windows/nls/locale.nls";
 const CONFIG_PATH: &str = "/etc/oxide/windows-runtime.conf";
 const PREFIX_DIR: &str = "/var/lib/oxide/windows-prefix";
@@ -25,7 +26,8 @@ pub(super) fn inject(root_img: &Path, arch: &str) -> Result<(), u8> {
     let nls_source = std::env::var_os("OXIDE_WINE_NLS").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/usr/share/wine/nls/locale.nls"));
     require_dir(&windows_source, "64-bit Wine PE catalog")?;
     require_dir(&unix_source, "64-bit Wine Unixlib catalog")?;
-    require_file(&windows_source.join("notepad.exe"), "Wine Notepad")?;
+    let notepad = windows_source.join(NOTEPAD_FIXTURE);
+    require_pe64(&notepad, "Wine 64-bit Notepad")?;
     require_file(&nls_source, "Wine NLS")?;
     let launcher = probe_cargo("x86_64", "windows-runtime")?;
     let registryd = probe_cargo_bin("x86_64", "windows-registry", "registryd")?;
@@ -38,7 +40,7 @@ pub(super) fn inject(root_img: &Path, arch: &str) -> Result<(), u8> {
     stage_file(root_img, &wrapper, "/usr/local/bin/windows-notepad-smoke", "wrapper", "0100755")?;
     stage_file(root_img, &config, CONFIG_PATH, "configuration", "0100644")?;
     stage_file(root_img, &registry_db, REGISTRY_DB, "registry seed", "0100644")?;
-    stage_file(root_img, &windows_source.join("notepad.exe"), &format!("{WINDOWS_DIR}/notepad.exe"), "Notepad", "0100644")?;
+    stage_file(root_img, &notepad, &format!("{WINDOWS_DIR}/{NOTEPAD_FIXTURE}"), "Notepad", "0100644")?;
     let dlls = catalog_files(&windows_source, |path| is_suffix(path, "dll") && !same_name(path, "ntdll.dll"))?;
     for path in &dlls { let name = safe_name(path)?; stage_file(root_img, path, &format!("{WINDOWS_DIR}/{name}"), "Wine PE DLL", "0100644")?; }
     let unixlibs = catalog_files(&unix_source, |path| is_suffix(path, "so"))?;
@@ -64,6 +66,18 @@ fn same_name(path: &Path, name: &str) -> bool { path.file_name().is_some_and(|va
 fn safe_name(path: &Path) -> Result<String, u8> { let name = path.file_name().and_then(|value| value.to_str()).ok_or(2u8)?; if name.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte)) { Ok(name.to_string()) } else { eprintln!("xtask rootfs: unsafe runtime filename `{name}`"); Err(2) } }
 fn require_dir(path: &Path, label: &str) -> Result<(), u8> { if path.is_dir() { Ok(()) } else { eprintln!("xtask rootfs: {label} missing at {}", path.display()); Err(2) } }
 fn require_file(path: &Path, label: &str) -> Result<(), u8> { if path.is_file() && fs::metadata(path).map(|m| m.len() > 0).unwrap_or(false) { Ok(()) } else { eprintln!("xtask rootfs: {label} missing or empty at {}", path.display()); Err(2) } }
+fn require_pe64(path: &Path, label: &str) -> Result<(), u8> {
+    require_file(path, label)?;
+    let bytes = fs::read(path).map_err(|_| 2u8)?;
+    let pe_offset = if bytes.len() >= 0x40 && &bytes[..2] == b"MZ" {
+        u32::from_le_bytes(bytes[0x3c..0x40].try_into().unwrap()) as usize
+    } else { 0 };
+    let valid = pe_offset.checked_add(26).is_some_and(|end| end <= bytes.len())
+        && &bytes[pe_offset..pe_offset + 4] == b"PE\0\0"
+        && u16::from_le_bytes(bytes[pe_offset + 4..pe_offset + 6].try_into().unwrap()) == 0x8664
+        && u16::from_le_bytes(bytes[pe_offset + 24..pe_offset + 26].try_into().unwrap()) == 0x20b;
+    if valid { Ok(()) } else { eprintln!("xtask rootfs: {label} is not a PE32+ AMD64 image at {}", path.display()); Err(2) }
+}
 fn stage_file(image: &Path, source: &Path, destination: &str, label: &str, mode: &str) -> Result<(), u8> { require_file(source, label)?; let _ = dbg(image, &format!("rm {destination}")); dbg(image, &format!("write {} {destination}", source.display()))?; dbg(image, &format!("sif {destination} mode {mode}")) }
 fn mkdir(image: &Path, path: &str) -> Result<(), u8> {
     if dbg(image, &format!("stat {path}")).is_ok() { return Ok(()); }
@@ -95,4 +109,17 @@ mod tests {
     }
     #[test]
     fn registry_seed_is_versioned_and_not_executable() { assert_eq!(EMPTY_REGISTRY, b"OXREG\0\x01\0\0\0\0\0"); }
+    #[test]
+    fn real_notepad_fixture_is_declared_as_a_pe32_amd64_image() {
+        let roots = ["/usr/lib64/wine/x86_64-windows", "/usr/lib/wine/x86_64-windows"];
+        let path = roots.iter().map(|root| Path::new(root).join(NOTEPAD_FIXTURE)).find(|path| path.is_file()).expect("Wine must provide the declared Notepad fixture");
+        assert_eq!(require_pe64(&path, "Wine 64-bit Notepad"), Ok(()));
+    }
+    #[test]
+    fn non_pe_fixture_is_rejected_before_staging() {
+        let path = std::env::temp_dir().join(format!("oxide-notepad-fixture-{}", std::process::id()));
+        fs::write(&path, b"MZ but not a PE image").unwrap();
+        assert_eq!(require_pe64(&path, "test fixture"), Err(2));
+        fs::remove_file(path).unwrap();
+    }
 }

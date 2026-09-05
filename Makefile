@@ -911,12 +911,11 @@ smoke-hostshare-arm: arm
 	./tools/boot-smoke-hostshare.sh arm $(FS_SMOKE_TIMEOUT)
 smoke-hostshare: smoke-hostshare-x86 smoke-hostshare-arm
 
-# Native x86_64 PE handoff smoke. Wine's Windows directory remains a host
-# fixture exported over virtio-9p; only the launcher enters the root image.
+# Native x86_64 PE handoff smoke. The xtask stages the declared Wine fixture
+# and its complete runtime catalog into the disposable root image.
 WINDOWS_NOTEPAD_SMOKE_TIMEOUT ?= 900
 smoke-windows-notepad-x86:
-	OXIDE_WINDOWS_NOTEPAD_SMOKE=1 OXIDE_QEMU_9P_SHARE=/usr/lib64/wine OXIDE_QEMU_9P_TAG=windowswine \
-	OXIDE_QEMU_9P_SHARE_2=/usr/share/wine/nls OXIDE_QEMU_9P_TAG_2=winenls \
+	OXIDE_WINDOWS_NOTEPAD_SMOKE=1 \
 	SMOKE_MARKER='[WINDOWS-PE-START] entry=' SMOKE_ALIVE_MARKER='[WINDOWS-PE-START] entry=' \
 	SMOKE_ALIVE_READY_MARKER='sh-5.2#' SMOKE_KEEP_LOG_DIR=target/windows-smoke-logs \
 	SMOKE_ALIVE_CMD=/usr/local/bin/windows-notepad-smoke \
