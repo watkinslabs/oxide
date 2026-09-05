@@ -104,13 +104,18 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RtlDeregisterWaitEx {
         let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
         if !cur.is_nt_personality() || call.args.a0 == 0 { return Some(STATUS_INVALID_PARAMETER); }
-        // Keep the wait record live when the completion-event form is not
-        // supported; deregistration must not lose state before returning the
-        // unsupported result.
-        if call.args.a1 != 0 { return Some(STATUS_NOT_IMPLEMENTED); }
+        let completion = if call.args.a1 == 0 { None } else {
+            if call.args.a1 > u32::MAX as u64 { return Some(STATUS_INVALID_HANDLE); }
+            let table = cur.thread_group.nt_handles();
+            let event = sched::nt_object::NtHandle::from_raw(call.args.a1 as u32);
+            let Some(object) = table.get(event, SYNCHRONIZE_ACCESS) else { return Some(STATUS_INVALID_HANDLE); };
+            if object.kind() != sched::nt_object::NtObjectType::Event { return Some(STATUS_INVALID_HANDLE); }
+            Some(object)
+        };
         let mut waits = cur.thread_group.nt_waits.lock();
         let Some(index) = waits.iter().position(|wait| wait.0 == call.args.a0) else { return Some(STATUS_INVALID_HANDLE); };
         waits.swap_remove(index);
+        if let Some(event) = completion { let _ = event.signal_for_wait(cur.tid as u64); }
         return Some(0);
     }
     if call.service == NtService::RtlCreateTimerQueue {
