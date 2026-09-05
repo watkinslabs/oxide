@@ -1,6 +1,6 @@
 # Known issues
 
-**Live issue count: 297** — 295 `OPEN`, 2 `IN-PROGRESS`.
+**Live issue count: 297** — 296 `OPEN`, 1 `IN-PROGRESS`.
 
 | Id | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|---|
@@ -304,7 +304,7 @@
 | KI-0337 | FIXED c13ce127c | DEFECT | high | Phase 9 x86-64 chained unwind records now preserve lookup identity, apply cumulative chain operations, and reject malformed chain targets. | Hosted PE parser tests cover CHAININFO, cumulative outer/inner operations, cycles, unaligned unwind data, and malformed inline targets; the x86_64/AArch64 target checks pass. | NT runtime |
 | KI-0341 | FIXED feat/windows-protected-duplicate-20260905 | DEFECT | med | [CLAIMED T1546-nt-handle-protected-duplicate 2026-09-04] DUPLICATE_CLOSE_SOURCE bypasses protect-from-close and closes a protected source handle | Independent audit `scratch/ki-0341-audit.md`: `close_duplicate_source` already routes through the canonical protected-close predicate on current `origin/main`; hosted regression proves the protected source remains live while the duplicate succeeds, and the deliberate predicate-bypass positive control is RED. No production change was required. | NT |
 | KI-0347 | FIXED B3475 | MISSING | med | NtQueryVolumeInformationFile rejects FileFsFullSizeInformationEx (class 14), which Wine exposes for modern volume-capacity callers. | Current `nt_file_volume_abi::encode` handles class 14 with the 96-byte extended payload, deriving total, actual-free, caller-available, used, and caller-total allocation units from the canonical `SbStatFs` counters; `nt_file::query` routes the live native call to that encoder. Hosted regression `nt_file_volume_abi::tests::full_size_ex_preserves_actual_and_caller_accounting` passes, and its positive control fails with `STATUS_INVALID_INFO_CLASS` when the class-14 match is removed. | P701-volume-full-size-information-ex |
-| KI-0351 | IN-PROGRESS F1572-nt-alertable-wait-order | MISSING | med | [CLAIMED F1572-nt-alertable-wait-order 2026-09-04] NtWaitForSingleObject alertable waits check queued APC state before rechecking the canonical object predicate after wake, so simultaneous object signal and APC incorrectly return STATUS_USER_APC instead of object success. | origin/main nt_dispatch::WaitEvent calls the alertable wait loop; live::wait_event_interruptible_until_user_apc tests apc before cond after park and after wake, unlike the NT wait ordering where signaled object wins before APC and timeout. | F1572-nt-alertable-wait-order |
+| KI-0353 | FIXED 13bf5b2e9 | MISSING | med | [CLAIMED F1572-nt-alertable-wait-order 2026-09-04] NtWaitForSingleObject alertable waits checked queued APC state before rechecking the canonical object predicate after wake, so simultaneous object signal and APC incorrectly returned STATUS_USER_APC instead of object success. | `live::wait_event_interruptible_until_user_apc` now rechecks the canonical condition after wake before consuming APC state. Hosted scheduler suite: 1,910 passed; focused alertable-wait tests: 12 passed; RED/GREEN positive control passed; x86_64 and AArch64 kernel checks passed. | NT runtime |
 
 ## Ext4 master program
 
