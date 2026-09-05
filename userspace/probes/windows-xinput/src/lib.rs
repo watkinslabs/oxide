@@ -20,6 +20,25 @@ pub struct XInputGamepad {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct XInputState { pub packet_number: u32, pub gamepad: XInputGamepad }
 
+/// XInput's two-motor vibration request. The field order is part of the
+/// Windows ABI and is intentionally identical to the native force-feedback
+/// rumble payload after translation.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct XInputVibration {
+    pub left_motor_speed: u16,
+    pub right_motor_speed: u16,
+}
+
+/// Canonical native rumble effect consumed by the Linux-shaped input owner.
+/// Strong is the heavy motor and weak is the light motor.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct NativeRumbleEffect {
+    pub strong_magnitude: u16,
+    pub weak_magnitude: u16,
+}
+
 pub const GAMEPAD_DPAD_UP: u16 = 0x0001;
 pub const GAMEPAD_DPAD_DOWN: u16 = 0x0002;
 pub const GAMEPAD_DPAD_LEFT: u16 = 0x0004;
@@ -158,6 +177,61 @@ fn mirror_axis(axis: NativeAxis) -> NativeAxis {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct XInputStateTracker { state: XInputState }
 
+/// Cached controller state and output ownership for one XInput slot.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct XInputController {
+    tracker: XInputStateTracker,
+    vibration: XInputVibration,
+}
+
+impl XInputController {
+    /// Apply one input report while retaining output state only for a live
+    /// controller. Disconnect therefore cannot leave a stale motor request
+    /// to be replayed when another device occupies the slot.
+    /// # C: O(1)
+    pub fn update(&mut self, report: Option<NativeGamepadReport>) -> Result<(), XInputNormalizationError> {
+        self.tracker.update(report)?;
+        if !self.tracker.is_connected() { self.vibration = XInputVibration::default(); }
+        Ok(())
+    }
+
+    /// Remove the controller and return the one native stop effect required
+    /// when its motors were active. This separates physical-output teardown
+    /// from slot state clearing so hot-unplug cannot strand a motor.
+    /// # C: O(1)
+    pub fn disconnect(&mut self) -> Option<NativeRumbleEffect> {
+        let stop = self.disable_vibration();
+        let _ = self.update(None);
+        stop
+    }
+
+    /// Cache one Windows vibration request and return a native effect only
+    /// when the requested state changes. The caller owns publication of the
+    /// returned effect to the canonical EV_FF device; repeated requests do not
+    /// create duplicate output events.
+    /// # C: O(1)
+    pub fn set_vibration(&mut self, vibration: Option<XInputVibration>) -> Result<Option<NativeRumbleEffect>, XInputRequestError> {
+        let Some(vibration) = vibration else { return Err(XInputRequestError::BadArguments); };
+        if !self.tracker.is_connected() { return Err(XInputRequestError::DeviceNotConnected); }
+        if self.vibration == vibration { return Ok(None); }
+        self.vibration = vibration;
+        Ok(Some(NativeRumbleEffect { strong_magnitude: vibration.left_motor_speed, weak_magnitude: vibration.right_motor_speed }))
+    }
+
+    /// Stop both motors as part of controller disable or removal, emitting a
+    /// zero effect only when a nonzero request was previously active.
+    /// # C: O(1)
+    pub fn disable_vibration(&mut self) -> Option<NativeRumbleEffect> {
+        if self.vibration == XInputVibration::default() { return None; }
+        self.vibration = XInputVibration::default();
+        Some(NativeRumbleEffect::default())
+    }
+
+    /// Return the cached Windows state for the controller slot.
+    /// # C: O(1)
+    pub const fn state(&self) -> XInputState { self.tracker.state() }
+}
+
 impl XInputStateTracker {
     /// Apply one complete native report, or clear the state on disconnect.
     /// Invalid reports leave the previous state and packet number untouched.
@@ -249,6 +323,8 @@ mod tests {
         assert_eq!(core::mem::size_of::<XInputGamepad>(), 12);
         assert_eq!(core::mem::size_of::<XInputState>(), 16);
         assert_eq!(core::mem::offset_of!(XInputState, gamepad), 4);
+        assert_eq!(core::mem::size_of::<XInputVibration>(), 4);
+        assert_eq!(core::mem::size_of::<NativeRumbleEffect>(), 4);
     }
 
     #[test]
@@ -361,5 +437,36 @@ mod tests {
         assert!(evdev_report(&state).is_ok());
         state.abs[ABS_RZ as usize] = None;
         assert_eq!(evdev_report(&state), Err(XInputNormalizationError::MissingAxis(XInputAxis::RightTrigger)));
+    }
+
+    #[test]
+    fn vibration_maps_motors_to_native_rumble_and_deduplicates_requests() {
+        let mut controller = XInputController::default();
+        controller.update(Some(report())).unwrap();
+        let vibration = XInputVibration { left_motor_speed: 0x1234, right_motor_speed: 0xabcd };
+        assert_eq!(controller.set_vibration(Some(vibration)), Ok(Some(NativeRumbleEffect { strong_magnitude: 0x1234, weak_magnitude: 0xabcd })));
+        assert_eq!(controller.set_vibration(Some(vibration)), Ok(None));
+        assert_eq!(controller.disable_vibration(), Some(NativeRumbleEffect::default()));
+        assert_eq!(controller.disable_vibration(), None);
+    }
+
+    #[test]
+    fn vibration_requests_fail_without_a_live_controller_and_null_input_is_bad_arguments() {
+        let mut controller = XInputController::default();
+        let vibration = XInputVibration { left_motor_speed: 1, right_motor_speed: 2 };
+        assert_eq!(controller.set_vibration(Some(vibration)), Err(XInputRequestError::DeviceNotConnected));
+        assert_eq!(controller.set_vibration(None), Err(XInputRequestError::BadArguments));
+    }
+
+    #[test]
+    fn disconnect_stops_active_vibration_and_clears_cached_state() {
+        let mut controller = XInputController::default();
+        controller.update(Some(report())).unwrap();
+        controller.set_vibration(Some(XInputVibration { left_motor_speed: 4, right_motor_speed: 5 })).unwrap();
+        assert_eq!(controller.disconnect(), Some(NativeRumbleEffect::default()));
+        assert_eq!(controller.state(), XInputState::default());
+        assert_eq!(controller.disable_vibration(), None);
+        controller.update(Some(report())).unwrap();
+        assert_eq!(controller.set_vibration(Some(XInputVibration::default())), Ok(None));
     }
 }
