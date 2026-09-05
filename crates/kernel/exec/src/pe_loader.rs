@@ -23,9 +23,9 @@ pub struct NtRuntime {
     pub wine_dispatcher: u64,
     pub wine_unix_dispatcher: u64,
     pub wine_unixlib_handle: u64,
-    addresses: [u64; 510],
+    addresses: [u64; 511],
 }
-const NTDLL_EXPORTS: [&[u8]; 510] = [
+const NTDLL_EXPORTS: [&[u8]; 511] = [
     b"NtAllocateVirtualMemory", b"NtFreeVirtualMemory", b"NtProtectVirtualMemory", b"NtQueryVirtualMemory",
     b"NtTerminateProcess", b"NtCreateEvent", b"NtClose", b"NtSetEvent", b"NtResetEvent", b"NtWaitForSingleObject",
     b"NtCreateFile", b"NtOpenFile", b"NtReadFile", b"NtWriteFile", b"NtQueryInformationFile", b"NtSetInformationFile", b"NtQueryDirectoryFile", b"NtWaitForMultipleObjects",
@@ -286,12 +286,12 @@ const NTDLL_EXPORTS: [&[u8]; 510] = [
     b"wcstol",
     b"LdrGetDllHandle",
     b"RtlFindExportedRoutineByName",
-    b"NtTestAlert", b"NtContinue", b"NtMakePermanentObject", b"RtlDeNormalizeProcessParams", b"TpPostWork",
+    b"NtTestAlert", b"NtContinue", b"NtMakePermanentObject", b"RtlDeNormalizeProcessParams", b"TpPostWork", b"TpReleaseWork",
 ];
 const WINE_SYSCALL_DISPATCHER: &[u8] = b"__wine_syscall_dispatcher";
 fn runtime_stub_bytes(index: usize) -> usize {
     if index == 505 { pe::nt_stub::X64_ZERO_ARG_STUB_BYTES }
-    else if matches!(index, 6 | 88 | 242 | 435 | 436 | 437 | 483 | 507 | 509) { pe::nt_stub::X64_UNARY_STUB_BYTES } else { pe::nt_stub::X64_SIX_ARG_STUB_BYTES }
+    else if matches!(index, 6 | 88 | 242 | 435 | 436 | 437 | 483 | 507 | 509 | 510) { pe::nt_stub::X64_UNARY_STUB_BYTES } else { pe::nt_stub::X64_SIX_ARG_STUB_BYTES }
 }
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct PeEntryState {
@@ -478,7 +478,7 @@ pub fn map_nt_runtime(as_: &AddressSpace) -> Result<NtRuntime, pe::Error> {
     let code_bytes = stub_bytes + continuation.len() + wndproc_continuation.len() + apc_continuation.len() + 8 + pe::nt_stub::X64_RELAY_STUB_BYTES + wine_dispatcher.len() + wine_unix_dispatcher.len() + 8;
     let mapped_bytes = (code_bytes + page - 1) / page * page;
     let mut code = alloc::vec![0u8; mapped_bytes];
-    let mut addresses = [0u64; 510];
+    let mut addresses = [0u64; 511];
     let mut offset = 0usize;
     for index in 0..NTDLL_EXPORTS.len() {
         // Keep the debug exports tied to their actual catalog indexes. This
@@ -952,10 +952,11 @@ pub fn map_nt_runtime(as_: &AddressSpace) -> Result<NtRuntime, pe::Error> {
             507 => syscall::nt::NtService::NtMakePermanentObject,
             508 => syscall::nt::NtService::RtlDeNormalizeProcessParams,
             509 => syscall::nt::NtService::TpPostWork,
+            510 => syscall::nt::NtService::TpReleaseWork,
             _ => syscall::nt::NtService::FreeHeap,
         }};
         let bytes = if index == 505 { pe::nt_stub::encode_x64_zero_arg_stub(selector.entry()).to_vec() }
-            else if matches!(index, 6 | 88 | 242 | 435 | 436 | 437 | 483 | 507 | 509) { pe::nt_stub::encode_x64_unary_stub(selector.entry()).to_vec() }
+            else if matches!(index, 6 | 88 | 242 | 435 | 436 | 437 | 483 | 507 | 509 | 510) { pe::nt_stub::encode_x64_unary_stub(selector.entry()).to_vec() }
             else { pe::nt_stub::encode_x64_six_arg_stub(selector.entry()).to_vec() };
         if offset.checked_add(bytes.len()).filter(|&end| end <= code.len()).is_none() { return Err(pe::Error::Einval); }
         code[offset..offset + bytes.len()].copy_from_slice(&bytes);

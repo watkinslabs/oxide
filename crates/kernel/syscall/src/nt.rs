@@ -336,6 +336,8 @@ pub enum NtService {
     QueryVulkanCapability = 547,
     /// Submit one previously allocated native thread-pool work object.
     TpPostWork = 548,
+    /// Release one process-owned native thread-pool work object.
+    TpReleaseWork = 549,
 }
 impl NtService {
     /// Return the tagged entry selector emitted by an NTDLL syscall stub.
@@ -776,6 +778,7 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 491 { return Some(NtCall { service: NtService::TpSetPoolStackInformation, args }); }
     if service == 492 { return Some(NtCall { service: NtService::TpSimpleTryPost, args }); }
     if service == 548 { return Some(NtCall { service: NtService::TpPostWork, args }); }
+    if service == 549 { return Some(NtCall { service: NtService::TpReleaseWork, args }); }
     if service == 493 { return Some(NtCall { service: NtService::Strnicmp, args }); }
     if service == 494 { return Some(NtCall { service: NtService::Vsnwprintf, args }); }
     if service == 495 { return Some(NtCall { service: NtService::Isalnum, args }); }
@@ -1170,7 +1173,7 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
         NtService::RtlValidateHeap => Err(Errno::Enosys),
         NtService::RtlWaitOnAddress | NtService::RtlWakeAddressAll | NtService::RtlWakeAddressSingle => Err(Errno::Enosys),
         NtService::RtlWalkHeap => Err(Errno::Enosys),
-        NtService::RtlWow64EnableFsRedirection | NtService::RtlWow64EnableFsRedirectionEx | NtService::RtlWow64GetProcessMachines | NtService::RtlWow64GetThreadContext | NtService::RtlWow64SetThreadContext | NtService::RtlZombifyActivationContext | NtService::TpAllocCleanupGroup | NtService::TpAllocIoCompletion | NtService::TpAllocPool | NtService::TpAllocTimer | NtService::TpAllocWait | NtService::TpAllocWork | NtService::TpCallbackMayRunLong | NtService::TpQueryPoolStackInformation | NtService::TpSetPoolStackInformation | NtService::TpSimpleTryPost | NtService::TpPostWork | NtService::Strnicmp | NtService::Vsnwprintf | NtService::Isalnum | NtService::Iswalnum | NtService::Isxdigit | NtService::Memcmp | NtService::Strcmp | NtService::Strncmp | NtService::Strtol | NtService::Towupper | NtService::Wcscspn | NtService::Wcsnlen | NtService::Wcspbrk | NtService::Wcsspn | NtService::Wcsstr | NtService::Wcstol | NtService::LdrGetDllHandle | NtService::RtlFindExportedRoutineByName => Err(Errno::Enosys),
+        NtService::RtlWow64EnableFsRedirection | NtService::RtlWow64EnableFsRedirectionEx | NtService::RtlWow64GetProcessMachines | NtService::RtlWow64GetThreadContext | NtService::RtlWow64SetThreadContext | NtService::RtlZombifyActivationContext | NtService::TpAllocCleanupGroup | NtService::TpAllocIoCompletion | NtService::TpAllocPool | NtService::TpAllocTimer | NtService::TpAllocWait | NtService::TpAllocWork | NtService::TpCallbackMayRunLong | NtService::TpQueryPoolStackInformation | NtService::TpSetPoolStackInformation | NtService::TpSimpleTryPost | NtService::TpPostWork | NtService::TpReleaseWork | NtService::Strnicmp | NtService::Vsnwprintf | NtService::Isalnum | NtService::Iswalnum | NtService::Isxdigit | NtService::Memcmp | NtService::Strcmp | NtService::Strncmp | NtService::Strtol | NtService::Towupper | NtService::Wcscspn | NtService::Wcsnlen | NtService::Wcspbrk | NtService::Wcsspn | NtService::Wcsstr | NtService::Wcstol | NtService::LdrGetDllHandle | NtService::RtlFindExportedRoutineByName => Err(Errno::Enosys),
         NtService::RtlAddAccessAllowedObjectAce => Err(Errno::Enosys),
         NtService::RtlAddAccessDeniedObjectAce => Err(Errno::Enosys),
         NtService::RtlAddAuditAccessObjectAce => Err(Errno::Enosys),
