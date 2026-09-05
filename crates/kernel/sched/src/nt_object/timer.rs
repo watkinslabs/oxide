@@ -17,6 +17,13 @@ pub fn merge_wait_deadline(wait_deadline: u64, timer_deadline: Option<u64>) -> u
     }
 }
 
+/// Report whether an effective wait deadline may have been the timer expiry.
+/// The caller must re-test every object before returning timeout, because the
+/// timer may have been canceled or a wait-all set may still be incomplete. # C: O(1)
+pub fn timer_expiry_may_have_woken(wait_deadline: u64, timer_deadline: Option<u64>, now_ns: u64) -> bool {
+    timer_deadline.is_some_and(|timer| (wait_deadline == 0 || timer <= wait_deadline) && now_ns >= timer)
+}
+
 pub struct NtTimer {
     manual_reset: bool,
     due_ns: AtomicU64,
