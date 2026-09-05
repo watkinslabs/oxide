@@ -26,6 +26,7 @@ pub enum BuildError {
     CatalogTooLarge,
     InvalidAddress,
     InvalidEnvironment,
+    AmbiguousModule { name: Vec<u8>, first: PathBuf, second: PathBuf },
 }
 
 impl From<io::Error> for BuildError {
@@ -129,20 +130,7 @@ impl RuntimeRequest {
         let root = pe::parse(&image).map_err(BuildError::InvalidRoot)?;
         let mut catalog = ModuleCatalog::new();
         let mut modules = Vec::new();
-        let mut available = HashMap::new();
-        let entries = fs::read_dir(dll_dir).map_err(|error| {
-            eprintln!("windows-runtime: read_dir {}: {error}", dll_dir.display()); BuildError::Io(error)
-        })?;
-        for entry in entries {
-            let entry = entry.map_err(|error| {
-                eprintln!("windows-runtime: directory entry {}: {error}", dll_dir.display()); BuildError::Io(error)
-            })?;
-            let path = entry.path();
-            if !is_dll(&path) { continue; }
-            let name = path.file_name().ok_or(BuildError::InvalidUtf8Path)?.as_bytes();
-            if name.eq_ignore_ascii_case(b"ntdll.dll") { continue; }
-            available.insert(name.to_ascii_lowercase(), path);
-        }
+        let available = stage_module_paths(dll_dir)?;
         let mut pending: Vec<Vec<u8>> = root.imports().map_err(BuildError::InvalidRoot)?
             .into_iter().map(|import| dependency_name(import.name).to_ascii_lowercase()).collect();
         let mut seen = HashSet::new();
@@ -268,6 +256,38 @@ fn environment_entries(block: &[u8]) -> Option<Vec<String>> {
 
 fn is_dll(path: &Path) -> bool {
     path.extension().and_then(OsStr::to_str).is_some_and(|extension| extension.eq_ignore_ascii_case("dll"))
+}
+
+/// Build the one-directory PE search index before reading any module bytes.
+/// Wine's loader searches an ordered path list; this native launcher receives
+/// one already-selected runtime directory, so duplicate case-insensitive names
+/// are an ambiguity rather than a precedence decision. Sorting the directory
+/// entries makes the reported pair stable despite filesystem enumeration order.
+fn stage_module_paths(dll_dir: &Path) -> Result<HashMap<Vec<u8>, PathBuf>, BuildError> {
+    let entries = fs::read_dir(dll_dir).map_err(|error| {
+        eprintln!("windows-runtime: read_dir {}: {error}", dll_dir.display()); BuildError::Io(error)
+    })?;
+    let mut paths = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            eprintln!("windows-runtime: directory entry {}: {error}", dll_dir.display()); BuildError::Io(error)
+        })?;
+        let path = entry.path();
+        if is_dll(&path) { paths.push(path); }
+    }
+    paths.sort_by(|left, right| {
+        left.file_name().map(OsStr::as_bytes).cmp(&right.file_name().map(OsStr::as_bytes))
+    });
+    let mut available = HashMap::new();
+    for path in paths {
+        let name = path.file_name().ok_or(BuildError::InvalidUtf8Path)?.as_bytes();
+        if name.eq_ignore_ascii_case(b"ntdll.dll") { continue; }
+        let key = name.to_ascii_lowercase();
+        if let Some(first) = available.insert(key.clone(), path.clone()) {
+            return Err(BuildError::AmbiguousModule { name: key, first, second: path });
+        }
+    }
+    Ok(available)
 }
 
 /// Use the shared PE API-set schema for graph identity, matching the kernel
@@ -495,6 +515,24 @@ mod tests {
         assert!(!is_dll(std::path::Path::new("notepad.exe")));
         assert!(!is_dll(std::path::Path::new("lib.dll.bak")));
         assert!(!is_dll(std::path::Path::new("DLL")));
+    }
+
+    #[test]
+    fn duplicate_case_insensitive_module_names_are_rejected_deterministically() {
+        let base = std::env::temp_dir().join(format!("oxide-windows-runtime-duplicates-{}", std::process::id()));
+        fs::create_dir_all(&base).unwrap();
+        fs::write(base.join("USER32.DLL"), []).unwrap();
+        fs::write(base.join("user32.dll"), []).unwrap();
+        let result = stage_module_paths(&base);
+        match result {
+            Err(BuildError::AmbiguousModule { name, first, second }) => {
+                assert_eq!(name, b"user32.dll");
+                assert_eq!(first.file_name().unwrap().as_bytes(), b"USER32.DLL");
+                assert_eq!(second.file_name().unwrap().as_bytes(), b"user32.dll");
+            }
+            other => panic!("expected deterministic duplicate rejection, got {other:?}"),
+        }
+        fs::remove_dir_all(base).unwrap();
     }
 
     #[test]
