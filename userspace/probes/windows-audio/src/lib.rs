@@ -62,7 +62,7 @@ pub struct NativePcmFormat {
 }
 
 mod stream;
-pub use stream::{AudioDirection, AudioStream, StreamError, StreamGeometry, HNS_PER_SEC};
+pub use stream::{AudioDirection, AudioStream, StreamError, StreamGeometry, StreamState, HNS_PER_SEC};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FormatError {
