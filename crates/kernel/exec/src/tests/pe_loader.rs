@@ -51,6 +51,10 @@
         let process = result.unwrap();
         assert!(process.initializer_trampoline.is_some(), "Notepad must enter through the PE startup continuation");
         assert_ne!(process.entry.rip, process.image.entry, "catalog PE entry must not fall through without a return path");
+        assert_eq!(process.startup.image_entry, process.image.entry);
+        assert_eq!(process.startup.transfer_entry, process.entry.rip);
+        assert_eq!(process.startup.peb, process.environment.peb);
+        assert_eq!(process.startup.teb, process.environment.teb);
         assert!(as_.vma_count() > 1, "Notepad image and dependencies must remain mapped after loading");
     }
 
@@ -600,6 +604,10 @@
         assert_eq!(process.entry.rip, process.image.entry);
         assert_eq!(process.entry.personality, ExecutionPersonality::Nt);
         assert_eq!(process.entry.rsp.as_u64() % 16, 8);
+        assert_eq!(process.startup.image_entry, process.image.entry);
+        assert_eq!(process.startup.transfer_entry, process.entry.rip);
+        assert_eq!(process.startup.stack_pointer, process.entry.rsp);
+        assert_eq!(process.startup.gs_base, process.environment.teb);
         let env_vma = as_.find_vma(process.environment.base).unwrap();
         let data = match env_vma.backing { VmaBacking::KernelBytes { data, .. } => data, _ => panic!("PE environment must be kernel-backed") };
         let read64 = |offset: usize| u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());

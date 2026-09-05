@@ -17,6 +17,7 @@ pub struct PreparedPeProcess {
     pub stack: hal::UserVirtAddr,
     pub stack_top: u64,
     pub process: elf_load::pe_loader::PeProcess,
+    pub startup: elf_load::pe_startup::PeStartupFacts,
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -108,7 +109,7 @@ fn commit_x86(cur: &sched::Task, path: &[u8], blob: &[u8], exec_vp: Option<&vfs:
         Ok(prepared) => prepared,
         Err(error) => { if let Some(stdio) = stdio { stdio.close(&table); } return Err(error); },
     };
-    let PreparedPeProcess { mm: as_, stack, stack_top, process } = prepared;
+    let PreparedPeProcess { mm: as_, stack, stack_top, process, startup } = prepared;
     let path = match core::str::from_utf8(path) { Ok(path) => path, Err(_) => { if let Some(stdio) = stdio { stdio.close(&table); } return Err(enoexec()); } };
     let mut creds = match decide_exec_box(cur, exec_vp) { Ok(creds) => creds, Err(error) => { if let Some(stdio) = stdio { stdio.close(&table); } return Err(error); } };
     let selinux = match decide_selinux_box(cur, exec_vp) { Ok(selinux) => selinux, Err(error) => { if let Some(stdio) = stdio { stdio.close(&table); } return Err(error); } };
@@ -141,9 +142,9 @@ fn commit_x86(cur: &sched::Task, path: &[u8], blob: &[u8], exec_vp: Option<&vfs:
     // SAFETY: the PE environment owns the TEB address and this task's context
     // is exclusively writable during the exec commit.
     unsafe {
-        hal_x86_64::set_user_gs_base(process.entry.gs_base.as_u64());
+        hal_x86_64::set_user_gs_base(startup.gs_base.as_u64());
         let ctx = cur.arch_ctx_ptr::<hal_x86_64::ContextX86_64>();
-        (*ctx).gs_base = process.entry.gs_base.as_u64();
+        (*ctx).gs_base = startup.gs_base.as_u64();
     }
     cur.set_nt_personality(true);
     sched::initialize_current_process(cur);
@@ -159,15 +160,15 @@ fn commit_x86(cur: &sched::Task, path: &[u8], blob: &[u8], exec_vp: Option<&vfs:
     let frame = unsafe { &mut *regs };
     crate::nt_milestone::reset();
     klog::write_raw(b"[WINDOWS-PE-START] entry=");
-    klog::write_hex_u64(process.entry.rip.as_u64());
+    klog::write_hex_u64(startup.transfer_entry.as_u64());
     klog::write_raw(b" rsp=");
-    klog::write_hex_u64(process.entry.rsp.as_u64());
+    klog::write_hex_u64(startup.stack_pointer.as_u64());
     klog::write_raw(b" stack=");
     klog::write_hex_u64(stack.as_u64());
     klog::write_raw(b"-");
     klog::write_hex_u64(stack_top);
     klog::write_raw(b"\n");
-    *frame = hal_x86_64::PtRegs { rip: process.entry.rip.as_u64(), rsp: process.entry.rsp.as_u64(), rflags: 0x202,
+    *frame = hal_x86_64::PtRegs { rip: startup.transfer_entry.as_u64(), rsp: startup.stack_pointer.as_u64(), rflags: 0x202,
         cs: hal_x86_64::USER_CS_SELECTOR, ss: hal_x86_64::USER_SS_SELECTOR,
         vector: frame.vector, error: frame.error, ..Default::default() };
     sched::live::vfork_done(cur);
@@ -242,7 +243,8 @@ pub fn prepare_pe_process(cur: &sched::Task, path: &[u8], blob: &[u8], command_l
             return Err(enoexec());
         }
     };
-    Ok(PreparedPeProcess { mm: as_, stack, stack_top, process })
+    let startup = process.startup;
+    Ok(PreparedPeProcess { mm: as_, stack, stack_top, process, startup })
 }
 
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]

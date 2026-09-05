@@ -81,8 +81,8 @@ pub fn dispatch(call: NtCall, stack: [u64; 5]) -> u64 {
             unsafe { child.replace_fd_table(Some(Arc::new(fd.fork_clone()))); }
         }
     }
-    unsafe { sched::live::arm_user_entry(&child, prepared.process.entry.rip.as_u64(),
-        prepared.process.entry.rsp.as_u64()); }
+    unsafe { sched::live::arm_user_entry(&child, prepared.startup.transfer_entry.as_u64(),
+        prepared.startup.stack_pointer.as_u64()); }
     // The NT TEB is addressed through GS on x86-64.  `arm_user_entry` builds
     // a generic user context, so the native process transaction must publish
     // the image-specific GS base before the task becomes visible to the
@@ -91,7 +91,7 @@ pub fn dispatch(call: NtCall, stack: [u64; 5]) -> u64 {
     #[cfg(target_arch = "x86_64")]
     unsafe {
         let ctx = child.arch_ctx_ptr::<hal_x86_64::ContextX86_64>();
-        (*ctx).gs_base = prepared.process.entry.gs_base.as_u64();
+        (*ctx).gs_base = prepared.startup.gs_base.as_u64();
     }
 
     let table = cur.thread_group.nt_handles();
