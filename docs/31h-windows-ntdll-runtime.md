@@ -67,9 +67,10 @@ synthetic NTDLL page.
 
 ## 6 PE-to-GNOME runtime frontier
 
-The Notepad rootfs harness must prove the Wine PE/Unixlib pair is available
-before submitting `ExecuteWithCatalog`. It checks the x86-64 Unixlib directory
-and the `ntdll.so`/`win32u.so` sidecars, then emits
+The Notepad rootfs harness must stage and prove the declared real Wine
+`notepad.exe` fixture is PE32+ AMD64 before submitting `ExecuteWithCatalog`.
+It also proves the Wine PE/Unixlib pair is available by checking the x86-64
+Unixlib directory and the `ntdll.so`/`win32u.so` sidecars, then emits
 `[WINDOWS-PE-UNIXLIB] ... state=present`. This is an availability diagnostic,
 not a readiness claim: the remaining runtime step is to map the selected ELF
 Unixlib, publish its callable Unix-function table, and dispatch its calls from
@@ -77,8 +78,9 @@ the PE-side `__wine_unix_call_dispatcher` before user32 can create and present a
 window. `[WINDOWS-PE-START]` proves only that the initial PE user frame was
 installed.
 
-The preflight fails before the PE handoff when either sidecar is absent, so a
-missing Unixlib cannot be confused with a PE loader or GNOME scanout failure.
+The staging and preflight fail before the PE handoff when the fixture is
+missing, malformed, non-AMD64, or either sidecar is absent, so missing runtime
+inputs cannot be confused with a PE loader or GNOME scanout failure.
 
 ## 7 Wine server packet bridge
 

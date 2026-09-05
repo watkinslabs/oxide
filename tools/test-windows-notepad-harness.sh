@@ -15,6 +15,7 @@ runtime_source="$root/userspace/probes/windows-runtime/src/lib.rs"
 user32_source="$root/userspace/probes/windows-user32/src/lib.rs"
 loader_tests="$root/crates/kernel/exec/src/tests/pe_loader.rs"
 wrapper_source="$root/tools/xtask/src/rootfs_disks/windows_notepad.rs"
+fixture="${OXIDE_WINE_NOTEPAD_FIXTURE:-}"
 
 require_text() {
     local label="$1" file="$2" needle="$3"
@@ -36,6 +37,34 @@ require_test() {
     require_text "$label test" "$file" "#[test]"
 }
 
+if [[ -z "$fixture" ]]; then
+    for candidate in /usr/lib64/wine/x86_64-windows/notepad.exe /usr/lib/wine/x86_64-windows/notepad.exe; do
+        if [[ -f "$candidate" ]]; then fixture="$candidate"; break; fi
+    done
+fi
+if [[ ! -f "$fixture" ]]; then
+    echo "windows-notepad-harness: FAIL (missing declared 64-bit Wine Notepad fixture)" >&2
+    exit 1
+fi
+fixture_size="$(stat -c '%s' "$fixture")"
+fixture_mz="$(dd if="$fixture" bs=1 count=2 status=none | od -An -tx1 | tr -d ' \n')"
+if [[ "$fixture_size" -lt 64 || "$fixture_mz" != 4d5a ]]; then
+    echo "windows-notepad-harness: FAIL (fixture is not a readable DOS image: $fixture)" >&2
+    exit 1
+fi
+fixture_offset="$(od -An -tu4 -j60 -N4 "$fixture" | tr -d ' ')"
+if [[ ! "$fixture_offset" =~ ^[0-9]+$ || "$fixture_offset" -ge "$fixture_size" ]]; then
+    echo "windows-notepad-harness: FAIL (fixture has an invalid PE header offset: $fixture)" >&2
+    exit 1
+fi
+fixture_pe="$(dd if="$fixture" bs=1 skip="$fixture_offset" count=4 status=none | od -An -tx1 | tr -d ' \n')"
+fixture_machine="$(dd if="$fixture" bs=1 skip=$((fixture_offset + 4)) count=2 status=none | od -An -tx1 | tr -d ' \n')"
+fixture_optional="$(dd if="$fixture" bs=1 skip=$((fixture_offset + 24)) count=2 status=none | od -An -tx1 | tr -d ' \n')"
+if [[ "$fixture_mz" != 4d5a || "$fixture_pe" != 50450000 || "$fixture_machine" != 6486 || "$fixture_optional" != 0b02 ]]; then
+    echo "windows-notepad-harness: FAIL (fixture is not a PE32+ AMD64 image: $fixture)" >&2
+    exit 1
+fi
+
 require_text "smoke admission" "$makefile" "SMOKE_MARKER='[WINDOWS-PE-START] entry='"
 require_text "smoke liveness" "$makefile" "SMOKE_ALIVE_MARKER='[WINDOWS-PE-START] entry='"
 require_text "smoke workload" "$makefile" "SMOKE_ALIVE_CMD=/usr/local/bin/windows-notepad-smoke"
@@ -48,7 +77,9 @@ start_line="$(grep -nF '[WINDOWS-PE-START] entry=' "$exec_source" | cut -d: -f1 
 commit_line="$(grep -nF '[WINDOWS-PE-COMMIT] success' "$exec_source" | cut -d: -f1 | head -n1)"
 test -n "$start_line" -a -n "$commit_line"
 test "$start_line" -lt "$commit_line"
-require_text "real PE fixture" "$wrapper_source" 'require_file(&windows_source.join("notepad.exe"), "Wine Notepad")'
+require_text "real PE fixture" "$wrapper_source" 'let notepad = windows_source.join(NOTEPAD_FIXTURE);'
+require_text "declared fixture name" "$wrapper_source" 'const NOTEPAD_FIXTURE: &str = "notepad.exe";'
+require_text "64-bit fixture validation" "$wrapper_source" 'require_pe64(&notepad, "Wine 64-bit Notepad")?;'
 require_text "Unixlib sidecar directory" "$wrapper_source" 'const UNIXLIB_DIR: &str = "/usr/local/lib/oxide/windows/x86_64-unix";'
 require_text "Unixlib sidecar inventory" "$wrapper_source" 'let unixlibs = catalog_files(&unix_source, |path| is_suffix(path, "so"))?;'
 require_text "Unixlib staging" "$wrapper_source" 'stage_file(root_img, path, &format!("{UNIXLIB_DIR}/{name}"), "Wine Unixlib", "0100644")?;'
