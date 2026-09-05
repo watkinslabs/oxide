@@ -1,6 +1,6 @@
 # Known issues
 
-**Live issue count: 296** — 295 `OPEN`, 1 `IN-PROGRESS`.
+**Live issue count: 295** — 294 `OPEN`, 1 `IN-PROGRESS`.
 
 | Id | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|---|
@@ -305,7 +305,6 @@
 | KI-0341 | FIXED feat/windows-protected-duplicate-20260905 | DEFECT | med | [CLAIMED T1546-nt-handle-protected-duplicate 2026-09-04] DUPLICATE_CLOSE_SOURCE bypasses protect-from-close and closes a protected source handle | Independent audit `scratch/ki-0341-audit.md`: `close_duplicate_source` already routes through the canonical protected-close predicate on current `origin/main`; hosted regression proves the protected source remains live while the duplicate succeeds, and the deliberate predicate-bypass positive control is RED. No production change was required. | NT |
 | KI-0347 | FIXED B3475 | MISSING | med | NtQueryVolumeInformationFile rejects FileFsFullSizeInformationEx (class 14), which Wine exposes for modern volume-capacity callers. | Current `nt_file_volume_abi::encode` handles class 14 with the 96-byte extended payload, deriving total, actual-free, caller-available, used, and caller-total allocation units from the canonical `SbStatFs` counters; `nt_file::query` routes the live native call to that encoder. Hosted regression `nt_file_volume_abi::tests::full_size_ex_preserves_actual_and_caller_accounting` passes, and its positive control fails with `STATUS_INVALID_INFO_CLASS` when the class-14 match is removed. | P701-volume-full-size-information-ex |
 | KI-0353 | FIXED 13bf5b2e9 | MISSING | med | [CLAIMED F1572-nt-alertable-wait-order 2026-09-04] NtWaitForSingleObject alertable waits checked queued APC state before rechecking the canonical object predicate after wake, so simultaneous object signal and APC incorrectly returned STATUS_USER_APC instead of object success. | `live::wait_event_interruptible_until_user_apc` now rechecks the canonical condition after wake before consuming APC state. Hosted scheduler suite: 1,910 passed; focused alertable-wait tests: 12 passed; RED/GREEN positive control passed; x86_64 and AArch64 kernel checks passed. | NT runtime |
-| KI-0354 | OPEN | MISSING | med | Direct PE startup enters without the Windows x64 call-entry stack contract | The direct load_pe_process path can return PeEntryState with RSP 16-byte aligned and no return-address slot; the Windows x64 callee-entry contract requires RSP mod 16 == 8. The catalog Notepad path normally uses a startup trampoline, so this uncovered gap is not exercised by that route. Add a stack-entry decision in the PE loader and hosted RED/GREEN coverage. | P201-pe-nt-entry-stack-contract |
 
 ## Ext4 master program
 
