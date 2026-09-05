@@ -307,6 +307,7 @@ pub struct PeProcess {
     pub image: PeLoadedImage,
     pub environment: process_env::NtProcessEnvironment,
     pub entry: PeEntryState,
+    pub startup: crate::pe_startup::PeStartupFacts,
     pub initializers: alloc::vec::Vec<PeModuleInitializer>,
     pub initializer_trampoline: Option<pe_init::PeInitTrampoline>,
 }
@@ -1020,29 +1021,6 @@ pub fn initial_entry_state_with_environment(image: &PeLoadedImage, stack_top: u6
     Ok(state)
 }
 
-/// Admit the complete first-user-context contract against one address space.
-/// The PE entry must be executable, the stack must be the canonical anonymous
-/// writable VMA with room for the Windows x64 home area, and GS/PEB must point
-/// into the environment block being committed.
-/// # C: O(1)
-fn validate_entry_context(as_: &AddressSpace, image: &PeLoadedImage,
-    env: &process_env::NtProcessEnvironment, stack_base: u64, stack_top: u64,
-    state: &PeEntryState) -> Result<(), pe::Error> {
-    if !executable_entry(as_, state.rip) || state.rip != image.entry || state.gs_base != env.teb { return Err(pe::Error::Einval); }
-    if stack_base == 0 { return Ok(()); }
-    let stack_vma = as_.find_vma(UserVirtAddr::new(stack_top.checked_sub(1).ok_or(pe::Error::Einval)?).ok_or(pe::Error::Einval)?)
-        .ok_or(pe::Error::Einval)?;
-    if stack_base >= stack_top || stack_vma.start.as_u64() != stack_base
-        || stack_vma.end.as_u64() != stack_top || !stack_vma.prot.contains(VmaProt::READ | VmaProt::WRITE)
-        || !matches!(stack_vma.backing, VmaBacking::Anonymous) { return Err(pe::Error::Einval); }
-    let rsp = state.rsp.as_u64();
-    if rsp < stack_base || rsp.checked_add(process_env::X64_SHADOW_SPACE + process_env::X64_RETURN_SLOT).ok_or(pe::Error::Einval)? > stack_top { return Err(pe::Error::Einval); }
-    let env_end = env.base.as_u64().checked_add(env.bytes as u64).ok_or(pe::Error::Einval)?;
-    for address in [env.peb.as_u64(), env.teb.as_u64()] {
-        if address < env.base.as_u64() || address >= env_end || as_.find_vma(UserVirtAddr::new(address).ok_or(pe::Error::Einval)?).is_none() { return Err(pe::Error::Einval); }
-    }
-    Ok(())
-}
 pub fn load_pe_process(blob: &[u8], as_: &AddressSpace, input: &process_env::EnvironmentInput<'_>, stack_top: u64) -> Result<PeProcess, pe::Error> {
     load_pe_process_with_resolver(blob, as_, input, stack_top, &RejectImports)
 }
@@ -1114,11 +1092,6 @@ fn load_pe_process_with_catalog_with_stack_bounds<R: ImportResolver>(blob: &[u8]
             return Err(error);
         }
     };
-    if validate_entry_context(as_, &loaded[0].image, &environment, stack_base, stack_top, &entry).is_err() {
-        let _ = as_.munmap(environment.base, environment.bytes);
-        unmap_loaded_modules(as_, &loaded);
-        return Err(pe::Error::Einval);
-    }
     let initializers = match pe_init::collect_initializers(&loaded, &owned) {
         Ok(initializers) => initializers,
         Err(error) => { let _ = as_.munmap(environment.base, environment.bytes); unmap_loaded_modules(as_, &loaded); return Err(error); }
@@ -1134,6 +1107,14 @@ fn load_pe_process_with_catalog_with_stack_bounds<R: ImportResolver>(blob: &[u8]
         Err(error) => { let _ = as_.munmap(environment.base, environment.bytes); unmap_loaded_modules(as_, &loaded); return Err(error); }
     };
     if let Some(trampoline) = initializer_trampoline { entry.rip = trampoline.entry; }
+    let startup = match crate::pe_startup::PeStartupTransaction::begin(as_, &loaded[0].image, &environment, stack_base, stack_top, &entry, initializer_trampoline.as_ref()) {
+        Ok(transaction) => transaction.finish(),
+        Err(_) => {
+            let _ = as_.munmap(environment.base, environment.bytes);
+            unmap_loaded_modules(as_, &loaded);
+            return Err(pe::Error::Einval);
+        }
+    };
     let mut runtime_modules = loaded.iter().zip(&owned).map(|(module, owned)| -> Result<_, pe::Error> { Ok(pe_modules::PeRuntimeModule { base: module.image.base, size: module.image.size, exception_rva: module.image.exception_directory.0, exception_size: module.image.exception_directory.1, exception_functions: pe::parse(&owned.blob)?.exception_functions()? }) }).collect::<Result<alloc::vec::Vec<_>, _>>()?;
     if !loaded.iter().any(|module| ascii_eq_ignore_case(module.name, b"ntdll.dll")) {
         runtime_modules.push(pe_modules::PeRuntimeModule { base: runtime.base.as_u64(), size: runtime.bytes as u32, exception_rva: 0, exception_size: 0, exception_functions: alloc::vec::Vec::new() });
@@ -1144,7 +1125,7 @@ fn load_pe_process_with_catalog_with_stack_bounds<R: ImportResolver>(blob: &[u8]
             pe_modules::register_exports(as_, module.image.base, rvas);
         }
     }
-    Ok(PeProcess { image: loaded[0].image, environment, entry, initializers, initializer_trampoline })
+    Ok(PeProcess { image: loaded[0].image, environment, entry, startup, initializers, initializer_trampoline })
 }
 
 #[cfg(test)]
@@ -1192,19 +1173,22 @@ pub fn load_pe_process_with_resolver_and_modules_and_params_with_stack_bounds<R:
         Ok(entry) => entry,
         Err(error) => { let _ = as_.munmap(environment.base, environment.bytes); let _ = as_.munmap(UserVirtAddr::new(image.base).ok_or(pe::Error::Einval)?, image.size as usize); return Err(error); }
     };
-    if validate_entry_context(as_, &image, &environment, stack_base, stack_top, &entry).is_err() {
-        let _ = as_.munmap(environment.base, environment.bytes);
-        let _ = as_.munmap(UserVirtAddr::new(image.base).ok_or(pe::Error::Einval)?, image.size as usize);
-        return Err(pe::Error::Einval);
-    }
     let initializers = match pe_init::collect_root_initializers(blob, &image) { Ok(initializers) => initializers, Err(error) => { let _ = as_.munmap(environment.base, environment.bytes); let _ = as_.munmap(UserVirtAddr::new(image.base).ok_or(pe::Error::Einval)?, image.size as usize); return Err(error); } };
     let initializer_trampoline = match pe_init::map(as_, entry.rip, &initializers) {
         Ok(trampoline) => trampoline,
         Err(error) => { let _ = as_.munmap(environment.base, environment.bytes); let _ = as_.munmap(UserVirtAddr::new(image.base).ok_or(pe::Error::Einval)?, image.size as usize); return Err(error); }
     };
     let entry = if let Some(trampoline) = initializer_trampoline { PeEntryState { rip: trampoline.entry, ..entry } } else { entry };
+    let startup = match crate::pe_startup::PeStartupTransaction::begin(as_, &image, &environment, stack_base, stack_top, &entry, initializer_trampoline.as_ref()) {
+        Ok(transaction) => transaction.finish(),
+        Err(_) => {
+            let _ = as_.munmap(environment.base, environment.bytes);
+            let _ = as_.munmap(UserVirtAddr::new(image.base).ok_or(pe::Error::Einval)?, image.size as usize);
+            return Err(pe::Error::Einval);
+        }
+    };
     pe_modules::register(as_, &[pe_modules::PeRuntimeModule { base: image.base, size: image.size, exception_rva: image.exception_directory.0, exception_size: image.exception_directory.1, exception_functions: pe::parse(blob)?.exception_functions()? }]);
-    Ok(PeProcess { image, environment, entry, initializers, initializer_trampoline })
+    Ok(PeProcess { image, environment, entry, startup, initializers, initializer_trampoline })
 }
 /// Map one validated PE32+ image into the common address space. # C: O(SizeOfImage + N_sections)
 pub fn load_pe_image(blob: &[u8], as_: &AddressSpace) -> Result<PeLoadedImage, pe::Error> {
