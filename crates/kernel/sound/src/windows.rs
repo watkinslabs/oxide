@@ -30,7 +30,10 @@ impl PcmFormat {
 pub enum AudioDirection { Render, Capture }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum StreamError { ZeroDuration, ZeroFrames, PeriodExceedsBuffer, BufferTooLarge, InvalidFrameCount, WouldBlock, BufferOperationPending, OutOfOrder, InvalidBufferSize, WrongDirection }
+pub enum StreamError { ZeroDuration, ZeroFrames, PeriodExceedsBuffer, BufferTooLarge, InvalidFrameCount, WouldBlock, BufferOperationPending, OutOfOrder, InvalidBufferSize, WrongDirection, AlreadyStarted, NotStopped, Invalidated }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StreamState { Initialized, Running, Stopped, Invalidated }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StreamGeometry { pub buffer_frames: u32, pub period_frames: u32, pub buffer_bytes: u32, pub period_bytes: u32 }
@@ -65,18 +68,69 @@ impl StreamGeometry {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct AudioStream { geometry: StreamGeometry, direction: AudioDirection, queued_frames: u32, render_loan: Option<u32> }
+pub struct AudioStream { format: Option<PcmFormat>, geometry: StreamGeometry, direction: AudioDirection, state: StreamState, queued_frames: u32, render_loan: Option<u32> }
 
 impl AudioStream {
     /// Create an endpoint queue starting with no padded frames.
     /// # C: O(1)
-    pub const fn new(geometry: StreamGeometry, direction: AudioDirection) -> Self { Self { geometry, direction, queued_frames: 0, render_loan: None } }
+    pub const fn new(geometry: StreamGeometry, direction: AudioDirection) -> Self {
+        Self { format: None, geometry, direction, state: StreamState::Initialized, queued_frames: 0, render_loan: None }
+    }
+    /// Create a stream while retaining the negotiated format for endpoint queries.
+    /// # C: O(1)
+    pub const fn with_format(format: PcmFormat, geometry: StreamGeometry, direction: AudioDirection) -> Self {
+        Self { format: Some(format), geometry, direction, state: StreamState::Initialized, queued_frames: 0, render_loan: None }
+    }
+    pub const fn format(self) -> Option<PcmFormat> { self.format }
+    pub const fn state(self) -> StreamState { self.state }
     pub const fn current_padding(self) -> u32 { self.queued_frames }
     pub const fn available_frames(self) -> u32 { self.geometry.buffer_frames - self.queued_frames }
+
+    /// Transition an initialized or stopped endpoint into active playback/capture.
+    /// # C: O(1)
+    pub fn start(&mut self) -> Result<(), StreamError> {
+        match self.state {
+            StreamState::Invalidated => Err(StreamError::Invalidated),
+            StreamState::Running => Err(StreamError::AlreadyStarted),
+            StreamState::Initialized | StreamState::Stopped => { self.state = StreamState::Running; Ok(()) }
+        }
+    }
+
+    /// Stop an endpoint; stopping an already stopped endpoint is idempotent.
+    /// # C: O(1)
+    pub fn stop(&mut self) -> Result<(), StreamError> {
+        if self.state == StreamState::Invalidated { return Err(StreamError::Invalidated); }
+        self.state = StreamState::Stopped;
+        self.render_loan = None;
+        Ok(())
+    }
+
+    /// Reset a stopped endpoint's client-visible padding and pointers.
+    /// # C: O(1)
+    pub fn reset(&mut self) -> Result<(), StreamError> {
+        match self.state {
+            StreamState::Invalidated => Err(StreamError::Invalidated),
+            StreamState::Running => Err(StreamError::NotStopped),
+            StreamState::Initialized | StreamState::Stopped => {
+                self.queued_frames = 0;
+                self.render_loan = None;
+                Ok(())
+            }
+        }
+    }
+
+    /// Permanently invalidate an endpoint after native device removal.
+    /// # C: O(1)
+    pub fn invalidate(&mut self) {
+        self.state = StreamState::Invalidated;
+        self.queued_frames = 0;
+        self.render_loan = None;
+    }
 
     /// Submit render frames or make capture frames available to the client.
     /// # C: O(1)
     pub fn client_write(&mut self, frames: u32) -> Result<(), StreamError> {
+        if self.state == StreamState::Invalidated { return Err(StreamError::Invalidated); }
         if self.render_loan.is_some() { return Err(StreamError::BufferOperationPending); }
         if frames > self.available_frames() { return Err(StreamError::WouldBlock); }
         self.queued_frames += frames; Ok(())
@@ -85,6 +139,7 @@ impl AudioStream {
     /// Consume render frames or read capture frames from the client queue.
     /// # C: O(1)
     pub fn client_read(&mut self, frames: u32) -> Result<(), StreamError> {
+        if self.state == StreamState::Invalidated { return Err(StreamError::Invalidated); }
         if self.render_loan.is_some() { return Err(StreamError::BufferOperationPending); }
         if frames > self.queued_frames { return Err(StreamError::WouldBlock); }
         self.queued_frames -= frames; Ok(())
@@ -93,6 +148,7 @@ impl AudioStream {
     /// Reserve one render buffer; its frames do not affect padding until release.
     /// # C: O(1)
     pub fn render_get_buffer(&mut self, frames: u32) -> Result<(), StreamError> {
+        if self.state == StreamState::Invalidated { return Err(StreamError::Invalidated); }
         if self.direction != AudioDirection::Render { return Err(StreamError::WrongDirection); }
         if self.render_loan.is_some() { return Err(StreamError::OutOfOrder); }
         if frames > self.available_frames() { return Err(StreamError::BufferTooLarge); }
