@@ -7,12 +7,69 @@ pub const MAX_BUFFER_FRAMES: u64 = 1_048_576;
 pub const MAX_CHANNELS: u32 = 64;
 pub const MIN_RATE_HZ: u32 = 1_000;
 pub const MAX_RATE_HZ: u32 = 200_000;
+pub const WAVE_FORMAT_EXTENSIBLE: u16 = 0xfffe;
+pub const WAVE_FORMAT_EXTENSIBLE_SIZE: u16 = 22;
+pub const SPEAKER_RESERVED: u32 = 0x8000_0000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PcmFormat { alsa_format: u32, channels: u32, rate_hz: u32, frame_bytes: u32 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FormatError { UnsupportedFormat, InvalidChannels, InvalidRate, InvalidFrameBytes }
+pub enum FormatError { UnsupportedFormat, InvalidChannels, InvalidRate, InvalidFrameBytes, InvalidWaveFormat }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WaveSubFormat { Pcm, IeeeFloat }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WaveFormatExtensible {
+    pub format_tag: u16,
+    pub channels: u16,
+    pub rate_hz: u32,
+    pub avg_bytes_per_sec: u32,
+    pub block_align: u16,
+    pub bits_per_sample: u16,
+    pub cb_size: u16,
+    pub valid_bits_per_sample: u16,
+    pub channel_mask: u32,
+    pub sub_format: WaveSubFormat,
+}
+
+impl WaveFormatExtensible {
+    /// Validate the Windows extensible descriptor before native negotiation.
+    /// # C: O(1)
+    pub fn validate(self) -> Result<(), FormatError> {
+        if self.format_tag != WAVE_FORMAT_EXTENSIBLE || self.cb_size < WAVE_FORMAT_EXTENSIBLE_SIZE { return Err(FormatError::InvalidWaveFormat); }
+        let channels = u32::from(self.channels);
+        let bits = u32::from(self.bits_per_sample);
+        if channels == 0 || channels > MAX_CHANNELS { return Err(FormatError::InvalidChannels); }
+        if !(MIN_RATE_HZ..=MAX_RATE_HZ).contains(&self.rate_hz) { return Err(FormatError::InvalidRate); }
+        if bits == 0 || bits % 8 != 0 || u32::from(self.block_align) != channels * bits / 8 || self.avg_bytes_per_sec != u32::from(self.block_align) * self.rate_hz { return Err(FormatError::InvalidWaveFormat); }
+        let valid = u32::from(self.valid_bits_per_sample);
+        if valid == 0 || valid > bits { return Err(FormatError::InvalidWaveFormat); }
+        if self.channel_mask & SPEAKER_RESERVED != 0 || (self.channel_mask != 0 && self.channel_mask.count_ones() != channels) { return Err(FormatError::InvalidWaveFormat); }
+        match self.sub_format {
+            WaveSubFormat::Pcm if matches!(bits, 8 | 16 | 24 | 32) && (valid == bits || (bits == 32 && valid == 24)) => Ok(()),
+            WaveSubFormat::IeeeFloat if bits == 32 && valid == bits => Ok(()),
+            _ => Err(FormatError::UnsupportedFormat),
+        }
+    }
+
+    /// Convert an accepted PCM descriptor into the existing native format.
+    /// # C: O(1)
+    pub fn to_pcm_format(self) -> Result<PcmFormat, FormatError> {
+        self.validate()?;
+        let alsa = match (self.sub_format, self.bits_per_sample) {
+            (WaveSubFormat::Pcm, 8) => crate::uapi::FMT_U8,
+            (WaveSubFormat::Pcm, 16) => crate::uapi::FMT_S16_LE,
+            (WaveSubFormat::Pcm, 24) => crate::uapi::FMT_S24_LE,
+            (WaveSubFormat::Pcm, 32) => crate::uapi::FMT_S32_LE,
+            _ => return Err(FormatError::UnsupportedFormat),
+        };
+        let format = PcmFormat::from_alsa(alsa, u32::from(self.channels), self.rate_hz)?;
+        if format.frame_bytes() != u32::from(self.block_align) { return Err(FormatError::InvalidWaveFormat); }
+        Ok(format)
+    }
+}
 
 impl PcmFormat {
     /// Build adapter geometry from an already-negotiated native format.

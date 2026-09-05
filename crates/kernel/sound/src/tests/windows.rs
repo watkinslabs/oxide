@@ -5,6 +5,48 @@ use super::*;
 
 fn format() -> PcmFormat { PcmFormat::from_alsa(crate::uapi::FMT_S16_LE, 2, 48_000).unwrap() }
 
+fn extensible(sub_format: WaveSubFormat) -> WaveFormatExtensible {
+    WaveFormatExtensible { format_tag: WAVE_FORMAT_EXTENSIBLE, channels: 2, rate_hz: 48_000,
+        avg_bytes_per_sec: 192_000, block_align: 4, bits_per_sample: 16, cb_size: WAVE_FORMAT_EXTENSIBLE_SIZE,
+        valid_bits_per_sample: 16, channel_mask: 3, sub_format }
+}
+
+#[test]
+fn extensible_pcm_crosses_into_the_native_owner() {
+    let accepted = extensible(WaveSubFormat::Pcm);
+    assert_eq!(accepted.validate(), Ok(()));
+    assert_eq!(accepted.to_pcm_format(), Ok(format()));
+}
+
+#[test]
+fn extensible_boundary_checks_subtype_precision_and_channel_geometry() {
+    let mut value = extensible(WaveSubFormat::IeeeFloat);
+    assert_eq!(value.validate(), Err(FormatError::UnsupportedFormat));
+    value.bits_per_sample = 32;
+    value.block_align = 8;
+    value.avg_bytes_per_sec = 384_000;
+    value.valid_bits_per_sample = 32;
+    assert_eq!(value.validate(), Ok(()));
+    assert_eq!(value.to_pcm_format(), Err(FormatError::UnsupportedFormat));
+    value.sub_format = WaveSubFormat::Pcm;
+    value.valid_bits_per_sample = 24;
+    assert_eq!(value.validate(), Ok(()));
+    value.channel_mask = 1;
+    assert_eq!(value.validate(), Err(FormatError::InvalidWaveFormat));
+    value.channel_mask = SPEAKER_RESERVED;
+    assert_eq!(value.validate(), Err(FormatError::InvalidWaveFormat));
+}
+
+#[test]
+fn extensible_descriptor_requires_the_complete_extension() {
+    let mut value = extensible(WaveSubFormat::Pcm);
+    value.cb_size = WAVE_FORMAT_EXTENSIBLE_SIZE - 1;
+    assert_eq!(value.validate(), Err(FormatError::InvalidWaveFormat));
+    value.cb_size = WAVE_FORMAT_EXTENSIBLE_SIZE;
+    value.valid_bits_per_sample = 17;
+    assert_eq!(value.validate(), Err(FormatError::InvalidWaveFormat));
+}
+
 #[test]
 fn duration_geometry_matches_wasapi_frame_rounding() {
     let g = StreamGeometry::from_durations(format(), 10_000_000, 1_000_000).unwrap();
