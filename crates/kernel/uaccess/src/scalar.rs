@@ -2,10 +2,18 @@ use core::mem::MaybeUninit;
 use syscall::errno::Errno;
 
 use crate::access_ok;
+use crate::copy_from_user;
 
 const OK: u32 = 0;
 const U32_BYTES: usize = core::mem::size_of::<u32>();
 const U64_BYTES: usize = core::mem::size_of::<u64>();
+
+/// Read one user u16 through the fault-recovering byte-copy path. # C: O(1)
+pub fn get_user_u16(addr: u64) -> Result<u16, Errno> {
+    let mut bytes = [0u8; 2];
+    copy_from_user(&mut bytes, addr)?;
+    Ok(u16::from_ne_bytes(bytes))
+}
 
 /// Read one user u32 through the typed exception-table load. # C: O(1)
 pub fn get_user_u32(addr: u64) -> Result<u32, Errno> {
@@ -76,6 +84,12 @@ mod tests {
         let wide_addr = (&mut wide as *mut u64) as u64;
         put_user_u64(wide_addr, 0x0123_4567_89ab_cdef).unwrap();
         assert_eq!(get_user_u64(wide_addr), Ok(0x0123_4567_89ab_cdef));
+    }
+
+    #[test]
+    fn typed_u16_load_accepts_unaligned_user_address() {
+        let mut bytes = [0u8, 0x34, 0x12, 0u8];
+        assert_eq!(get_user_u16((&mut bytes[1] as *mut u8) as u64), Ok(0x1234));
     }
 
     #[test]
