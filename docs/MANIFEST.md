@@ -95,6 +95,7 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `31aw-windows-nt-ldr-get-procedure-address.md` | FROZEN | 2026-08-31 | `01`,`02`,`31h`,`52`,`53` |
 | `31ax-windows-nt-ldr-set-dll-directory.md` | FROZEN | 2026-08-31 | `01`,`02`,`31h`,`52`,`53` |
 | `31ga-windows-nt-ldr-get-dll-path.md` | FROZEN | 2026-09-04 | `01`,`02`,`31h`,`31ax`,`52`,`53` |
+| `31gb-windows-winsock-events.md` | FROZEN | 2026-09-04 | `01`,`02`,`25`,`31d`,`31f`,`31g`,`52`,`53` |
 | `31ay-windows-nt-add-atom.md` | FROZEN | 2026-08-31 | `01`,`02`,`31h`,`52`,`53` |
 | `31az-windows-nt-assign-process-job.md` | FROZEN | 2026-08-31 | `01`,`02`,`31h`,`52`,`53` |
 | `31ba-windows-nt-create-job.md` | FROZEN | 2026-08-31 | `01`,`02`,`31h`,`52`,`53` |
