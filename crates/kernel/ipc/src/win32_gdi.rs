@@ -121,6 +121,28 @@ impl GdiManager {
         Ok(())
     }
 
+    /// Copy a clipped source rectangle into a destination context without aliasing either context. # C: O(width*height)
+    pub fn bitblt(&mut self, dst: u32, dst_x: i32, dst_y: i32, src: u32, src_x: i32, src_y: i32, width: i32, height: i32) -> Result<(), GdiError> {
+        if width <= 0 || height <= 0 { return Err(GdiError::InvalidDimensions); }
+        let Some((_, source)) = self.dcs.iter().find(|(candidate, _)| *candidate == src) else { return Err(GdiError::NoSuchObject); };
+        let source_width = source.width;
+        let source_height = source.height;
+        let source_pixels = source.pixels.clone();
+        let Some((_, destination)) = self.dcs.iter_mut().find(|(candidate, _)| *candidate == dst) else { return Err(GdiError::NoSuchObject); };
+        for row in 0..height {
+            let sy = src_y.saturating_add(row);
+            let dy = dst_y.saturating_add(row);
+            if sy < 0 || sy >= source_height || dy < 0 || dy >= destination.height { continue; }
+            for column in 0..width {
+                let sx = src_x.saturating_add(column);
+                let dx = dst_x.saturating_add(column);
+                if sx < 0 || sx >= source_width || dx < 0 || dx >= destination.width { continue; }
+                destination.pixels[dy as usize * destination.width as usize + dx as usize] = source_pixels[sy as usize * source_width as usize + sx as usize];
+            }
+        }
+        Ok(())
+    }
+
     /// Read the rendered row-major XRGB surface for one device context. # C: O(1)
     pub fn pixels(&self, dc: u32) -> Option<&[u32]> { self.dcs.iter().find(|(candidate, _)| *candidate == dc).map(|(_, state)| state.pixels.as_slice()) }
 
@@ -190,5 +212,26 @@ mod tests {
         let source = [0x11, 0x22, 0x33, 0xaa, 0xbb, 0xcc];
         gdi.blit_pixels(dc, -1, 0, 3, 2, 3, &source).unwrap();
         assert_eq!(gdi.pixels(dc).unwrap(), &[0x22, 0x33, 0, 0xbb, 0xcc, 0]);
+    }
+
+    #[test]
+    fn bitblt_copies_clipped_pixels_and_handles_overlap_from_one_snapshot() {
+        let mut gdi = GdiManager::new();
+        let src = gdi.create_dc(3, 2).unwrap();
+        let dst = gdi.create_dc(4, 2).unwrap();
+        gdi.blit_pixels(src, 0, 0, 3, 2, 3, &[1, 2, 3, 4, 5, 6]).unwrap();
+        gdi.bitblt(dst, -1, 0, src, 0, 0, 3, 2).unwrap();
+        assert_eq!(gdi.pixels(dst).unwrap(), &[2, 3, 0, 0, 5, 6, 0, 0]);
+        gdi.bitblt(dst, 1, 0, dst, 0, 0, 3, 2).unwrap();
+        assert_eq!(gdi.pixels(dst).unwrap(), &[2, 2, 3, 0, 5, 5, 6, 0]);
+    }
+
+    #[test]
+    fn bitblt_rejects_empty_or_unknown_contexts_without_mutation() {
+        let mut gdi = GdiManager::new();
+        let dc = gdi.create_dc(2, 2).unwrap();
+        assert_eq!(gdi.bitblt(dc, 0, 0, dc, 0, 0, 0, 1), Err(GdiError::InvalidDimensions));
+        assert_eq!(gdi.bitblt(dc, 0, 0, 99, 0, 0, 1, 1), Err(GdiError::NoSuchObject));
+        assert_eq!(gdi.pixels(dc).unwrap(), &[0, 0, 0, 0]);
     }
 }

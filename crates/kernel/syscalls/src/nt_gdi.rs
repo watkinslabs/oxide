@@ -38,6 +38,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         NtGdiCall::GetTextExtent { dc, count, text, extent } => Some(get_extent(state, dc, count, text, extent)),
         NtGdiCall::FillRect { dc, left, top, right, bottom, color } => Some(match state.fill_rect(dc, ipc::win32_gdi::Rect { left, top, right, bottom }, color) { Ok(()) => STATUS_SUCCESS, Err(_) => STATUS_INVALID_HANDLE }),
         NtGdiCall::BlitSurface { dc, pixels, x, y, width, height, stride } => Some(blit_surface(state, dc, pixels, x, y, width, height, stride)),
+        NtGdiCall::BitBltSurface { dst, src, dst_x, dst_y, src_x, src_y, width, height } => Some(match state.bitblt(dst, dst_x, dst_y, src, src_x, src_y, width, height) { Ok(()) => STATUS_SUCCESS, Err(ipc::win32_gdi::GdiError::NoSuchObject) => STATUS_INVALID_HANDLE, Err(_) => STATUS_INVALID_PARAMETER }),
         NtGdiCall::PresentSurface { dc, x, y } => Some(present_surface(state, dc, x, y)),
         NtGdiCall::PresentWindow { hwnd, dc } => Some(present_window(state, hwnd, dc)),
         NtGdiCall::PresentWindowRegion { hwnd, dc, left, top, right, bottom } => Some(present_window_region(state, hwnd, dc, left, top, right, bottom)),
