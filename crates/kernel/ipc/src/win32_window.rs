@@ -81,10 +81,14 @@ impl MessageQueue {
         let index = self.messages.iter().position(|message| filter.matches(*message))?;
         if remove { self.messages.remove(index) } else { self.messages.get(index).copied() }
     }
+    fn peek_matching<F>(&mut self, matches: F, remove: bool) -> Option<WinMessage>
+    where F: Fn(WinMessage) -> bool {
+        let index = self.messages.iter().position(|message| matches(*message))?;
+        if remove { self.messages.remove(index) } else { self.messages.get(index).copied() }
+    }
     pub fn len(&self) -> usize { self.messages.len() }
     fn cleanup_window(&mut self, id: WindowId) { self.messages.retain(|message| message.hwnd != Some(id)); }
     pub fn post_quit(&mut self, code: i32) { self.quit = Some(code); }
-    fn take_quit(&mut self) -> Option<i32> { self.quit.take() }
     fn quit_pending(&self) -> bool { self.quit.is_some() }
     fn quit_message(&mut self, filter: MessageFilter, remove: bool) -> Option<WinMessage> {
         let code = self.quit?;
@@ -92,6 +96,14 @@ impl MessageQueue {
         if !filter.matches(message) { return None; }
         if remove { self.quit = None; }
         Some(message)
+    }
+    fn take_quit_matching<F>(&mut self, matches: F) -> Option<i32>
+    where F: Fn(WinMessage) -> bool {
+        let code = self.quit?;
+        let message = WinMessage { hwnd: None, message: WM_QUIT, wparam: code as u64, lparam: 0 };
+        if !matches(message) { return None; }
+        self.quit = None;
+        Some(code)
     }
 }
 
@@ -388,7 +400,11 @@ impl WindowManager {
         fired
     }
     pub fn peek_for_thread(&mut self, tid: u64, filter: MessageFilter, remove: bool) -> Option<WinMessage> {
-        self.queues.iter_mut().find(|(owner, _)| *owner == tid).and_then(|(_, queue)| queue.peek(filter, remove).or_else(|| queue.quit_message(filter, remove)))
+        let queue_index = self.queues.iter().position(|(owner, _)| *owner == tid)?;
+        let windows = &self.windows;
+        let matches = |message| message_matches_in_windows(windows, filter, message);
+        let queue = &mut self.queues[queue_index].1;
+        queue.peek_matching(matches, remove).or_else(|| queue.quit_message(filter, remove))
     }
     /// Validate the optional HWND filter before a queue lookup. # C: O(N_windows)
     pub fn validate_message_filter(&self, window: Option<WindowId>) -> Result<(), WindowError> {
@@ -400,13 +416,30 @@ impl WindowManager {
         else { let mut queue = MessageQueue::default(); queue.post_quit(code); self.queues.push((tid, queue)); }
     }
     pub fn take_for_thread(&mut self, tid: u64, filter: MessageFilter) -> QueueResult {
-        let Some((_, queue)) = self.queues.iter_mut().find(|(owner, _)| *owner == tid) else { return QueueResult::Empty; };
-        if let Some(message) = queue.peek(filter, true) { QueueResult::Message(message) }
-        else if let Some(code) = queue.take_quit() { QueueResult::Quit(code) }
+        let Some(queue_index) = self.queues.iter().position(|(owner, _)| *owner == tid) else { return QueueResult::Empty; };
+        let windows = &self.windows;
+        let matches = |message| message_matches_in_windows(windows, filter, message);
+        let queue = &mut self.queues[queue_index].1;
+        if let Some(message) = queue.peek_matching(matches, true) { QueueResult::Message(message) }
+        else if let Some(code) = queue.take_quit_matching(matches) { QueueResult::Quit(code) }
         else { QueueResult::Empty }
     }
     pub fn quit_pending(&self, tid: u64) -> bool { self.queues.iter().find(|(owner, _)| *owner == tid).is_some_and(|(_, queue)| queue.quit_pending()) }
     pub fn len(&self) -> usize { self.windows.len() }
+
+}
+
+fn message_matches_in_windows(windows: &[(WindowId, WindowRecord)], filter: MessageFilter, message: WinMessage) -> bool {
+    let range = MessageFilter { hwnd: None, first: filter.first, last: filter.last };
+    if !range.matches(message) { return false; }
+    let Some(filter_window) = filter.hwnd else { return true; };
+    let Some(message_window) = message.hwnd else { return false; };
+    let mut current = Some(message_window);
+    while let Some(window) = current {
+        if window == filter_window { return true; }
+        current = windows.iter().find(|(candidate, _)| *candidate == window).and_then(|(_, record)| record.parent);
+    }
+    false
 }
 
 fn same_name(left: &[u16], right: &[u16]) -> bool {
@@ -541,6 +574,34 @@ mod tests {
         assert_eq!(manager.validate_message_filter(Some(window)), Ok(()));
         manager.destroy(window).unwrap();
         assert_eq!(manager.validate_message_filter(Some(window)), Err(WindowError::NoSuchWindow));
+    }
+
+    #[test]
+    fn parent_hwnd_filter_includes_descendant_messages_but_not_siblings() {
+        let mut manager = WindowManager::new();
+        let parent = manager.create(9, None, 0).unwrap();
+        let child = manager.create(9, Some(parent), 0).unwrap();
+        let sibling = manager.create(9, None, 0).unwrap();
+        manager.post_to_window(child, message(Some(child), WM_KEYDOWN)).unwrap();
+        manager.post_to_window(sibling, message(Some(sibling), WM_KEYUP)).unwrap();
+        let filter = MessageFilter { hwnd: Some(parent), first: 0, last: u32::MAX };
+        assert_eq!(manager.peek_for_thread(9, filter, false).map(|value| value.hwnd), Some(Some(child)));
+        assert_eq!(manager.take_for_thread(9, filter), QueueResult::Message(message(Some(child), WM_KEYDOWN)));
+        assert_eq!(manager.take_for_thread(9, filter), QueueResult::Empty);
+        assert_eq!(manager.peek_for_thread(9, MessageFilter { hwnd: None, first: 0, last: u32::MAX }, true).map(|value| value.hwnd), Some(Some(sibling)));
+    }
+
+    #[test]
+    fn hwnd_filtered_get_does_not_consume_thread_quit_until_unfiltered() {
+        let mut manager = WindowManager::new();
+        let window = manager.create(9, None, 0).unwrap();
+        manager.post_quit(9, 23);
+        let filtered = MessageFilter { hwnd: Some(window), first: 0, last: u32::MAX };
+        assert_eq!(manager.take_for_thread(9, filtered), QueueResult::Empty);
+        assert!(manager.quit_pending(9));
+        let unfiltered = MessageFilter { hwnd: None, first: 0, last: u32::MAX };
+        assert_eq!(manager.take_for_thread(9, unfiltered), QueueResult::Quit(23));
+        assert!(!manager.quit_pending(9));
     }
 
     #[test]
