@@ -78,4 +78,14 @@ mod tests {
     fn rejects_io_status_block_pointer_wraparound() {
         assert!(!supported_request(0, 0, u64::MAX - 7, 0, 0, 1, 0, REG_NOTIFY_CHANGE_LAST_SET));
     }
+
+    #[test]
+    fn registry_has_one_dispatch_owner_before_legacy_fallbacks() {
+        let source = include_str!("nt_dispatch.rs");
+        let owner = "crate::nt_registry::dispatch(call)";
+        assert_eq!(source.matches(owner).count(), 1);
+        let owner_at = source.find(owner).expect("registry owner");
+        let file_at = source.find("crate::nt_file::dispatch_native(call)").expect("file owner");
+        assert!(owner_at < file_at);
+    }
 }
