@@ -247,7 +247,7 @@ impl RuntimeRequest {
     /// # C: O(PE + DLL catalog bytes)
     pub fn from_launch_config(image_path: &Path, windows_path: &[u8], command_line: &[u8], config: &ProtonLaunchConfig) -> Result<Self, BuildError> {
         config.validate()?;
-        Self::from_paths_with_environment(image_path, windows_path, command_line, &config.dll_catalog, config.profile().environment())
+        Self::from_paths_with_environment_and_dirs(image_path, windows_path, command_line, &config.dll_catalog, &[config.dxvk.as_path()], config.profile().environment())
     }
 
     /// Read a PE32+ root and every non-native DLL in `dll_dir` using the Linux personality.
@@ -268,6 +268,14 @@ impl RuntimeRequest {
     /// # C: O(root + DLL directory bytes + environment bytes)
     pub fn from_paths_with_environment<I>(image_path: &Path, windows_path: &[u8], command_line: &[u8], dll_dir: &Path, environment: I) -> Result<Self, BuildError>
     where I: IntoIterator<Item = (String, String)> {
+        Self::from_paths_with_environment_and_dirs(image_path, windows_path, command_line, dll_dir, &[], environment)
+    }
+
+    /// Build one owned catalog from the primary Wine directory and optional
+    /// component directories, rejecting duplicate identities across sources.
+    /// # C: O(root + component directories + DLL bytes + environment bytes)
+    fn from_paths_with_environment_and_dirs<I>(image_path: &Path, windows_path: &[u8], command_line: &[u8], dll_dir: &Path, component_dirs: &[&Path], environment: I) -> Result<Self, BuildError>
+    where I: IntoIterator<Item = (String, String)> {
         if windows_path.is_empty() || windows_path.len() > u32::MAX as usize || windows_path.contains(&0) { return Err(BuildError::InvalidUtf8Path); }
         if command_line.is_empty() || command_line.len() > u32::MAX as usize || command_line.contains(&0) { return Err(BuildError::InvalidUtf8Path); }
         let image = fs::read(image_path).map_err(|error| {
@@ -277,7 +285,10 @@ impl RuntimeRequest {
         let root = pe::parse(&image).map_err(BuildError::InvalidRoot)?;
         let mut catalog = ModuleCatalog::new();
         let mut modules = Vec::new();
-        let available = stage_module_paths(dll_dir)?;
+        let mut catalog_dirs = Vec::with_capacity(component_dirs.len() + 1);
+        catalog_dirs.push(dll_dir);
+        catalog_dirs.extend_from_slice(component_dirs);
+        let available = stage_module_paths_from_dirs(&catalog_dirs)?;
         let mut pending: Vec<Vec<u8>> = root.imports().map_err(BuildError::InvalidRoot)?
             .into_iter().map(|import| dependency_name(import.name).to_ascii_lowercase()).collect();
         let mut seen = HashSet::new();
@@ -436,16 +447,22 @@ fn is_dll(path: &Path) -> bool {
 /// are an ambiguity rather than a precedence decision. Sorting the directory
 /// entries makes the reported pair stable despite filesystem enumeration order.
 fn stage_module_paths(dll_dir: &Path) -> Result<HashMap<Vec<u8>, PathBuf>, BuildError> {
-    let entries = fs::read_dir(dll_dir).map_err(|error| {
-        eprintln!("windows-runtime: read_dir {}: {error}", dll_dir.display()); BuildError::Io(error)
-    })?;
+    stage_module_paths_from_dirs(&[dll_dir])
+}
+
+fn stage_module_paths_from_dirs(dll_dirs: &[&Path]) -> Result<HashMap<Vec<u8>, PathBuf>, BuildError> {
     let mut paths = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(|error| {
-            eprintln!("windows-runtime: directory entry {}: {error}", dll_dir.display()); BuildError::Io(error)
+    for dll_dir in dll_dirs {
+        let entries = fs::read_dir(dll_dir).map_err(|error| {
+            eprintln!("windows-runtime: read_dir {}: {error}", dll_dir.display()); BuildError::Io(error)
         })?;
-        let path = entry.path();
-        if is_dll(&path) { paths.push(path); }
+        for entry in entries {
+            let entry = entry.map_err(|error| {
+                eprintln!("windows-runtime: directory entry {}: {error}", dll_dir.display()); BuildError::Io(error)
+            })?;
+            let path = entry.path();
+            if is_dll(&path) { paths.push(path); }
+        }
     }
     paths.sort_by(|left, right| {
         left.file_name().map(OsStr::as_bytes).cmp(&right.file_name().map(OsStr::as_bytes))
@@ -753,6 +770,24 @@ mod tests {
             }
             other => panic!("expected deterministic duplicate rejection, got {other:?}"),
         }
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn launch_catalog_merges_owned_component_sources_without_precedence_fallback() {
+        let base = std::env::temp_dir().join(format!("oxide-windows-runtime-components-{}", std::process::id()));
+        let wine = base.join("wine");
+        let dxvk = base.join("dxvk");
+        fs::create_dir_all(&wine).unwrap();
+        fs::create_dir_all(&dxvk).unwrap();
+        fs::write(wine.join("kernel32.dll"), []).unwrap();
+        fs::write(dxvk.join("d3d11.dll"), []).unwrap();
+        fs::write(dxvk.join("dxgi.dll"), []).unwrap();
+        let available = stage_module_paths_from_dirs(&[wine.as_path(), dxvk.as_path()]).unwrap();
+        assert_eq!(available.get(b"kernel32.dll".as_slice()), Some(&wine.join("kernel32.dll")));
+        assert_eq!(available.get(b"d3d11.dll".as_slice()), Some(&dxvk.join("d3d11.dll")));
+        fs::write(wine.join("DXGI.DLL"), []).unwrap();
+        assert!(matches!(stage_module_paths_from_dirs(&[wine.as_path(), dxvk.as_path()]), Err(BuildError::AmbiguousModule { .. })));
         fs::remove_dir_all(base).unwrap();
     }
 

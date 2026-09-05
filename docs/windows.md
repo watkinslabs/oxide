@@ -888,6 +888,9 @@ runtime. The record canonicalizes absolute paths, requires `d3d11.dll` and
 `dxgi.dll` as regular files with valid PE32+ identity, and requires a strict
 `major.minor.patch` version manifest. Missing, malformed, duplicated, or
 runtime-external components fail closed before the PE launch catalog is read.
+When a configured launch builds its owned PE catalog, these admitted DXVK
+modules are merged with the Wine catalog as one source set; duplicate
+case-insensitive identities fail rather than selecting an accidental path.
 
 ## W8 ... vkd3d-proton
 
