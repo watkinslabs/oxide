@@ -75,7 +75,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
         smoke-ata-sat smoke-ata-sat-x86 smoke-ata-sat-arm \
         smoke-usb-scsi smoke-usb-scsi-x86 smoke-usb-scsi-arm \
         hosted-gate test-build-gate test-build-check-selftest \
-        smoke-hostshare smoke-hostshare-x86 smoke-hostshare-arm smoke-windows-notepad-x86 \
+        smoke-hostshare smoke-hostshare-x86 smoke-hostshare-arm smoke-windows-notepad-x86 windows-nt-transition-test \
         smoke-ping smoke-ping-x86 smoke-ping-arm smoke-network-native-pci-x86 \
         stack-gate-baseline-x86 stack-gate-baseline-arm stack-report \
         clean clean-builds help
@@ -119,9 +119,14 @@ test: windows-compat-test
 # compatibility gate.
 windows-compat-test:
 	./tools/test-windows-notepad-harness.sh
+	./tools/test-windows-nt-transition-harness.sh
 	$(WARNING_RUN) $(CARGO) test --manifest-path userspace/probes/Cargo.toml -p windows-contracts --quiet
 	$(WARNING_RUN) $(CARGO) run --manifest-path userspace/probes/Cargo.toml -p windows-contracts --quiet
 	$(WARNING_RUN) $(CARGO) +nightly check -Z build-std=core,compiler_builtins,alloc -Z build-std-features=compiler-builtins-mem -Z unstable-options -Z json-target-spec --target targets/x86_64-unknown-oxide-kernel.json -p kmain -p boot-x86_64 -p kernel-bin-x86_64 --quiet
+
+windows-nt-transition-test:
+	./tools/test-windows-nt-transition-harness.sh
+	$(CARGO) test -p syscalls --lib nt_transition_measure --quiet
 	$(WARNING_RUN) $(CARGO) +nightly check -Z build-std=core,compiler_builtins,alloc -Z build-std-features=compiler-builtins-mem -Z unstable-options -Z json-target-spec --target targets/aarch64-unknown-oxide-kernel.json -p kmain -p boot-aarch64 -p kernel-bin-aarch64 --quiet
 	$(WARNING_RUN) $(CARGO) test --manifest-path userspace/probes/Cargo.toml -p vulkan_probe --quiet
 	$(WARNING_RUN) $(CARGO) run --manifest-path userspace/probes/Cargo.toml -p vulkan_probe --quiet
