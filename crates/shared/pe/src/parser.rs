@@ -10,6 +10,8 @@ pub const IMAGE_DIRECTORY_ENTRY_BASERELOC: usize = 5;
 pub const IMAGE_DIRECTORY_ENTRY_TLS: usize = 9;
 pub const IMAGE_REL_BASED_ABSOLUTE: u16 = 0;
 pub const IMAGE_REL_BASED_DIR64: u16 = 10;
+const UNW_FLAG_EHANDLER: u8 = 0x01;
+const UNW_FLAG_UHANDLER: u8 = 0x02;
 const UNW_FLAG_CHAININFO: u8 = 0x04;
 const UWOP_SAVE_XMM128: u8 = 8;
 const UWOP_SAVE_XMM128_FAR: u8 = 9;
@@ -39,6 +41,7 @@ impl SectionFlags {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)] pub struct RuntimeFunction { pub begin_rva: u32, pub end_rva: u32, pub unwind_rva: u32 }
 #[derive(Copy, Clone, Debug, Eq, PartialEq)] pub struct UnwindCode { pub code_offset: u8, pub unwind_op: u8, pub op_info: u8 }
 #[derive(Debug, Eq, PartialEq)] pub struct UnwindInfo { pub version: u8, pub flags: u8, pub prolog_size: u8, pub code_count: u8, pub frame_register: u8, pub frame_offset: u8, pub codes: Vec<UnwindCode> }
+#[derive(Copy, Clone, Debug, Eq, PartialEq)] pub struct UnwindHandler { pub handler_rva: u32, pub data_rva: u32 }
 /// x64 register state consumed and produced by one unwind step.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)] pub struct UnwindContext {
     pub regs: [u64; 16], pub xmm: [[u64; 2]; 16], pub rip: u64, pub rsp: u64,
@@ -371,12 +374,28 @@ impl<'a> Image<'a> {
         let header = self.rva_range(function.unwind_rva, 4)?;
         let version = header[0] & 7; let flags = header[0] >> 3;
         if version != 1 { return Err(Error::Unsupported); }
+        if flags & !(UNW_FLAG_EHANDLER | UNW_FLAG_UHANDLER | UNW_FLAG_CHAININFO) != 0 || flags & UNW_FLAG_CHAININFO != 0 && flags & (UNW_FLAG_EHANDLER | UNW_FLAG_UHANDLER) != 0 { return Err(Error::Einval); }
         let code_count = header[2]; let mut codes = Vec::with_capacity(code_count as usize);
         for index in 0..code_count as u32 {
             let bytes = self.rva_range(function.unwind_rva.checked_add(4 + index * 2).ok_or(Error::Einval)?, 2)?;
             codes.push(UnwindCode { code_offset: bytes[0], unwind_op: bytes[1] & 0x0f, op_info: bytes[1] >> 4 });
         }
         Ok(UnwindInfo { version, flags, prolog_size: header[1], code_count, frame_register: header[3] & 0x0f, frame_offset: header[3] >> 4, codes })
+    }
+    /// Return the language-handler entry and its opaque handler-data start.
+    /// The fixed pair is validated without interpreting language-specific data.
+    /// # C: O(unwind-code slots)
+    pub fn unwind_handler(&self, function: RuntimeFunction) -> Result<Option<UnwindHandler>, Error> {
+        let function = self.resolve_unwind_function(function)?;
+        let info = self.read_unwind_info(function)?;
+        if info.flags & (UNW_FLAG_EHANDLER | UNW_FLAG_UHANDLER) == 0 { return Ok(None); }
+        let slots = ((info.code_count as u32 + 1) & !1).checked_mul(2).ok_or(Error::Einval)?;
+        let handler_at = function.unwind_rva.checked_add(4 + slots).ok_or(Error::Einval)?;
+        let handler_rva = u32(self.rva_range(handler_at, 4)?, 0)?;
+        self.rva_range(handler_rva, 1)?;
+        let data_rva = handler_at.checked_add(4).ok_or(Error::Einval)?;
+        if data_rva > self.size_of_image { return Err(Error::Einval); }
+        Ok(Some(UnwindHandler { handler_rva, data_rva }))
     }
     fn runtime_function_at(&self, rva: u32) -> Result<RuntimeFunction, Error> {
         let b = self.rva_range(rva, 12)?;
