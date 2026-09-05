@@ -388,9 +388,20 @@ fn native_io_values(cur: &sched::Task, handle: u32, event: u64, io_status: u64, 
         if let Ok(n) = result { if uaccess::copy_to_user(buffer, &data[..n]).is_err() { return STATUS_ACCESS_VIOLATION; } }
         result.map(|n| n as u64)
     };
+    let file_options = object.file_info().map_or(0, |info| info.options);
     match result {
-        Ok(0) => { write_io_status(io_status, STATUS_END_OF_FILE, 0); post_completion(&object, io_status, STATUS_END_OF_FILE, 0); signal_io_event(cur, event); STATUS_END_OF_FILE }
-        Ok(bytes) => { write_io_status(io_status, STATUS_SUCCESS, bytes); post_completion(&object, io_status, STATUS_SUCCESS, bytes); signal_io_event(cur, event); STATUS_SUCCESS }
+        Ok(0) => {
+            write_io_status(io_status, STATUS_END_OF_FILE, 0);
+            post_completion(&object, io_status, STATUS_END_OF_FILE, 0); signal_io_event(cur, event);
+            crate::nt_file_async_policy::regular_file_return_status(file_options,
+                sched::nt_object::NtFileInfo::FD_TYPE_FILE, STATUS_END_OF_FILE, write)
+        }
+        Ok(bytes) => {
+            write_io_status(io_status, STATUS_SUCCESS, bytes);
+            post_completion(&object, io_status, STATUS_SUCCESS, bytes); signal_io_event(cur, event);
+            crate::nt_file_async_policy::regular_file_return_status(file_options,
+                sched::nt_object::NtFileInfo::FD_TYPE_FILE, STATUS_SUCCESS, write)
+        }
         Err(error) => {
             let status = crate::nt_file_policy::status_from_errno(-(error as i64));
             write_io_status(io_status, status, 0); post_completion(&object, io_status, status, 0); signal_io_event(cur, event); status
