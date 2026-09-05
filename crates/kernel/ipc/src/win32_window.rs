@@ -105,9 +105,9 @@ pub struct WindowClass { pub name: Vec<u16>, pub wndproc: u64, pub atom: u16 }
 pub struct WindowRect { pub left: i32, pub top: i32, pub right: i32, pub bottom: i32 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum WindowError { NoSuchWindow, InvalidParent, ClassInUse, WrongThread, NoFocus, QueueFull }
+pub enum WindowError { NoSuchWindow, InvalidParent, ClassInUse, WrongThread, NoFocus, QueueFull, PaintActive, PaintNotActive }
 
-pub struct WindowManager { next: u32, next_atom: u16, classes: Vec<WindowClass>, windows: Vec<(WindowId, WindowRecord)>, rects: Vec<(WindowId, WindowRect)>, texts: Vec<(WindowId, Vec<u16>)>, dirty: Vec<(WindowId, WindowRect)>, queues: Vec<(u64, MessageQueue)>, timers: Vec<WindowTimer>, focus: Option<WindowId>, cursor: (i32, i32), destroying: Vec<WindowId> }
+pub struct WindowManager { next: u32, next_atom: u16, classes: Vec<WindowClass>, windows: Vec<(WindowId, WindowRecord)>, rects: Vec<(WindowId, WindowRect)>, texts: Vec<(WindowId, Vec<u16>)>, dirty: Vec<(WindowId, WindowRect)>, painting: Vec<WindowId>, queues: Vec<(u64, MessageQueue)>, timers: Vec<WindowTimer>, focus: Option<WindowId>, cursor: (i32, i32), destroying: Vec<WindowId> }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 struct WindowTimer { owner_tid: u64, hwnd: Option<WindowId>, id: u64, period_ns: u64, due_ns: u64, proc: u64 }
@@ -118,7 +118,7 @@ pub enum QueueResult { Message(WinMessage), Quit(i32), Empty }
 impl Default for WindowManager { fn default() -> Self { Self::new() } }
 
 impl WindowManager {
-    pub fn new() -> Self { Self { next: 1, next_atom: 1, classes: Vec::new(), windows: Vec::new(), rects: Vec::new(), texts: Vec::new(), dirty: Vec::new(), queues: Vec::new(), timers: Vec::new(), focus: None, cursor: (0, 0), destroying: Vec::new() } }
+    pub fn new() -> Self { Self { next: 1, next_atom: 1, classes: Vec::new(), windows: Vec::new(), rects: Vec::new(), texts: Vec::new(), dirty: Vec::new(), painting: Vec::new(), queues: Vec::new(), timers: Vec::new(), focus: None, cursor: (0, 0), destroying: Vec::new() } }
     /// Register one process-local window class and retain its procedure. # C: O(N_classes)
     pub fn register_class(&mut self, name: &[u16], wndproc: u64) -> Result<u16, WindowError> {
         if name.is_empty() || self.classes.iter().any(|class| same_name(&class.name, name)) { return Err(WindowError::InvalidParent); }
@@ -265,7 +265,16 @@ impl WindowManager {
     /// Consume the current dirty region for a window. # C: O(N_dirty)
     pub fn begin_paint(&mut self, id: WindowId) -> Result<Option<WindowRect>, WindowError> {
         if self.get(id).is_none() { return Err(WindowError::NoSuchWindow); }
-        Ok(self.dirty.iter().position(|(window, _)| *window == id).map(|index| self.dirty.remove(index).1))
+        if self.painting.contains(&id) { return Err(WindowError::PaintActive); }
+        let region = self.dirty.iter().position(|(window, _)| *window == id).map(|index| self.dirty.remove(index).1);
+        self.painting.push(id);
+        Ok(region)
+    }
+    /// Close one canonical paint transaction and reject unmatched EndPaint calls. # C: O(N_painting)
+    pub fn end_paint(&mut self, id: WindowId) -> Result<(), WindowError> {
+        let Some(index) = self.painting.iter().position(|window| *window == id) else { return Err(WindowError::PaintNotActive); };
+        self.painting.remove(index);
+        Ok(())
     }
     /// Read the UTF-16 title/control text owned by one window. # C: O(N_windows)
     pub fn text(&self, id: WindowId) -> Option<&[u16]> { self.texts.iter().find(|(window, _)| *window == id).map(|(_, text)| text.as_slice()) }
@@ -281,6 +290,7 @@ impl WindowManager {
         self.rects.retain(|(window, _)| *window != id);
         self.texts.retain(|(window, _)| *window != id);
         self.dirty.retain(|(window, _)| *window != id);
+        self.painting.retain(|window| *window != id);
         self.destroying.retain(|window| *window != id);
         if self.focus == Some(id) { self.focus = None; }
         Ok(self.windows.remove(index).1)
@@ -708,6 +718,26 @@ mod tests {
         manager.invalidate(window, Some(WindowRect { left: 10, top: 1, right: 40, bottom: 50 })).unwrap();
         assert_eq!(manager.begin_paint(window), Ok(Some(WindowRect { left: 2, top: 1, right: 40, bottom: 50 })));
         assert_eq!(manager.peek_for_thread(9, MessageFilter { hwnd: Some(window), first: WM_PAINT, last: WM_PAINT }, true).is_some(), true);
+    }
+
+    #[test]
+    fn paint_transaction_requires_begin_before_end_and_closes_once() {
+        let mut manager = WindowManager::new();
+        let window = manager.create(9, None, 0).unwrap();
+        assert_eq!(manager.end_paint(window), Err(WindowError::PaintNotActive));
+        assert_eq!(manager.begin_paint(window), Ok(None));
+        assert_eq!(manager.begin_paint(window), Err(WindowError::PaintActive));
+        assert_eq!(manager.end_paint(window), Ok(()));
+        assert_eq!(manager.end_paint(window), Err(WindowError::PaintNotActive));
+    }
+
+    #[test]
+    fn destroying_window_closes_an_open_paint_transaction() {
+        let mut manager = WindowManager::new();
+        let window = manager.create(9, None, 0).unwrap();
+        manager.begin_paint(window).unwrap();
+        manager.destroy(window).unwrap();
+        assert_eq!(manager.end_paint(window), Err(WindowError::PaintNotActive));
     }
 
     #[test]
