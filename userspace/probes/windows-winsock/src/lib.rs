@@ -6,9 +6,11 @@
 
 extern crate alloc;
 
+mod dns;
 mod select;
 mod readiness;
 
+pub use dns::addrinfo_error;
 pub use select::{project_select, SelectProjection, SocketReadiness};
 pub use select::{READY_ACCEPT, READY_CONNECT_ERROR, READY_ERROR, READY_HUP, READY_OOB,
     READY_READ, READY_RESET, READY_WRITE};
@@ -83,7 +85,9 @@ pub const fn wsa_code(error: WsaError) -> i32 {
 /// # C: O(1)
 pub const fn wsa_error(errno: i32) -> WsaError {
     match errno {
+        1 => WsaError::PermissionDenied,
         11 => WsaError::WouldBlock,
+        32 => WsaError::ConnectionReset,
         4 => WsaError::Interrupted,
         9 => WsaError::BadFileDescriptor,
         13 => WsaError::PermissionDenied,
