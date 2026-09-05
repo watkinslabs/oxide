@@ -191,6 +191,7 @@ const SECTION_MAX_BYTES: u64 = 1 << 30;
 const SECTION_QUERY: u32 = 0x0001;
 const SECTION_MAP_READ: u32 = 0x0004;
 const SECTION_MAP_WRITE: u32 = 0x0002;
+const SECTION_MAP_EXECUTE: u32 = 0x0008;
 const FILE_READ_DATA: u32 = 0x0001;
 const FILE_GENERIC_READ: u32 = 0x0012_0089;
 const THREAD_ALL_ACCESS: u32 = 0x001f_03ff;
@@ -1187,14 +1188,13 @@ pub fn dispatch(call: NtCall) -> u64 {
             }
             NtObjectCall::CreateSection { handle, desired_access, size, protect, attributes, file }
             | NtObjectCall::CreateSectionNative { handle, desired_access, size, protect, attributes, file } => {
-                if desired_access & !(SECTION_QUERY | SECTION_MAP_READ | SECTION_MAP_WRITE | SYNCHRONIZE_ACCESS) != 0
+                if desired_access & !(SECTION_QUERY | SECTION_MAP_READ | SECTION_MAP_WRITE | SECTION_MAP_EXECUTE | SYNCHRONIZE_ACCESS) != 0
                     || size == 0 || size > SECTION_MAX_BYTES { return STATUS_INVALID_PARAMETER; }
                 let page = hal::PAGE_SIZE_BYTES as u64;
                 let Some(size) = size.checked_add(page - 1).map(|v| v & !(page - 1)) else { return STATUS_INVALID_PARAMETER; };
                 let Ok(protection) = elf_load::nt_memory::windows_protection(protect) else { return STATUS_INVALID_PARAMETER; };
-                if protection.contains(vmm::VmaProt::EXEC) { return STATUS_INVALID_PARAMETER; }
                 let object = if file == 0 {
-                    let Some(object) = table.new_section(size as usize) else { return STATUS_NO_MEMORY; };
+                    let Some(object) = table.new_section_with_protection(size as usize, 0, protection) else { return STATUS_NO_MEMORY; };
                     object
                 } else {
                     let native = sched::nt_object::NtHandle::from_raw(file);
@@ -1209,7 +1209,7 @@ pub fn dispatch(call: NtCall) -> u64 {
                     if file_size == 0 || size < file_size { return STATUS_INVALID_PARAMETER; }
                     let mapping_access = FILE_MAPPING_ACCESS | if protection.contains(vmm::VmaProt::WRITE) { FILE_MAPPING_WRITE } else { 0 };
                     let Some(share) = sched::nt_object::NtFileShare::claim_mapping(&file, mapping_access) else { return STATUS_SHARING_VIOLATION; };
-                    table.new_file_section_with_share(file, size as usize, 0, share)
+                    table.new_file_section_with_share_and_protection(file, size as usize, 0, protection, share)
                 };
                 if attributes != 0 {
                     let Some(path) = crate::nt_directory::resolve_object_path(attributes, &table) else { return STATUS_INVALID_PARAMETER; };
@@ -1235,12 +1235,14 @@ pub fn dispatch(call: NtCall) -> u64 {
                 // slot for this syscall; the clone keeps the VMM state alive.
                 let Some(mm) = (unsafe { cur.mm_ref() }).map(|mm| mm.clone()) else { return STATUS_INVALID_PARAMETER; };
                 let Ok(protection) = elf_load::nt_memory::windows_protection(protect) else { return STATUS_INVALID_PARAMETER; };
-                if protection.contains(vmm::VmaProt::EXEC) { return STATUS_INVALID_PARAMETER; }
                 let native = sched::nt_object::NtHandle::from_raw(section);
-                let required_access = if protection.contains(vmm::VmaProt::WRITE) { SECTION_MAP_WRITE } else { SECTION_MAP_READ };
+                let required_access = if protection.contains(vmm::VmaProt::WRITE) { SECTION_MAP_WRITE }
+                    else if protection.contains(vmm::VmaProt::EXEC) { SECTION_MAP_EXECUTE }
+                    else { SECTION_MAP_READ };
                 let Some(object) = table.get(native, required_access) else { return if table.contains(native) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE }; };
                 if object.kind() != sched::nt_object::NtObjectType::Section { return STATUS_INVALID_HANDLE; }
                 let Some(section) = object.section() else { return STATUS_INVALID_HANDLE; };
+                if elf_load::nt_memory::section_view_protection(section.protection(), protection).is_err() { return STATUS_INVALID_PARAMETER; }
                 if offset >= section.size() as u64 { return STATUS_INVALID_PARAMETER; }
                 let requested = match uaccess::get_user_u64(base.as_u64()) { Ok(0) => None, Ok(raw) => hal::UserVirtAddr::new(raw), Err(_) => return STATUS_INVALID_PARAMETER };
                 if requested.map(|address| address.as_u64() & 0xffff != 0).unwrap_or(false) { return STATUS_MAPPED_ALIGNMENT; }

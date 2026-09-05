@@ -116,6 +116,7 @@ mod tests {
 pub struct NtSection {
     bytes: Arc<[u8]>,
     size: usize,
+    protection: vmm::VmaProt,
     file: Option<Arc<vfs::File>>,
     flags: u32,
     file_share: Option<Arc<NtFileShare>>,
@@ -135,10 +136,14 @@ impl NtSection {
     }
     /// Construct zero-filled section backing with protocol-visible flags. # C: O(size)
     pub fn new_with_flags(size: usize, flags: u32) -> Option<Arc<Self>> {
+        Self::new_with_protection(size, flags, vmm::VmaProt::READ | vmm::VmaProt::WRITE | vmm::VmaProt::EXEC)
+    }
+    /// Construct zero-filled section backing with maximum view protection. # C: O(size)
+    pub fn new_with_protection(size: usize, flags: u32, protection: vmm::VmaProt) -> Option<Arc<Self>> {
         let mut bytes = Vec::new();
         bytes.try_reserve_exact(size).ok()?;
         bytes.resize(size, 0);
-        Some(Arc::new(Self { bytes: bytes.into(), size, file: None, flags, file_share: None }))
+        Some(Arc::new(Self { bytes: bytes.into(), size, protection, file: None, flags, file_share: None }))
     }
     /// Construct a file-backed section retaining the VFS open description. # C: O(1)
     pub fn from_file(file: Arc<vfs::File>, size: usize) -> Arc<Self> {
@@ -146,16 +151,26 @@ impl NtSection {
     }
     /// Construct file-backed section backing with protocol-visible flags. # C: O(1)
     pub fn from_file_with_flags(file: Arc<vfs::File>, size: usize, flags: u32) -> Arc<Self> {
-        Arc::new(Self { bytes: Arc::from(&[][..]), size, file: Some(file), flags, file_share: None })
+        Self::from_file_with_protection(file, size, flags, vmm::VmaProt::READ | vmm::VmaProt::WRITE | vmm::VmaProt::EXEC)
+    }
+    /// Construct file-backed section backing with maximum view protection. # C: O(1)
+    pub fn from_file_with_protection(file: Arc<vfs::File>, size: usize, flags: u32, protection: vmm::VmaProt) -> Arc<Self> {
+        Arc::new(Self { bytes: Arc::from(&[][..]), size, protection, file: Some(file), flags, file_share: None })
     }
     /// Construct a file-backed section retaining its mapping share claim. # C: O(1)
     pub fn from_file_with_share(file: Arc<vfs::File>, size: usize, flags: u32, file_share: Arc<NtFileShare>) -> Arc<Self> {
-        Arc::new(Self { bytes: Arc::from(&[][..]), size, file: Some(file), flags, file_share: Some(file_share) })
+        Self::from_file_with_share_and_protection(file, size, flags, vmm::VmaProt::READ | vmm::VmaProt::WRITE | vmm::VmaProt::EXEC, file_share)
+    }
+    /// Construct file-backed section backing with sharing and maximum protection. # C: O(1)
+    pub fn from_file_with_share_and_protection(file: Arc<vfs::File>, size: usize, flags: u32, protection: vmm::VmaProt, file_share: Arc<NtFileShare>) -> Arc<Self> {
+        Arc::new(Self { bytes: Arc::from(&[][..]), size, protection, file: Some(file), flags, file_share: Some(file_share) })
     }
     /// Return the section's byte backing for a VMA. # C: O(1)
     pub fn bytes(&self) -> Arc<[u8]> { self.bytes.clone() }
     /// Return the section extent. # C: O(1)
     pub fn size(&self) -> usize { self.size }
+    /// Return the maximum protection permitted for views. # C: O(1)
+    pub fn protection(&self) -> vmm::VmaProt { self.protection }
     /// Return the retained file description, if this is file-backed. # C: O(1)
     pub fn file(&self) -> Option<Arc<vfs::File>> { self.file.clone() }
     /// Return protocol-visible mapping flags. # C: O(1)

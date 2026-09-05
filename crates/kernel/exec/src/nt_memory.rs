@@ -98,6 +98,13 @@ pub fn windows_protection(raw: u32) -> Result<VmaProt, NtStatus> {
     }
 }
 
+/// Check that a section view does not request access absent from creation
+/// protection. # C: O(1)
+pub fn section_view_protection(maximum: VmaProt, requested: VmaProt) -> Result<VmaProt, NtStatus> {
+    if requested.difference(maximum).is_empty() { Ok(requested) }
+    else { Err(NtStatus::InvalidParameter) }
+}
+
 /// Allocate private anonymous NT memory through the common VMM.
 /// # C: O(log N_vmas)
 pub fn allocate(as_: &AddressSpace, base: Option<UserVirtAddr>, size: usize, protection: VmaProt, committed: bool) -> Result<NtAllocation, NtStatus> {
@@ -246,6 +253,14 @@ mod tests {
         assert_eq!(windows_protection(0x20), Ok(VmaProt::READ | VmaProt::EXEC));
         assert_eq!(windows_protection(0x40), Ok(VmaProt::READ | VmaProt::WRITE | VmaProt::EXEC));
         assert_eq!(windows_protection(0x104), Err(NtStatus::InvalidParameter));
+    }
+
+    #[test]
+    fn section_views_cannot_gain_execute_or_write_access() {
+        let maximum = VmaProt::READ | VmaProt::EXEC;
+        assert_eq!(section_view_protection(maximum, VmaProt::READ), Ok(VmaProt::READ));
+        assert_eq!(section_view_protection(maximum, maximum), Ok(maximum));
+        assert_eq!(section_view_protection(maximum, VmaProt::READ | VmaProt::WRITE), Err(NtStatus::InvalidParameter));
     }
 
     #[test]

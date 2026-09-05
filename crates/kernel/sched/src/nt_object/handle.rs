@@ -188,8 +188,12 @@ impl NtHandleTable {
     }
     /// Allocate an anonymous section with protocol-visible flags. # C: O(size)
     pub fn new_section_with_flags(&self, size: usize, flags: u32) -> Option<Arc<NtObject>> {
+        self.new_section_with_protection(size, flags, vmm::VmaProt::READ | vmm::VmaProt::WRITE | vmm::VmaProt::EXEC)
+    }
+    /// Allocate an anonymous section with maximum view protection. # C: O(size)
+    pub fn new_section_with_protection(&self, size: usize, flags: u32, protection: vmm::VmaProt) -> Option<Arc<NtObject>> {
         let id = self.next_object_id.fetch_add(1, Ordering::Relaxed);
-        Some(NtObject::new_section(id, NtSection::new_with_flags(size, flags)?))
+        Some(NtObject::new_section(id, NtSection::new_with_protection(size, flags, protection)?))
     }
 
     /// Wrap a VFS file in a section object. # C: O(1)
@@ -198,14 +202,22 @@ impl NtHandleTable {
     }
     /// Wrap a VFS file in a section carrying protocol-visible flags. # C: O(1)
     pub fn new_file_section_with_flags(&self, file: Arc<vfs::File>, size: usize, flags: u32) -> Arc<NtObject> {
+        self.new_file_section_with_protection(file, size, flags, vmm::VmaProt::READ | vmm::VmaProt::WRITE | vmm::VmaProt::EXEC)
+    }
+    /// Wrap a VFS file in a section with maximum view protection. # C: O(1)
+    pub fn new_file_section_with_protection(&self, file: Arc<vfs::File>, size: usize, flags: u32, protection: vmm::VmaProt) -> Arc<NtObject> {
         let id = self.next_object_id.fetch_add(1, Ordering::Relaxed);
-        NtObject::new_section(id, NtSection::from_file_with_flags(file, size, flags))
+        NtObject::new_section(id, NtSection::from_file_with_protection(file, size, flags, protection))
     }
 
     /// Wrap a VFS file in a section while retaining its mapping share claim. # C: O(1)
     pub fn new_file_section_with_share(&self, file: Arc<vfs::File>, size: usize, flags: u32, share: Arc<NtFileShare>) -> Arc<NtObject> {
+        self.new_file_section_with_share_and_protection(file, size, flags, vmm::VmaProt::READ | vmm::VmaProt::WRITE | vmm::VmaProt::EXEC, share)
+    }
+    /// Wrap a VFS file in a section with sharing and maximum protection. # C: O(1)
+    pub fn new_file_section_with_share_and_protection(&self, file: Arc<vfs::File>, size: usize, flags: u32, protection: vmm::VmaProt, share: Arc<NtFileShare>) -> Arc<NtObject> {
         let id = self.next_object_id.fetch_add(1, Ordering::Relaxed);
-        NtObject::new_section(id, NtSection::from_file_with_share(file, size, flags, share))
+        NtObject::new_section(id, NtSection::from_file_with_share_and_protection(file, size, flags, protection, share))
     }
 
     /// Allocate a symbolic-link object with one immutable target. # C: O(1)
