@@ -119,6 +119,13 @@ pub(crate) const fn delete_on_close_access_valid(options: u32, desired: u32) -> 
     options & FILE_DELETE_ON_CLOSE == 0 || desired & DELETE_ACCESS != 0
 }
 
+/// Admit the open before any create, truncate, or share-state mutation. The
+/// result is the deferred-delete state for the file object. # C: O(1)
+pub(crate) const fn delete_on_close_admission(options: u32, desired: u32) -> Option<bool> {
+    if !delete_on_close_access_valid(options, desired) { None }
+    else { Some(options & FILE_DELETE_ON_CLOSE != 0) }
+}
+
 /// `DoDeleteFile` is a one-byte BOOLEAN; every nonzero value requests delete.
 /// The length screen precedes handle lookup in the NT set-information path.
 pub(crate) const fn disposition_information_valid(length: u32) -> bool {
@@ -181,6 +188,13 @@ mod tests {
         assert!(delete_on_close_access_valid(0, 0));
         assert!(!delete_on_close_access_valid(FILE_DELETE_ON_CLOSE, 0));
         assert!(delete_on_close_access_valid(FILE_DELETE_ON_CLOSE, DELETE_ACCESS));
+    }
+
+    #[test]
+    fn delete_on_close_admission_is_side_effect_free_and_reports_arming() {
+        assert_eq!(delete_on_close_admission(0, 0), Some(false));
+        assert_eq!(delete_on_close_admission(FILE_DELETE_ON_CLOSE, DELETE_ACCESS), Some(true));
+        assert_eq!(delete_on_close_admission(FILE_DELETE_ON_CLOSE, 0), None);
     }
 
     #[test]
