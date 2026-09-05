@@ -28,6 +28,13 @@ impl<'a> ModuleSource<'a> for OneModule<'a> {
     fn load(&self, name: &[u8]) -> Option<&'a [u8]> { if crate::loader_name::matches_ascii(name, self.name) { Some(self.blob) } else { None } }
 }
 
+struct TwoModules<'a> { first: (&'a [u8], &'a [u8]), second: (&'a [u8], &'a [u8]) }
+impl<'a> ModuleSource<'a> for TwoModules<'a> {
+    fn load(&self, name: &[u8]) -> Option<&'a [u8]> {
+        [self.first, self.second].into_iter().find(|(module, _)| crate::loader_name::matches_ascii(name, module)).map(|(_, blob)| blob)
+    }
+}
+
 #[test] fn parses_pe32_plus_and_materializes_sections() {
     let b = image(); let p = parse(&b).unwrap(); assert_eq!(p.entry_rva, 0x1010); assert_eq!(p.sections.len(), 1); assert_eq!(p.materialize().unwrap()[0x1010], 0xcc); assert_eq!(p.rva_range(0x1010, 1).unwrap(), &[0xcc]);
 }
@@ -68,6 +75,39 @@ fn discovers_transitive_modules_once_and_accepts_cycles() {
     assert_eq!(modules.len(), 2);
     assert_eq!(modules[0].name, b"root.exe");
     assert_eq!(modules[1].name, b"dep.dll");
+}
+
+#[test]
+fn discovers_forwarder_target_as_a_dll_dependency_before_mapping() {
+    let mut root = imports_image(b"forward.dll");
+    root[0x580..0x588].copy_from_slice(&0x8000_0000_0000_0001u64.to_le_bytes());
+    let mut forward = image();
+    let dir = OPT + 112 + IMAGE_DIRECTORY_ENTRY_EXPORT * 8;
+    forward[dir..dir + 4].copy_from_slice(&0x1100u32.to_le_bytes());
+    forward[dir + 4..dir + 8].copy_from_slice(&0x100u32.to_le_bytes());
+    forward[0x500 + 12..0x500 + 16].copy_from_slice(&0x1160u32.to_le_bytes());
+    forward[0x500 + 16..0x500 + 20].copy_from_slice(&1u32.to_le_bytes());
+    forward[0x500 + 20..0x500 + 24].copy_from_slice(&1u32.to_le_bytes());
+    forward[0x500 + 28..0x500 + 32].copy_from_slice(&0x1130u32.to_le_bytes());
+    forward[0x500 + 32..0x500 + 36].copy_from_slice(&0x1134u32.to_le_bytes());
+    forward[0x500 + 36..0x500 + 40].copy_from_slice(&0x1138u32.to_le_bytes());
+    forward[0x530..0x534].copy_from_slice(&0x1150u32.to_le_bytes());
+    forward[0x534..0x538].copy_from_slice(&0x1170u32.to_le_bytes());
+    forward[0x538..0x53a].copy_from_slice(&0u16.to_le_bytes());
+    forward[0x570..0x578].copy_from_slice(b"NtClose\0");
+    forward[0x550..0x550 + b"module.NtClose\0".len()].copy_from_slice(b"module.NtClose\0");
+    let mut malformed = forward.clone();
+    malformed[0x550..0x550 + b"malformed\0".len()].copy_from_slice(b"malformed\0");
+    assert_eq!(parse(&malformed).unwrap().loader_dependencies(), Err(Error::Einval));
+    let target = image();
+    let forward_image = parse(&forward).unwrap();
+    let root_import = parse(&root).unwrap().imports().unwrap().remove(0);
+    let thunk = parse(&root).unwrap().import_thunks(&root_import).unwrap().remove(0);
+    assert_eq!(forward_image.forwarder_dependency(&thunk).unwrap(), Some(b"module.dll".to_vec()));
+    let source = TwoModules { first: (b"forward.dll", &forward), second: (b"module.dll", &target) };
+    let modules = discover_owned_modules(b"root.exe", &root, &source).unwrap();
+    assert_eq!(modules.iter().map(|module| module.name.as_slice()).collect::<Vec<_>>(),
+        vec![b"root.exe".as_slice(), b"forward.dll".as_slice(), b"module.dll".as_slice()]);
 }
 
 #[test]
