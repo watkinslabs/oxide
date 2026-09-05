@@ -71,7 +71,7 @@ pub struct Registry { keys: BTreeMap<String, Key>, handles: BTreeMap<KeyHandle, 
 pub struct RegistryStore { registry: Registry, path: PathBuf, _lock: File, dirty: bool, subscriptions: BTreeMap<u64, Subscription>, next_subscription: u64 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct Subscription { key: KeyHandle, filter: u64, pending: bool }
+struct Subscription { key: KeyHandle, filter: u64, subtree: bool, pending: bool }
 
 #[derive(Debug)]
 pub enum Request {
@@ -156,9 +156,9 @@ impl RegistryStore {
             }
             Request::QueryPath { key } => self.registry.path_for_handle(key).map_or_else(Response::Failure, Response::Text),
             Request::Subscribe { key, filter, subtree } => {
-                if subtree || filter != crate::REG_NOTIFY_CHANGE_LAST_SET || self.registry.path_for_handle(key).is_err() { return Response::Failure(Error::InvalidPath); }
+                if filter != crate::REG_NOTIFY_CHANGE_LAST_SET || self.registry.path_for_handle(key).is_err() { return Response::Failure(Error::InvalidPath); }
                 let id = self.next_subscription; self.next_subscription = self.next_subscription.saturating_add(1);
-                self.subscriptions.insert(id, Subscription { key, filter, pending: false }); Response::Subscription(id)
+                self.subscriptions.insert(id, Subscription { key, filter, subtree, pending: false }); Response::Subscription(id)
             }
             Request::PollSubscription { subscription } => match self.subscriptions.get_mut(&subscription) {
                 Some(state) if state.pending => { state.pending = false; Response::Notification }
@@ -169,7 +169,12 @@ impl RegistryStore {
     }
 
     fn mark_changed(&mut self, key: KeyHandle) {
-        for state in self.subscriptions.values_mut() { if state.key == key && state.filter & REG_NOTIFY_CHANGE_LAST_SET != 0 { state.pending = true; } }
+        let Some(changed) = self.registry.path_for_handle(key).ok().map(|path| canonical(&path)) else { return };
+        for state in self.subscriptions.values_mut() {
+            let Some(watched) = self.registry.path_for_handle(state.key).ok().map(|path| canonical(&path)) else { continue };
+            let matches = state.key == key || state.subtree && changed.starts_with(&format!("{}\\", watched));
+            if matches && state.filter & REG_NOTIFY_CHANGE_LAST_SET != 0 { state.pending = true; }
+        }
     }
 }
 
@@ -740,6 +745,21 @@ mod tests {
     }
 
     #[test]
+    fn subtree_notification_wakes_for_descendant_value_mutation() {
+        let path = std::env::temp_dir().join(format!("oxide-registry-subtree-{}.db", std::process::id()));
+        let _ = fs::remove_file(&path);
+        let mut store = RegistryStore::open(&path).unwrap();
+        let parent = match store.execute(Request::Create { root: Root::CurrentUser, subkey: "Software\\Oxide".into() }) { Response::Handle(key) => key, other => panic!("unexpected response: {other:?}") };
+        let child = match store.execute(Request::CreateRelative { key: parent, subkey: "Settings".into() }) { Response::Handle(key) => key, other => panic!("unexpected response: {other:?}") };
+        let subscription = match store.execute(Request::Subscribe { key: parent, filter: REG_NOTIFY_CHANGE_LAST_SET, subtree: true }) { Response::Subscription(id) => id, other => panic!("unexpected response: {other:?}") };
+        assert_eq!(store.execute(Request::PollSubscription { subscription }), Response::Success);
+        assert_eq!(store.execute(Request::Set { key: child, name: "Ready".into(), value: Value { kind: ValueType::Dword, data: vec![1, 0, 0, 0] } }), Response::Success);
+        assert_eq!(store.execute(Request::PollSubscription { subscription }), Response::Notification);
+        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(std::env::temp_dir().join(format!("oxide-registry-subtree-{}.oxide-registry.lock", std::process::id())));
+    }
+
+    #[test]
     fn store_loads_missing_user_state_and_flushes_one_canonical_database() {
         let path = std::env::temp_dir().join(format!("oxide-registry-missing-user-{}", std::process::id()));
         let _ = std::fs::remove_file(&path);
@@ -951,7 +971,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_owner_queues_only_exact_key_last_set_notifications() {
+    fn canonical_owner_queues_exact_or_subtree_last_set_notifications() {
         let path = std::env::temp_dir().join(format!("oxide-registry-notify-{}", std::process::id())); let _ = fs::remove_file(&path);
         let mut store = RegistryStore::open(&path).unwrap();
         let key = match store.execute(Request::Create { root: Root::CurrentUser, subkey: "Software\\Notify".into() }) { Response::Handle(key) => key, response => panic!("unexpected response: {response:?}") };
@@ -962,7 +982,7 @@ mod tests {
         assert_eq!(store.execute(Request::PollSubscription { subscription }), Response::Success);
         assert_eq!(store.execute(Request::Set { key, name: "changed".into(), value: Value { kind: ValueType::Dword, data: vec![2, 0, 0, 0] } }), Response::Success);
         assert_eq!(store.execute(Request::PollSubscription { subscription }), Response::Notification);
-        assert_eq!(store.execute(Request::Subscribe { key, filter: REG_NOTIFY_CHANGE_LAST_SET, subtree: true }), Response::Failure(Error::InvalidPath));
+        assert!(matches!(store.execute(Request::Subscribe { key, filter: REG_NOTIFY_CHANGE_LAST_SET, subtree: true }), Response::Subscription(_)));
         fs::remove_file(path).ok();
     }
 

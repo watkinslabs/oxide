@@ -12,10 +12,9 @@ pub const fn flush_handle(raw: u64) -> Result<u32, u64> {
     if raw > u32::MAX as u64 { Err(STATUS_INVALID_HANDLE) } else { Ok(raw as u32) }
 }
 
-/// Whether the ABI shape can be owned by the current synchronous NT bridge.
-/// APC delivery, subtree traversal, and output records remain separate
-/// contracts; accepting them here without an owner would turn a pending
-/// request into a false success.
+/// Whether the ABI shape can be owned by the current asynchronous NT bridge.
+/// APC delivery and output records remain separate contracts; accepting them
+/// here without an owner would turn a pending request into a false success.
 pub const fn supported_request(
     apc: u64,
     apc_context: u64,
@@ -33,7 +32,7 @@ pub const fn supported_request(
         && buffer == 0
         && length == 0
         && asynchronous != 0
-        && subtree == 0
+        && subtree <= 1
         && filter == REG_NOTIFY_CHANGE_LAST_SET
 }
 
@@ -68,8 +67,8 @@ mod tests {
     }
 
     #[test]
-    fn rejects_subtree_and_invalid_filters() {
-        assert!(!supported_request(0, 0, 0x1000, 0, 0, 1, 1, REG_NOTIFY_CHANGE_LAST_SET));
+    fn accepts_subtree_and_rejects_invalid_filters() {
+        assert!(supported_request(0, 0, 0x1000, 0, 0, 1, 1, REG_NOTIFY_CHANGE_LAST_SET));
         assert!(!supported_request(0, 0, 0x1000, 0, 0, 1, 0, REG_NOTIFY_CHANGE_LAST_SET | 0x0000_0001));
         assert!(!supported_request(0, 0, 0x1000, 0, 0, 1, 2, REG_NOTIFY_CHANGE_LAST_SET));
         assert!(!supported_request(0, 0, 0x1000, 0, 0, 1, 0, 2));
