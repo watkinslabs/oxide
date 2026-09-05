@@ -13,4 +13,5 @@ path = "src/main.rs"
 
 [dependencies]
 libc = { workspace = true }
+pe = { path = "../../../crates/shared/pe" }
 syscall = { path = "../../../crates/kernel/syscall" }
