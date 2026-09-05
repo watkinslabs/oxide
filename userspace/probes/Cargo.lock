@@ -558,6 +558,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "windows-vulkan"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "syscall",
+]
+
+[[package]]
 name = "windows-winsock"
 version = "0.1.0"
 
