@@ -1,5 +1,7 @@
 //! Untargeted admission and completion policy for native NT gather writes.
 
+use syscall::nt::NtService;
+
 pub const STATUS_SUCCESS: u64 = 0;
 pub const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 pub const STATUS_ACCESS_VIOLATION: u64 = 0xc000_0005;
@@ -12,6 +14,13 @@ pub const FILE_WRITE_DATA: u32 = 0x0002;
 pub const FILE_NO_INTERMEDIATE_BUFFERING: u32 = 0x0000_0008;
 pub const FILE_SYNCHRONOUS_IO_ALERT: u32 = 0x0000_0020;
 pub const FILE_SYNCHRONOUS_IO_NONALERT: u32 = 0x0000_0040;
+
+/// Identify the native file service owned by this adapter. Keeping the
+/// ownership predicate beside the policy lets hosted tests verify the target-
+/// gated dispatcher contract without fabricating a kernel task or user memory.
+pub const fn owns(service: NtService) -> bool {
+    matches!(service, NtService::NtWriteFileGather)
+}
 
 /// Validate the native ordering and fixed-page contract before handle access.
 /// A non-page-sized request wins over the I/O-status pointer, matching NT. # C: O(1)
@@ -84,5 +93,24 @@ mod tests {
     #[test]
     fn empty_request_does_not_require_segment_array() {
         assert_eq!(valid(0, 0), Ok(0));
+    }
+
+    #[test]
+    fn ownership_is_exclusive_to_native_gather_write() {
+        assert!(owns(NtService::NtWriteFileGather));
+        assert!(!owns(NtService::WriteFile));
+        assert!(!owns(NtService::NtWriteVirtualMemory));
+    }
+
+    #[test]
+    fn file_dispatch_reaches_gather_before_service_fallbacks() {
+        let file = include_str!("nt_file.rs");
+        let gather = file.find("nt_file_gather::dispatch").expect("gather owner");
+        let fallback = file.find("match call.service").expect("file fallback");
+        assert!(gather < fallback);
+
+        let dispatch = include_str!("nt_dispatch.rs");
+        assert!(dispatch.contains("nt_file::dispatch_native(call)"));
+        assert!(!dispatch.contains("NtWriteFileGather"));
     }
 }

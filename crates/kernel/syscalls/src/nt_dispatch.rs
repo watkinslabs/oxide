@@ -500,16 +500,6 @@ pub fn dispatch(call: NtCall) -> u64 {
         if uaccess::put_user_u64(call.args.a5, pages.len() as u64).is_err() { return STATUS_ACCESS_VIOLATION; }
         return STATUS_SUCCESS;
     }
-    if call.service == syscall::nt::NtService::NtWriteFileGather {
-        let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
-        if !cur.is_nt_personality() || call.args.a0 == 0 || call.args.a4 == 0 || call.args.a5 == 0 {
-            return STATUS_INVALID_PARAMETER;
-        }
-        // The trailing length/offset/key arguments live on the x86_64 user
-        // stack. Keep this native ABI separate from the ordinary NtWriteFile
-        // request until a canonical segment-array/file owner exists.
-        return STATUS_NOT_IMPLEMENTED;
-    }
     if call.service == syscall::nt::NtService::NtYieldExecution {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
         if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }

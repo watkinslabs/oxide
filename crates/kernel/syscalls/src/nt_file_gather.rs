@@ -5,7 +5,7 @@
 extern crate alloc;
 use alloc::vec;
 use syscall::errno::Errno;
-use syscall::nt::{NtCall, NtService};
+use syscall::nt::NtCall;
 use crate::nt_file_gather_policy as policy;
 
 const MAX_NT_IO: usize = 16 * 1024 * 1024;
@@ -14,7 +14,7 @@ const FILE_USE_FILE_POINTER_POSITION: i64 = -2;
 /// Claim the native gather service; file identity and I/O remain owned by the
 /// process-local NT object table and retained VFS open description. # C: O(pages)
 pub fn dispatch(call: NtCall) -> Option<u64> {
-    if call.service == NtService::NtWriteFileGather { Some(write(call)) } else { None }
+    if policy::owns(call.service) { Some(write(call)) } else { None }
 }
 
 fn write(call: NtCall) -> u64 {
