@@ -80,31 +80,31 @@ impl ClassRegistry {
 
     /// Register one UTF-16 window class and return its atom. # C: O(log N_classes)
     pub fn register_class_ex_w(&mut self, name: &[u16], wndproc: u64) -> Result<u16, ClassError> {
-        let name = class_name(name)?;
-        if self.classes.contains_key(name) { return Err(ClassError::DuplicateName); }
+        let name = class_key(name)?;
+        if self.classes.contains_key(&name) { return Err(ClassError::DuplicateName); }
         let atom = self.next_atom;
         self.next_atom = self.next_atom.checked_add(1).ok_or(ClassError::DuplicateName)?;
-        self.classes.insert(name.to_vec(), RegisteredClass { atom, wndproc });
+        self.classes.insert(name, RegisteredClass { atom, wndproc });
         Ok(atom)
     }
 
     /// Remove one class by its UTF-16 name. # C: O(log N_classes)
     pub fn unregister_class_w(&mut self, name: &[u16]) -> Result<(), ClassError> {
-        let name = class_name(name)?;
-        if self.classes.remove(name).is_some() { Ok(()) } else { Err(ClassError::UnknownClass) }
+        let name = class_key(name)?;
+        if self.classes.remove(&name).is_some() { Ok(()) } else { Err(ClassError::UnknownClass) }
     }
 
     /// Create a native window using the registered class procedure. # C: O(log N_classes) plus kernel service
     pub fn create_window_ex_w(&self, user32: &User32, name: &[u16], parent: u64) -> Result<u64, ClassError> {
-        let name = class_name(name)?;
-        let class = self.classes.get(name).ok_or(ClassError::UnknownClass)?;
+        let name = class_key(name)?;
+        let class = self.classes.get(&name).ok_or(ClassError::UnknownClass)?;
         user32.create_window(parent, class.wndproc).map_err(ClassError::Service)
     }
 
     /// Return the stable atom assigned to a registered class. # C: O(log N_classes)
     pub fn atom(&self, name: &[u16]) -> Result<u16, ClassError> {
-        let name = class_name(name)?;
-        self.classes.get(name).map(|class| class.atom).ok_or(ClassError::UnknownClass)
+        let name = class_key(name)?;
+        self.classes.get(&name).map(|class| class.atom).ok_or(ClassError::UnknownClass)
     }
 }
 
@@ -323,10 +323,12 @@ fn invoke(service: NtService, args: [u64; 6]) -> Result<u64, WindowError> {
     if result & STATUS_FAILURE_MASK != 0 { Err(WindowError::Status(result)) } else { Ok(result) }
 }
 
-fn class_name(name: &[u16]) -> Result<&[u16], ClassError> {
+fn class_key(name: &[u16]) -> Result<Vec<u16>, ClassError> {
     let end = name.iter().position(|unit| *unit == 0).ok_or(ClassError::UnterminatedName)?;
     if end == 0 || name[end + 1..].iter().any(|unit| *unit != 0) { return Err(ClassError::EmptyName); }
-    Ok(&name[..end])
+    Ok(name[..end].iter().map(|unit| {
+        if (b'A' as u16..=b'Z' as u16).contains(unit) { *unit + (b'a' as u16 - b'A' as u16) } else { *unit }
+    }).collect())
 }
 
 #[cfg(test)]
@@ -391,9 +393,21 @@ mod tests {
         let mut classes = ClassRegistry::new();
         let name: Vec<u16> = "Notepad".encode_utf16().chain([0]).collect();
         let atom = classes.register_class_ex_w(&name, 0x1400).unwrap();
-        assert!(matches!(classes.atom(&name), Ok(value) if value == atom));
-        assert!(matches!(classes.register_class_ex_w(&name, 0x1500), Err(ClassError::DuplicateName)));
-        assert!(classes.unregister_class_w(&name).is_ok());
+        let mixed_case: Vec<u16> = "NOTEPAD".encode_utf16().chain([0]).collect();
+        assert!(matches!(classes.atom(&mixed_case), Ok(value) if value == atom));
+        assert!(matches!(classes.register_class_ex_w(&mixed_case, 0x1500), Err(ClassError::DuplicateName)));
+        assert!(classes.unregister_class_w(&mixed_case).is_ok());
         assert!(matches!(classes.atom(&name), Err(ClassError::UnknownClass)));
+    }
+
+    #[test]
+    fn class_lookup_rejects_non_case_name_changes_and_malformed_termination() {
+        let mut classes = ClassRegistry::new();
+        let name: Vec<u16> = "Notepad".encode_utf16().chain([0]).collect();
+        let different: Vec<u16> = "NotepadEdit".encode_utf16().chain([0]).collect();
+        let unterminated: Vec<u16> = "Notepad".encode_utf16().collect();
+        classes.register_class_ex_w(&name, 0x1400).unwrap();
+        assert!(matches!(classes.atom(&different), Err(ClassError::UnknownClass)));
+        assert!(matches!(classes.atom(&unterminated), Err(ClassError::UnterminatedName)));
     }
 }
