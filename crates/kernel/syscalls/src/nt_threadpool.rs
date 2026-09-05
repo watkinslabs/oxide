@@ -220,8 +220,12 @@ fn timer_work(token: usize) {
         break;
     }
     let Some((task, callback, context, period_ms)) = target else { return; };
+    // Wine's TP_TIMER callback ABI is `(instance, userdata, timer)`. The
+    // APC frame preserves all three Windows x64 argument registers, so keep
+    // the target task as the delivery owner while passing typed timer
+    // identities instead of the wait callback's `(context, timed_out)` pair.
     if task.nt_apc_queue.push(sched::nt_apc::Apc { routine: callback,
-        argument1: context, argument2: 1, argument3: 0, flags: 0 }).is_ok() {
+        argument1: token, argument2: context, argument3: token, flags: 0 }).is_ok() {
         task.nt_apc_queue.request_delivery();
     }
     if period_ms != 0 {
