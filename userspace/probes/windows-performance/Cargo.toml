@@ -1,0 +1,15 @@
+[package]
+name = "windows-performance"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[lib]
+name = "windows_performance"
+path = "src/lib.rs"
+
+[[bin]]
+name = "windows-performance"
+path = "src/main.rs"
+
+[dependencies]
