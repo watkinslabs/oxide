@@ -1,6 +1,6 @@
 # Known issues
 
-**Live issue count: 303** — 296 `OPEN`, 7 `IN-PROGRESS`.
+**Live issue count: 303** — 297 `OPEN`, 6 `IN-PROGRESS`.
 
 | Id | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|---|
@@ -307,6 +307,7 @@
 | KI-0341 | IN-PROGRESS T1546-nt-handle-protected-duplicate | DEFECT | med | [CLAIMED T1546-nt-handle-protected-duplicate 2026-09-04] DUPLICATE_CLOSE_SOURCE bypasses protect-from-close and closes a protected source handle | Current sched::nt_object::close_duplicate_source bypasses the canonical protected-close check. Wine validates the per-handle close-protection bit before removal; add a hosted regression proving protected source remains live while duplicate succeeds, then route source close through the normal close path. | NT |
 | KI-0347 | OPEN | MISSING | med | NtQueryVolumeInformationFile rejects FileFsFullSizeInformationEx (class 14), which Wine exposes for modern volume-capacity callers. | Current nt_file_volume::encode handles classes 1, 3, 4, 5, and 7 but returns STATUS_INVALID_INFO_CLASS for class 14; Wine ABI defines a 96-byte extended payload derived from filesystem allocation accounting. | P701-volume-full-size-information-ex |
 | KI-0349 | OPEN | INFRA | med | origin/main windows compatibility gate fails before launcher verification because sched::NtSection::file_share is dead code under -D warnings | make windows-compat-test on fresh origin/main d57edf64f10e9ae4810734f537f40e153c6c1685 reaches launcher/static checks, then kernel target build fails at crates/kernel/sched/src/nt_object/object.rs:121; launcher files are untouched by this failure | P1401-steam-proton-runtime-contract |
+| KI-0350 | OPEN | MISSING | med | Native NtQueryInformationProcess did not expose ProcessImageInformation (class 37), so Wine’s main-module setup could not obtain SECTION_IMAGE_INFORMATION from an NT PE process. | Verified on origin/main: the query owner admitted basic/name/VM classes but returned STATUS_INVALID_INFO_CLASS for class 37. Wine’s loader calls this class while building the main module; the implementation now derives the result from the canonical PEB image pointer and mapped PE headers. | NT runtime |
 
 ## Ext4 master program
 
