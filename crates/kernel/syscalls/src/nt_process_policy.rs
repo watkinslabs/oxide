@@ -7,6 +7,13 @@ pub const PROCESS_CREATE_FLAGS_SUSPENDED: u32 = 0x0000_0200;
 pub const PROCESS_CREATE_FLAGS_SUPPORTED: u32 =
     PROCESS_CREATE_FLAGS_INHERIT_HANDLES | PROCESS_CREATE_FLAGS_SUSPENDED;
 
+/// Native thread-stack reservation floor and allocation granularity. Wine's
+/// 64-bit NT path applies both before creating the thread's TEB.
+pub const NT_THREAD_DEFAULT_STACK: u64 = 1 << 20;
+pub const NT_THREAD_MIN_STACK: u64 = 1 << 20;
+pub const NT_THREAD_MAX_STACK: u64 = 64 << 20;
+pub const NT_THREAD_STACK_GRANULARITY: u64 = 64 << 10;
+
 /// Select general handle-table inheritance from the NT create flags. # C: O(1)
 pub const fn inherits_process_handles(flags: u32) -> bool {
     flags & PROCESS_CREATE_FLAGS_INHERIT_HANDLES != 0
@@ -20,6 +27,15 @@ pub fn valid_process_create_flags(flags: u32) -> bool {
 /// Preserve initial suspension from either NT create flag. # C: O(1)
 pub fn initial_thread_suspended(process_flags: u32, thread_flags: u32) -> bool {
     process_flags & PROCESS_CREATE_FLAGS_SUSPENDED != 0 || thread_flags & 1 != 0
+}
+
+/// Normalize an NtCreateThreadEx stack reservation before mapping it. # C: O(1)
+pub fn thread_stack_size(requested: u64) -> Option<u64> {
+    let requested = if requested == 0 { NT_THREAD_DEFAULT_STACK } else { requested };
+    let size = requested.max(NT_THREAD_MIN_STACK);
+    let rounded = size.checked_add(NT_THREAD_STACK_GRANULARITY - 1)?
+        & !(NT_THREAD_STACK_GRANULARITY - 1);
+    (rounded <= NT_THREAD_MAX_STACK).then_some(rounded)
 }
 
 /// Validate the process-scoped CLIENT_ID shape used by NtOpenProcess. # C: O(1)
@@ -91,6 +107,21 @@ mod tests {
         assert!(!initial_thread_suspended(0, 0));
         assert!(initial_thread_suspended(PROCESS_CREATE_FLAGS_SUSPENDED, 0));
         assert!(initial_thread_suspended(0, 1));
+    }
+
+    #[test]
+    fn thread_stack_uses_native_floor_and_granularity() {
+        assert_eq!(thread_stack_size(0), Some(NT_THREAD_DEFAULT_STACK));
+        assert_eq!(thread_stack_size(0x1000), Some(NT_THREAD_MIN_STACK));
+        assert_eq!(thread_stack_size(NT_THREAD_MIN_STACK + 1),
+            Some(NT_THREAD_MIN_STACK + NT_THREAD_STACK_GRANULARITY));
+    }
+
+    #[test]
+    fn thread_stack_rejects_values_that_round_past_native_limit() {
+        assert_eq!(thread_stack_size(NT_THREAD_MAX_STACK), Some(NT_THREAD_MAX_STACK));
+        assert_eq!(thread_stack_size(NT_THREAD_MAX_STACK + 1), None);
+        assert_eq!(thread_stack_size(u64::MAX), None);
     }
 
     #[test]
