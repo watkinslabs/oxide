@@ -71,6 +71,9 @@ impl Inode {
     /// Canonical inode-owned advisory-lock context (`inode->i_flctx`). # C: O(1)
     pub fn file_lock_context(&self) -> &super::file_lock::FileLockContext { &self.i_flctx }
 
+    /// Canonical inode-owned Windows open/share state. # C: O(1)
+    pub fn windows_share_context(&self) -> &super::windows_share::WindowsShareContext { &self.i_windows_share }
+
     /// `inode->i_ino`. # C: O(1)
     pub fn ino(&self) -> crate::types::Ino { self.i_ino }
     /// `i_mode` umode_t view (`S_IFMT` | perm). # C: O(1)

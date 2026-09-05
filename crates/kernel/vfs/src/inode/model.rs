@@ -148,6 +148,8 @@ pub struct Inode {
     pub(super) i_rwsem:        super::rwsem::InodeRwsem,
     /// `inode->i_flctx`: single owner for BSD flock and POSIX/OFD records.
     pub(super) i_flctx:        FileLockContext,
+    /// One owner for NT open/share claims, paired with `inode->i_flctx`.
+    pub(super) i_windows_share: super::windows_share::WindowsShareContext,
     /// `inode->i_security`: the mandatory-access-control label this object
     /// carries, cached here because the inode is the object the label belongs
     /// to — a table elsewhere keyed by inode identity would outlive the inodes
@@ -217,6 +219,7 @@ impl Inode {
             i_dquot: InodeDquots::new(),
             i_rwsem: super::rwsem::InodeRwsem::new(),
             i_flctx: FileLockContext::new(),
+            i_windows_share: super::windows_share::WindowsShareContext::new(),
             i_security: AtomicU32::new(self.i_security.load(Ordering::Relaxed)),
             i_security_class: AtomicU16::new(self.i_security_class.load(Ordering::Relaxed)),
             i_security_seq: AtomicU32::new(0),
