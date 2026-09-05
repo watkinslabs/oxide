@@ -75,7 +75,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     })
 }
 
-fn timer_deadline(due_time: i64) -> Option<u64> {
+pub(crate) fn timer_deadline(due_time: i64) -> Option<u64> {
     if due_time <= 0 {
         let ticks = (-(due_time as i128)) as u128;
         let delta = ticks.checked_mul(100)?;
