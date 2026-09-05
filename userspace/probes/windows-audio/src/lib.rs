@@ -35,6 +35,8 @@ pub const WAVE_FORMAT_EXTENSIBLE: u16 = 0xfffe;
 pub const EXTENSIBLE_CB_SIZE: u16 = 22;
 pub const SUBFORMAT_PCM: [u8; 16] = [1, 0, 0, 0, 0, 0, 16, 0, 128, 0, 0, 170, 0, 56, 155, 113];
 pub const SUBFORMAT_IEEE_FLOAT: [u8; 16] = [3, 0, 0, 0, 0, 0, 16, 0, 128, 0, 0, 170, 0, 56, 155, 113];
+pub const SPEAKER_RESERVED: u32 = 0x7ffc_0000;
+pub const SPEAKER_POSITION_MASK: u32 = 0x0003_ffff;
 pub const MAX_CHANNELS: u16 = 8;
 pub const MIN_RATE: u32 = 8_000;
 pub const MAX_RATE: u32 = 192_000;
@@ -103,7 +105,7 @@ fn normalize_parts(wave: &WaveFormatEx, valid_bits: u16, channel_mask: u32, subt
     if wave.channels == 0 || wave.channels > MAX_CHANNELS { return Err(FormatError::InvalidChannels); }
     if !(MIN_RATE..=MAX_RATE).contains(&wave.samples_per_sec) { return Err(FormatError::InvalidRate); }
     if valid_bits == 0 || valid_bits > wave.bits_per_sample { return Err(FormatError::InvalidValidBits); }
-    if channel_mask != 0 && channel_mask.count_ones() != u32::from(wave.channels) { return Err(FormatError::InvalidChannelMask); }
+    if channel_mask & (SPEAKER_RESERVED | !SPEAKER_POSITION_MASK) != 0 || (channel_mask != 0 && channel_mask.count_ones() != u32::from(wave.channels)) { return Err(FormatError::InvalidChannelMask); }
     let format = if subtype == SUBFORMAT_IEEE_FLOAT {
         if wave.bits_per_sample != 32 { return Err(FormatError::UnsupportedBits); }
         if valid_bits != wave.bits_per_sample { return Err(FormatError::UnsupportedBits); }
@@ -115,6 +117,7 @@ fn normalize_parts(wave: &WaveFormatEx, valid_bits: u16, channel_mask: u32, subt
         32 => NativeSampleFormat::S32Le,
         _ => return Err(FormatError::UnsupportedBits),
     } } else { return Err(FormatError::UnsupportedSubtype); };
+    if subtype == SUBFORMAT_PCM && valid_bits != wave.bits_per_sample && !(wave.bits_per_sample == 32 && valid_bits == 24) { return Err(FormatError::UnsupportedBits); }
     let frame_bytes = format.bytes().checked_mul(u32::from(wave.channels)).ok_or(FormatError::InvalidBlockAlign)?;
     if u32::from(wave.block_align) != frame_bytes { return Err(FormatError::InvalidBlockAlign); }
     let byte_rate = wave.samples_per_sec.checked_mul(frame_bytes).ok_or(FormatError::InvalidByteRate)?;
@@ -199,6 +202,52 @@ mod tests {
         value = extensible(16, 2, 48_000, SUBFORMAT_PCM);
         value.format.cb_size = EXTENSIBLE_CB_SIZE - 1;
         assert_eq!(normalize_extensible(&value), Err(FormatError::UnsupportedExtension));
+        value.format.cb_size = EXTENSIBLE_CB_SIZE;
+        value.valid_bits_per_sample = 15;
+        assert_eq!(normalize_extensible(&value), Err(FormatError::UnsupportedBits));
+        value.valid_bits_per_sample = 16;
+        value.channel_mask = 0x0004_0001;
+        assert_eq!(normalize_extensible(&value), Err(FormatError::InvalidChannelMask));
+    }
+
+    #[test]
+    fn accepts_owner_compatible_pcm_container_precision() {
+        let mut value = extensible(32, 2, 48_000, SUBFORMAT_PCM);
+        value.valid_bits_per_sample = 24;
+        assert_eq!(normalize_extensible(&value).unwrap().format, NativeSampleFormat::S32Le);
+        assert_eq!(normalize_extensible(&value).unwrap().valid_bits_per_sample, 24);
+        value.valid_bits_per_sample = 32;
+        assert_eq!(normalize_extensible(&value).unwrap().format, NativeSampleFormat::S32Le);
+        value.format.cb_size = EXTENSIBLE_CB_SIZE + 4;
+        assert_eq!(normalize_extensible(&value).unwrap().format, NativeSampleFormat::S32Le);
+    }
+
+    #[test]
+    fn rejects_precision_and_mask_values_that_cannot_reach_owner() {
+        let mut value = extensible(16, 2, 48_000, SUBFORMAT_PCM);
+        value.valid_bits_per_sample = 8;
+        assert_eq!(normalize_extensible(&value), Err(FormatError::UnsupportedBits));
+        value = extensible(32, 2, 48_000, SUBFORMAT_IEEE_FLOAT);
+        value.valid_bits_per_sample = 31;
+        assert_eq!(normalize_extensible(&value), Err(FormatError::UnsupportedBits));
+        value.valid_bits_per_sample = 32;
+        value.channel_mask = SPEAKER_RESERVED;
+        assert_eq!(normalize_extensible(&value), Err(FormatError::InvalidChannelMask));
+        value.channel_mask = 0x0004_0001;
+        assert_eq!(normalize_extensible(&value), Err(FormatError::InvalidChannelMask));
+        value.channel_mask = 0;
+        assert_eq!(normalize_extensible(&value).unwrap().channel_mask, 0);
+    }
+
+    #[test]
+    fn preserves_the_complete_native_owner_descriptor() {
+        let mut value = extensible(32, 2, 96_000, SUBFORMAT_PCM);
+        value.valid_bits_per_sample = 24;
+        value.channel_mask = 0;
+        assert_eq!(normalize_extensible(&value).unwrap(), NativePcmFormat {
+            format: NativeSampleFormat::S32Le, channels: 2, rate: 96_000,
+            frame_bytes: 8, byte_rate: 768_000, valid_bits_per_sample: 24, channel_mask: 0,
+        });
     }
 
     #[test]
