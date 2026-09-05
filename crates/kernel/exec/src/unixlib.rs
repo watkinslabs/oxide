@@ -21,6 +21,24 @@ pub struct MappedUnixlib {
     pub end: u64,
 }
 
+/// Register the callable table exported by a mapped Unixlib. `table_offset`
+/// is the value of `__wine_unix_call_funcs` in the ELF symbol scope; callers
+/// cannot provide an unrelated process address. The registry validates the
+/// complete u64 slot range before publishing it to the address-space owner.
+/// # C: O(1)
+pub fn register_callable_table(as_: &AddressSpace, image: MappedUnixlib, table_offset: u64,
+    entry_count: u64) -> Result<crate::elf_modules::ElfUnixlibDescriptor,
+    crate::elf_modules::UnixlibRegistrationError>
+{
+    let table_address = image.base.checked_add(table_offset)
+        .ok_or(crate::elf_modules::UnixlibRegistrationError::ArithmeticOverflow)?;
+    let descriptor = crate::elf_modules::ElfUnixlibDescriptor {
+        table_address, entry_count, module_base: image.base, module_end: image.end,
+    };
+    crate::elf_modules::register_unixlib_table(as_, descriptor)?;
+    Ok(descriptor)
+}
+
 /// One admitted native object. The loader publishes this transaction only
 /// after the complete dependency closure has been parsed and ordered.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -258,6 +276,38 @@ mod tests {
         let released = scope;
         assert_eq!(released.len(), 1);
         drop(released);
+    }
+
+    #[test]
+    fn callable_table_registration_uses_loaded_image_bounds() {
+        let as_ = AddressSpace::new(0x7_2500).unwrap();
+        let image = MappedUnixlib { base: 0x40_000, end: 0x41_000 };
+        let descriptor = register_callable_table(&as_, image, 0x800, 8).unwrap();
+        assert_eq!(descriptor.table_address, 0x40_800);
+        assert_eq!(crate::elf_modules::unixlib_descriptor(as_.root_pa()), Some(descriptor));
+        assert_eq!(register_callable_table(&as_, image, 0x800, 8), Ok(descriptor));
+        crate::elf_modules::clear(as_.root_pa());
+    }
+
+    #[test]
+    fn callable_table_registration_rejects_outside_and_overflow_ranges() {
+        let as_ = AddressSpace::new(0x7_2600).unwrap();
+        let image = MappedUnixlib { base: 0x50_000, end: 0x51_000 };
+        assert_eq!(register_callable_table(&as_, image, 0x1000, 1),
+            Err(crate::elf_modules::UnixlibRegistrationError::InvalidRange));
+        assert_eq!(register_callable_table(&as_, image, u64::MAX - image.base + 1, 1),
+            Err(crate::elf_modules::UnixlibRegistrationError::ArithmeticOverflow));
+        crate::elf_modules::clear(as_.root_pa());
+    }
+
+    #[test]
+    fn callable_table_registration_rejects_a_second_identity() {
+        let as_ = AddressSpace::new(0x7_2700).unwrap();
+        let image = MappedUnixlib { base: 0x60_000, end: 0x61_000 };
+        let _ = register_callable_table(&as_, image, 0x200, 8).unwrap();
+        assert_eq!(register_callable_table(&as_, image, 0x300, 8),
+            Err(crate::elf_modules::UnixlibRegistrationError::AlreadyRegistered));
+        crate::elf_modules::clear(as_.root_pa());
     }
 
     #[test]

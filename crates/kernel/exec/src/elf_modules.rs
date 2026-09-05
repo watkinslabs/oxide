@@ -33,6 +33,9 @@ pub struct ElfUnixlibDescriptor {
     pub module_end: u64,
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum UnixlibRegistrationError { InvalidRange, ArithmeticOverflow, AlreadyRegistered }
+
 static MODULES: Spinlock<BTreeMap<u64, Vec<ElfRuntimeModule>>, Modules> =
     Spinlock::new(BTreeMap::new());
 static SYMBOLS: Spinlock<BTreeMap<u64, Vec<ElfRuntimeSymbol>>, Modules> =
@@ -79,8 +82,26 @@ pub fn append_symbols(as_: &AddressSpace, symbols: &[ElfRuntimeSymbol]) {
 
 /// Publish the one canonical Unixlib descriptor for an address space.
 /// # C: O(log N) for the address-space registry
-pub fn register_unixlib_descriptor(as_: &AddressSpace, descriptor: ElfUnixlibDescriptor) {
-    UNIXLIBS.lock().insert(as_.root_pa(), descriptor);
+pub fn register_unixlib_table(as_: &AddressSpace, descriptor: ElfUnixlibDescriptor)
+    -> Result<(), UnixlibRegistrationError>
+{
+    if descriptor.module_base >= descriptor.module_end || descriptor.entry_count == 0 {
+        return Err(UnixlibRegistrationError::InvalidRange);
+    }
+    if descriptor.table_address < descriptor.module_base {
+        return Err(UnixlibRegistrationError::InvalidRange);
+    }
+    let bytes = descriptor.entry_count.checked_mul(core::mem::size_of::<u64>() as u64)
+        .ok_or(UnixlibRegistrationError::ArithmeticOverflow)?;
+    let table_end = descriptor.table_address.checked_add(bytes)
+        .ok_or(UnixlibRegistrationError::ArithmeticOverflow)?;
+    if table_end > descriptor.module_end { return Err(UnixlibRegistrationError::InvalidRange); }
+    let mut tables = UNIXLIBS.lock();
+    match tables.get(&as_.root_pa()) {
+        Some(existing) if *existing != descriptor => Err(UnixlibRegistrationError::AlreadyRegistered),
+        Some(_) => Ok(()),
+        None => { tables.insert(as_.root_pa(), descriptor); Ok(()) }
+    }
 }
 
 /// Read the Unixlib descriptor owned by an address space.
@@ -136,7 +157,7 @@ mod tests {
         let as_ = AddressSpace::new(0x7_2000).unwrap();
         let descriptor = ElfUnixlibDescriptor { table_address: 0x4200, entry_count: 3,
             module_base: 0x4000, module_end: 0x5000 };
-        register_unixlib_descriptor(&as_, descriptor);
+        register_unixlib_table(&as_, descriptor).unwrap();
         assert_eq!(unixlib_descriptor(as_.root_pa()), Some(descriptor));
         assert_eq!(unixlib_descriptor(as_.root_pa() + 1), None);
         clear(as_.root_pa());
