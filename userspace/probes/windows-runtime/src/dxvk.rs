@@ -7,6 +7,8 @@ use super::BuildError;
 const VERSION_FILE: &str = "version";
 const D3D11: &[u8] = b"d3d11.dll";
 const DXGI: &[u8] = b"dxgi.dll";
+const MAX_VERSION_BYTES: u64 = 64;
+const MAX_COMPONENT_BYTES: u64 = 512 * 1024 * 1024;
 
 /// Immutable, owned DXVK admission record for one Proton runtime.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -26,6 +28,7 @@ impl DxvkRuntimeAdmission {
         if root == runtime || !root.starts_with(&runtime) { return Err(invalid()); }
         let version_path = fs::canonicalize(root.join(VERSION_FILE)).map_err(|_| invalid())?;
         if !version_path.starts_with(&root) || !fs::metadata(&version_path).map(|metadata| metadata.is_file()).unwrap_or(false) { return Err(invalid()); }
+        if fs::metadata(&version_path).map(|metadata| metadata.len() > MAX_VERSION_BYTES).unwrap_or(true) { return Err(invalid()); }
         let version = fs::read_to_string(version_path).map_err(|_| invalid())?;
         let version = version.trim();
         if !valid_version(version) { return Err(invalid()); }
@@ -41,6 +44,7 @@ impl DxvkRuntimeAdmission {
             let path = root.join(std::str::from_utf8(name).map_err(|_| invalid())?);
             let canonical = fs::canonicalize(&path).map_err(|_| invalid())?;
             if !canonical.starts_with(&root) || !fs::metadata(&canonical).map(|m| m.is_file()).unwrap_or(false) { return Err(invalid()); }
+            if fs::metadata(&canonical).map(|metadata| metadata.len() == 0 || metadata.len() > MAX_COMPONENT_BYTES).unwrap_or(true) { return Err(invalid()); }
             let image = fs::read(&canonical).map_err(|_| invalid())?;
             let parsed = pe::parse(&image).map_err(|_| invalid())?;
             if parsed.sections.is_empty() { return Err(invalid()); }
@@ -91,6 +95,8 @@ mod tests {
     #[test] fn admits_owned_versioned_x86_64_identity() { let (runtime, root) = fixture("valid", "2.6.1"); let image = pe_image(); fs::write(root.join("d3d11.dll"), &image).unwrap(); fs::write(root.join("dxgi.dll"), &image).unwrap(); let record = DxvkRuntimeAdmission::admit(&root, &runtime).unwrap(); assert_eq!(&*record.version, "2.6.1"); assert!(record.modules.iter().all(|p| p.is_absolute() && p.starts_with(&record.root))); fs::remove_dir_all(runtime.parent().unwrap()).unwrap(); }
     #[test] fn rejects_missing_version() { let (runtime, root) = fixture("no-version", ""); fs::remove_file(root.join(VERSION_FILE)).unwrap(); assert!(DxvkRuntimeAdmission::admit(&root, &runtime).is_err()); fs::remove_dir_all(runtime.parent().unwrap()).unwrap(); }
     #[test] fn rejects_malformed_version() { let (runtime, root) = fixture("bad-version", "2.6"); assert!(DxvkRuntimeAdmission::admit(&root, &runtime).is_err()); fs::remove_dir_all(runtime.parent().unwrap()).unwrap(); }
+    #[test] fn rejects_oversized_version_manifest_before_reading_modules() { let (runtime, root) = fixture("oversized-version", &("2.6.1".to_string() + &" ".repeat(64))); let image = pe_image(); fs::write(root.join("d3d11.dll"), &image).unwrap(); fs::write(root.join("dxgi.dll"), &image).unwrap(); assert!(DxvkRuntimeAdmission::admit(&root, &runtime).is_err()); fs::remove_dir_all(runtime.parent().unwrap()).unwrap(); }
     #[test] fn rejects_missing_identity_module() { let (runtime, root) = fixture("missing-dll", "2.6.1"); fs::write(root.join("d3d11.dll"), pe_image()).unwrap(); assert!(DxvkRuntimeAdmission::admit(&root, &runtime).is_err()); fs::remove_dir_all(runtime.parent().unwrap()).unwrap(); }
     #[test] fn rejects_component_outside_runtime() { let (runtime, _) = fixture("outside", "2.6.1"); let root = runtime.parent().unwrap().join("foreign"); fs::create_dir_all(&root).unwrap(); assert!(DxvkRuntimeAdmission::admit(&root, &runtime).is_err()); fs::remove_dir_all(runtime.parent().unwrap()).unwrap(); fs::remove_dir_all(root).unwrap_or(()); }
+    #[test] fn rejects_oversized_component_before_reading_image() { let (runtime, root) = fixture("oversized-component", "2.6.1"); let image = pe_image(); fs::write(root.join("d3d11.dll"), &image).unwrap(); let file = fs::File::create(root.join("dxgi.dll")).unwrap(); file.set_len(MAX_COMPONENT_BYTES + 1).unwrap(); assert!(DxvkRuntimeAdmission::admit(&root, &runtime).is_err()); fs::remove_dir_all(runtime.parent().unwrap()).unwrap(); }
 }
