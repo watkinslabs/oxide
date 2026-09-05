@@ -174,17 +174,56 @@ unsafe fn deliver_nt_exception(regs: *mut UserRegs) -> bool {
     let Some(task) = sched::live::current() else { return false; };
     if !task.is_nt_personality() { return false; }
     let Some(pending) = task.nt_exception.begin_delivery() else { return false; };
-    let context_rsp = u64::from_le_bytes(pending.context[0x98..0xa0].try_into().unwrap());
+    let mut context = pending.context;
+    if !sched::nt_exception::prepare_dispatch_context(&pending.record, &mut context) {
+        let _ = task.nt_exception.abort_delivery();
+        return false;
+    }
+    let Ok(image) = crate::nt_context_image::decode(&context) else {
+        let _ = task.nt_exception.abort_delivery();
+        return false;
+    };
+    if image.validate_user_return(hal_x86_64::USER_CS_SELECTOR, hal_x86_64::USER_SS_SELECTOR).is_err() {
+        let _ = task.nt_exception.abort_delivery();
+        return false;
+    }
+    let Some(mm) = task.clone_mm() else {
+        let _ = task.nt_exception.abort_delivery();
+        return false;
+    };
+    let rip = image.registers[crate::nt_context_image::RestoreImage::RIP];
+    let context_rsp = image.registers[crate::nt_context_image::RestoreImage::RSP];
+    let Some(code) = hal::UserVirtAddr::new(rip).and_then(|address| mm.find_vma(address)) else {
+        let _ = task.nt_exception.abort_delivery();
+        return false;
+    };
+    if !code.prot.contains(vmm::VmaProt::EXEC) {
+        let _ = task.nt_exception.abort_delivery();
+        return false;
+    }
     let Some(frame) = pe::nt_stub::x64_exception_frame(context_rsp, 0) else { let _ = task.nt_exception.abort_delivery(); return false; };
-    if !uaccess::access_ok(frame.stack, pe::nt_stub::X64_EXCEPTION_FRAME_BYTES as usize) { let _ = task.nt_exception.abort_delivery(); return false; }
+    let Some(stack) = hal::UserVirtAddr::new(frame.stack).and_then(|address| mm.find_vma(address)) else {
+        let _ = task.nt_exception.abort_delivery();
+        return false;
+    };
+    if !pe::nt_stub::valid_x64_exception_frame_range(frame.stack, stack.start.as_u64(), stack.end.as_u64(), stack.prot.contains(vmm::VmaProt::WRITE)) {
+        let _ = task.nt_exception.abort_delivery();
+        return false;
+    }
     let Some(ntdll) = crate::nt_loader_proc::module_base_by_name(&task, b"ntdll.dll") else { let _ = task.nt_exception.abort_delivery(); return false; };
     let Some(dispatcher) = crate::nt_loader_proc::resolve_exported_routine_by_name(&task, ntdll, b"KiUserExceptionDispatcher") else { let _ = task.nt_exception.abort_delivery(); return false; };
-    if uaccess::copy_to_user(frame.context, &pending.context).is_err() || uaccess::copy_to_user(frame.exception_record, &pending.record).is_err() { let _ = task.nt_exception.abort_delivery(); return false; }
-    for (offset, value) in [(0u64, u64::from_le_bytes(pending.context[0xf8..0x100].try_into().unwrap())),
-        (8, 0x33), (16, u64::from_le_bytes(pending.context[0x44..0x48].try_into().unwrap())),
-        (24, context_rsp), (32, 0x2b)] {
-        let Some(address) = frame.machine_frame.checked_add(offset) else { let _ = task.nt_exception.abort_delivery(); return false; };
-        if uaccess::put_user_u64(address, value).is_err() { let _ = task.nt_exception.abort_delivery(); return false; }
+    let mut user_frame = [0u8; pe::nt_stub::X64_EXCEPTION_FRAME_BYTES as usize];
+    user_frame[..context.len()].copy_from_slice(&context);
+    user_frame[pe::nt_stub::X64_EXCEPTION_RECORD_OFFSET as usize..pe::nt_stub::X64_EXCEPTION_RECORD_OFFSET as usize + pending.record.len()].copy_from_slice(&pending.record);
+    for (offset, value) in [(0u64, rip), (8, hal_x86_64::USER_CS_SELECTOR),
+        (16, u64::from_le_bytes(context[0x44..0x48].try_into().unwrap())),
+        (24, context_rsp), (32, hal_x86_64::USER_SS_SELECTOR)] {
+        let offset = pe::nt_stub::X64_EXCEPTION_MACHINE_FRAME_OFFSET as usize + offset as usize;
+        user_frame[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+    }
+    if uaccess::copy_to_user(frame.stack, &user_frame).is_err() {
+        let _ = task.nt_exception.abort_delivery();
+        return false;
     }
     // SAFETY: the return frame is the active syscall frame owned by this task; all user frame writes completed above.
     let regs = unsafe { &mut *regs };
