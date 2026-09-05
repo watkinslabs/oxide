@@ -55,6 +55,47 @@ struct ModuleBuffer { name: Box<[u8]>, image: Box<[u8]> }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WindowsArchitecture { X86_64 }
 
+/// One immutable, x86-64 VKD3D-Proton installation admitted to a launch.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Vkd3dProtonRuntime {
+    pub path: PathBuf,
+    pub version: String,
+    pub identity: String,
+}
+
+impl Vkd3dProtonRuntime {
+    /// Read the immutable Proton version record into an owned admission
+    /// record; callers cannot substitute an identity after staging.
+    /// # C: O(version record bytes)
+    pub fn from_path(path: PathBuf) -> Result<Self, BuildError> {
+        let record = fs::read_to_string(path.join("version")).map_err(|_| BuildError::InvalidLaunchConfiguration { field: "vkd3d version" })?;
+        let mut fields = record.split_whitespace();
+        let version = fields.next().ok_or(BuildError::InvalidLaunchConfiguration { field: "vkd3d identity" })?.to_owned();
+        let identity = fields.next().ok_or(BuildError::InvalidLaunchConfiguration { field: "vkd3d identity" })?.to_owned();
+        if fields.next().is_some() { return Err(BuildError::InvalidLaunchConfiguration { field: "vkd3d identity" }); }
+        Ok(Self { path, version, identity })
+    }
+
+    /// Validate the installed VKD3D-Proton directory and its Proton identity
+    /// record before the launcher reads an image or DLL catalog.
+    /// # C: O(path bytes + identity bytes)
+    pub fn validate(&self) -> Result<(), BuildError> {
+        let bytes = self.path.as_os_str().as_bytes();
+        if bytes.is_empty() || bytes.contains(&0) || !self.path.is_absolute() || !self.path.is_dir() {
+            return Err(BuildError::InvalidLaunchConfiguration { field: "vkd3d" });
+        }
+        if !valid_version(&self.version) || !valid_identity(&self.identity) {
+            return Err(BuildError::InvalidLaunchConfiguration { field: "vkd3d identity" });
+        }
+        let record = fs::read_to_string(self.path.join("version")).map_err(|_| BuildError::InvalidLaunchConfiguration { field: "vkd3d version" })?;
+        let mut fields = record.split_whitespace();
+        if fields.next() != Some(self.version.as_str()) || fields.next() != Some(self.identity.as_str()) || fields.next().is_some() {
+            return Err(BuildError::InvalidLaunchConfiguration { field: "vkd3d identity" });
+        }
+        Ok(())
+    }
+}
+
 /// Immutable per-game Proton/Wine launch admission record.
 ///
 /// The DLL catalog is a staged directory owned by the launch record; the
@@ -72,7 +113,7 @@ pub struct ProtonLaunchConfig {
     pub registry_socket: PathBuf,
     pub registry_database: PathBuf,
     pub dxvk: PathBuf,
-    pub vkd3d: PathBuf,
+    pub vkd3d: Vkd3dProtonRuntime,
     pub faudio: PathBuf,
 }
 
@@ -88,7 +129,7 @@ impl ProtonLaunchConfig {
             ("dll_catalog", &self.dll_catalog), ("unixlib", &self.unixlib),
             ("nls", &self.nls), ("registry_socket", &self.registry_socket),
             ("registry_database", &self.registry_database), ("dxvk", &self.dxvk),
-            ("vkd3d", &self.vkd3d), ("faudio", &self.faudio),
+            ("faudio", &self.faudio),
         ];
         for (field, path) in paths {
             let bytes = path.as_os_str().as_bytes();
@@ -96,7 +137,7 @@ impl ProtonLaunchConfig {
                 return Err(BuildError::InvalidLaunchConfiguration { field });
             }
         }
-        for (field, path) in [("prefix", &self.prefix), ("runtime", &self.runtime), ("dll_catalog", &self.dll_catalog), ("unixlib", &self.unixlib)] {
+        for (field, path) in [("prefix", &self.prefix), ("runtime", &self.runtime), ("dll_catalog", &self.dll_catalog), ("unixlib", &self.unixlib), ("dxvk", &self.dxvk), ("faudio", &self.faudio)] {
             if !path.is_dir() { return Err(BuildError::InvalidLaunchConfiguration { field }); }
         }
         if !self.nls.is_file() || !self.registry_database.is_file() {
@@ -105,6 +146,7 @@ impl ProtonLaunchConfig {
         if !fs::metadata(&self.registry_socket).map(|metadata| metadata.file_type().is_socket()).unwrap_or(false) || UnixStream::connect(&self.registry_socket).is_err() {
             return Err(BuildError::InvalidLaunchConfiguration { field: "registry_socket" });
         }
+        self.vkd3d.validate()?;
         Ok(())
     }
 
@@ -113,7 +155,7 @@ impl ProtonLaunchConfig {
     fn profile(&self) -> RuntimeProfile {
         RuntimeProfile {
             prefix: self.prefix.clone(), wine_runtime: self.runtime.clone(),
-            dxvk: self.dxvk.clone(), vkd3d: self.vkd3d.clone(), faudio: self.faudio.clone(),
+            dxvk: self.dxvk.clone(), vkd3d: self.vkd3d.path.clone(), faudio: self.faudio.clone(),
         }
     }
 }
@@ -164,6 +206,16 @@ impl RuntimeProfile {
 
 fn env_path(name: &str, default: &Path) -> PathBuf {
     std::env::var_os(name).map(PathBuf::from).unwrap_or_else(|| default.to_owned())
+}
+
+fn valid_version(value: &str) -> bool {
+    let mut parts = value.strip_prefix('v').unwrap_or(value).split('.');
+    let valid = parts.clone().count() == 3 && parts.all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()));
+    valid
+}
+
+fn valid_identity(value: &str) -> bool {
+    value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 /// Owns every byte referenced by one `NtExecRequest` until the call returns.
@@ -518,6 +570,25 @@ mod tests {
     }
 
     #[test]
+    fn vkd3d_admission_requires_matching_version_and_commit_identity() {
+        let base = std::env::temp_dir().join(format!("oxide-vkd3d-admission-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        let identity = "0123456789012345678901234567890123456789";
+        fs::write(base.join("version"), format!("v3.0.1 {identity}\n")).unwrap();
+        let valid = Vkd3dProtonRuntime { path: base.clone(), version: "v3.0.1".into(), identity: identity.into() };
+        assert!(valid.validate().is_ok());
+        assert_eq!(Vkd3dProtonRuntime::from_path(base.clone()).unwrap(), valid);
+        let mut wrong = valid.clone();
+        wrong.identity = "fedcba9876543210fedcba9876543210fedcba98".into();
+        assert!(matches!(wrong.validate(), Err(BuildError::InvalidLaunchConfiguration { field: "vkd3d identity" })));
+        let mut malformed = valid;
+        malformed.version = "v3.0".into();
+        assert!(matches!(malformed.validate(), Err(BuildError::InvalidLaunchConfiguration { field: "vkd3d identity" })));
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
     fn launch_config_rejects_relative_paths_before_image_or_catalog_reads() {
         let config = ProtonLaunchConfig {
             architecture: WindowsArchitecture::X86_64,
@@ -525,7 +596,7 @@ mod tests {
             dll_catalog: PathBuf::from("dlls"), unixlib: PathBuf::from("unix"),
             nls: PathBuf::from("locale.nls"), registry_socket: PathBuf::from("registry.sock"),
             registry_database: PathBuf::from("registry.db"), dxvk: PathBuf::from("dxvk"),
-            vkd3d: PathBuf::from("vkd3d"), faudio: PathBuf::from("faudio"),
+            vkd3d: Vkd3dProtonRuntime { path: PathBuf::from("vkd3d"), version: "v3.0.1".into(), identity: "0123456789012345678901234567890123456789".into() }, faudio: PathBuf::from("faudio"),
         };
         assert!(matches!(RuntimeRequest::from_launch_config(Path::new("does-not-exist.exe"), b"C:\\game.exe", b"C:\\game.exe", &config), Err(BuildError::InvalidLaunchConfiguration { field: "prefix" })));
     }
@@ -541,7 +612,7 @@ mod tests {
             dll_catalog: base.join("missing-dlls"), unixlib: base.join("unix"),
             nls: base.join("locale.nls"), registry_socket: base.join("missing.sock"),
             registry_database: base.join("registry.db"), dxvk: base.join("dxvk"),
-            vkd3d: base.join("vkd3d"), faudio: base.join("faudio"),
+            vkd3d: Vkd3dProtonRuntime { path: base.join("vkd3d"), version: "v3.0.1".into(), identity: "0123456789012345678901234567890123456789".into() }, faudio: base.join("faudio"),
         };
         assert!(matches!(config.validate(), Err(BuildError::InvalidLaunchConfiguration { field: "dll_catalog" })));
         fs::remove_dir_all(base).unwrap();
