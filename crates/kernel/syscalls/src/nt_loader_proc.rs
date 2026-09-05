@@ -23,7 +23,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         return Some(probe_relay_descriptor(call.args.a0));
     }
     if call.service == NtService::RelayCall {
-        let result = resolve_relay_call(call).unwrap_or(0);
+        let result = resolve_relay_call(call).unwrap_or(pe::relay::RELAY_TARGET_NOT_FOUND);
         klog::write_raw(b"[WINDOWS-PE-RELAY-DISPATCH] descriptor="); klog::write_hex_u64(call.args.a0);
         klog::write_raw(b" index="); klog::write_hex_u64(call.args.a1);
         klog::write_raw(b" result="); klog::write_hex_u64(result); klog::write_raw(b"\n");
