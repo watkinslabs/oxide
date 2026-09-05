@@ -304,21 +304,21 @@ pub unsafe fn wait_event_interruptible_until_user_apc(
         // SAFETY: forwarded fn-level contract; the caller is process context
         // and holds no lock owned by a waker.
         unsafe { wq.park_with_wait_state(deadline_ns, WaitState::Interruptible); }
-        if apc() { wq.cancel_current_park(); return NtWaitOutcome::UserApc; }
         if cond() { break; }
+        if apc() { wq.cancel_current_park(); return NtWaitOutcome::UserApc; }
         if signal_pending_state_current(WaitState::Interruptible) {
             wq.cancel_current_park(); return NtWaitOutcome::Interrupted;
         }
         if deadline_ns != 0 && now() >= deadline_ns {
             wq.cancel_current_park();
-            return if apc() { NtWaitOutcome::UserApc }
-                else if cond() { NtWaitOutcome::Ready } else { NtWaitOutcome::TimedOut };
+            return if cond() { NtWaitOutcome::Ready }
+                else if apc() { NtWaitOutcome::UserApc } else { NtWaitOutcome::TimedOut };
         }
         // SAFETY: the task published Sleeping and the wait list owns the
         // wakeup protocol until the next predicate recheck.
         unsafe { super::park_yield(); }
-        if apc() { wq.cancel_current_park(); return NtWaitOutcome::UserApc; }
         if cond() { break; }
+        if apc() { wq.cancel_current_park(); return NtWaitOutcome::UserApc; }
     }
     wq.cancel_current_park();
     NtWaitOutcome::Ready
@@ -517,5 +517,42 @@ mod tests {
             });
         }
         assert_eq!(reads.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn alertable_wait_returns_object_success_before_a_simultaneous_apc() {
+        let wait = WaitList::new();
+        let checks = AtomicU32::new(0);
+        // SAFETY: hosted test has no runqueue; the predicate changes at the
+        // post-publication recheck that models an object wake racing an APC.
+        let outcome = unsafe {
+            wait_event_interruptible_until_user_apc(
+                &wait, 0, || 0, || true,
+                || checks.fetch_add(1, Ordering::Relaxed) != 0,
+            )
+        };
+        assert_eq!(outcome, NtWaitOutcome::Ready);
+    }
+
+    #[test]
+    fn alertable_wait_returns_apc_before_an_expired_timeout() {
+        let wait = WaitList::new();
+        // SAFETY: hosted test has no runqueue; the expired deadline is handled
+        // by the synchronous terminal recheck.
+        let outcome = unsafe {
+            wait_event_interruptible_until_user_apc(&wait, 10, || 10, || true, || false)
+        };
+        assert_eq!(outcome, NtWaitOutcome::UserApc);
+    }
+
+    #[test]
+    fn alertable_wait_returns_timeout_when_object_and_apc_are_absent() {
+        let wait = WaitList::new();
+        // SAFETY: hosted test has no runqueue; the expired deadline is handled
+        // by the synchronous terminal recheck.
+        let outcome = unsafe {
+            wait_event_interruptible_until_user_apc(&wait, 10, || 10, || false, || false)
+        };
+        assert_eq!(outcome, NtWaitOutcome::TimedOut);
     }
 }

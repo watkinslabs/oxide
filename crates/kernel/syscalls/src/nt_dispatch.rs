@@ -1093,7 +1093,6 @@ pub fn dispatch(call: NtCall) -> u64 {
             }
             NtObjectCall::WaitEvent { handle, alertable, timeout } => {
                 if alertable > 1 { return STATUS_INVALID_PARAMETER; }
-                if alertable != 0 && cur.nt_apc_queue.request_delivery() { return STATUS_USER_APC; }
                 let native = sched::nt_object::NtHandle::from_raw(handle);
                 let Some(object) = table.get(native, SYNCHRONIZE_ACCESS) else { return if table.contains(native) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE }; };
                 let deadline = match wait_deadline(timeout) { Ok(deadline) => deadline, Err(status) => return status };
