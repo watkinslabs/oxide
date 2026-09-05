@@ -8,9 +8,24 @@ use crate::inode::{Inode, InodeBuilder, InodeRef};
 use crate::inode_ops::{mk_mode, InodeOps};
 use crate::file_ops::default_file_ops;
 use crate::types::{FileType, KResult, VfsError};
+use crate::{FileSystemType, SimpleSuperOps, SuperBlock};
 use alloc::string::String;
 use alloc::format;
 use alloc::vec::Vec;
+
+struct AliasTestFs;
+impl FileSystemType for AliasTestFs {
+fn name(&self) -> &str { "alias-test" }
+fn mount(&self, _src: Option<&str>, _opts: &str) -> KResult<Arc<SuperBlock>> { Err(VfsError::Eperm) }
+}
+
+fn alias_test_sb() -> Arc<SuperBlock> {
+    SuperBlock::new(Arc::new(AliasTestFs), Arc::new(SimpleSuperOps { magic: 1, block_size: 4096, options: String::new() }), 1, 1, 4096, String::from("alias-test"), Arc::new(()))
+}
+
+fn alias_test_root(sb: &Arc<SuperBlock>) -> Arc<Dentry> {
+    d_make_root(InodeBuilder::new(1, mk_mode(FileType::Directory, 0o755), Arc::new(DirOps), default_file_ops()).build(), sb)
+}
 
 // Minimal directory inode for positive-dentry tests. `i_sb` defaults to
 // None so no superblock/alias machinery is needed; `lookup` → Enoent.
@@ -229,6 +244,30 @@ let moved = d_move(&d_lookup(&r, "old").unwrap(), &p2, "new");
 assert!(d_lookup(&r, "old").is_none());
 let hit = d_lookup(&p2, "new").unwrap();
 assert!(Arc::ptr_eq(&hit, &moved));
+}
+
+#[test]
+fn hashed_alias_follows_rename_for_final_close() {
+let sb = alias_test_sb();
+let r = alias_test_root(&sb);
+let inode = InodeBuilder::new(30, mk_mode(FileType::Regular, 0o644), Arc::new(DirOps), default_file_ops()).build();
+let old = d_add(&r, "old", inode.clone());
+assert!(Arc::ptr_eq(&d_find_hashed_alias(&inode).unwrap(), &old));
+let moved = d_move(&old, &r, "current");
+let current = d_find_hashed_alias(&inode).expect("renamed inode retains named alias");
+assert!(Arc::ptr_eq(&current, &moved));
+assert_eq!(current.name(), "current");
+}
+
+#[test]
+fn hashed_alias_rejects_wrong_inode() {
+let sb = alias_test_sb();
+let r = alias_test_root(&sb);
+let victim = InodeBuilder::new(31, mk_mode(FileType::Regular, 0o644), Arc::new(DirOps), default_file_ops()).build();
+let replacement = InodeBuilder::new(32, mk_mode(FileType::Regular, 0o644), Arc::new(DirOps), default_file_ops()).build();
+d_add(&r, "same-name", replacement.clone());
+assert!(d_find_hashed_alias(&victim).is_none(), "replacement inode cannot satisfy victim recheck");
+assert_eq!(d_find_hashed_alias(&replacement).unwrap().name(), "same-name");
 }
 
 // shrink_dcache_parent prunes the unused subtree but pins the path to an
