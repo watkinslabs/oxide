@@ -221,8 +221,6 @@ const THREAD_ALL_ACCESS: u32 = 0x001f_03ff;
 const THREAD_TERMINATE: u32 = 0x0001;
 const THREAD_SUSPEND_RESUME: u32 = 0x0002;
 const THREAD_QUERY_INFORMATION: u32 = 0x0040;
-const NT_THREAD_DEFAULT_STACK: u64 = 1 << 20;
-const NT_THREAD_MAX_STACK: u64 = 64 << 20;
 #[cfg(target_os = "oxide-kernel")]
 const NT_EPOCH_OFFSET_NS: u64 = 11_644_473_600_000_000_000;
 #[cfg(target_os = "oxide-kernel")]
@@ -1462,10 +1460,7 @@ pub fn dispatch(call: NtCall) -> u64 {
                     klog::write_hex_u64(parameter);
                     klog::write_raw(b"\n");
                 }
-                let stack_size = if stack_size == 0 { NT_THREAD_DEFAULT_STACK } else { stack_size };
-                let page = hal::PAGE_SIZE_BYTES as u64;
-                let Some(stack_size) = stack_size.checked_add(page - 1).map(|v| v & !(page - 1)) else { return STATUS_INVALID_PARAMETER; };
-                if stack_size == 0 || stack_size > NT_THREAD_MAX_STACK { return STATUS_INVALID_PARAMETER; }
+                let Some(stack_size) = crate::nt_process_policy::thread_stack_size(stack_size) else { return STATUS_INVALID_PARAMETER; };
                 // SAFETY: the running NT task owns this address-space slot;
                 // the clone pins it while the unpublished child is prepared.
                 let Some(mm) = (unsafe { cur.mm_ref() }).map(|mm| mm.clone()) else { return STATUS_INVALID_PARAMETER; };
