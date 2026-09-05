@@ -135,12 +135,12 @@
         b
     }
 
-    struct FixedResolver;
+    struct FixedResolver(u64);
     impl ImportResolver for FixedResolver {
         fn resolve(&self, dll: &[u8], import: &pe::ImportThunk<'_>) -> Result<u64, pe::Error> {
             assert_eq!(dll, b"ntdll.dll");
             assert_eq!(import, &pe::ImportThunk::Name { hint: 7, name: b"NtClose" });
-            Ok(0x1234_5678_9abc_def0)
+            Ok(self.0)
         }
     }
 
@@ -150,12 +150,15 @@
         let blob = imported_pe();
         let parsed = pe::parse(&blob).unwrap();
         assert_eq!(parsed.imports().unwrap().len(), 1);
-        let image = load_pe_image_with_resolver(&blob, &as_, &FixedResolver).unwrap();
+        let data = as_.stash_bytes(alloc::boxed::Box::new([0u8; 4096]));
+        let target = as_.mmap(None, 4096, VmaProt::READ | VmaProt::EXEC,
+            VmaFlags::PRIVATE, VmaBacking::KernelBytes { data, off: 0 }, false).unwrap();
+        let image = load_pe_image_with_resolver(&blob, &as_, &FixedResolver(target.as_u64())).unwrap();
         assert_eq!(image.size, 0x4000);
         let vma = as_.find_vma(UserVirtAddr::new(image.base + 0x2090).unwrap()).unwrap();
         let data = match vma.backing { VmaBacking::KernelBytes { data, .. } => data, _ => panic!("PE image must be kernel-backed") };
         let offset = 0x2090usize;
-        assert_eq!(u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap()), 0x1234_5678_9abc_def0);
+        assert_eq!(u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap()), target.as_u64());
     }
 
     #[test]
@@ -731,14 +734,17 @@
         let resolver = PeExportResolver { modules: &exports };
         assert_eq!(resolver.resolve(b"ADVAPI32.DLL", &import).unwrap(), 0x1800_6fcc);
         assert_eq!(resolver.resolve(b"advapi32.dll", &event_log).unwrap(), 0x1801_9c90);
-        struct AnyResolver;
+        struct AnyResolver(u64);
         impl ImportResolver for AnyResolver {
-            fn resolve(&self, _dll: &[u8], _import: &pe::ImportThunk<'_>) -> Result<u64, pe::Error> { Ok(0x1234_5678_9abc_def0) }
+            fn resolve(&self, _dll: &[u8], _import: &pe::ImportThunk<'_>) -> Result<u64, pe::Error> { Ok(self.0) }
         }
         let as_ = AddressSpace::new(0x200_000).unwrap();
         let base = UserVirtAddr::new(image_base).unwrap();
+        let data = as_.stash_bytes(alloc::boxed::Box::new([0u8; 4096]));
+        let target = as_.mmap(None, 4096, VmaProt::READ | VmaProt::EXEC,
+            VmaFlags::PRIVATE, VmaBacking::KernelBytes { data, off: 0 }, false).unwrap();
         let relay_call = 0xfeed_beef_cafe_0000;
-        let image = load_pe_image_with_resolver_at(&blob, &as_, &AnyResolver, Some(base), relay_call).unwrap();
+        let image = load_pe_image_with_resolver_at(&blob, &as_, &AnyResolver(target.as_u64()), Some(base), relay_call).unwrap();
         let descriptor = UserVirtAddr::new(image.base + 0x24000 + 8).unwrap();
         let vma = as_.find_vma(descriptor).unwrap();
         let data = match vma.backing { VmaBacking::KernelBytes { data, off } => (data, off), _ => panic!("PE image must be kernel-backed") };
@@ -753,13 +759,16 @@
         let blob = std::fs::read(path).expect("installed Wine advapi32 must be readable");
         let parsed = pe::parse(&blob).expect("installed Wine advapi32 must parse");
         assert_eq!(parsed.entry_rva, 0x12280);
-        struct AnyResolver;
+        struct AnyResolver(u64);
         impl ImportResolver for AnyResolver {
-            fn resolve(&self, _dll: &[u8], _import: &pe::ImportThunk<'_>) -> Result<u64, pe::Error> { Ok(0x1234_5678_9abc_def0) }
+            fn resolve(&self, _dll: &[u8], _import: &pe::ImportThunk<'_>) -> Result<u64, pe::Error> { Ok(self.0) }
         }
         let as_ = AddressSpace::new(0x200_000).unwrap();
         let base = UserVirtAddr::new(parsed.image_base).unwrap();
-        let image = load_pe_image_with_resolver_at(&blob, &as_, &AnyResolver, Some(base), 0).unwrap();
+        let data = as_.stash_bytes(alloc::boxed::Box::new([0u8; 4096]));
+        let target = as_.mmap(None, 4096, VmaProt::READ | VmaProt::EXEC,
+            VmaFlags::PRIVATE, VmaBacking::KernelBytes { data, off: 0 }, false).unwrap();
+        let image = load_pe_image_with_resolver_at(&blob, &as_, &AnyResolver(target.as_u64()), Some(base), 0).unwrap();
         let entry = as_.find_vma(image.entry).expect("initializer must remain mapped");
         assert!(entry.prot.contains(VmaProt::EXEC));
         let data = match entry.backing { VmaBacking::KernelBytes { data, off } => (data, off), _ => panic!("initializer must use PE bytes") };
@@ -792,6 +801,21 @@
             VmaFlags::PRIVATE, VmaBacking::KernelBytes { data, off: 0 }, false).unwrap();
         assert_eq!(load_pe_image_with_resolver(&imported_pe(), &as_, &BadResolver(target.as_u64())), Err(pe::Error::Einval));
         assert_eq!(as_.vma_count(), 1, "invalid IAT target must roll back the image");
+    }
+
+    #[test]
+    fn unmapped_or_non_user_import_target_rejects_before_image_commit() {
+        struct BadResolver(u64);
+        impl ImportResolver for BadResolver {
+            fn resolve(&self, _dll: &[u8], _import: &pe::ImportThunk<'_>) -> Result<u64, pe::Error> {
+                Ok(self.0)
+            }
+        }
+        for target in [0x1234_5678_9abc_def0, u64::MAX] {
+            let as_ = AddressSpace::new(0x40_000).unwrap();
+            assert_eq!(load_pe_image_with_resolver(&imported_pe(), &as_, &BadResolver(target)), Err(pe::Error::Einval));
+            assert_eq!(as_.vma_count(), 0, "failed IAT target must roll back the image");
+        }
     }
 
     #[test]

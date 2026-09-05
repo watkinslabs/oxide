@@ -1387,11 +1387,9 @@ fn validate_bound_imports(parsed: &pe::Image<'_>, image: &[u8], as_: &AddressSpa
             let offset = (import.first_thunk as usize).checked_add(index.checked_mul(8).ok_or(pe::Error::Einval)?).ok_or(pe::Error::Einval)?;
             let end = offset.checked_add(8).ok_or(pe::Error::Einval)?;
             let address = u64::from_le_bytes(image.get(offset..end).ok_or(pe::Error::Einval)?.try_into().map_err(|_| pe::Error::Einval)?);
-            if let Some(target) = UserVirtAddr::new(address) {
-                if let Some(vma) = as_.find_vma(target) {
-                    if !vma.prot.contains(VmaProt::EXEC) { return Err(pe::Error::Einval); }
-                }
-            }
+            let target = UserVirtAddr::new(address).ok_or(pe::Error::Einval)?;
+            let vma = as_.find_vma(target).ok_or(pe::Error::Einval)?;
+            if !vma.prot.contains(VmaProt::EXEC) { return Err(pe::Error::Einval); }
         }
     }
     Ok(())
