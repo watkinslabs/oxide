@@ -138,6 +138,19 @@ fn timer_deadlines_support_one_shot_periodic_and_cancel() {
 }
 
 #[test]
+fn timer_expiry_is_not_hidden_by_an_infinite_wait_timeout() {
+    assert_eq!(super::merge_wait_deadline(0, Some(500)), 500);
+    assert_eq!(super::merge_wait_deadline(0, None), 0);
+    assert_eq!(super::merge_wait_deadline(700, Some(500)), 500);
+    assert_eq!(super::merge_wait_deadline(700, None), 700);
+    let timer = NtObject::new_timer(8, false).timer().unwrap();
+    timer.arm(900, 0);
+    assert_eq!(timer.deadline(), Some(900));
+    timer.cancel();
+    assert_eq!(timer.deadline(), None);
+}
+
+#[test]
 fn timer_cancel_clears_readiness_after_a_periodic_expiry() {
     let timer = NtObject::new_timer(8, false).timer().unwrap();
     timer.arm(100, 10);

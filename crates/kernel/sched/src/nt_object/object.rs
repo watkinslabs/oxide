@@ -294,8 +294,8 @@ impl NtObject {
             task: None, file_info: None, file_share: None, delete_on_close: None, file_completion: Spinlock::new(None) })
     }
 
-    /// Return the next timer deadline, or `None` for non-timer objects. # C: O(1)
-    pub fn timer_deadline(&self) -> Option<u64> { self.timer.as_ref().map(|timer| timer.due_ns()) }
+    /// Return the next armed timer deadline, or `None` for non-timers/disarmed timers. # C: O(1)
+    pub fn timer_deadline(&self) -> Option<u64> { self.timer.as_ref().and_then(|timer| timer.deadline()) }
 
     /// Test whether this object currently satisfies a wait. # C: O(1)
     pub fn is_signaled(&self) -> bool {
