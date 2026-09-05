@@ -4,6 +4,7 @@
 
 use syscall::nt::{NtCall, NtObjectCall};
 use crate::nt_process_vm_counters;
+use crate::nt_process_image_policy;
 
 const STATUS_SUCCESS: u64 = 0;
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
@@ -24,6 +25,7 @@ pub(crate) const PROCESS_CREATE_THREAD: u32 = 0x0000_0002;
 pub(crate) const PROCESS_VM_OPERATION: u32 = 0x0000_0008;
 pub(crate) const PROCESS_QUERY_INFORMATION_ACCESS: u32 = 0x0000_0400;
 const PROCESS_BASIC_INFORMATION_CLASS: u32 = 0;
+const PROCESS_IMAGE_INFORMATION_CLASS: u32 = 37;
 const PROCESS_BASIC_INFORMATION_BYTES: usize = 48;
 const PROCESS_AFFINITY_MASK_CLASS: u32 = 21;
 const PROCESS_WOW64_INFORMATION_CLASS: u32 = 26;
@@ -149,6 +151,9 @@ fn query_process(process: u64, class: u32, info: syscall::UserPtr<u8>, length: u
     if class == PROCESS_IMAGE_FILE_NAME_CLASS || class == PROCESS_IMAGE_FILE_NAME_WIN32_CLASS {
         return query_process_image_name(target, info, length, return_length, class == PROCESS_IMAGE_FILE_NAME_WIN32_CLASS);
     }
+    if class == PROCESS_IMAGE_INFORMATION_CLASS {
+        return query_process_image_information(target, info, length, return_length);
+    }
     if class == nt_process_vm_counters::CLASS {
         return query_process_vm_counters(target, info, length, return_length);
     }
@@ -192,6 +197,56 @@ fn query_process(process: u64, class: u32, info: syscall::UserPtr<u8>, length: u
     if uaccess::copy_to_user(info.as_u64(), &out).is_err() { return Some(STATUS_INVALID_PARAMETER); }
     write_process_return_length(return_length, required)
 }
+
+fn query_process_image_information(target: &sched::Task, info: syscall::UserPtr<u8>, length: u32,
+    return_length: Option<syscall::UserPtr<u32>>) -> Option<u64> {
+    if nt_process_image_policy::length_status(length as usize) != STATUS_SUCCESS {
+        return Some(if write_process_return_length(return_length, nt_process_image_policy::BYTES) == Some(STATUS_SUCCESS) {
+            STATUS_INFO_LENGTH_MISMATCH
+        } else { STATUS_INVALID_PARAMETER });
+    }
+    if info.as_u64() == 0 { return Some(STATUS_ACCESS_VIOLATION); }
+    let peb = target.nt_peb();
+    let image = read_u64(peb.checked_add(0x10)?)?;
+    let nt = image.checked_add(read_u32(image.checked_add(0x3c)?)? as u64)?;
+    if read_u32(nt)? != 0x0000_4550 { return Some(STATUS_INVALID_PARAMETER); }
+    let machine = read_u32(nt.checked_add(4)?)? as u16;
+    let sections = read_u32(nt.checked_add(6)?)? as usize;
+    let optional_size = read_u32(nt.checked_add(20)?)? as usize;
+    let optional = nt.checked_add(24)?;
+    if read_u32(optional)? & 0xffff != 0x020b || optional_size < 112 { return Some(STATUS_INVALID_PARAMETER); }
+    let entry = image.checked_add(read_u32(optional.checked_add(16)?)? as u64)?;
+    let preferred = read_u64(optional.checked_add(24)?)?;
+    let stack = read_u64(optional.checked_add(72)?)?;
+    let commit = read_u64(optional.checked_add(80)?)?;
+    let facts = nt_process_image_policy::Facts {
+        transfer: entry, maximum_stack: stack, committed_stack: commit,
+        subsystem: read_u32(optional.checked_add(68)?)? & 0xffff,
+        subsystem_minor: (read_u32(optional.checked_add(48)?)? >> 16) as u16,
+        subsystem_major: (read_u32(optional.checked_add(48)?)? & 0xffff) as u16,
+        os_major: (read_u32(optional.checked_add(40)?)? & 0xffff) as u16,
+        os_minor: (read_u32(optional.checked_add(40)?)? >> 16) as u16,
+        image_characteristics: (read_u32(nt.checked_add(20)?)? >> 16) as u16,
+        dll_characteristics: (read_u32(optional.checked_add(70)?)? >> 16) as u16,
+        machine, contains_code: image_contains_code(nt, optional_size, sections),
+        image_flags: ((image != preferred) as u8) << 2 | (image <= u32::MAX as u64) as u8,
+        loader_flags: read_u32(optional.checked_add(88)?)?,
+        image_size: read_u32(optional.checked_add(56)?)?, checksum: read_u32(optional.checked_add(64)?)?,
+    };
+    if uaccess::copy_to_user(info.as_u64(), &nt_process_image_policy::encode(facts)).is_err() {
+        return Some(STATUS_INVALID_PARAMETER);
+    }
+    write_process_return_length(return_length, nt_process_image_policy::BYTES)
+}
+
+fn image_contains_code(nt: u64, optional_size: usize, count: usize) -> bool {
+    let Some(sections) = nt.checked_add(24).and_then(|value| value.checked_add(optional_size as u64)) else { return false; };
+    (0..count.min(96)).any(|index| sections.checked_add((index * 40) as u64)
+        .and_then(|address| read_u32(address.checked_add(36)?)).is_some_and(|flags| flags & 0x20 != 0))
+}
+
+fn read_u32(address: u64) -> Option<u32> { uaccess::get_user_u32(address).ok() }
+fn read_u64(address: u64) -> Option<u64> { uaccess::get_user_u64(address).ok() }
 
 fn query_process_vm_counters(target: &sched::Task, info: syscall::UserPtr<u8>, length: u32,
     return_length: Option<syscall::UserPtr<u32>>) -> Option<u64> {
