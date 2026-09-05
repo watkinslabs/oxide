@@ -316,6 +316,31 @@ pub enum PeInitializerKind { TlsCallback, DllEntry }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct PeModuleInitializer { pub base: u64, pub entry: UserVirtAddr, pub kind: PeInitializerKind }
+
+struct PeImageTransaction<'a> {
+    as_: &'a AddressSpace,
+    base: UserVirtAddr,
+    bytes: usize,
+    committed: bool,
+}
+
+impl PeImageTransaction<'_> {
+    fn new(as_: &AddressSpace, base: UserVirtAddr, bytes: usize) -> PeImageTransaction<'_> {
+        PeImageTransaction { as_, base, bytes, committed: false }
+    }
+    fn commit(&mut self) { self.committed = true; }
+}
+
+impl Drop for PeImageTransaction<'_> {
+    fn drop(&mut self) {
+        if !self.committed { let _ = self.as_.munmap(self.base, self.bytes); }
+    }
+}
+
+fn executable_entry(as_: &AddressSpace, entry: UserVirtAddr) -> bool {
+    as_.find_vma(entry).is_some_and(|vma| vma.prot.contains(VmaProt::EXEC))
+}
+
 pub trait ImportResolver {
     fn resolve(&self, dll: &[u8], import: &pe::ImportThunk<'_>) -> Result<u64, pe::Error>;
 }
@@ -1206,6 +1231,7 @@ pub fn load_pe_image_with_resolver_at<R: ImportResolver>(blob: &[u8], as_: &Addr
         VmaProt::READ, VmaProt::READ | VmaProt::WRITE | VmaProt::EXEC,
         VmaFlags::PRIVATE, VmaBacking::KernelBytes { data, off: 0 })
         .map_err(|_| pe::Error::Einval)?;
+    let mut transaction = PeImageTransaction::new(as_, reservation, len);
     let header_len = align_up(parsed.size_of_headers, parsed.section_alignment);
     as_.mprotect(reservation, header_len as usize, VmaProt::READ).map_err(|_| pe::Error::Einval)?;
     for section in &parsed.sections {
@@ -1216,8 +1242,13 @@ pub fn load_pe_image_with_resolver_at<R: ImportResolver>(blob: &[u8], as_: &Addr
         as_.mprotect(UserVirtAddr::new(start).ok_or(pe::Error::Einval)?, span as usize, prot).map_err(|_| pe::Error::Einval)?;
     }
     let entry = UserVirtAddr::new(base.checked_add(parsed.entry_rva as u64).ok_or(pe::Error::Einval)?).ok_or(pe::Error::Einval)?;
+    // The transfer address is executable code, not merely an in-range RVA.
+    // Keep this check in the loader transaction so a malformed image cannot
+    // publish a task that will fault on its first user instruction.
+    if !executable_entry(as_, entry) { return Err(pe::Error::Einval); }
     let exception = parsed.directories[pe::IMAGE_DIRECTORY_ENTRY_EXCEPTION];
     let tls = parsed.directories[pe::IMAGE_DIRECTORY_ENTRY_TLS];
+    transaction.commit();
     Ok(PeLoadedImage { base, preferred_base: parsed.image_base, entry, size: parsed.size_of_image, exception_directory: (exception.rva, exception.size), tls_directory: (tls.rva, tls.size) })
 }
 pub fn load_pe_module_set_with_resolver<'a, R: ImportResolver>(modules: &[pe::Module<'a>], as_: &AddressSpace, resolver: &R) -> Result<alloc::vec::Vec<PeLoadedModule<'a>>, pe::Error> {
