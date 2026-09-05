@@ -10,6 +10,12 @@ use windows_runtime::RuntimeRequest;
 fn main() -> ExitCode {
     let mut args = env::args_os();
     let _program = args.next();
+    if args.next().as_deref().is_some_and(|arg| arg == std::ffi::OsStr::new("--steam-launch")) {
+        let Some(path) = args.next() else { usage(); return ExitCode::from(2); };
+        if args.next().is_some() { usage(); return ExitCode::from(2); }
+        return steam_launch(PathBuf::from(path));
+    }
+    let mut args = env::args_os(); args.next();
     if args.next().as_deref().is_some_and(|arg| arg == std::ffi::OsStr::new("--preflight")) {
         return preflight(&mut args);
     }
@@ -57,6 +63,22 @@ fn main() -> ExitCode {
     }
 }
 
+fn steam_launch(path: PathBuf) -> ExitCode {
+    let record = match windows_runtime::SteamLaunchRecord::from_path(&path) {
+        Ok(record) => record,
+        Err(error) => { eprintln!("windows-runtime phase=preflight operation=steam_launch_record outcome=fail error={error:?}"); return ExitCode::from(1); }
+    };
+    eprintln!("windows-runtime phase=preflight operation=steam_launch_record outcome=pass appid={}", record.appid);
+    let request = match record.into_request() {
+        Ok(request) => request,
+        Err(error) => { eprintln!("windows-runtime phase=preflight operation=build_handoff outcome=fail error={error:?}"); return ExitCode::from(1); }
+    };
+    match request.execute() {
+        Ok(status) => { println!("windows-runtime phase=commit operation=steam_launch outcome=committed ntstatus=0x{status:08x}"); ExitCode::SUCCESS }
+        Err(error) => { eprintln!("windows-runtime phase=handoff operation=steam_launch outcome=fail error={error:?}"); ExitCode::from(1) }
+    }
+}
+
 fn preflight(args: &mut impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
     let values = args.map(PathBuf::from).collect::<Vec<_>>();
     if values.len() != 6 { usage(); return ExitCode::from(2); }
@@ -67,5 +89,5 @@ fn preflight(args: &mut impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
 }
 
 fn usage() {
-    eprintln!("usage: windows-runtime --preflight <image> <dll-directory> <unixlib-directory> <nls-file> <registry-socket> <registry-database> | --launch <image> <windows-path> <command-line> x86_64 <prefix> <runtime> <dll-catalog> <unixlib> <nls-file> <registry-socket> <registry-database> <dxvk> <vkd3d> <faudio>");
+    eprintln!("usage: windows-runtime --steam-launch <record> | --preflight <image> <dll-directory> <unixlib-directory> <nls-file> <registry-socket> <registry-database> | --launch <image> <windows-path> <command-line> x86_64 <prefix> <runtime> <dll-catalog> <unixlib> <nls-file> <registry-socket> <registry-database> <dxvk> <vkd3d> <faudio>");
 }

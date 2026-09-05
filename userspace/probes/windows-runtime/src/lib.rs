@@ -15,8 +15,10 @@ use syscall::UserPtr;
 
 mod preflight;
 mod dxvk;
+mod steam;
 pub use preflight::{BootArtifactReport, PreflightError};
 pub use dxvk::DxvkRuntimeAdmission;
+pub use steam::SteamLaunchRecord;
 
 const MAX_IMAGE_BYTES: u64 = 1 << 31;
 
