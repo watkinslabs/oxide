@@ -128,6 +128,15 @@ pub fn join_root_path(root: &str, relative: &str) -> Option<String> {
     normalize_path(&joined)
 }
 
+/// Resolve an NT object name against its `RootDirectory` path. Absolute names
+/// retain NT's root precedence; relative names require a directory root and
+/// are joined through the canonical VFS path normalizer. # C: O(path)
+pub fn resolve_object_path(root: Option<&str>, raw: &str) -> Option<String> {
+    let path = normalize_path(raw)?;
+    if path.starts_with('/') { return Some(path); }
+    join_root_path(root?, &path)
+}
+
 fn lexical_normalize(path: &str) -> Option<String> {
     let absolute = path.starts_with('/');
     let drive_floor = if absolute && path.get(..9).is_some_and(|prefix| prefix.eq_ignore_ascii_case("/windows/")) {
@@ -162,7 +171,7 @@ fn lexical_normalize(path: &str) -> Option<String> {
 mod tests {
     use alloc::string::String;
     use super::{join_root_path, normalize_absolute_path, normalize_path, render_windows_path,
-        windows_lookup_flags};
+        resolve_object_path, windows_lookup_flags};
 
     #[test]
     fn native_windows_lookup_uses_unicode_case_insensitive_vfs_policy() {
@@ -235,6 +244,15 @@ mod tests {
     fn rejects_escape_past_a_drive_root() {
         assert_eq!(normalize_path("/windows/c/.."), None);
         assert_eq!(normalize_path("/windows/c/Games/../../etc"), None);
+    }
+
+    #[test]
+    fn object_name_root_handles_relative_and_absolute_names() {
+        assert_eq!(resolve_object_path(Some("/windows/c/Windows"), "System32/notepad.exe"),
+            Some(String::from("/windows/c/Windows/System32/notepad.exe")));
+        assert_eq!(resolve_object_path(Some("/windows/c/Windows"), r"C:\\Temp\\note.txt"),
+            Some(String::from("/windows/c/Temp/note.txt")));
+        assert_eq!(resolve_object_path(None, "System32/notepad.exe"), None);
     }
 
     #[test]
