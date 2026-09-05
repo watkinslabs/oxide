@@ -1245,7 +1245,7 @@ pub fn dispatch(call: NtCall) -> u64 {
             NtObjectCall::MapViewOfSection { section, process, base, zero_bits, offset, size, protect }
             | NtObjectCall::MapViewOfSectionNative { section, process, base, zero_bits, offset, size, protect } => {
                 if !crate::nt_process_handles::permits_current_process(process, &cur, crate::nt_process_handles::PROCESS_VM_OPERATION)
-                    || offset % hal::PAGE_SIZE_BYTES != 0 { return STATUS_INVALID_PARAMETER; }
+                    || !elf_load::nt_memory::section_offset_admitted(offset) { return STATUS_INVALID_PARAMETER; }
                 if zero_bits > 21 && zero_bits < 32 { return STATUS_INVALID_PARAMETER; }
                 // SAFETY: the running NT task owns its current address-space
                 // slot for this syscall; the clone keeps the VMM state alive.

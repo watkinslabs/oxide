@@ -2,6 +2,9 @@ use hal::UserVirtAddr;
 use vmm::{AddressSpace, MmapPlacement, VmaBacking, VmaFlags, VmaProt};
 
 const PAGE: usize = hal::PAGE_SIZE_BYTES as usize;
+/// Windows section offsets and view bases use the system allocation
+/// granularity, not the page size used by the Linux VMM.
+pub const SECTION_ALLOCATION_GRANULARITY: u64 = 0x1_0000;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum NtStatus { Success, InvalidParameter, NoMemory, ConflictingAddresses, NotMapped }
@@ -103,6 +106,13 @@ pub fn windows_protection(raw: u32) -> Result<VmaProt, NtStatus> {
 pub fn section_view_protection(maximum: VmaProt, requested: VmaProt) -> Result<VmaProt, NtStatus> {
     if requested.difference(maximum).is_empty() { Ok(requested) }
     else { Err(NtStatus::InvalidParameter) }
+}
+
+/// Admit the alignment required by the NT section-view ABI. The Linux mmap
+/// owner still receives a page-aligned offset after this boundary check.
+/// # C: O(1)
+pub fn section_offset_admitted(offset: u64) -> bool {
+    offset & (SECTION_ALLOCATION_GRANULARITY - 1) == 0
 }
 
 /// Allocate private anonymous NT memory through the common VMM.
@@ -261,6 +271,14 @@ mod tests {
         assert_eq!(section_view_protection(maximum, VmaProt::READ), Ok(VmaProt::READ));
         assert_eq!(section_view_protection(maximum, maximum), Ok(maximum));
         assert_eq!(section_view_protection(maximum, VmaProt::READ | VmaProt::WRITE), Err(NtStatus::InvalidParameter));
+    }
+
+    #[test]
+    fn section_offsets_use_windows_allocation_granularity() {
+        assert!(section_offset_admitted(0));
+        assert!(section_offset_admitted(SECTION_ALLOCATION_GRANULARITY));
+        assert!(!section_offset_admitted(PAGE as u64));
+        assert!(!section_offset_admitted(SECTION_ALLOCATION_GRANULARITY - PAGE as u64));
     }
 
     #[test]
