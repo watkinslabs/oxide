@@ -100,7 +100,17 @@ impl Gdi {
 
     /// Present one dirty client rectangle at the window's canonical screen position. # C: O(region_pixels) plus kernel service
     pub fn present_window_region(&self, hwnd: u64, dc: u64, rect: Rect) -> Result<(), GdiError> {
+        let region = crate::DamageRegion::from_rect(rect).map_err(|_| GdiError::Host(io::Error::from_raw_os_error(libc::EINVAL)))?;
+        let rect = region.get().unwrap();
         invoke(NtService::PresentGdiWindowRegion, [hwnd, dc, rect.left as u64, rect.top as u64, rect.right as u64, rect.bottom as u64]).map(|_| ())
+    }
+
+    /// Present and consume one coalesced client damage region. # C: O(region_pixels) plus kernel service
+    pub fn present_window_damage(&self, hwnd: u64, dc: u64, damage: &mut crate::DamageRegion) -> Result<(), GdiError> {
+        let Some(rect) = damage.get() else { return Ok(()); };
+        self.present_window_region(hwnd, dc, rect)?;
+        let _ = damage.take();
+        Ok(())
     }
 
     /// Submit only the intersection of a raster tile and an `ETO_CLIPPED` rectangle. # C: O(width*height) plus kernel service
