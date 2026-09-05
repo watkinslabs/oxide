@@ -10,14 +10,56 @@ use crate::consts::{EVENT_MINOR_BASE, INPUT_MAJOR};
 
 const INPUT_OBJECT_PREFIX: &str = "input";
 
+fn dispatch_native_keys(
+    is_pointer: bool,
+    values: &[input::InputValue],
+    route: fn(u16, bool, bool) -> bool,
+) {
+    if is_pointer { return; }
+    for value in values {
+        if value.ev_type == crate::EV_KEY {
+            let _ = route(value.code, value.value != 0, value.value == 2);
+        }
+    }
+}
+
 fn dispatch_packet(id: u32, is_pointer: bool, values: &[input::InputValue]) {
     crate::evdev_queue::push_packet(id, values);
-    if !is_pointer {
-        for value in values {
-            if value.ev_type == crate::EV_KEY {
-                crate::drain::handle_key_event_value(value.code, value.value);
-            }
-        }
+    dispatch_native_keys(is_pointer, values, |key, pressed, repeat| {
+        input::dispatch_native_key_event(key, pressed, repeat)
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::dispatch_native_keys;
+    use core::sync::atomic::{AtomicU32, Ordering};
+
+    static CALLS: AtomicU32 = AtomicU32::new(0);
+
+    fn count_key(_key: u16, _pressed: bool, _repeat: bool) -> bool {
+        CALLS.fetch_add(1, Ordering::Relaxed);
+        true
+    }
+
+    #[test]
+    fn canonical_keyboard_packet_delivers_each_key_once() {
+        CALLS.store(0, Ordering::Relaxed);
+        let values = [
+            input::InputValue { ev_type: crate::EV_KEY, code: 30, value: 1 },
+            input::InputValue { ev_type: crate::EV_SYN, code: crate::SYN_REPORT, value: 0 },
+            input::InputValue { ev_type: crate::EV_KEY, code: 30, value: 2 },
+        ];
+        dispatch_native_keys(false, &values, count_key);
+        assert_eq!(CALLS.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn pointer_packet_never_enters_keyboard_route() {
+        CALLS.store(0, Ordering::Relaxed);
+        let values = [input::InputValue { ev_type: crate::EV_KEY, code: 0x110, value: 1 }];
+        dispatch_native_keys(true, &values, count_key);
+        assert_eq!(CALLS.load(Ordering::Relaxed), 0);
     }
 }
 

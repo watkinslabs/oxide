@@ -5,10 +5,10 @@
 //!
 //! Pipeline: i8042 controller bring-up + keyboard reset/identify, then a
 //! Scancode-Set-1 decoder that turns make/break codes (incl. 0xE0-prefixed
-//! extended keys) into `(linux_keycode, pressed)` and feeds each through
-//! the ONE shared input pipeline `drv_virtio_input::drain::handle_key_event`
-//! — the same modifier / Ctrl-Alt-F<n> VT-switch / Shift-PgUp scrollback /
-//! keymap→byte logic the virtio-input keyboard uses. No duplicate key logic.
+//! extended keys) into `(linux_keycode, pressed)` and publishes each event
+//! through the canonical Linux-shaped input device. Its evdev packet sink is
+//! the sole native/terminal consumer, so one hardware transition cannot be
+//! delivered twice.
 //!
 //! Input delivery is IRQ1-owned by the i8042 driver. `probe()` programs the
 //! I/O APIC redirection entry and enables the controller IRQ bit only after the
