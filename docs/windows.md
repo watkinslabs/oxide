@@ -900,6 +900,12 @@ Run a Direct3D 12 title.
 D3D12 -> vkd3d-proton -> Vulkan -> GPU
 ```
 
+Launch admission requires one immutable VKD3D-Proton record whose semantic
+version and 40-hex-digit source identity match the staged `version` record.
+Its canonical component directory must be a strict child of the configured
+Proton runtime; external or runtime-root components fail closed before PE or
+DLL catalog reads.
+
 ## W9 ... Steam Game
 
 Launch a Windows Steam game from the Linux-native Steam environment.
