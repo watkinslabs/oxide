@@ -139,7 +139,7 @@ where F: FnMut(&[u8]) -> Option<Vec<u8>> {
 /// # C: O(objects * exports)
 pub fn resolve_admitted_symbol(scope: &[UnixlibDependency], name: &[u8]) -> Option<u64> {
     scope.iter().find_map(|object| object.exports.iter()
-        .find(|export| export.name.as_slice() == name).map(|export| export.value))
+        .find(|export| export.name.as_slice() == name && export.value != 0).map(|export| export.value))
 }
 
 /// Map a validated native Unixlib into `as_` as one contiguous ET_DYN image.
@@ -310,6 +310,15 @@ mod tests {
         let released = scope;
         assert_eq!(released.len(), 1);
         drop(released);
+    }
+
+    #[test]
+    fn admitted_symbol_scope_rejects_a_null_callable_export() {
+        let scope = vec![UnixlibDependency {
+            name: b"winevulkan.so".to_vec(), soname: None, needed: Vec::new(),
+            exports: vec![UnixlibExport { name: b"__wine_unix_call_funcs".to_vec(), value: 0 }],
+        }];
+        assert_eq!(resolve_admitted_symbol(&scope, b"__wine_unix_call_funcs"), None);
     }
 
     #[test]
