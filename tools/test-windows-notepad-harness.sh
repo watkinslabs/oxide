@@ -49,6 +49,9 @@ commit_line="$(grep -nF '[WINDOWS-PE-COMMIT] success' "$exec_source" | cut -d: -
 test -n "$start_line" -a -n "$commit_line"
 test "$start_line" -lt "$commit_line"
 require_text "real PE fixture" "$wrapper_source" "head -c 2 /mnt/windows/x86_64-windows/notepad.exe"
+require_text "Unixlib sidecar directory" "$wrapper_source" "/mnt/windows/x86_64-unix"
+require_text "Unixlib sidecar inventory" "$wrapper_source" "for sidecar in ntdll.so win32u.so"
+require_text "Unixlib diagnostic" "$wrapper_source" "[WINDOWS-PE-UNIXLIB] sidecars=ntdll.so,win32u.so state=present"
 require_text "real PE handoff" "$wrapper_source" "exec /usr/local/bin/windows-runtime"
 
 # W1/W2: parse and load a real PE, resolve the complete graph, and reject
