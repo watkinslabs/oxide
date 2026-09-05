@@ -1439,8 +1439,9 @@ pub fn dispatch(call: NtCall) -> u64 {
             NtObjectCall::CreateIoCompletion { .. } | NtObjectCall::SetIoCompletion { .. } | NtObjectCall::RemoveIoCompletion { .. } | NtObjectCall::SignalAndWait { .. } => STATUS_INVALID_PARAMETER,
             NtObjectCall::OpenProcessToken { .. } | NtObjectCall::OpenThreadToken { .. } | NtObjectCall::QueryToken { .. } => STATUS_INVALID_PARAMETER,
             NtObjectCall::CreateThreadEx { handle, process, start, parameter, stack_size, flags } => {
+                const THREAD_CREATE_FLAGS_CREATE_SUSPENDED: u32 = 0x0000_0001;
                 if !crate::nt_process_handles::permits_current_process(process, &cur, crate::nt_process_handles::PROCESS_CREATE_THREAD)
-                    || flags != 0 || start == 0 { return STATUS_INVALID_PARAMETER; }
+                    || flags & !THREAD_CREATE_FLAGS_CREATE_SUSPENDED != 0 || start == 0 { return STATUS_INVALID_PARAMETER; }
                 let Some(entry) = hal::UserVirtAddr::new(start) else { return STATUS_INVALID_PARAMETER; };
                 #[cfg(feature = "debug-faultdiag")]
                 {
@@ -1463,9 +1464,11 @@ pub fn dispatch(call: NtCall) -> u64 {
                 };
                 let stack_top = stack.as_u64().checked_add(stack_size).unwrap_or(0) & !0xf;
                 let tid = sched::live::next_tid();
-                let teb = match elf_load::process_env::build_thread_teb(
+                let stack_limit = stack.as_u64();
+                let stack_base = stack_top;
+                let teb = match elf_load::process_env::build_thread_teb_with_stack(
                     cur.tgid.load(core::sync::atomic::Ordering::Acquire), tid,
-                    cur.nt_peb(), &mm) {
+                    cur.nt_peb(), stack_limit, stack_base, &mm) {
                     Ok(teb) => teb.as_u64(),
                     Err(_) => { let _ = mm.munmap(stack, stack_size as usize); return STATUS_NO_MEMORY; }
                 };
@@ -1474,19 +1477,30 @@ pub fn dispatch(call: NtCall) -> u64 {
                 let child = match unsafe { sched::live::new_nt_thread_unpublished(
                     tid, entry.as_u64(), stack_top, parameter, teb, mm.clone(), cur.thread_group.clone()) } {
                     Ok(child) => child,
-                    Err(_) => { let _ = mm.munmap(stack, stack_size as usize); return STATUS_NO_MEMORY; }
+                    Err(_) => {
+                        if let Some(teb) = hal::UserVirtAddr::new(teb) { let _ = elf_load::process_env::unmap_thread_teb(teb, &mm); }
+                        let _ = mm.munmap(stack, stack_size as usize);
+                        return STATUS_NO_MEMORY;
+                    }
                 };
                 let native = match table.insert(table.new_thread(child.clone()), THREAD_ALL_ACCESS | SYNCHRONIZE_ACCESS) {
                     Some(handle) => handle,
-                    None => { let _ = mm.munmap(stack, stack_size as usize); return STATUS_NO_MEMORY; }
+                    None => {
+                        if let Some(teb) = hal::UserVirtAddr::new(teb) { let _ = elf_load::process_env::unmap_thread_teb(teb, &mm); }
+                        let _ = mm.munmap(stack, stack_size as usize);
+                        return STATUS_NO_MEMORY;
+                    }
                 };
                 if uaccess::put_user_u32(handle.as_u64(), native.raw()).is_err() {
                     let _ = table.close(native);
+                    if let Some(teb) = hal::UserVirtAddr::new(teb) { let _ = elf_load::process_env::unmap_thread_teb(teb, &mm); }
                     let _ = mm.munmap(stack, stack_size as usize);
                     return STATUS_INVALID_PARAMETER;
                 }
                 sched::live::publish_new_task(&child);
-                sched::live::wake_new_task(&child);
+                if flags & THREAD_CREATE_FLAGS_CREATE_SUSPENDED != 0 {
+                    let _ = child.nt_suspend();
+                } else { sched::live::wake_new_task(&child); }
                 STATUS_SUCCESS
             }
             // Timer state and publication are owned by nt_timer; this arm

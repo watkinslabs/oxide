@@ -11,7 +11,7 @@ pub use publish::{publish_module, publish_modules};
 pub const X64_SHADOW_SPACE: u64 = 32;
 #[cfg(test)]
 const PAGE: usize = 4096;
-const THREAD_TEB_BYTES: usize = 0x4000;
+pub const THREAD_TEB_BYTES: usize = 0x4000;
 const TEB_SYSCALL_FRAME_OFFSET: usize = 0x378;
 const TEB_ACTIVATION_CONTEXT_STACK_OFFSET: usize = 0x2c8;
 const TEB_ACTIVATION_CONTEXT_STACK_INLINE: usize = 0x290;
@@ -146,6 +146,18 @@ pub fn build(input: &EnvironmentInput<'_>, as_: &AddressSpace) -> Result<NtProce
 /// thread-owned and carries the TEB self pointer, IDs, PEB pointer, and TLS.
 /// # C: O(1)
 pub fn build_thread_teb(process_id: u32, thread_id: u32, peb: u64, as_: &AddressSpace) -> Result<UserVirtAddr, Error> {
+    build_thread_teb_with_stack(process_id, thread_id, peb, 0, 0, as_)
+}
+
+/// Allocate one thread-owned TEB and publish its NT_TIB stack bounds.
+/// `stack_limit` is the low address and `stack_base` is the exclusive high
+/// address. Zero bounds are accepted only for environment fixtures that have
+/// no stack mapping; a live NT thread must supply both bounds.
+/// # C: O(1)
+pub fn build_thread_teb_with_stack(process_id: u32, thread_id: u32, peb: u64,
+    stack_limit: u64, stack_base: u64, as_: &AddressSpace) -> Result<UserVirtAddr, Error> {
+    if (stack_limit == 0) != (stack_base == 0)
+        || (stack_limit != 0 && stack_limit >= stack_base) { return Err(Error::Einval); }
     let reservation = as_.mmap(None, THREAD_TEB_BYTES, VmaProt::READ | VmaProt::WRITE,
         VmaFlags::PRIVATE, VmaBacking::Anonymous, false).map_err(|_| Error::Einval)?;
     let base = reservation.as_u64();
@@ -155,6 +167,9 @@ pub fn build_thread_teb(process_id: u32, thread_id: u32, peb: u64, as_: &Address
     put_u32(&mut teb, 0x40, process_id);
     put_u32(&mut teb, 0x48, thread_id);
     put_u64(&mut teb, 0x58, base + 0x180);
+    put_u64(&mut teb, TEB_STACK_BASE_OFF, stack_base);
+    put_u64(&mut teb, TEB_STACK_LIMIT_OFF, stack_limit);
+    put_u64(&mut teb, TEB_DEALLOCATION_STACK_OFF, stack_limit);
     put_u64(&mut teb, TEB_ACTIVATION_CONTEXT_STACK_OFFSET,
         base + TEB_ACTIVATION_CONTEXT_STACK_INLINE as u64);
     put_u32(&mut teb, TEB_CURRENT_LOCALE_OFF, 0x409);
@@ -171,6 +186,16 @@ pub fn build_thread_teb(process_id: u32, thread_id: u32, peb: u64, as_: &Address
         return Err(Error::Einval);
     }
     Ok(reservation)
+}
+
+/// Remove exactly one TEB mapping produced by this module.
+/// # C: O(1)
+pub fn unmap_thread_teb(teb: UserVirtAddr, as_: &AddressSpace) -> bool {
+    let Some(vma) = as_.find_vma(teb) else { return false; };
+    if vma.start != teb || vma.end.as_u64().checked_sub(teb.as_u64()) != Some(THREAD_TEB_BYTES as u64) {
+        return false;
+    }
+    as_.munmap(teb, THREAD_TEB_BYTES).is_ok()
 }
 
 /// Build the initial process environment and publish the supplied loader list.
@@ -659,6 +684,35 @@ mod tests {
         assert!(data[TEB_TLS_SLOTS_OFF..TEB_TLS_SLOTS_OFF + TEB_TLS_SLOTS * 8].iter().all(|byte| *byte == 0));
         assert_eq!(u64::from_le_bytes(data[TEB_TLS_EXPANSION_SLOTS_OFF..TEB_TLS_EXPANSION_SLOTS_OFF + 8].try_into().unwrap()), 0);
         assert_eq!(u64::from_le_bytes(data[TEB_SYSCALL_FRAME_OFFSET..TEB_SYSCALL_FRAME_OFFSET + 8].try_into().unwrap()), first.as_u64() + THREAD_SYSCALL_FRAME_OFF as u64);
+    }
+
+    #[test]
+    fn thread_teb_publishes_stack_bounds_and_exact_cleanup() {
+        let as_ = AddressSpace::new(0x80_000).unwrap();
+        let stack = as_.mmap(None, 0x8000, VmaProt::READ | VmaProt::WRITE,
+            VmaFlags::PRIVATE, VmaBacking::Anonymous, false).unwrap();
+        let low = stack.as_u64();
+        let high = low + 0x8000;
+        let teb = build_thread_teb_with_stack(7, 8, 0x12_000, low, high, &as_).unwrap();
+        let vma = as_.find_vma(teb).unwrap();
+        let data = match vma.backing { VmaBacking::KernelBytes { data, .. } => data, _ => panic!("TEB must be kernel-backed") };
+        let read64 = |offset: usize| u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
+        assert_eq!(read64(TEB_STACK_BASE_OFF), high);
+        assert_eq!(read64(TEB_STACK_LIMIT_OFF), low);
+        assert_eq!(read64(TEB_DEALLOCATION_STACK_OFF), low);
+        assert!(!unmap_thread_teb(stack, &as_));
+        assert!(as_.find_vma(teb).is_some());
+        assert!(unmap_thread_teb(teb, &as_));
+        assert!(as_.find_vma(teb).is_none());
+        assert!(as_.munmap(stack, 0x8000).is_ok());
+    }
+
+    #[test]
+    fn thread_teb_rejects_one_sided_or_reversed_stack_bounds() {
+        let as_ = AddressSpace::new(0x40_000).unwrap();
+        assert_eq!(build_thread_teb_with_stack(1, 2, 3, 0x1000, 0, &as_), Err(Error::Einval));
+        assert_eq!(build_thread_teb_with_stack(1, 2, 3, 0x2000, 0x1000, &as_), Err(Error::Einval));
+        assert_eq!(as_.vma_count(), 0);
     }
 
     #[test]
