@@ -3,7 +3,8 @@
 use std::process::ExitCode;
 use syscall::nt::NtWindowRect;
 use windows_gdi::{Gdi, Rect};
-use windows_user32::{ClassRegistry, GetMessageResult, MenuItemInfoW, User32, MF_POPUP, MIIM_ID, MIIM_STRING, MIIM_SUBMENU, WM_KEYDOWN, WM_QUIT};
+use windows_user32::{ClassRegistry, GetMessageResult, HostInput, InputRoute, InputTranslator, MenuItemInfoW, MouseButton, User32, MF_POPUP, MIIM_ID, MIIM_STRING, MIIM_SUBMENU, WM_KEYDOWN, WM_QUIT};
+use windows_user32::input::{WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEWHEEL};
 
 const SW_SHOW: u32 = 1;
 const WM_PAINT: u32 = 0x000f;
@@ -75,6 +76,17 @@ fn run() -> Result<(), String> {
     if !user32.translate_message(&message, false, false).map_err(|error| format!("translate key: {error:?}"))? { return Err("key was not translatable".into()); }
     message = match user32.get_message(child, WM_CHAR, WM_CHAR).map_err(|error| format!("get char: {error:?}"))? { GetMessageResult::Message(message) => message, GetMessageResult::Quit(_) => return Err("character wait returned WM_QUIT".into()) };
     if message.wparam != b'a' as u64 { return Err("character message mismatch".into()); }
+
+    let mut input = InputTranslator::new();
+    let input_route = InputRoute { hit: Some(child), focus: Some(child), capture: Some(child) };
+    for event in [HostInput::Move { x: 12, y: 14 }, HostInput::Button { button: MouseButton::Left, pressed: true }, HostInput::Wheel { delta: -120 }, HostInput::Button { button: MouseButton::Left, pressed: false }] {
+        let translated = input.translate(event, input_route).map_err(|error| format!("translate pointer: {error:?}"))?;
+        user32.post_message(translated.hwnd, translated.message, translated.wparam, translated.lparam).map_err(|error| format!("post pointer: {error:?}"))?;
+    }
+    for expected in [WM_LBUTTONDOWN, WM_MOUSEWHEEL, WM_LBUTTONUP] {
+        message = match user32.get_message(child, expected, expected).map_err(|error| format!("get pointer: {error:?}"))? { GetMessageResult::Message(message) => message, GetMessageResult::Quit(_) => return Err("pointer wait returned WM_QUIT".into()) };
+        if message.message != expected || message.hwnd != child { return Err("pointer message target mismatch".into()); }
+    }
     user32.post_quit_message(0).map_err(|error| format!("post quit: {error:?}"))?;
     let message = match user32.get_message(0, 0, u32::MAX).map_err(|error| format!("get quit: {error:?}"))? { GetMessageResult::Quit(message) => message, GetMessageResult::Message(message) => return Err(format!("expected quit message, got {}", message.message)) };
     if message.message != WM_QUIT { return Err(format!("unexpected quit message: {}", message.message)); }

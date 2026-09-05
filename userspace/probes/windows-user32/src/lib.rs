@@ -5,6 +5,9 @@ use std::collections::BTreeMap;
 use syscall::nt::{NtService, NtWindowMessage, NtWindowRect};
 use windows_gdi::{Gdi, GdiError, RasterError, RasterFont, RasterSurface, Rect as GdiRect};
 
+pub mod input;
+pub use input::{HostInput, InputError, InputRoute, InputTranslator, MouseButton};
+
 const STATUS_NO_MORE_ENTRIES: u64 = 0x8000_001a;
 const STATUS_FAILURE_MASK: u64 = 0x8000_0000;
 pub const WM_KEYDOWN: u32 = 0x0100;
