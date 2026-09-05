@@ -601,7 +601,6 @@ pub fn parse(raw: &[u8]) -> Result<Image<'_>, Error> {
         if raw_size != 0 { raw_offset.checked_add(raw_size).filter(|&e| e as usize <= raw.len()).ok_or(Error::Einval)?; }
         let span = virtual_size.max(raw_size); let end = virtual_address.checked_add(align_up(span, section_alignment)).ok_or(Error::Einval)?;
         if virtual_address < size_of_headers || end > size_of_image || virtual_address % section_alignment != 0 { return Err(Error::Einval); }
-        if characteristics.contains(SectionFlags::MEM_WRITE) && characteristics.contains(SectionFlags::MEM_EXECUTE) { return Err(Error::Einval); }
         for prior in &sections {
             let prior_end = prior.virtual_address.checked_add(align_up(prior.virtual_size.max(prior.raw_size), section_alignment)).ok_or(Error::Einval)?;
             if virtual_address < prior_end && prior.virtual_address < end { return Err(Error::Einval); }

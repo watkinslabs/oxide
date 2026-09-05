@@ -532,6 +532,17 @@
     }
 
     #[test]
+    fn maps_pe_writable_executable_section_with_windows_permissions() {
+        let mut blob = tiny_pe();
+        let section = 0x188;
+        blob[section + 36..section + 40].copy_from_slice(&(0xe000_0020u32).to_le_bytes());
+        let as_ = AddressSpace::new(0x1_0000).unwrap(); as_.set_mmap_layout(0x7000_0000, true);
+        let image = load_pe_image(&blob, &as_).unwrap();
+        let vma = as_.find_vma(image.entry).unwrap();
+        assert_eq!(vma.prot, VmaProt::READ | VmaProt::WRITE | VmaProt::EXEC);
+    }
+
+    #[test]
     fn hello_pe_contains_a_real_native_terminate_entry_contract() {
         let mut blob = tiny_pe();
         let selector = (syscall::nt::NT_SERVICE_NAMESPACE | syscall::nt::NtService::TerminateProcess as u64).to_le_bytes();
