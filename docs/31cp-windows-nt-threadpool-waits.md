@@ -24,6 +24,6 @@ delivery that was lost.
 
 Future timeout expiry, periodic re-arm, `TpSetWait`, `TpSetTimer`, release and
 flush ordering, pool/work/I/O-completion ownership, and cleanup groups remain
-explicitly unsupported. No caller may infer those variants from successful
-allocation or ready-edge dispatch. They require a scheduler-owned delayed
-callback registration and a complete callback-drain lifetime contract.
+explicitly unsupported. `RtlDeregisterWaitEx` validates a supplied completion
+event before removing the wait, then signals that canonical event; invalid
+completion handles preserve the registration for a later valid call.
