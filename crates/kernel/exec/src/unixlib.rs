@@ -16,7 +16,9 @@ use vmm::{AddressSpace, MmapPlacement, VmaBacking, VmaFlags, VmaProt};
 use crate::{ARCH_MACHINE, LoadError, PAGE};
 
 mod context;
+mod loader;
 pub use context::{build_load_context, UnixlibLoadContext, UnixlibSourceObject};
+pub use loader::{map_load_context, MappedUnixlibObject};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct MappedUnixlib {
