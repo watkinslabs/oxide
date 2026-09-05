@@ -654,6 +654,10 @@ name = "windows-audio"
 version = "0.1.0"
 
 [[package]]
+name = "windows-console"
+version = "0.1.0"
+
+[[package]]
 name = "windows-contracts"
 version = "0.1.0"
 dependencies = [
