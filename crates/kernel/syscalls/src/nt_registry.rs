@@ -41,7 +41,7 @@ struct RegistryWatch { key: u64, subscription: u64, owner_tid: u32, event: Arc<s
 static REGISTRY_WATCHES: sync::Spinlock<Vec<RegistryWatch>, sync::TaskList> = sync::Spinlock::new(Vec::new());
 
 #[derive(Debug)]
-enum Reply { Success, Handle(u64), Value { kind: u32, data: Vec<u8> }, Keys(Vec<String>), Values(Vec<(String, u32, Vec<u8>)>), KeyInfo { name: String, subkeys: u32, max_subkey: u32, values: u32, max_value_name: u32, max_value_data: u32 }, Bytes(Vec<u8>), Text(String), Subscription(u64), Notification, Failure(u8) }
+enum Reply { Success, Handle(u64), Value { kind: u32, data: Vec<u8> }, Keys(Vec<String>), Values(Vec<(String, u32, Vec<u8>)>), KeyInfo { name: String, subkeys: u32, max_subkey: u32, values: u32, max_value_name: u32, max_value_data: u32 }, Bytes(Vec<u8>), #[allow(dead_code)] Text(String), Subscription(u64), Notification, Failure(u8) }
 
 /// Create the native key handle for the userspace-owned current-user root.
 /// # C: O(1) plus one NT handle-table insertion
