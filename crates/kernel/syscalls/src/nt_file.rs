@@ -788,7 +788,12 @@ fn query_information_values(cur: &sched::Task, handle: u32, io_status: u64, info
         }
         FILE_INTERNAL_INFORMATION => { out.resize(8, 0); put_i64(&mut out, 0, stat.ino as i64); 8 }
         FILE_EA_INFORMATION => { out.resize(4, 0); 4 }
-        FILE_ACCESS_INFORMATION => { out.resize(4, 0); 4 }
+        FILE_ACCESS_INFORMATION => {
+            out.resize(4, 0);
+            let access = table.access(native).unwrap_or(0);
+            out[0..4].copy_from_slice(&access.to_ne_bytes());
+            4
+        }
         FILE_NAME_INFORMATION => {
             out.resize(4 + name_bytes, 0);
             out[0..4].copy_from_slice(&(name_bytes as u32).to_ne_bytes());
