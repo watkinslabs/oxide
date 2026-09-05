@@ -73,6 +73,18 @@ impl Inode {
 
     /// Canonical inode-owned Windows open/share state. # C: O(1)
     pub fn windows_share_context(&self) -> &super::windows_share::WindowsShareContext { &self.i_windows_share }
+    /// Read the inode-owned Windows file attributes. # C: O(1)
+    pub fn windows_attributes(&self) -> super::windows_attributes::WindowsFileAttributes {
+        super::windows_attributes::WindowsFileAttributes::from_raw(
+            self.i_windows_attributes.load(Ordering::Acquire),
+            self.file_type() == FileType::Directory,
+        ).unwrap_or_else(|| super::windows_attributes::WindowsFileAttributes::initial(
+            self.file_type() == FileType::Directory, self.perm().unwrap_or(0) & 0o222 == 0))
+    }
+    /// Replace the inode-owned Windows file attributes after NT validation. # C: O(1)
+    pub fn set_windows_attributes(&self, value: super::windows_attributes::WindowsFileAttributes) {
+        self.i_windows_attributes.store(value.raw(), Ordering::Release);
+    }
 
     /// `inode->i_ino`. # C: O(1)
     pub fn ino(&self) -> crate::types::Ino { self.i_ino }

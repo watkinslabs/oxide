@@ -154,6 +154,11 @@ impl InodeBuilder {
             i_rwsem: super::rwsem::InodeRwsem::new(),
             i_flctx: super::file_lock::FileLockContext::new(),
             i_windows_share: super::windows_share::WindowsShareContext::new(),
+            i_windows_attributes: AtomicU32::new(
+                super::windows_attributes::WindowsFileAttributes::initial(
+                    self.mode as u16 & crate::types::S_IFMT == crate::types::S_IFDIR,
+                    self.mode as u16 & 0o222 == 0,
+                ).raw()),
             i_security: AtomicU32::new(super::metadata::SECURITY_SID_UNSET),
             i_security_class: core::sync::atomic::AtomicU16::new(0),
             i_security_seq: AtomicU32::new(0),
