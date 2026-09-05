@@ -121,6 +121,8 @@ require_test "environment rollback" "$loader_tests" "failed_environment_setup_ro
 # W4/W5: require the user32 class-to-window path and its deterministic
 # malformed/unknown-class coverage; a symbol-only check is not sufficient.
 require_text "user32 class registration" "$wine_window_source" "if ordinal == WINE_REGISTER_CLASS_EX { return Some(raw_class::register_class(args)); }"
+require_text "user32 registered-message ordinal" "$wine_window_source" "const WINE_REGISTER_WINDOW_MESSAGE: u64 = 0x1507;"
+require_text "user32 registered-message admission" "$wine_window_source" "WINE_REGISTER_WINDOW_MESSAGE |"
 require_text "user32 creation dispatch" "$wine_window_source" "if ordinal == WINE_CREATE_WINDOW_EX { let result = raw_class::create_window(args);"
 require_text "user32 class implementation" "$raw_class_source" "pub(super) fn register_class(args: SyscallArgs)"
 require_text "user32 window implementation" "$raw_class_source" "pub(super) fn create_window(args: SyscallArgs)"

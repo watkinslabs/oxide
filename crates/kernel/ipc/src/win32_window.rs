@@ -113,6 +113,32 @@ pub struct WindowRecord { pub owner_tid: u64, pub parent: Option<WindowId>, pub 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WindowClass { pub name: Vec<u16>, pub wndproc: u64, pub atom: u16 }
 
+const USER_ATOM_BASE: u16 = 0xc000;
+const USER_ATOM_CAPACITY: usize = 0x4000;
+const USER_ATOM_MAX_LENGTH: usize = 255;
+
+/// System-wide string atoms used by RegisterWindowMessageW and the Win32
+/// window-station boundary. GUI process state remains separate from this table.
+pub struct UserAtomTable { names: Vec<Vec<u16>> }
+
+impl UserAtomTable {
+    /// Create an empty system-wide user atom table. # C: O(1)
+    pub const fn new() -> Self { Self { names: Vec::new() } }
+
+    /// Add one message name or return its existing atom. # C: O(N_atoms * N_name)
+    pub fn register(&mut self, name: &[u16]) -> Option<u16> {
+        if name.is_empty() || name.len() > USER_ATOM_MAX_LENGTH { return None; }
+        if let Some(index) = self.names.iter().position(|entry| same_name(entry, name)) {
+            return USER_ATOM_BASE.checked_add(index as u16 + 1);
+        }
+        if self.names.len() >= USER_ATOM_CAPACITY - 1 { return None; }
+        self.names.push(name.to_vec());
+        USER_ATOM_BASE.checked_add(self.names.len() as u16)
+    }
+}
+
+impl Default for UserAtomTable { fn default() -> Self { Self::new() } }
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct WindowRect { pub left: i32, pub top: i32, pub right: i32, pub bottom: i32 }
 
@@ -503,6 +529,25 @@ pub fn default_window_proc_for_rect(message: u32, rect: WindowRect, lparam: i64)
 mod tests {
     use super::*;
     use alloc::vec;
+
+    #[test]
+    fn user_message_atoms_are_case_insensitive_and_stable() {
+        let mut atoms = UserAtomTable::new();
+        assert_eq!(atoms.register(&[b'F' as u16, b'i' as u16, b'n' as u16]), Some(USER_ATOM_BASE + 1));
+        assert_eq!(atoms.register(&[b'f' as u16, b'I' as u16, b'N' as u16]), Some(USER_ATOM_BASE + 1));
+        assert_eq!(atoms.register(&[b'P' as u16, b'a' as u16, b'i' as u16, b'n' as u16]), Some(USER_ATOM_BASE + 2));
+    }
+
+    #[test]
+    fn user_message_atoms_reject_invalid_and_exhausted_names() {
+        let mut atoms = UserAtomTable::new();
+        assert_eq!(atoms.register(&[]), None);
+        assert_eq!(atoms.register(&[b'x' as u16; USER_ATOM_MAX_LENGTH + 1]), None);
+        for index in 0..USER_ATOM_CAPACITY - 1 {
+            assert_eq!(atoms.register(&[0x0100 + index as u16]), Some(USER_ATOM_BASE + index as u16 + 1));
+        }
+        assert_eq!(atoms.register(&[u16::MAX]), None);
+    }
 
     fn message(hwnd: Option<WindowId>, message: u32) -> WinMessage { WinMessage { hwnd, message, wparam: 1, lparam: 2 } }
 

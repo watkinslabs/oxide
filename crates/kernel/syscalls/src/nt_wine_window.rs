@@ -38,6 +38,7 @@ const WINE_MESSAGE_CALL: u64 = 0x14b5;
 const WINE_GET_CLASS_NAME: u64 = 0x13d9;
 const WINE_GET_CLASS_INFO_EX: u64 = 0x13d8;
 const WINE_UNREGISTER_CLASS: u64 = 0x15df;
+const WINE_REGISTER_WINDOW_MESSAGE: u64 = 0x1507;
 // Wine's NtUserCallWindowProc selector, passed as the NtUserMessageCall type.
 const WINE_CALL_WINDOW_PROC: u64 = 0x02ab;
 // Wine's builtin DefWindowProc selector, passed through the same syscall.
@@ -91,6 +92,7 @@ fn raw_ordinal_claimed(ordinal: u64) -> bool {
         WINE_POST_MESSAGE | WINE_SHOW_WINDOW | WINE_BEGIN_PAINT | WINE_END_PAINT |
         WINE_GET_DC | WINE_GET_DC_EX | WINE_INVALIDATE_RECT | WINE_RELEASE_DC |
         WINE_SET_WINDOW_POS |
+        WINE_REGISTER_WINDOW_MESSAGE |
         WINE_NTUSER_INITIALIZE_CLIENT_PFN_ARRAYS |
         WINE_NTUSER_GET_SYSTEM_DPI_FOR_PROCESS | WINE_GET_WINDOW_PLACEMENT | WINE_CALL_NO_PARAM |
         WINE_CHECK_MENU_ITEM | WINE_CREATE_MENU | WINE_CREATE_POPUP_MENU | WINE_DELETE_MENU |
@@ -388,6 +390,10 @@ fn get_class_info_ex(args: &[u64; 17]) -> u64 {
 pub fn dispatch_raw(ordinal: u64, args: SyscallArgs) -> Option<u64> {
     if !raw_ordinal_claimed(ordinal) { return None; }
     if ordinal == WINE_REGISTER_CLASS_EX { return Some(raw_class::register_class(args)); }
+    if ordinal == WINE_REGISTER_WINDOW_MESSAGE {
+        let Some(name) = read_unicode_string(args.a0) else { return Some(0); };
+        return Some(crate::nt_window::register_window_message_for_current(&name).map(u64::from).unwrap_or(0));
+    }
     if ordinal == WINE_CREATE_WINDOW_EX { let result = raw_class::create_window(args); if result != 0 && result != STATUS_INVALID_PARAMETER { crate::nt_milestone::window_create(); } return Some(result); }
     if ordinal == WINE_DISPATCH_MESSAGE { return Some(raw_callback::dispatch_message(args.a0)); }
     if ordinal == WINE_MESSAGE_CALL { return Some(raw_callback::message_call(args)); }
@@ -600,7 +606,7 @@ mod tests {
 
     #[test]
     fn wine_user32_ordinals_match_the_generated_table() {
-        assert_eq![(WINE_CREATE_WINDOW_EX, 0x136b), (WINE_DESTROY_WINDOW, 0x1384), (WINE_GET_MESSAGE, 0x141b), (WINE_PEEK_MESSAGE, 0x14ca), (WINE_POST_MESSAGE, 0x14d0), (WINE_SHOW_WINDOW, 0x15bd), (WINE_BEGIN_PAINT, 0x1327), (WINE_END_PAINT, 0x13bc), (WINE_GET_DC, 0x13eb), (WINE_GET_DC_EX, 0x13ec), (WINE_INVALIDATE_RECT, 0x148c), (WINE_RELEASE_DC, 0x1509), (WINE_SET_WINDOW_POS, 0x15a7), (WINE_GET_TEXT_METRICS, 0x1229), (WINE_GET_TEXT_EXTENT_EX, 0x1227), (WINE_REGISTER_CLASS_EX, 0x14eb), (WINE_DISPATCH_MESSAGE, 0x138b), (WINE_MESSAGE_CALL, 0x14b5), (WINE_GET_CLASS_NAME, 0x13d9), (WINE_GET_CLASS_INFO_EX, 0x13d8), (WINE_UNREGISTER_CLASS, 0x15df), (WINE_NTUSER_INITIALIZE_CLIENT_PFN_ARRAYS, 0x147a), (WINE_NTUSER_GET_SYSTEM_DPI_FOR_PROCESS, 0x144b), (WINE_GET_WINDOW_PLACEMENT, 0x1463), (WINE_CALL_NO_PARAM, 0x133c), (WINE_CALL_ONE_PARAM, 0x133d), (WINE_CREATE_MENU, 0x1366), (WINE_CREATE_POPUP_MENU, 0x1368), (WINE_DELETE_MENU, 0x1378), (WINE_REMOVE_MENU, 0x151d), (WINE_DRAW_MENU_BAR, 0x139b), (WINE_DRAW_MENU_BAR_TEMP, 0x139c), (WINE_SET_ACTIVE_WINDOW, 0x1532), (WINE_SET_FOCUS, 0x1557), (WINE_TRANSLATE_MESSAGE, 0x15d8), (WINE_THUNKED_MENU_ITEM_INFO, 0x15d0)] .iter().for_each(|(actual, expected)| assert_eq!(*actual, *expected));
+        assert_eq![(WINE_CREATE_WINDOW_EX, 0x136b), (WINE_DESTROY_WINDOW, 0x1384), (WINE_GET_MESSAGE, 0x141b), (WINE_PEEK_MESSAGE, 0x14ca), (WINE_POST_MESSAGE, 0x14d0), (WINE_SHOW_WINDOW, 0x15bd), (WINE_BEGIN_PAINT, 0x1327), (WINE_END_PAINT, 0x13bc), (WINE_GET_DC, 0x13eb), (WINE_GET_DC_EX, 0x13ec), (WINE_INVALIDATE_RECT, 0x148c), (WINE_RELEASE_DC, 0x1509), (WINE_SET_WINDOW_POS, 0x15a7), (WINE_GET_TEXT_METRICS, 0x1229), (WINE_GET_TEXT_EXTENT_EX, 0x1227), (WINE_REGISTER_CLASS_EX, 0x14eb), (WINE_DISPATCH_MESSAGE, 0x138b), (WINE_MESSAGE_CALL, 0x14b5), (WINE_GET_CLASS_NAME, 0x13d9), (WINE_GET_CLASS_INFO_EX, 0x13d8), (WINE_UNREGISTER_CLASS, 0x15df), (WINE_REGISTER_WINDOW_MESSAGE, 0x1507), (WINE_NTUSER_INITIALIZE_CLIENT_PFN_ARRAYS, 0x147a), (WINE_NTUSER_GET_SYSTEM_DPI_FOR_PROCESS, 0x144b), (WINE_GET_WINDOW_PLACEMENT, 0x1463), (WINE_CALL_NO_PARAM, 0x133c), (WINE_CALL_ONE_PARAM, 0x133d), (WINE_CREATE_MENU, 0x1366), (WINE_CREATE_POPUP_MENU, 0x1368), (WINE_DELETE_MENU, 0x1378), (WINE_REMOVE_MENU, 0x151d), (WINE_DRAW_MENU_BAR, 0x139b), (WINE_DRAW_MENU_BAR_TEMP, 0x139c), (WINE_SET_ACTIVE_WINDOW, 0x1532), (WINE_SET_FOCUS, 0x1557), (WINE_TRANSLATE_MESSAGE, 0x15d8), (WINE_THUNKED_MENU_ITEM_INFO, 0x15d0)] .iter().for_each(|(actual, expected)| assert_eq!(*actual, *expected));
         assert_eq!(WINE_DEF_WINDOW_PROC, 0x029e);
         assert_eq!(WINE_CALL_WINDOW_PROC, 0x02ab);
     }
@@ -609,6 +615,7 @@ mod tests {
     fn raw_ordinal_admission_has_positive_and_negative_controls() {
         assert!(raw_ordinal_claimed(WINE_GET_MESSAGE));
         assert!(raw_ordinal_claimed(WINE_BEGIN_PAINT));
+        assert!(raw_ordinal_claimed(WINE_REGISTER_WINDOW_MESSAGE));
         assert!(!raw_ordinal_claimed(0x131b));
         assert!(!raw_ordinal_claimed(u64::MAX));
     }
