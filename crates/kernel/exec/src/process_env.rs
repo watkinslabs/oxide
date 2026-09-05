@@ -40,10 +40,14 @@ const TEB_TLS_EXPANSION_SLOTS_OFF: usize = 0x1780;
 const PARAM_OFF: usize = 0x300;
 const PARAM_CURRENT_DIRECTORY_OFF: usize = 0x38;
 const PARAM_COMMAND_LINE_OFF: usize = 0x70;
+const PARAM_WINDOW_TITLE_OFF: usize = 0xb0;
 const PARAM_CURRENT_DIRECTORY_HANDLE_OFF: usize = 0x48;
 const PARAM_SIZE: u32 = (ENV_OFF - PARAM_OFF) as u32;
 const PARAM_FLAGS_NORMALIZED: u32 = 1;
+const PARAM_SHOW_WINDOW_OFF: usize = 0xa8;
 const PARAM_ENVIRONMENT_SIZE_OFF: usize = 0x3f0;
+const PARAM_PROCESS_GROUP_ID_OFF: usize = 0x408;
+const SHOW_WINDOW_NORMAL: u32 = 1;
 const LDR_OFF: usize = 0x1800;
 const MOD_OFF: usize = 0x1900;
 const MOD_STRIDE: usize = 0x70;
@@ -330,6 +334,11 @@ pub fn build_with_modules_and_params_and_stack(input: &EnvironmentInput<'_>, mod
     // kernelbase's TlsAlloc/TlsSetValue behavior.
     put_u64(&mut block, TEB_OFF + TEB_SYSCALL_FRAME_OFFSET, base + PROCESS_SYSCALL_FRAME_OFF as u64);
     put_u64(&mut block, PARAM_OFF + 0x10, params.console_handle);
+    // Wine's initial parameter builder publishes a normal-show startup
+    // disposition and uses the executable path as the default window title.
+    // Keep the title backed by the one canonical image-path string.
+    put_u32(&mut block, PARAM_OFF + PARAM_SHOW_WINDOW_OFF, SHOW_WINDOW_NORMAL);
+    put_u32(&mut block, PARAM_OFF + PARAM_PROCESS_GROUP_ID_OFF, input.process_id);
     put_u64(&mut block, PARAM_OFF + PARAM_CURRENT_DIRECTORY_HANDLE_OFF, params.current_directory_handle);
     for (offset, handle) in [0x20usize, 0x28, 0x30].into_iter().zip(standard_handles) {
         put_u64(&mut block, PARAM_OFF + offset, handle);
@@ -341,6 +350,7 @@ pub fn build_with_modules_and_params_and_stack(input: &EnvironmentInput<'_>, mod
         base + current_dir_off as u64, CURRENT_DIR_STORAGE)?;
     put_x64_unicode(&mut block, PARAM_OFF + PARAM_COMMAND_LINE_OFF, command_desc);
     put_x64_unicode(&mut block, PARAM_OFF + PARAM_CURRENT_DIRECTORY_OFF, current_dir_desc);
+    put_unicode(&mut block, PARAM_OFF + PARAM_WINDOW_TITLE_OFF, &image_path, base + image_path_off as u64);
     put_u64(&mut block, PARAM_OFF + 0x80, base + env_off as u64);
     put_u32(&mut block, LDR_OFF, 0x58);
     block[LDR_OFF + 4] = 1;
@@ -588,12 +598,36 @@ mod tests {
         assert_eq!(read16(PARAM_OFF + PARAM_CURRENT_DIRECTORY_OFF), ("C:\\Windows".encode_utf16().count() * 2) as u16);
         assert_eq!(read16(PARAM_OFF + PARAM_CURRENT_DIRECTORY_OFF + 2), CURRENT_DIR_STORAGE as u16);
         assert_eq!(read64(PARAM_OFF + 0x80), base as u64 + ENV_OFF as u64);
+        assert_eq!(u32::from_le_bytes(bytes[PARAM_OFF + PARAM_SHOW_WINDOW_OFF..PARAM_OFF + PARAM_SHOW_WINDOW_OFF + 4].try_into().unwrap()), SHOW_WINDOW_NORMAL);
+        assert_eq!(u32::from_le_bytes(bytes[PARAM_OFF + PARAM_PROCESS_GROUP_ID_OFF..PARAM_OFF + PARAM_PROCESS_GROUP_ID_OFF + 4].try_into().unwrap()), 11);
+        assert_eq!(read16(PARAM_OFF + PARAM_WINDOW_TITLE_OFF), ("C:\\Windows\\notepad.exe".encode_utf16().count() * 2) as u16);
+        assert_eq!(read16(PARAM_OFF + PARAM_WINDOW_TITLE_OFF + 2), ("C:\\Windows\\notepad.exe".encode_utf16().count() * 2 + 2) as u16);
+        assert_eq!(read64(PARAM_OFF + PARAM_WINDOW_TITLE_OFF + 8), base as u64 + STR_OFF as u64);
         assert_eq!(read64(PEB_OFF + 0x68), base as u64 + API_SET_OFF as u64);
         assert_eq!(read64(PEB_OFF + PEB_PROCESS_HEAP_OFF), PROCESS_HEAP_HANDLE);
         assert_eq!(u32::from_le_bytes(bytes[PEB_OFF + PEB_NUMBER_OF_PROCESSORS_OFF..PEB_OFF + PEB_NUMBER_OF_PROCESSORS_OFF + 4].try_into().unwrap()), INITIAL_PROCESSOR_COUNT);
         assert_eq!(u32::from_le_bytes(bytes[API_SET_OFF..API_SET_OFF + 4].try_into().unwrap()), 6);
         assert_eq!(u32::from_le_bytes(bytes[API_SET_OFF + 12..API_SET_OFF + 16].try_into().unwrap()), pe::apiset::entries().len() as u32);
         assert_eq!(off, 0);
+    }
+
+    #[test]
+    fn initial_process_parameters_publish_wine_startup_identity() {
+        let as_ = AddressSpace::new(0x20_000).unwrap();
+        let e = build(&EnvironmentInput {
+            image_base: 0x1400_0000, image_size: 0x5000, image_path: "C:\\Windows\\notepad.exe",
+            command_line: "notepad.exe", environment: &[], process_id: 73, thread_id: 74,
+        }, &as_).unwrap();
+        let vma = as_.find_vma(e.base).unwrap();
+        let data = match vma.backing { VmaBacking::KernelBytes { data, .. } => data, _ => panic!("environment must be kernel-backed") };
+        let read32 = |offset: usize| u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
+        let read16 = |offset: usize| u16::from_le_bytes(data[offset..offset + 2].try_into().unwrap());
+        let read64 = |offset: usize| u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
+        assert_eq!(read32(PARAM_OFF + PARAM_SHOW_WINDOW_OFF), SHOW_WINDOW_NORMAL);
+        assert_eq!(read32(PARAM_OFF + PARAM_PROCESS_GROUP_ID_OFF), 73);
+        assert_eq!(read16(PARAM_OFF + PARAM_WINDOW_TITLE_OFF), 44);
+        assert_eq!(read16(PARAM_OFF + PARAM_WINDOW_TITLE_OFF + 2), 46);
+        assert_eq!(read64(PARAM_OFF + PARAM_WINDOW_TITLE_OFF + 8), e.base.as_u64() + STR_OFF as u64);
     }
 
     #[test]
