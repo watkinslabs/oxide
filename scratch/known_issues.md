@@ -1,6 +1,6 @@
 # Known issues
 
-**Live issue count: 296** — 294 `OPEN`, 2 `IN-PROGRESS`.
+**Live issue count: 295** — 294 `OPEN`, 1 `IN-PROGRESS`.
 
 | Id | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|---|
@@ -306,7 +306,6 @@
 | KI-0347 | FIXED B3475 | MISSING | med | NtQueryVolumeInformationFile rejects FileFsFullSizeInformationEx (class 14), which Wine exposes for modern volume-capacity callers. | Current `nt_file_volume_abi::encode` handles class 14 with the 96-byte extended payload, deriving total, actual-free, caller-available, used, and caller-total allocation units from the canonical `SbStatFs` counters; `nt_file::query` routes the live native call to that encoder. Hosted regression `nt_file_volume_abi::tests::full_size_ex_preserves_actual_and_caller_accounting` passes, and its positive control fails with `STATUS_INVALID_INFO_CLASS` when the class-14 match is removed. | P701-volume-full-size-information-ex |
 | KI-0353 | FIXED 13bf5b2e9 | MISSING | med | [CLAIMED F1572-nt-alertable-wait-order 2026-09-04] NtWaitForSingleObject alertable waits checked queued APC state before rechecking the canonical object predicate after wake, so simultaneous object signal and APC incorrectly returned STATUS_USER_APC instead of object success. | `live::wait_event_interruptible_until_user_apc` now rechecks the canonical condition after wake before consuming APC state. Hosted scheduler suite: 1,910 passed; focused alertable-wait tests: 12 passed; RED/GREEN positive control passed; x86_64 and AArch64 kernel checks passed. | NT runtime |
 | KI-0355 | FIXED 95ea93eae | MISSING | med | [CLAIMED P602-windows-user32-timer-adapter 2026-09-05] windows-user32 exposed no SetTimer/KillTimer adapter over the existing native window timer owner, leaving a native Notepad message loop unable to arm or cancel WM_TIMER through user32 | `windows-user32::User32::{set_timer,kill_timer}` now delegates to the canonical `NtWindow` timer owner; focused user32 timer tests pass, including replacement and cancellation semantics. | NT runtime |
-| KI-0356 | IN-PROGRESS P802-hkcr-merged-view | MISSING | med | [CLAIMED P802-hkcr-merged-view 2026-09-05] HKCR is modeled as an independent tree instead of the Windows merged Classes view | Current userspace registry owner creates HKCR separately; Wine documents HKEY_CLASSES_ROOT as the merged view of HKLM\\Software\\Classes and HKCU\\Software\\Classes, so HKCU class registrations are invisible through HKCR. Add one canonical overlay owner with precedence and mutation routing, then cover open/query/enumeration. | windows-registry |
 
 ## Ext4 master program
 
