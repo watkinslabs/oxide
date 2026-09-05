@@ -740,9 +740,9 @@ mod tests {
 
     fn descriptor(root: u64, table_address: u64, entry_count: u64, module_base: u64, module_end: u64) {
         let as_ = vmm::AddressSpace::new(root).unwrap();
-        elf_load::elf_modules::register_unixlib_descriptor(&as_, elf_load::elf_modules::ElfUnixlibDescriptor {
+        elf_load::elf_modules::register_unixlib_table(&as_, elf_load::elf_modules::ElfUnixlibDescriptor {
             table_address, entry_count, module_base, module_end,
-        });
+        }).unwrap();
     }
 
     #[test]
@@ -757,33 +757,43 @@ mod tests {
     fn unixlib_lookup_rejects_missing_and_out_of_range_descriptors() {
         let root = 0x7_3100;
         assert_eq!(lookup_unixlib_entry(root, 0x4200, 0), Err(STATUS_INVALID_PARAMETER));
-        descriptor(root, 0x3ff8, 2, 0x4000, 0x5000);
-        assert_eq!(lookup_unixlib_entry(root, 0x3ff8, 0), Err(STATUS_ACCESS_VIOLATION));
+        let as_ = vmm::AddressSpace::new(root).unwrap();
+        assert_eq!(elf_load::elf_modules::register_unixlib_table(&as_, elf_load::elf_modules::ElfUnixlibDescriptor {
+            table_address: 0x3ff8, entry_count: 2, module_base: 0x4000, module_end: 0x5000,
+        }), Err(elf_load::elf_modules::UnixlibRegistrationError::InvalidRange));
         elf_load::elf_modules::clear(root);
     }
 
     #[test]
     fn unixlib_lookup_rejects_descriptor_arithmetic_overflow() {
         let root = 0x7_3200;
-        descriptor(root, 0x4000, u64::MAX, 0x4000, u64::MAX);
-        assert_eq!(lookup_unixlib_entry(root, 0x4000, 0), Err(STATUS_INVALID_PARAMETER));
+        let as_ = vmm::AddressSpace::new(root).unwrap();
+        assert_eq!(elf_load::elf_modules::register_unixlib_table(&as_, elf_load::elf_modules::ElfUnixlibDescriptor {
+            table_address: 0x4000, entry_count: u64::MAX, module_base: 0x4000, module_end: u64::MAX,
+        }), Err(elf_load::elf_modules::UnixlibRegistrationError::ArithmeticOverflow));
         elf_load::elf_modules::clear(root);
     }
 
     #[test]
     fn unixlib_lookup_rejects_table_address_overflow_as_access_violation() {
         let root = 0x7_3300;
-        descriptor(root, u64::MAX - 7, 2, u64::MAX - 7, u64::MAX);
-        assert_eq!(lookup_unixlib_entry(root, u64::MAX - 7, 0), Err(STATUS_ACCESS_VIOLATION));
+        let as_ = vmm::AddressSpace::new(root).unwrap();
+        assert_eq!(elf_load::elf_modules::register_unixlib_table(&as_, elf_load::elf_modules::ElfUnixlibDescriptor {
+            table_address: u64::MAX - 7, entry_count: 2, module_base: u64::MAX - 7, module_end: u64::MAX,
+        }), Err(elf_load::elf_modules::UnixlibRegistrationError::ArithmeticOverflow));
         elf_load::elf_modules::clear(root);
     }
 
     #[test]
     fn unixlib_lookup_rejects_zero_count_and_past_end_entry() {
         let root = 0x7_3400;
-        descriptor(root, 0x4200, 0, 0x4000, 0x5000);
-        assert_eq!(lookup_unixlib_entry(root, 0x4200, 0), Err(STATUS_INVALID_PARAMETER));
-        descriptor(root, 0x4ff0, 2, 0x4000, 0x5000);
+        let as_ = vmm::AddressSpace::new(root).unwrap();
+        assert_eq!(elf_load::elf_modules::register_unixlib_table(&as_, elf_load::elf_modules::ElfUnixlibDescriptor {
+            table_address: 0x4200, entry_count: 0, module_base: 0x4000, module_end: 0x5000,
+        }), Err(elf_load::elf_modules::UnixlibRegistrationError::InvalidRange));
+        assert_eq!(elf_load::elf_modules::register_unixlib_table(&as_, elf_load::elf_modules::ElfUnixlibDescriptor {
+            table_address: 0x4ff0, entry_count: 2, module_base: 0x4000, module_end: 0x5000,
+        }), Ok(()));
         assert_eq!(lookup_unixlib_entry(root, 0x4ff0, 2), Err(STATUS_ACCESS_VIOLATION));
         elf_load::elf_modules::clear(root);
     }
@@ -791,7 +801,9 @@ mod tests {
     #[test]
     fn wine_dispatch_validates_the_canonical_table_before_matching_a_slot() {
         let root = 0x7_3500;
-        descriptor(root, 0x4200, 8, 0x4000, 0x5000);
+        let as_ = vmm::AddressSpace::new(root).unwrap();
+        let image = elf_load::unixlib::MappedUnixlib { base: 0x4000, end: 0x5000 };
+        elf_load::unixlib::register_callable_table(&as_, image, 0x200, 8).unwrap();
         let call = NtCall { service: NtService::WineUnixCall,
             args: syscall::SyscallArgs { a0: syscall::nt::WINE_UNIXLIB_HANDLE,
                 a1: WineUnixFunction::WineSpawnVp as u64, a2: 0, a3: 0, a4: 0, a5: 0 } };
