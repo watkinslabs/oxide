@@ -106,7 +106,6 @@ impl RegistryStore {
         let lock = OpenOptions::new().read(true).write(true).create(true).open(lock_path)?;
         let fd = lock.as_raw_fd();
         // SAFETY: the descriptor belongs to the live sidecar File and remains open for the session.
-        // SAFETY: the descriptor belongs to the live sidecar File and remains open for the session.
         if unsafe { libc::flock(fd, libc::LOCK_EX) } != 0 { return Err(io::Error::last_os_error().into()); }
         let registry = if path.exists() { Registry::load(path)? } else { Registry::new() };
         Ok(Self { registry, path: path.to_path_buf(), _lock: lock, dirty: false, subscriptions: BTreeMap::new(), next_subscription: 1 })
@@ -726,6 +725,18 @@ mod tests {
         assert_eq!(restored.registry().query_value(&first_key, "committed").unwrap().data, vec![1, 0, 0, 0]);
         assert_eq!(restored.registry().query_value(&second_key, "committed").unwrap().data, vec![2, 0, 0, 0]);
         drop(restored); let _ = fs::remove_file(path); let _ = fs::remove_file(lock_path);
+    }
+
+    #[test]
+    fn failed_registry_load_releases_the_session_lock() {
+        let path = std::env::temp_dir().join(format!("oxide-registry-load-failure-{}", std::process::id()));
+        let lock_path = path.with_extension("oxide-registry.lock");
+        let _ = fs::remove_file(&path); let _ = fs::remove_file(&lock_path);
+        fs::write(&path, b"not-a-registry").unwrap();
+        assert!(matches!(RegistryStore::open(&path), Err(Error::InvalidFile)));
+        fs::remove_file(&path).unwrap();
+        let store = RegistryStore::open(&path).unwrap();
+        drop(store); let _ = fs::remove_file(path); let _ = fs::remove_file(lock_path);
     }
 
     #[test]
