@@ -94,7 +94,6 @@ fn notify_change_key(call: NtCall) -> u64 {
     let Some(event) = event_object.event() else { return STATUS_INVALID_PARAMETER; };
     let Some(Reply::Subscription(subscription)) = transact(&frame_subscribe(key_object.id(), call.args.a5, subtree != 0)) else { return STATUS_UNSUCCESSFUL; };
     let mut watches = REGISTRY_WATCHES.lock();
-    watches.retain(|watch| !(watch.key == key_object.id() && watch.io_status == call.args.a4));
     watches.push(RegistryWatch { key: key_object.id(), subscription, owner_tid: current.tid, event, io_status: call.args.a4 });
     STATUS_PENDING
 }
@@ -112,6 +111,7 @@ pub fn close_watches(key: u64) { let _ = finish_watches(key, None, None, STATUS_
 fn finish_watches(key: u64, owner_tid: Option<u32>, target_io_status: Option<u64>, status: u64) -> bool {
     let mut watches = REGISTRY_WATCHES.lock();
     let mut finished = false;
+    let mut subscriptions = Vec::new();
     let mut index = 0;
     while index < watches.len() {
         let watch = &watches[index];
@@ -121,6 +121,7 @@ fn finish_watches(key: u64, owner_tid: Option<u32>, target_io_status: Option<u64
             continue;
         }
         let watch = watches.remove(index);
+        subscriptions.push(watch.subscription);
         let _ = uaccess::put_user_u64(watch.io_status, status);
         if let Some(status_information) = watch.io_status.checked_add(8) {
             let _ = uaccess::put_user_u64(status_information, 0);
@@ -128,24 +129,32 @@ fn finish_watches(key: u64, owner_tid: Option<u32>, target_io_status: Option<u64
         watch.event.set();
         finished = true;
     }
+    drop(watches);
+    for subscription in subscriptions { unsubscribe(subscription); }
     finished
 }
 
 fn notify_registry_key(key: u64, _change: u64) {
-    let mut watches = REGISTRY_WATCHES.lock();
     let mut index = 0;
-    while index < watches.len() {
-        let watch = &watches[index];
-        if watch.key != key { index += 1; continue; }
-        let subscription = watch.subscription;
+    loop {
+        let subscription = {
+            let watches = REGISTRY_WATCHES.lock();
+            watches.iter().skip(index).find(|watch| watch.key == key).map(|watch| watch.subscription)
+        };
+        let Some(subscription) = subscription else { break };
         let notified = matches!(transact(&frame_poll_subscription(subscription)), Some(Reply::Notification));
         if !notified { index += 1; continue; }
-        let watch = watches.remove(index);
+        let watch = {
+            let mut watches = REGISTRY_WATCHES.lock();
+            let Some(position) = watches.iter().position(|watch| watch.subscription == subscription) else { continue };
+            watches.remove(position)
+        };
         let _ = uaccess::put_user_u64(watch.io_status, STATUS_SUCCESS);
         if let Some(status_information) = watch.io_status.checked_add(8) {
             let _ = uaccess::put_user_u64(status_information, 0);
         }
         watch.event.set();
+        unsubscribe(subscription);
     }
 }
 
@@ -154,6 +163,11 @@ fn frame_subscribe(key: u64, filter: u64, subtree: bool) -> Vec<u8> {
 }
 
 fn frame_poll_subscription(subscription: u64) -> Vec<u8> { frame_key(registry_wire::POLL_SUBSCRIPTION, subscription) }
+
+fn unsubscribe(subscription: u64) {
+    let frame = frame_key(registry_wire::UNSUBSCRIBE, subscription);
+    let _ = transact(&frame);
+}
 
 /// Release the userspace registry handle paired with a native NT key.
 /// # C: one bounded registry request

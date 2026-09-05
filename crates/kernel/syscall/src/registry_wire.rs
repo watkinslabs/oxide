@@ -21,6 +21,7 @@ pub const IMPORT: u8 = 16;
 pub const QUERY_PATH: u8 = 17;
 pub const SUBSCRIBE: u8 = 18;
 pub const POLL_SUBSCRIPTION: u8 = 19;
+pub const UNSUBSCRIBE: u8 = 20;
 
 pub const RESPONSE_SUCCESS: u8 = 0;
 pub const RESPONSE_HANDLE: u8 = 1;
