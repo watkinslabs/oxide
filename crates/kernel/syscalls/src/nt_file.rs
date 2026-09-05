@@ -82,8 +82,8 @@ pub fn dispatch(call: NtFileCall) -> u64 {
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
     match call {
-        NtFileCall::QueryAttributes { attributes, information } => query_attributes(attributes.as_u64(), information.as_u64()),
-        NtFileCall::QueryFullAttributes { attributes, information } => query_full_attributes(attributes.as_u64(), information.as_u64()),
+        NtFileCall::QueryAttributes { attributes, information } => query_attributes(cur, attributes.as_u64(), information.as_u64()),
+        NtFileCall::QueryFullAttributes { attributes, information } => query_full_attributes(cur, attributes.as_u64(), information.as_u64()),
         NtFileCall::Create { request } => open_create(cur, request.as_u64()),
         NtFileCall::Open { request } => open_existing(cur, request.as_u64(), false),
         NtFileCall::Read { request } => io(cur, request.as_u64(), false),
@@ -429,9 +429,10 @@ fn native_query_directory(call: NtCall) -> u64 {
     query_directory_values(cur, call.args.a0 as u32, call.args.a4, call.args.a5, length as u32, class as u32)
 }
 
-fn query_attributes(attributes: u64, information: u64) -> u64 {
+fn query_attributes(cur: &sched::Task, attributes: u64, information: u64) -> u64 {
     if attributes == 0 || information == 0 { return STATUS_ACCESS_VIOLATION; }
-    let Some(path) = object_path(attributes) else { return STATUS_INVALID_PARAMETER; };
+    let table = cur.thread_group.nt_handles();
+    let Some(path) = object_path_with_root(attributes, &table) else { return STATUS_INVALID_PARAMETER; };
     let lookup = crate::pathresolve::resolve_at_path(crate::pathresolve::AT_FDCWD, &path,
         crate::nt_path::windows_lookup_flags());
     let Ok(vp) = lookup else { return STATUS_OBJECT_NAME_NOT_FOUND; };
@@ -448,9 +449,10 @@ fn query_attributes(attributes: u64, information: u64) -> u64 {
     if uaccess::copy_to_user(information, &out).is_err() { STATUS_ACCESS_VIOLATION } else { STATUS_SUCCESS }
 }
 
-fn query_full_attributes(attributes: u64, information: u64) -> u64 {
+fn query_full_attributes(cur: &sched::Task, attributes: u64, information: u64) -> u64 {
     if attributes == 0 || information == 0 { return STATUS_ACCESS_VIOLATION; }
-    let Some(path) = object_path(attributes) else { return STATUS_INVALID_PARAMETER; };
+    let table = cur.thread_group.nt_handles();
+    let Some(path) = object_path_with_root(attributes, &table) else { return STATUS_INVALID_PARAMETER; };
     let lookup = crate::pathresolve::resolve_at_path(crate::pathresolve::AT_FDCWD, &path,
         crate::nt_path::windows_lookup_flags());
     let Ok(vp) = lookup else { return STATUS_OBJECT_NAME_NOT_FOUND; };
@@ -1112,11 +1114,12 @@ fn object_path_with_root(attrs: u64, table: &sched::nt_object::NtHandleTable) ->
     let path = crate::nt_path::normalize_path(&raw)?;
     if path.starts_with('/') { return Some(path); }
     if root == 0 { return None; }
+    if root > u32::MAX as u64 { return None; }
     let object = table.get(sched::nt_object::NtHandle::from_raw(root as u32), 0)?;
     let file = object.file()?;
     if file.inode().file_type() != vfs::FileType::Directory { return None; }
     let base = String::from_utf8(file.dentry().absolute_path()).ok()?;
-    crate::nt_path::join_root_path(&base, &path)
+    crate::nt_path::resolve_object_path(Some(&base), &path)
 }
 
 fn object_name(attrs: u64) -> Option<(u64, String)> {
