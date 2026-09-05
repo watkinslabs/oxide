@@ -88,6 +88,10 @@ pub fn run() {
 
     let path = WindowsPath::parse(r"C:\Windows\System32\notepad.exe").unwrap();
     assert_eq!(path.lookup_key(), "c:/windows/system32/notepad.exe");
+    let stored = WindowsPath::parse("C:\\Données\\Straße\\Café.txt").unwrap();
+    let query = WindowsPath::parse("c:\\DONNE\u{301}ES\\STRASSE\\CAFE\u{301}.TXT").unwrap();
+    assert_eq!(stored.lookup_key(), query.lookup_key());
+    assert_ne!(stored.host_path(), query.host_path());
     let mut registry = Registry::new();
     let key = registry.create_handle(Root::CurrentUser, r"Software\Oxide\Notepad").unwrap();
     registry.set_value_handle(key, "WindowTitle", Value { kind: ValueType::String, data: "Untitled - Notepad\0".encode_utf16().flat_map(u16::to_le_bytes).collect() }).unwrap();

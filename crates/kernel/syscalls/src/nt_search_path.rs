@@ -28,7 +28,8 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     }
     let found = candidates.into_iter().find(|candidate| {
         let Some(path) = crate::nt_path::normalize_path(candidate) else { return false; };
-        crate::pathresolve::resolve_at_path(crate::pathresolve::AT_FDCWD, &path, vfs::LookupFlags::default()).is_ok()
+        crate::pathresolve::resolve_at_path(crate::pathresolve::AT_FDCWD, &path,
+            crate::nt_path::windows_lookup_flags()).is_ok()
     });
     let Some(found) = found else { return Some(0); };
     let units: Vec<u16> = found.encode_utf16().collect();
