@@ -2,6 +2,7 @@
 
 use hal::UserVirtAddr;
 use pe::Error;
+use core::ops::Deref;
 use vmm::{AddressSpace, VmaBacking, VmaProt};
 
 /// Immutable facts carried by the first NT user context.
@@ -19,7 +20,7 @@ pub struct PeStartupFacts {
 /// A validated, single-use boundary between image construction and task
 /// publication. No caller can obtain startup facts until all address-space
 /// and x64 entry-state checks have succeeded.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct PeStartupTransaction { facts: PeStartupFacts }
 
 impl PeStartupTransaction {
@@ -57,9 +58,16 @@ impl PeStartupTransaction {
         } })
     }
 
-    /// Consume the transaction and expose the immutable startup facts to the
-    /// NT exec commit. # C: O(1)
-    pub fn finish(self) -> PeStartupFacts { self.facts }
+    /// Read the immutable startup facts at the NT task commit boundary. # C: O(1)
+    pub fn facts(&self) -> &PeStartupFacts { &self.facts }
+
+    /// Consume the validated boundary exactly at task publication. # C: O(1)
+    pub fn finish(&self) -> PeStartupFacts { self.facts }
+}
+
+impl Deref for PeStartupTransaction {
+    type Target = PeStartupFacts;
+    fn deref(&self) -> &Self::Target { &self.facts }
 }
 
 fn executable(as_: &AddressSpace, address: UserVirtAddr) -> bool {
@@ -83,5 +91,20 @@ mod tests {
         };
         assert_ne!(facts.image_entry, facts.transfer_entry);
         assert_eq!(facts.personality, super::super::pe_loader::ExecutionPersonality::Nt);
+    }
+
+    #[test]
+    fn transaction_exposes_only_the_validated_nt_personality() {
+        let transaction = PeStartupTransaction { facts: PeStartupFacts {
+            image_entry: UserVirtAddr::new(0x1400_1010).unwrap(),
+            transfer_entry: UserVirtAddr::new(0x1400_1010).unwrap(),
+            stack_pointer: UserVirtAddr::new(0x6000_0fd8).unwrap(),
+            gs_base: UserVirtAddr::new(0x5000_0100).unwrap(),
+            peb: UserVirtAddr::new(0x5000_0000).unwrap(),
+            teb: UserVirtAddr::new(0x5000_0100).unwrap(),
+            personality: super::super::pe_loader::ExecutionPersonality::Nt,
+        }};
+        assert_eq!(transaction.facts().personality, super::super::pe_loader::ExecutionPersonality::Nt);
+        assert_eq!(transaction.finish().transfer_entry, UserVirtAddr::new(0x1400_1010).unwrap());
     }
 }
