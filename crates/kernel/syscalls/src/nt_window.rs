@@ -151,16 +151,14 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
                     (Some(result), Some(wait), None)
                 }
                 NtWindowCall::Peek { message, hwnd, first, last, remove } => {
-                    if hwnd > u32::MAX as u64 { return Some(STATUS_INVALID_HANDLE); }
-                    let filter = ipc::win32_window::MessageFilter { hwnd: ipc::win32_window::WindowId::from_raw(hwnd as u32), first, last };
+                    let Some(filter) = message_filter(state, hwnd, first, last) else { return Some(STATUS_INVALID_HANDLE); };
                     let Some(found) = state.peek_for_thread(cur.tid as u64, filter, false) else { return Some(STATUS_NO_MORE_ENTRIES); };
                     if copy_message(message, found).is_err() { return Some(STATUS_INVALID_PARAMETER); }
                     if remove != 0 { let _ = state.peek_for_thread(cur.tid as u64, filter, true); }
                     (Some(STATUS_SUCCESS), None, None)
                 }
                 NtWindowCall::Get { message, hwnd, first, last } => {
-                    if hwnd > u32::MAX as u64 { return Some(STATUS_INVALID_HANDLE); }
-                    let filter = ipc::win32_window::MessageFilter { hwnd: ipc::win32_window::WindowId::from_raw(hwnd as u32), first, last };
+                    let Some(filter) = message_filter(state, hwnd, first, last) else { return Some(STATUS_INVALID_HANDLE); };
                     match state.take_for_thread(cur.tid as u64, filter) {
                         ipc::win32_window::QueueResult::Message(found) => {
                             if copy_message(message, found).is_err() { return Some(STATUS_INVALID_PARAMETER); }
@@ -389,6 +387,13 @@ fn copy_message(destination: syscall::UserPtr<NtWindowMessage>, message: ipc::wi
 
 fn valid_window(hwnd: u64) -> Option<ipc::win32_window::WindowId> {
     (hwnd <= u32::MAX as u64).then(|| ipc::win32_window::WindowId::from_raw(hwnd as u32)).flatten()
+}
+
+fn message_filter(state: &ipc::win32_window::WindowManager, hwnd: u64, first: u32, last: u32) -> Option<ipc::win32_window::MessageFilter> {
+    if hwnd > u32::MAX as u64 { return None; }
+    let hwnd = ipc::win32_window::WindowId::from_raw(hwnd as u32);
+    if state.validate_message_filter(hwnd).is_err() { return None; }
+    Some(ipc::win32_window::MessageFilter { hwnd, first, last })
 }
 
 fn copy_rect(destination: syscall::UserPtr<syscall::nt::NtWindowRect>, value: ipc::win32_window::WindowRect) -> u64 {

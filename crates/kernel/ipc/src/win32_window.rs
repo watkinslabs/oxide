@@ -390,6 +390,11 @@ impl WindowManager {
     pub fn peek_for_thread(&mut self, tid: u64, filter: MessageFilter, remove: bool) -> Option<WinMessage> {
         self.queues.iter_mut().find(|(owner, _)| *owner == tid).and_then(|(_, queue)| queue.peek(filter, remove).or_else(|| queue.quit_message(filter, remove)))
     }
+    /// Validate the optional HWND filter before a queue lookup. # C: O(N_windows)
+    pub fn validate_message_filter(&self, window: Option<WindowId>) -> Result<(), WindowError> {
+        if window.is_some_and(|window| self.get(window).is_none()) { return Err(WindowError::NoSuchWindow); }
+        Ok(())
+    }
     pub fn post_quit(&mut self, tid: u64, code: i32) {
         if let Some((_, queue)) = self.queues.iter_mut().find(|(owner, _)| *owner == tid) { queue.post_quit(code); }
         else { let mut queue = MessageQueue::default(); queue.post_quit(code); self.queues.push((tid, queue)); }
@@ -526,6 +531,16 @@ mod tests {
         assert_eq!(manager.peek_for_thread(8, MessageFilter { hwnd: None, first: 0, last: u32::MAX }, false), None);
         assert_eq!(manager.destroy(window).unwrap().wndproc, 0x1234);
         assert_eq!(manager.post_to_window(window, message(None, 1)), Err(WindowError::NoSuchWindow));
+    }
+
+    #[test]
+    fn message_filter_accepts_null_and_live_hwnd_but_rejects_stale_hwnd() {
+        let mut manager = WindowManager::new();
+        let window = manager.create(9, None, 0).unwrap();
+        assert_eq!(manager.validate_message_filter(None), Ok(()));
+        assert_eq!(manager.validate_message_filter(Some(window)), Ok(()));
+        manager.destroy(window).unwrap();
+        assert_eq!(manager.validate_message_filter(Some(window)), Err(WindowError::NoSuchWindow));
     }
 
     #[test]
