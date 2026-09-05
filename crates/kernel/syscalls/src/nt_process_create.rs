@@ -134,7 +134,11 @@ fn write_create_success(address: u64, environment: &elf_load::process_env::NtPro
         && uaccess::put_user_u32(address + 72, 0).is_ok()
 }
 
-fn read_u16(address: u64) -> Option<u16> { uaccess::get_user_u32(address).ok().map(|v| v as u16) }
+fn read_u16(address: u64) -> Option<u16> {
+    let mut bytes = [0u8; 2];
+    uaccess::copy_from_user(&mut bytes, address).ok()?;
+    Some(u16::from_le_bytes(bytes))
+}
 
 fn read_u64(address: u64) -> Option<u64> { uaccess::get_user_u64(address).ok() }
 
