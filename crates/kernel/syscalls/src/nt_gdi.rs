@@ -60,6 +60,46 @@ pub fn dialog_base_units() -> Option<(i32, i32)> {
     Some(entries[index].state.dialog_base_units())
 }
 
+/// Acquire the canonical per-window DC owned by the current NT process. # C: O(N_process_gdi_states + N_windows)
+pub fn acquire_window_dc_for_current(hwnd: u32, width: i32, height: i32) -> u64 {
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    let group = Arc::clone(&cur.thread_group);
+    let mut entries = GDI.lock();
+    entries.retain(|entry| entry.group.upgrade().is_some());
+    let index = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group)));
+    let index = index.unwrap_or_else(|| {
+        entries.push(GdiEntry { group: Arc::downgrade(&group), state: ipc::win32_gdi::GdiManager::new() });
+        entries.len() - 1
+    });
+    match entries[index].state.acquire_window_dc(hwnd, width, height) {
+        Ok(handle) => handle as u64,
+        Err(_) => STATUS_INVALID_PARAMETER,
+    }
+}
+
+/// Validate one ReleaseDC lease against the canonical window owner. # C: O(N_process_gdi_states + N_windows)
+pub fn release_window_dc_for_current(hwnd: u32, dc: u32) -> u64 {
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    let group = Arc::clone(&cur.thread_group);
+    let mut entries = GDI.lock();
+    let Some(entry) = entries.iter_mut().find(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group))) else { return STATUS_INVALID_HANDLE; };
+    match entry.state.release_window_dc(hwnd, dc) {
+        Ok(()) => STATUS_SUCCESS,
+        Err(_) => STATUS_INVALID_HANDLE,
+    }
+}
+
+/// Remove a window DC when its canonical HWND is destroyed. # C: O(N_process_gdi_states + N_windows)
+pub fn destroy_window_dc_for_current(hwnd: u32) {
+    let Some(cur) = sched::live::current() else { return; };
+    if !cur.is_nt_personality() { return; }
+    let group = Arc::clone(&cur.thread_group);
+    let mut entries = GDI.lock();
+    if let Some(entry) = entries.iter_mut().find(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group))) { let _ = entry.state.destroy_window_dc(hwnd); }
+}
+
 fn blit_surface(state: &mut ipc::win32_gdi::GdiManager, dc: u32, pixels: syscall::UserPtr<u8>, x: i32, y: i32, width: u32, height: u32, stride: u32) -> u64 {
     let Some(words) = (height as usize).checked_mul(stride as usize) else { return STATUS_INVALID_PARAMETER; };
     if width == 0 || height == 0 || width > i32::MAX as u32 || height > i32::MAX as u32

@@ -29,13 +29,13 @@ pub enum GdiError { NoSuchObject, InvalidDimensions, InvalidText }
 #[derive(Debug, Eq, PartialEq)]
 struct DeviceContext { width: i32, height: i32, map_mode: u32, font: Option<u32>, pixels: Vec<u32> }
 
-pub struct GdiManager { next: u32, dcs: Vec<(u32, DeviceContext)>, fonts: Vec<(u32, Font)> }
+pub struct GdiManager { next: u32, dcs: Vec<(u32, DeviceContext)>, fonts: Vec<(u32, Font)>, window_dcs: Vec<(u32, u32)> }
 
 impl Default for GdiManager { fn default() -> Self { Self::new() } }
 
 impl GdiManager {
     /// Construct an empty process-local GDI object owner. # C: O(1)
-    pub fn new() -> Self { Self { next: 1, dcs: Vec::new(), fonts: Vec::new() } }
+    pub fn new() -> Self { Self { next: 1, dcs: Vec::new(), fonts: Vec::new(), window_dcs: Vec::new() } }
 
     /// Create a memory device context with bounded positive dimensions. # C: O(1)
     pub fn create_dc(&mut self, width: i32, height: i32) -> Result<u32, GdiError> {
@@ -43,6 +43,26 @@ impl GdiManager {
         let handle = self.allocate();
         self.dcs.push((handle, DeviceContext { width, height, map_mode: MM_TEXT, font: None, pixels: alloc::vec![0; (width as usize) * (height as usize)] }));
         Ok(handle)
+    }
+
+    /// Return the stable display DC associated with one canonical HWND. # C: O(N_windows)
+    pub fn acquire_window_dc(&mut self, hwnd: u32, width: i32, height: i32) -> Result<u32, GdiError> {
+        if let Some((_, dc)) = self.window_dcs.iter().find(|(window, _)| *window == hwnd) { return Ok(*dc); }
+        let dc = self.create_dc(width, height)?;
+        self.window_dcs.push((hwnd, dc));
+        Ok(dc)
+    }
+
+    /// Release a GetDC lease without destroying its canonical window DC. # C: O(N_windows)
+    pub fn release_window_dc(&self, hwnd: u32, dc: u32) -> Result<(), GdiError> {
+        if self.window_dcs.iter().any(|(window, candidate)| *window == hwnd && *candidate == dc) { Ok(()) } else { Err(GdiError::NoSuchObject) }
+    }
+
+    /// Remove a window association and its DC during HWND destruction. # C: O(N_windows + N_objects)
+    pub fn destroy_window_dc(&mut self, hwnd: u32) -> Result<(), GdiError> {
+        let Some(index) = self.window_dcs.iter().position(|(window, _)| *window == hwnd) else { return Err(GdiError::NoSuchObject); };
+        let (_, dc) = self.window_dcs.remove(index);
+        self.delete_object(dc)
     }
 
     /// Create a logical font object from its requested metrics. # C: O(1)
@@ -56,7 +76,7 @@ impl GdiManager {
     /// Delete a device context or font object. # C: O(N_objects)
     pub fn delete_object(&mut self, handle: u32) -> Result<(), GdiError> {
         if let Some(index) = self.dcs.iter().position(|(candidate, _)| *candidate == handle) {
-            self.dcs.remove(index); return Ok(());
+            self.dcs.remove(index); self.window_dcs.retain(|(_, dc)| *dc != handle); return Ok(());
         }
         if let Some(index) = self.fonts.iter().position(|(candidate, _)| *candidate == handle) {
             self.fonts.remove(index);
@@ -233,5 +253,27 @@ mod tests {
         assert_eq!(gdi.bitblt(dc, 0, 0, dc, 0, 0, 0, 1), Err(GdiError::InvalidDimensions));
         assert_eq!(gdi.bitblt(dc, 0, 0, 99, 0, 0, 1, 1), Err(GdiError::NoSuchObject));
         assert_eq!(gdi.pixels(dc).unwrap(), &[0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn window_dc_is_stable_and_release_does_not_destroy_surface() {
+        let mut gdi = GdiManager::new();
+        let first = gdi.acquire_window_dc(7, 20, 10).unwrap();
+        gdi.fill_rect(first, Rect { left: 0, top: 0, right: 1, bottom: 1 }, 0x0012_3456).unwrap();
+        assert_eq!(gdi.acquire_window_dc(7, 20, 10), Ok(first));
+        assert_eq!(gdi.release_window_dc(7, first), Ok(()));
+        assert_eq!(gdi.pixels(first).unwrap()[0], 0x0012_3456);
+        assert_eq!(gdi.release_window_dc(8, first), Err(GdiError::NoSuchObject));
+    }
+
+    #[test]
+    fn destroying_window_dc_removes_only_its_association_and_object() {
+        let mut gdi = GdiManager::new();
+        let window_dc = gdi.acquire_window_dc(7, 20, 10).unwrap();
+        let memory_dc = gdi.create_dc(20, 10).unwrap();
+        assert_eq!(gdi.destroy_window_dc(7), Ok(()));
+        assert!(gdi.pixels(window_dc).is_none());
+        assert!(gdi.pixels(memory_dc).is_some());
+        assert_eq!(gdi.destroy_window_dc(7), Err(GdiError::NoSuchObject));
     }
 }
