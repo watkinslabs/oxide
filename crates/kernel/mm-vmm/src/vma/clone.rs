@@ -29,6 +29,7 @@ impl Clone for Vma {
             // Linux `vma_dup_policy` → `mpol_dup`: the child VMA keeps the
             // parent's mbind(2) policy across fork.
             mempolicy: self.mempolicy,
+            mapping_origin: self.mapping_origin,
         }
     }
 }
@@ -82,6 +83,7 @@ impl Vma {
             uffd: self.uffd.clone(),
             // `__split_vma` → `vma_dup_policy`: both halves keep the policy.
             mempolicy: self.mempolicy,
+            mapping_origin: self.mapping_origin,
         }
     }
 }

@@ -1267,11 +1267,15 @@ pub fn dispatch(call: NtCall) -> u64 {
                     vmm::VmaBacking::KernelBytes { data: section.bytes(), off: offset as usize }
                 };
                 let mapped = match mm.mmap_with_may_at(placement, requested_size as usize, protection, protection,
-                    vmm::VmaFlags::PRIVATE, backing) {
+                    vmm::VmaFlags::PRIVATE | vmm::VmaFlags::NT_SECTION_VIEW, backing) {
                     Ok(mapped) => mapped,
                     Err(vmm::MmapError::Exists) => return STATUS_CONFLICTING_ADDRESSES,
                     Err(vmm::MmapError::Vmm(_)) => return STATUS_NO_MEMORY,
                 };
+                if !mm.set_mapping_origin(mapped) {
+                    let _ = mm.munmap(mapped, requested_size as usize);
+                    return STATUS_NO_MEMORY;
+                }
                 if uaccess::put_user_u64(base.as_u64(), mapped.as_u64()).is_err()
                     || uaccess::put_user_u64(size.as_u64(), requested_size).is_err() {
                     let _ = mm.munmap(mapped, requested_size as usize);
@@ -1286,8 +1290,8 @@ pub fn dispatch(call: NtCall) -> u64 {
                 let Some(mm) = (unsafe { cur.mm_ref() }).map(|mm| mm.clone()) else { return STATUS_INVALID_PARAMETER; };
                 let Some(base) = hal::UserVirtAddr::new(base) else { return STATUS_INVALID_PARAMETER; };
                 let Some(vma) = mm.find_vma(base) else { return STATUS_MEMORY_NOT_ALLOCATED; };
-                if vma.start != base { return STATUS_INVALID_PARAMETER; }
-                if mm.munmap(vma.start, (vma.end.as_u64() - vma.start.as_u64()) as usize).is_ok() { STATUS_SUCCESS } else { STATUS_MEMORY_NOT_ALLOCATED }
+                if !vma.flags.contains(vmm::VmaFlags::NT_SECTION_VIEW) || vma.mapping_origin.is_none() { return STATUS_MEMORY_NOT_ALLOCATED; }
+                if mm.unmap_mapping_origin(vma.mapping_origin.unwrap()).is_ok() { STATUS_SUCCESS } else { STATUS_MEMORY_NOT_ALLOCATED }
             }
             NtObjectCall::UnmapViewOfSectionEx { process, base, flags } => {
                 if !crate::nt_process_handles::permits_current_process(process, &cur, crate::nt_process_handles::PROCESS_VM_OPERATION)
@@ -1295,8 +1299,8 @@ pub fn dispatch(call: NtCall) -> u64 {
                 let Some(mm) = (unsafe { cur.mm_ref() }).map(|mm| mm.clone()) else { return STATUS_INVALID_PARAMETER; };
                 let Some(base) = hal::UserVirtAddr::new(base) else { return STATUS_INVALID_PARAMETER; };
                 let Some(vma) = mm.find_vma(base) else { return STATUS_MEMORY_NOT_ALLOCATED; };
-                if vma.start != base { return STATUS_INVALID_PARAMETER; }
-                if mm.munmap(vma.start, (vma.end.as_u64() - vma.start.as_u64()) as usize).is_ok() { STATUS_SUCCESS } else { STATUS_MEMORY_NOT_ALLOCATED }
+                if !vma.flags.contains(vmm::VmaFlags::NT_SECTION_VIEW) || vma.mapping_origin.is_none() { return STATUS_MEMORY_NOT_ALLOCATED; }
+                if mm.unmap_mapping_origin(vma.mapping_origin.unwrap()).is_ok() { STATUS_SUCCESS } else { STATUS_MEMORY_NOT_ALLOCATED }
             }
             NtObjectCall::QuerySection { section, class, info, length, return_length } => {
                 const SECTION_BASIC_INFORMATION_BYTES: u32 = 24;
@@ -1606,7 +1610,7 @@ pub fn dispatch(call: NtCall) -> u64 {
             let state = if memory.allocation_base.as_u64() == 0 { MEM_FREE } else if memory.committed { MEM_COMMIT } else { MEM_RESERVE };
             bytes[32..36].copy_from_slice(&state.to_ne_bytes());
             bytes[36..40].copy_from_slice(&windows_protection_word(memory.protection).to_ne_bytes());
-            let kind: u32 = if memory.allocation_base.as_u64() == 0 { 0 } else { 0x20000 };
+            let kind: u32 = if memory.allocation_base.as_u64() == 0 { 0 } else if memory.mapped_view { 0x40000 } else { 0x20000 };
             bytes[40..44].copy_from_slice(&kind.to_ne_bytes());
             if uaccess::copy_to_user(info.as_u64(), &bytes).is_err() || uaccess::put_user_u64(return_length.as_u64(), MEMORY_BASIC_INFORMATION_BYTES as u64).is_err() { return STATUS_INVALID_PARAMETER; }
             STATUS_SUCCESS

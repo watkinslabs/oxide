@@ -145,6 +145,9 @@ bitflags::bitflags! {
         /// Windows NT reserved address space: the VMA exists for later
         /// MEM_COMMIT, but faults must not instantiate pages yet.
         const NT_RESERVED = 1 << 20;
+        /// Windows section view. The VMM owns this marker so the NT unmap
+        /// path cannot release an unrelated Linux mapping at the same VA.
+        const NT_SECTION_VIEW = 1 << 21;
         /// Windows MEM_WRITE_WATCH ownership is attached to this VMA; dirty
         /// pages remain in the canonical per-mm VMM state.
         const NT_WRITE_WATCH = 1 << 21;
@@ -317,6 +320,9 @@ pub struct Vma {
     /// allocation fall back to the task policy and makes
     /// `get_mempolicy(MPOL_F_ADDR)` report `MPOL_DEFAULT`.
     pub mempolicy: Option<crate::mempolicy::MemPolicy>,
+    /// Origin of the complete Windows section view. VMA splits retain this
+    /// value so query/unmap operate on the view, not one fragment.
+    pub mapping_origin: Option<UserVirtAddr>,
 }
 
 impl core::fmt::Debug for Vma {
@@ -336,6 +342,7 @@ impl core::fmt::Debug for Vma {
             .field("anon_name", &self.anon_name)
             .field("uffd", &self.uffd.is_some())
             .field("mempolicy", &self.mempolicy)
+            .field("mapping_origin", &self.mapping_origin)
             .finish()
     }
 }
@@ -383,6 +390,7 @@ impl Vma {
             anon_name: None,
             uffd: None,
             mempolicy: None,
+            mapping_origin: None,
         }
     }
 

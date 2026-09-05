@@ -380,6 +380,29 @@ fn munmap_punches_hole() {
 }
 
 #[test]
+fn windows_section_view_unmap_removes_all_protection_fragments() {
+    let a = AddressSpace::new(0).unwrap();
+    let origin = UserVirtAddr::new(0x4000_0000).unwrap();
+    a.mmap(Some(origin), 3 * PAGE, r_w(), VmaFlags::PRIVATE | VmaFlags::NT_SECTION_VIEW,
+        VmaBacking::KernelBytes { data: alloc::sync::Arc::from(&ELF_BLOB[..]), off: 0 }, false).unwrap();
+    assert!(a.set_mapping_origin(origin));
+    let middle = UserVirtAddr::new(origin.as_u64() + PAGE as u64).unwrap();
+    a.mprotect(middle, PAGE, VmaProt::READ).unwrap();
+    assert_eq!(a.find_vma(middle).unwrap().mapping_origin, Some(origin));
+    a.unmap_mapping_origin(origin).unwrap();
+    assert_eq!(a.vma_count(), 0);
+}
+
+#[test]
+fn windows_section_view_unmap_does_not_release_anonymous_mapping() {
+    let a = AddressSpace::new(0).unwrap();
+    let origin = UserVirtAddr::new(0x4000_0000).unwrap();
+    a.mmap(Some(origin), PAGE, r_w(), VmaFlags::PRIVATE, VmaBacking::Anonymous, false).unwrap();
+    assert!(a.unmap_mapping_origin(origin).is_err());
+    assert!(a.find_vma(origin).is_some());
+}
+
+#[test]
 fn mprotect_changes_prot() {
     let a = AddressSpace::new(0).unwrap();
     let va = a.mmap(None, 4 * PAGE, VmaProt::READ, priv_anon(), VmaBacking::Anonymous, false).unwrap();

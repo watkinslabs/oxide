@@ -90,6 +90,33 @@ impl AddressSpace {
         g.find_containing(va).cloned()
     }
 
+    /// Mark one newly-created VMA as the origin of a Windows section view.
+    /// The marker is VMM-owned and is copied by every later split.
+    /// # C: O(log N)
+    pub fn set_mapping_origin(&self, va: UserVirtAddr) -> bool {
+        self.vmas.write().find_containing_mut(va).map(|vma| {
+            vma.mapping_origin = Some(va);
+            true
+        }).unwrap_or(false)
+    }
+
+    /// Remove every VMA fragment belonging to one Windows section view.
+    /// # C: O(K + log N)
+    pub fn unmap_mapping_origin(&self, origin: UserVirtAddr) -> KResult<()> {
+        let vmas = self.snapshot_vmas();
+        let members: Vec<&Vma> = vmas.iter().filter(|vma| vma.mapping_origin == Some(origin)).collect();
+        if members.is_empty() { return Err(Error::Inval); }
+        let start = members.iter().map(|vma| vma.start.as_u64()).min().ok_or(Error::Inval)?;
+        let end = members.iter().map(|vma| vma.end.as_u64()).max().ok_or(Error::Inval)?;
+        let mut cursor = start;
+        for vma in vmas.iter().filter(|vma| vma.end.as_u64() > start && vma.start.as_u64() < end) {
+            if vma.start.as_u64() != cursor || vma.mapping_origin != Some(origin) { return Err(Error::Inval); }
+            cursor = vma.end.as_u64();
+        }
+        if cursor != end { return Err(Error::Inval); }
+        self.munmap(UserVirtAddr::new(start).ok_or(Error::Inval)?, (end - start) as usize)
+    }
+
     /// Flush dirty file-backed pages overlapping one fully mapped range and
     /// return the page-aligned range actually processed. Anonymous mappings
     /// are valid and require no backing-store operation. # C: O(N_vma + dirty pages)
