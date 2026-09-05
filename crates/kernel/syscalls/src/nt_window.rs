@@ -312,7 +312,20 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
                 }
                 NtWindowCall::Show { hwnd, command } => {
                     let Some(window) = valid_window(hwnd) else { return Some(STATUS_INVALID_HANDLE); };
-                    (Some(match state.show(cur.tid as u64, window, command != ipc::win32_window::SW_HIDE) { Ok(previous) => previous as u64, Err(ipc::win32_window::WindowError::WrongThread) => STATUS_INVALID_PARAMETER, Err(_) => STATUS_INVALID_HANDLE }), None, None)
+                    let visible = command != ipc::win32_window::SW_HIDE;
+                    (Some(match state.show(cur.tid as u64, window, visible) {
+                        Ok(previous) => {
+                            if let Some(wparam) = crate::nt_window_policy::visibility_transition_message(previous, visible) {
+                                match state.post_to_window(window, ipc::win32_window::WinMessage { hwnd: Some(window), message: crate::nt_window_policy::WM_SHOWWINDOW, wparam, lparam: 0 }) {
+                                    Ok(()) => previous as u64,
+                                    Err(ipc::win32_window::WindowError::QueueFull) => STATUS_QUOTA_EXCEEDED,
+                                    Err(_) => STATUS_INVALID_HANDLE,
+                                }
+                            } else { previous as u64 }
+                        }
+                        Err(ipc::win32_window::WindowError::WrongThread) => STATUS_INVALID_PARAMETER,
+                        Err(_) => STATUS_INVALID_HANDLE,
+                    }), None, None)
                 }
                 NtWindowCall::Invalidate { hwnd, rect } => {
                     let Some(window) = valid_window(hwnd) else { return Some(STATUS_INVALID_HANDLE); };
