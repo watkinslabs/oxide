@@ -3,13 +3,11 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-use core::sync::atomic::Ordering;
-
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
 use crate::affinity_abi;
-use crate::affinity_common::{active_cpu_mask, affinity_target};
+use crate::affinity_common::affinity_target;
 use crate::userbuf::validate_user_buf_writable;
 
 /// `sys_sched_getaffinity(pid, len, user_mask_ptr)` — slot 204. Returns the
@@ -27,7 +25,7 @@ pub fn sys_sched_getaffinity(args: &SyscallArgs) -> i64 {
     let t = match affinity_target(pid) {
         Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
     };
-    let m = affinity_abi::reported_mask(t.cpus_allowed.load(Ordering::Acquire), active_cpu_mask());
+    let m = t.affinity_snapshot();
     if let Err(rv) = validate_user_buf_writable(uptr, retlen as u64, 1) { return rv; }
     if uaccess::copy_to_user(uptr, &affinity_abi::mask_to_bytes(m)[..retlen]).is_err() {
         return -(Errno::Efault.as_i32() as i64);

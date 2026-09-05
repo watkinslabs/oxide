@@ -3,10 +3,51 @@ use core::sync::atomic::Ordering;
 
 use crate::live::runqueue::{RqIrq, Runqueue};
 use crate::Task;
+use syscall::errno::Errno;
 use super::cpu_target::this_cpu;
 use crate::live::runqueue::global_for;
 
 use super::cpu_target::resched_locked;
+
+fn active_cpu_mask() -> cpu::CpuMask {
+    let active = cpu::smp::online_cpumask();
+    if active.is_empty() { cpu::CpuMask::of(0) } else { active }
+}
+
+impl Task {
+    /// Commit a Windows or Linux user affinity request through the canonical
+    /// task mask owner, preserving the deadline capacity admission rule.
+    /// # C: O(N_cpus · log N)
+    pub fn set_user_affinity(self: &Arc<Self>, want: cpu::CpuMask)
+        -> Result<cpu::CpuMask, Errno>
+    {
+        let _wake = self.pi_lock.lock_irqsave::<RqIrq>();
+        let allowed = crate::affinity::compose(
+            self.cpuset_cpus_allowed.load(Ordering::Acquire), want,
+            crate::affinity::MaskChange::UserRequest);
+        if crate::deadline::live::confined_below_span(self, allowed) {
+            return Err(Errno::Ebusy);
+        }
+        if allowed.intersect(active_cpu_mask()).is_empty() {
+            return Err(Errno::Einval);
+        }
+        self.user_cpus_allowed.store(want, Ordering::Release);
+        self.cpus_allowed.store(allowed, Ordering::Release);
+        let _placement = sync::rcu_read_lock();
+        relocate_for_affinity_pi_locked_with_probe(
+            &|cpu| unsafe { global_for(cpu) }, self, allowed,
+            &cpu::smp::is_active, &mut |_, _, _| {});
+        Ok(allowed)
+    }
+
+    /// Read the effective mask after applying the active CPU set under the
+    /// same task-side serialization boundary used by affinity writers.
+    /// # C: O(words)
+    pub fn affinity_snapshot(&self) -> cpu::CpuMask {
+        let _wake = self.pi_lock.lock_irqsave::<RqIrq>();
+        self.cpus_allowed.load(Ordering::Acquire).intersect(active_cpu_mask())
+    }
+}
 
 /// Choose the CPU to wake `task` on (Linux `select_task_rq`): the idlest
 /// online runqueue (fewest `nr_running`) among the task's allowed CPUs,

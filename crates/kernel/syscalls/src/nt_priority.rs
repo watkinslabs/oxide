@@ -99,8 +99,10 @@ fn set_thread(call: NtCall) -> u64 {
             want, process, active, target.no_setaffinity.load(core::sync::atomic::Ordering::Acquire)).is_err() {
             return STATUS_INVALID_PARAMETER;
         }
-        sched::live::update_affinity(&target, Some(want), None);
-        return crate::nt_thread_info_policy::success();
+        return match target.set_user_affinity(want) {
+            Ok(_) => crate::nt_thread_info_policy::success(),
+            Err(_) => STATUS_INVALID_PARAMETER,
+        };
     }
     if call.args.a3 != 4 { return STATUS_INFO_LENGTH_MISMATCH; }
     let Ok(raw) = uaccess::get_user_u32(call.args.a2) else { return STATUS_INVALID_PARAMETER; };
