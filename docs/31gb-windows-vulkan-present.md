@@ -11,8 +11,8 @@ loader or a Direct3D translation layer.
 - The NT capability record is the only device snapshot crossing into the
   Windows personality.
 - user32's process-scoped window owner supplies the canonical window identity;
-  a present request carries that identity together with the Vulkan device,
-  queue, and resource identities.
+  a present request carries that identity together with one nonzero session
+  identity and the Vulkan device, queue, and resource identities.
 - The userspace Vulkan façade owns surface admission and the present lifecycle;
   it stores no alternate device capability registry.
 
@@ -20,7 +20,11 @@ loader or a Direct3D translation layer.
 
 - A surface is admitted only when the device is ready, the surface is alive,
   presentation is supported, dimensions are nonzero and within the native
-  bounds, and the requested format is in the native format mask.
+  bounds, the requested format is in the native format mask, and every object
+  identity is nonzero.
+- Capability records reject unknown capability or format bits. A handoff from
+  another session is ownership failure, even when its window and queue IDs
+  happen to match.
 - Unsupported device, surface, format, and dimension states return
   `Unsupported`; they are never downgraded to software presentation.
 - A valid surface moves `Ready` → `Acquired` → `Ready` for each submission.
@@ -44,9 +48,9 @@ commands.
 
 - The userspace probe consumes the native NT capability record and executes one
   admitted acquire/present cycle.
-- Hosted tests cover admission failures, owner/device/queue/resource identity,
-  acquire/present ordering, explicit queue rollback, repeated cycles, and
-  terminal surface loss.
+- Hosted tests cover strict capability parsing, admission failures,
+  session/owner/device/queue/resource identity, acquire/present ordering,
+  explicit queue rollback, repeated cycles, and terminal surface loss.
 - A positive-control mutation of any required admission or lifecycle condition
   makes the focused test suite fail.
 - x86-64 and AArch64 GNU userspace builds compile the same ABI and state

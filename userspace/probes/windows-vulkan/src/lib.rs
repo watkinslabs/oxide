@@ -7,6 +7,13 @@ use std::io;
 use syscall::nt::{NtService, NtVulkanCapability};
 
 const STATUS_FAILURE_MASK: u64 = 0x8000_0000;
+pub(crate) const CAPABILITY_VERSION: u32 = 1;
+pub(crate) const RENDER_NODE: u32 = 1;
+pub(crate) const THREE_D: u32 = 2;
+pub(crate) const KNOWN_CAPABILITY_FLAGS: u32 = RENDER_NODE | THREE_D;
+pub(crate) const XRGB8888: u64 = 1;
+pub(crate) const ARGB8888: u64 = 2;
+pub(crate) const KNOWN_FORMATS: u64 = XRGB8888 | ARGB8888;
 
 #[derive(Debug)]
 pub enum VulkanError { Unsupported, Status(u64), Host(io::Error) }
@@ -17,8 +24,13 @@ pub struct Capability { pub version: u32, pub render_node: bool, pub three_d: bo
 impl Capability {
     /// Validate the fixed NT record before a Windows graphics layer consumes it. # C: O(1)
     pub fn from_native(value: NtVulkanCapability) -> Result<Self, VulkanError> {
-        let capability = Self { version: value.version, render_node: value.flags & 1 != 0, three_d: value.flags & 2 != 0, max_width: value.max_width, max_height: value.max_height, format_mask: value.format_mask };
-        if capability.version != 1 || !capability.render_node || !capability.three_d || capability.max_width == 0 || capability.max_height == 0 || capability.format_mask == 0 { return Err(VulkanError::Unsupported); }
+        let capability = Self { version: value.version, render_node: value.flags & RENDER_NODE != 0, three_d: value.flags & THREE_D != 0, max_width: value.max_width, max_height: value.max_height, format_mask: value.format_mask };
+        if capability.version != CAPABILITY_VERSION || value.flags & !KNOWN_CAPABILITY_FLAGS != 0
+            || !capability.render_node || !capability.three_d || capability.max_width == 0
+            || capability.max_height == 0 || capability.format_mask == 0
+            || capability.format_mask & !KNOWN_FORMATS != 0 {
+            return Err(VulkanError::Unsupported);
+        }
         Ok(capability)
     }
 }
@@ -48,5 +60,20 @@ mod tests {
         assert!(matches!(Capability::from_native(NtVulkanCapability { flags: 1, ..valid() }), Err(VulkanError::Unsupported)));
         assert!(matches!(Capability::from_native(NtVulkanCapability { format_mask: 0, ..valid() }), Err(VulkanError::Unsupported)));
         assert!(matches!(Capability::from_native(NtVulkanCapability { version: 2, ..valid() }), Err(VulkanError::Unsupported)));
+    }
+
+    #[test]
+    fn native_capability_rejects_unknown_flags_and_formats() {
+        assert!(matches!(Capability::from_native(NtVulkanCapability { flags: 7, ..valid() }), Err(VulkanError::Unsupported)));
+        assert!(matches!(Capability::from_native(NtVulkanCapability { format_mask: 4, ..valid() }), Err(VulkanError::Unsupported)));
+        assert!(matches!(Capability::from_native(NtVulkanCapability { max_width: 0, ..valid() }), Err(VulkanError::Unsupported)));
+        assert!(matches!(Capability::from_native(NtVulkanCapability { max_height: 0, ..valid() }), Err(VulkanError::Unsupported)));
+    }
+
+    #[test]
+    fn native_capability_preserves_all_admitted_fields() {
+        let capability = Capability::from_native(valid()).unwrap();
+        assert_eq!((capability.version, capability.render_node, capability.three_d), (1, true, true));
+        assert_eq!((capability.max_width, capability.max_height, capability.format_mask), (4096, 2160, 3));
     }
 }
