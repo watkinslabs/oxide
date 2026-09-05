@@ -3,6 +3,14 @@
 extern crate alloc;
 use alloc::string::String;
 
+/// Lookup policy for every native Windows pathname walk. The VFS keeps the
+/// dentry's stored name as its display spelling while its owning filesystem
+/// applies the Unicode equivalence rule to the query.
+/// # C: O(1)
+pub(crate) fn windows_lookup_flags() -> vfs::LookupFlags {
+    vfs::LookupFlags { case_insensitive: true, ..Default::default() }
+}
+
 /// Decode one NT `UNICODE_STRING` payload after the user copy. Unpaired
 /// surrogates are malformed; valid pairs become one Rust scalar so the VFS
 /// receives the supplied Unicode name.
@@ -153,7 +161,14 @@ fn lexical_normalize(path: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use alloc::string::String;
-    use super::{join_root_path, normalize_absolute_path, normalize_path, render_windows_path};
+    use super::{join_root_path, normalize_absolute_path, normalize_path, render_windows_path,
+        windows_lookup_flags};
+
+    #[test]
+    fn native_windows_lookup_uses_unicode_case_insensitive_vfs_policy() {
+        let flags = windows_lookup_flags();
+        assert!(flags.case_insensitive);
+    }
 
     #[test]
     fn maps_absolute_drive_paths_to_windows_root() {
