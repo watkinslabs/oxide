@@ -570,4 +570,42 @@ mod tests {
         malformed[1..5].copy_from_slice(&((payload.len() as u32) - 1).to_le_bytes());
         assert!(decode_reply(&malformed).is_none());
     }
+
+    #[test]
+    fn reply_decoder_rejects_truncation_and_trailing_bytes() {
+        let mut value = vec![registry_wire::RESPONSE_VALUE];
+        value.extend_from_slice(&4u32.to_le_bytes());
+        value.extend_from_slice(&8u32.to_le_bytes());
+        value.extend_from_slice(b"data");
+        assert!(decode_reply(&value).is_none());
+
+        let mut success = vec![registry_wire::RESPONSE_SUCCESS, 0];
+        assert!(decode_reply(&success).is_none());
+        success.clear();
+        success.push(registry_wire::RESPONSE_SUCCESS);
+        success.push(0);
+        assert!(decode_reply(&success).is_none());
+    }
+
+    #[test]
+    fn reply_decoder_rejects_oversized_and_invalid_key_lists() {
+        let mut keys = vec![registry_wire::RESPONSE_KEYS];
+        keys.extend_from_slice(&(1u32 << 20 + 1).to_le_bytes());
+        assert!(decode_reply(&keys).is_none());
+
+        let mut keys = vec![registry_wire::RESPONSE_KEYS];
+        keys.extend_from_slice(&1u32.to_le_bytes());
+        keys.extend_from_slice(&2u32.to_le_bytes());
+        keys.extend_from_slice(&[b'x']);
+        assert!(decode_reply(&keys).is_none());
+    }
+
+    #[test]
+    fn registry_frames_encode_lengths_and_handles_little_endian() {
+        assert_eq!(frame_key(registry_wire::FLUSH, 0x0102_0304_0506_0708),
+            [registry_wire::FLUSH, 8, 7, 6, 5, 4, 3, 2, 1]);
+        assert_eq!(frame_set(9, "Name", 4, &[1, 2]),
+            [registry_wire::SET, 9, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0,
+                4, 0, 0, 0, b'N', b'a', b'm', b'e', 2, 0, 0, 0, 1, 2]);
+    }
 }
