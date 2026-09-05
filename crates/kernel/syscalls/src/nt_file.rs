@@ -34,7 +34,6 @@ const GENERIC_READ: u32 = 0x8000_0000;
 const GENERIC_WRITE: u32 = 0x4000_0000;
 const FILE_NON_DIRECTORY_FILE: u32 = 0x40;
 const FILE_DIRECTORY_FILE: u32 = 0x1;
-const FILE_DELETE_ON_CLOSE: u32 = 0x0000_1000;
 const MAX_NT_IO: usize = 16 * 1024 * 1024;
 const FILE_BASIC_INFORMATION: u32 = 4;
 const FILE_STANDARD_INFORMATION: u32 = 5;
@@ -545,6 +544,10 @@ fn open_existing(cur: &sched::Task, addr: u64, _create: bool) -> u64 {
 fn open_path(cur: &sched::Task, output: u64, desired: u32, attrs: u64, options: u32,
              sharing: u32, file_attributes: u32, disposition: CreateDisposition) -> u64 {
     if sharing & !0x7 != 0 { return STATUS_INVALID_PARAMETER; }
+    let delete = match crate::nt_file_policy::delete_on_close_admission(options, desired) {
+        Some(delete) => delete,
+        None => return STATUS_INVALID_PARAMETER,
+    };
     let table = cur.thread_group.nt_handles();
     let Some(path) = object_path_with_root(attrs, &table) else { return STATUS_INVALID_PARAMETER; };
     if let Some(pipe) = sched::nt_object::lookup_object(&path, sched::nt_object::NtObjectType::NamedPipe) {
@@ -585,23 +588,25 @@ fn open_path(cur: &sched::Task, output: u64, desired: u32, attrs: u64, options: 
     if let Some(rv) = crate::open_common::enforce_open_perm(&inode, mnt_id, flags.bits(), created) {
         return crate::nt_file_policy::status_from_errno(rv);
     }
-    if !created && disposition.truncates_existing() && inode.truncate(0).is_err() {
-        return STATUS_ACCESS_DENIED;
-    }
     let Some(cred) = crate::pathresolve::file_cred_for(cur) else { return STATUS_ACCESS_DENIED; };
     let Ok(file) = vfs::file::open_file_at(inode, dentry, flags, mnt_id, cred, None) else {
         return STATUS_ACCESS_DENIED;
     };
-    let delete = if options & FILE_DELETE_ON_CLOSE != 0 {
-        if !crate::nt_file_policy::delete_on_close_access_valid(options, desired) { return STATUS_INVALID_PARAMETER; }
+    let rollback = if created {
+        sched::nt_object::NtDeleteOnClose::new(file.as_ref(), true)
+    } else { None };
+    let delete_state = if delete {
         if sched::nt_object::NtDeleteOnClose::new(file.as_ref(), false).is_none() { return STATUS_INVALID_PARAMETER; }
         true
     } else { false };
     let Some(share) = sched::nt_object::NtFileShare::claim(&file, desired, sharing) else {
         return STATUS_SHARING_VIOLATION;
     };
+    if !created && disposition.truncates_existing() && file.inode().truncate(0).is_err() {
+        return STATUS_ACCESS_DENIED;
+    }
     let info = sched::nt_object::NtFileInfo::from_file(file.as_ref(), options);
-    let object = table.new_file_with_share_and_delete_and_info(file, share, delete, info);
+    let object = table.new_file_with_share_and_delete_and_info(file, share, delete_state, info);
     let Some(handle) = table.insert(object, desired | SYNCHRONIZE_ACCESS) else {
         return STATUS_INVALID_PARAMETER;
     };
@@ -609,6 +614,7 @@ fn open_path(cur: &sched::Task, output: u64, desired: u32, attrs: u64, options: 
         let _ = table.close(handle);
         return STATUS_INVALID_PARAMETER;
     }
+    if let Some(rollback) = rollback { rollback.set_armed(false); }
     STATUS_SUCCESS
 }
 
