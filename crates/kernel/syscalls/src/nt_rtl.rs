@@ -36,7 +36,8 @@ const WINDOWS_PRODUCT_WORKSTATION: u8 = 1;
 const GUID_STRING_BYTES: usize = 76;
 const TEB_PEB_OFFSET: u64 = 0x60;
 const PEB_PROCESS_PARAMETERS_OFFSET: u64 = 0x20;
-const PARAM_CURRENT_DIRECTORY_OFFSET: u64 = 0x40;
+const PARAM_CURRENT_DIRECTORY_OFFSET: u64 = 0x38;
+const PARAM_CURRENT_DIRECTORY_HANDLE_OFFSET: u64 = 0x48;
 const PARAM_IMAGE_PATH_OFFSET: u64 = 0x60;
 const PARAM_ENVIRONMENT_OFFSET: u64 = 0x80;
 const STATUS_NO_MEMORY: u64 = 0xc000_0017;
@@ -903,7 +904,7 @@ fn dos_path_to_nt(source: u64, target: u64, file_part: u64, curdir: u64) -> u64 
         let Some(params_address) = peb.checked_add(PEB_PROCESS_PARAMETERS_OFFSET) else { return 0; };
         let Some(params) = uaccess::get_user_u64(params_address).ok() else { return 0; };
         let Some(path_address) = params.checked_add(PARAM_CURRENT_DIRECTORY_OFFSET) else { return 0; };
-        let Some(handle_address) = params.checked_add(0x38) else { return 0; };
+        let Some(handle_address) = params.checked_add(PARAM_CURRENT_DIRECTORY_HANDLE_OFFSET) else { return 0; };
         let mut path = [0u8; UNICODE_STRING_BYTES];
         let mut handle = [0u8; 8];
         if uaccess::copy_from_user(&mut path, path_address).is_err()

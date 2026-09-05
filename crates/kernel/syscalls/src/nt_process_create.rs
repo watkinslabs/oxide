@@ -16,6 +16,10 @@ const PS_CREATE_SUCCESS: u64 = 6;
 const IMAGE_NAME: u64 = 0x0002_0005;
 const CLIENT_ID: u64 = 0x0001_0003;
 const MAX_ATTRIBUTES: u64 = 64;
+const PARAM_CURRENT_DIRECTORY_OFF: u64 = 0x38;
+const PARAM_CURRENT_DIRECTORY_HANDLE_OFF: u64 = 0x48;
+const PARAM_COMMAND_LINE_OFF: u64 = 0x70;
+const PARAM_ENVIRONMENT_OFF: u64 = 0x80;
 
 /// Dispatch the real child-image transaction.  Only the x86-64 native path
 /// is exposed: this kernel deliberately does not promise a 32-bit Windows ABI.
@@ -136,10 +140,10 @@ fn read_u64(address: u64) -> Option<u64> { uaccess::get_user_u64(address).ok() }
 /// The returned strings own their storage so no parent address-space pointer
 /// survives the transaction.
 fn process_parameters(params: syscall::UserPtr<u8>) -> Option<(String, Vec<(String, String)>, String, u64, u64, [u64; 3])> {
-    let command = unicode_field(params.as_u64(), 0x70)?;
-    let environment = read_environment(read_u64(params.as_u64() + 0x80)?)?;
-    let current_directory = unicode_field(params.as_u64(), 0x40)?;
-    let current_directory_handle = read_u64(params.as_u64() + 0x38)?;
+    let command = unicode_field(params.as_u64(), PARAM_COMMAND_LINE_OFF)?;
+    let environment = read_environment(read_u64(params.as_u64() + PARAM_ENVIRONMENT_OFF)?)?;
+    let current_directory = unicode_field(params.as_u64(), PARAM_CURRENT_DIRECTORY_OFF)?;
+    let current_directory_handle = read_u64(params.as_u64() + PARAM_CURRENT_DIRECTORY_HANDLE_OFF)?;
     let console_handle = read_u64(params.as_u64() + 0x10)?;
     let standard_handles = [read_u64(params.as_u64() + 0x20)?,
         read_u64(params.as_u64() + 0x28)?, read_u64(params.as_u64() + 0x30)?];

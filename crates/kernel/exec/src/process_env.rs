@@ -36,6 +36,8 @@ const TEB_TLS_EXPANSION_SLOTS_OFF: usize = 0x1780;
 // Keep the process-parameter structure clear of PEB64's inline TLS expansion
 // bitmap at 0x240..0x2c0. The loader list/module records follow it.
 const PARAM_OFF: usize = 0x300;
+const PARAM_CURRENT_DIRECTORY_OFF: usize = 0x38;
+const PARAM_CURRENT_DIRECTORY_HANDLE_OFF: usize = 0x48;
 const PARAM_SIZE: u32 = (ENV_OFF - PARAM_OFF) as u32;
 const PARAM_FLAGS_NORMALIZED: u32 = 1;
 const PARAM_ENVIRONMENT_SIZE_OFF: usize = 0x3f0;
@@ -259,13 +261,13 @@ pub fn build_with_modules_and_params_and_stack(input: &EnvironmentInput<'_>, mod
     // kernelbase's TlsAlloc/TlsSetValue behavior.
     put_u64(&mut block, TEB_OFF + TEB_SYSCALL_FRAME_OFFSET, base + PROCESS_SYSCALL_FRAME_OFF as u64);
     put_u64(&mut block, PARAM_OFF + 0x10, params.console_handle);
-    put_u64(&mut block, PARAM_OFF + 0x38, params.current_directory_handle);
+    put_u64(&mut block, PARAM_OFF + PARAM_CURRENT_DIRECTORY_HANDLE_OFF, params.current_directory_handle);
     for (offset, handle) in [0x20usize, 0x28, 0x30].into_iter().zip(params.standard_handles) {
         put_u64(&mut block, PARAM_OFF + offset, handle);
     }
     put_unicode(&mut block, PARAM_OFF + 0x60, &image_path, base + image_path_off as u64);
     put_unicode(&mut block, PARAM_OFF + 0x70, &command_line, base + command_off as u64);
-    put_unicode_with_capacity(&mut block, PARAM_OFF + 0x40, &current_dir,
+    put_unicode_with_capacity(&mut block, PARAM_OFF + PARAM_CURRENT_DIRECTORY_OFF, &current_dir,
         base + current_dir_off as u64, CURRENT_DIR_STORAGE);
     put_u64(&mut block, PARAM_OFF + 0x80, base + env_off as u64);
     put_u32(&mut block, LDR_OFF, 0x58);
@@ -455,7 +457,7 @@ mod tests {
         let (bytes, off) = match vma.backing { VmaBacking::KernelBytes { data, off } => (data, off), _ => panic!("environment must be kernel bytes") };
         let at = |offset: usize| { let start = off + e.process_parameters.as_u64() as usize - e.base.as_u64() as usize + offset; u64::from_ne_bytes(bytes[start..start + 8].try_into().unwrap()) };
         assert_eq!(at(0x10), 0x31);
-        assert_eq!(at(0x38), 0x21);
+        assert_eq!(at(PARAM_CURRENT_DIRECTORY_HANDLE_OFF), 0x21);
         assert_eq!([at(0x20), at(0x28), at(0x30)], [0x41, 0x42, 0x43]);
     }
 
