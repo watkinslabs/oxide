@@ -300,6 +300,14 @@ pub unsafe fn wait_event_interruptible_until_user_apc(
     mut apc: impl FnMut() -> bool, mut cond: impl FnMut() -> bool,
 ) -> NtWaitOutcome {
     if cond() { return NtWaitOutcome::Ready; }
+    // Native NT checks alertability before arming a wait.  Keep the object
+    // predicate first: a signaled object outranks an APC already queued for
+    // this thread, just as the dispatcher wait owner does.
+    if apc() { return NtWaitOutcome::UserApc; }
+    if deadline_ns != 0 && now() >= deadline_ns {
+        return if cond() { NtWaitOutcome::Ready }
+            else if apc() { NtWaitOutcome::UserApc } else { NtWaitOutcome::TimedOut };
+    }
     loop {
         // SAFETY: forwarded fn-level contract; the caller is process context
         // and holds no lock owned by a waker.
@@ -319,6 +327,14 @@ pub unsafe fn wait_event_interruptible_until_user_apc(
         unsafe { super::park_yield(); }
         if cond() { break; }
         if apc() { wq.cancel_current_park(); return NtWaitOutcome::UserApc; }
+        if signal_pending_state_current(WaitState::Interruptible) {
+            wq.cancel_current_park(); return NtWaitOutcome::Interrupted;
+        }
+        if deadline_ns != 0 && now() >= deadline_ns {
+            wq.cancel_current_park();
+            return if cond() { NtWaitOutcome::Ready }
+                else if apc() { NtWaitOutcome::UserApc } else { NtWaitOutcome::TimedOut };
+        }
     }
     wq.cancel_current_park();
     NtWaitOutcome::Ready
@@ -527,11 +543,26 @@ mod tests {
         // post-publication recheck that models an object wake racing an APC.
         let outcome = unsafe {
             wait_event_interruptible_until_user_apc(
-                &wait, 0, || 0, || true,
+                &wait, 0, || 0, || checks.load(Ordering::Relaxed) >= 2,
                 || checks.fetch_add(1, Ordering::Relaxed) != 0,
             )
         };
         assert_eq!(outcome, NtWaitOutcome::Ready);
+    }
+
+    #[test]
+    fn alertable_wait_checks_an_initial_apc_before_arming_timeout() {
+        let wait = WaitList::new();
+        let apc_checks = AtomicU32::new(0);
+        // SAFETY: hosted test has no runqueue; the APC is already pending and
+        // therefore must finish the wait before its expired timeout is read.
+        let outcome = unsafe {
+            wait_event_interruptible_until_user_apc(
+                &wait, 10, || panic!("an initial APC must outrank timeout"),
+                || apc_checks.fetch_add(1, Ordering::Relaxed) == 0, || false,
+            )
+        };
+        assert_eq!(outcome, NtWaitOutcome::UserApc);
     }
 
     #[test]
