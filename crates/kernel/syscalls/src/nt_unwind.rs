@@ -154,6 +154,23 @@ fn restore_context(current: &sched::Task, target: u64, test_alert: bool) -> u64 
         let rip = image.registers[crate::nt_context_image::RestoreImage::RIP];
         let rsp = image.registers[crate::nt_context_image::RestoreImage::RSP];
         if hal::UserVirtAddr::new(rip).is_none() || hal::UserVirtAddr::new(rsp).is_none() { return STATUS_INVALID_PARAMETER; }
+        if image.validate_user_return(hal_x86_64::USER_CS_SELECTOR, hal_x86_64::USER_SS_SELECTOR).is_err() {
+            return STATUS_INVALID_PARAMETER;
+        }
+        // Linux validates the restored instruction and stack ranges against
+        // the current mm before its return frame is committed. The NT path
+        // uses the same canonical VMA owner so a CONTEXT cannot redirect a
+        // task into data or an unwritable stack.
+        let Some(mm) = current.clone_mm() else { return STATUS_INVALID_PARAMETER; };
+        let Some(code) = hal::UserVirtAddr::new(rip).and_then(|address| mm.find_vma(address)) else {
+            return STATUS_INVALID_PARAMETER;
+        };
+        if !code.prot.contains(vmm::VmaProt::EXEC) { return STATUS_INVALID_PARAMETER; }
+        let Some(stack_byte) = rsp.checked_sub(1).and_then(hal::UserVirtAddr::new) else {
+            return STATUS_INVALID_PARAMETER;
+        };
+        let Some(stack) = mm.find_vma(stack_byte) else { return STATUS_INVALID_PARAMETER; };
+        if !stack.prot.contains(vmm::VmaProt::WRITE) { return STATUS_INVALID_PARAMETER; }
         if let Some(floating) = &image.floating {
             let mxcsr = u32::from_le_bytes(floating[24..28].try_into().unwrap());
             if mxcsr & !hal_x86_64::mxcsr_feature_mask() != 0 { return STATUS_INVALID_PARAMETER; }

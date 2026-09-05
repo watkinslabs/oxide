@@ -11,11 +11,15 @@ const CONTEXT_XSTATE: u32 = 0x0000_0040;
 const CONTEXT_HIGH_FLAGS: u32 = 0xd800_0000;
 const CONTEXT_SUPPORTED: u32 = CONTEXT_AMD64 | CONTEXT_CONTROL | CONTEXT_INTEGER
     | CONTEXT_SEGMENTS | CONTEXT_FLOATING_POINT | CONTEXT_HIGH_FLAGS;
+const CONTEXT_CS_OFFSET: usize = 0x38;
+const CONTEXT_SS_OFFSET: usize = 0x42;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct RestoreImage {
     pub flags: u32,
     pub rflags: u32,
+    pub cs: u16,
+    pub ss: u16,
     pub registers: [u64; 17],
     pub floating: Option<[u8; 512]>,
 }
@@ -43,6 +47,17 @@ impl RestoreImage {
     pub const RIP: usize = 16;
 
     pub fn has_integer(&self) -> bool { self.flags & CONTEXT_INTEGER != 0 }
+
+    /// Validate control state before it becomes a user return frame.
+    /// # C: O(1)
+    pub fn validate_user_return(&self, user_cs: u64, user_ss: u64) -> Result<(), Error> {
+        if self.cs as u64 != user_cs || self.ss as u64 != user_ss { return Err(Error::Invalid); }
+        // IOPL, NT, VM, VIF and VIP are kernel-owned; bit 1 is architecturally set.
+        if self.rflags & 0x2 == 0 || (self.rflags as u64 & 0x0000_0000_0000_7000) != 0 {
+            return Err(Error::Invalid);
+        }
+        Ok(())
+    }
 }
 
 pub(crate) fn decode(bytes: &[u8]) -> Result<RestoreImage, Error> {
@@ -60,11 +75,17 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<RestoreImage, Error> {
         image.copy_from_slice(bytes.get(0x100..0x300).ok_or(Error::Invalid)?);
         Some(image)
     } else { None };
-    Ok(RestoreImage { flags, rflags: read_u32(bytes, 0x44)?, registers, floating })
+    Ok(RestoreImage { flags, rflags: read_u32(bytes, 0x44)?,
+        cs: read_u16(bytes, CONTEXT_CS_OFFSET)?, ss: read_u16(bytes, CONTEXT_SS_OFFSET)?,
+        registers, floating })
 }
 
 fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, Error> {
     Ok(u32::from_le_bytes(bytes.get(offset..offset + 4).ok_or(Error::Invalid)?.try_into().map_err(|_| Error::Invalid)?))
+}
+
+fn read_u16(bytes: &[u8], offset: usize) -> Result<u16, Error> {
+    Ok(u16::from_le_bytes(bytes.get(offset..offset + 2).ok_or(Error::Invalid)?.try_into().map_err(|_| Error::Invalid)?))
 }
 
 fn read_u64(bytes: &[u8], offset: usize) -> Result<u64, Error> {
@@ -79,6 +100,8 @@ mod tests {
         let mut bytes = [0u8; CONTEXT_BYTES];
         bytes[0x30..0x34].copy_from_slice(&(CONTEXT_AMD64 | CONTEXT_CONTROL | CONTEXT_INTEGER | CONTEXT_FLOATING_POINT).to_le_bytes());
         bytes[0x44..0x48].copy_from_slice(&0x202u32.to_le_bytes());
+        bytes[CONTEXT_CS_OFFSET..CONTEXT_CS_OFFSET + 2].copy_from_slice(&0x4bu16.to_le_bytes());
+        bytes[CONTEXT_SS_OFFSET..CONTEXT_SS_OFFSET + 2].copy_from_slice(&0x43u16.to_le_bytes());
         bytes[0x78..0x80].copy_from_slice(&7u64.to_le_bytes());
         bytes[0x98..0xa0].copy_from_slice(&0x7000u64.to_le_bytes());
         bytes[0xf8..0x100].copy_from_slice(&0x4000u64.to_le_bytes());
@@ -112,5 +135,17 @@ mod tests {
             bytes[0x30..0x34].copy_from_slice(&flags.to_le_bytes());
             assert_eq!(decode(&bytes), Err(Error::Unsupported));
         }
+    }
+
+    #[test]
+    fn accepts_only_native_user_segments_and_safe_flags() {
+        let image = decode(&full()).unwrap();
+        assert!(image.validate_user_return(0x4b, 0x43).is_ok());
+        let mut bad = full();
+        bad[CONTEXT_CS_OFFSET..CONTEXT_CS_OFFSET + 2].copy_from_slice(&0x23u16.to_le_bytes());
+        assert_eq!(decode(&bad).unwrap().validate_user_return(0x4b, 0x43), Err(Error::Invalid));
+        let mut bad = full();
+        bad[0x44..0x48].copy_from_slice(&0x3202u32.to_le_bytes());
+        assert_eq!(decode(&bad).unwrap().validate_user_return(0x4b, 0x43), Err(Error::Invalid));
     }
 }
