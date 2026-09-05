@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use sync::{Spinlock, TaskList as TaskListClass, ThreadGroupSched};
 pub mod child_acct;
 mod exec;
@@ -10,6 +10,8 @@ pub mod shared_signal;
 use crate::pid::PidIdentity;
 use crate::task::PosixTimer;
 use crate::Task;
+/// Initial state for the ordered native Windows runtime diagnostic phase.
+pub const NT_WINDOWS_MILESTONE_INITIAL: u8 = 1;
 /// Every real internal exit status is non-negative
 /// (`crate::exit::status`), so no group death can spell this value.
 const GROUP_EXIT_UNSET: i32 = i32::MIN;
@@ -100,6 +102,10 @@ pub struct ThreadGroup {
     /// Process-wide default DLL search flags selected by the NT loader.
     pub nt_default_dll_search_flags: AtomicU32,
     pub nt_unhandled_filter: AtomicU64,
+    /// Process-local ordered native Windows runtime diagnostic phase.
+    /// Stored with the NT process state so concurrent personalities cannot
+    /// reset or consume another process's acceptance trace.
+    pub nt_windows_milestone: AtomicU8,
     /// Process-preferred Windows UI language multi-string and input mode.
     pub nt_process_ui_languages: Spinlock<(u32, Vec<u16>), TaskListClass>,
     /// Linux `signal_struct::timer_create_restore_ids`
@@ -278,6 +284,7 @@ impl ThreadGroup {
             nt_search_path_mode: AtomicU32::new(0),
             nt_default_dll_search_flags: AtomicU32::new(0),
             nt_unhandled_filter: AtomicU64::new(0),
+            nt_windows_milestone: AtomicU8::new(NT_WINDOWS_MILESTONE_INITIAL),
             nt_process_ui_languages: Spinlock::new((0x8, alloc::vec![b'e' as u16, b'n' as u16, b'-' as u16, b'U' as u16, b'S' as u16, 0, 0])),
             timer_create_restore_ids: AtomicBool::new(false),
             session_leader: AtomicBool::new(false),
