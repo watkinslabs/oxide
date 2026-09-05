@@ -44,6 +44,7 @@ FROZEN 2026-08-31. Dep:`01`,`02`,`15`,`31c`,`53`. Provides: oxide-owned NT servi
 | 49 | create timer | `sched::nt_object` |
 | 50 | set timer | `sched::nt_object` |
 | 51 | cancel timer | `sched::nt_object` |
+| 115 | query system information | native NTDLL system-information adapter |
 
 ## 3 Tests
 
@@ -82,3 +83,4 @@ FROZEN 2026-08-31. Dep:`01`,`02`,`15`,`31c`,`53`. Provides: oxide-owned NT servi
   adapter reads arguments 6 and 7 from the preserved caller stack in the
   x86-64 entry frame. No global `SyscallArgs` or Linux entry layout changes.
 - Registry records use fixed x86-64 layouts for `UNICODE_STRING`, `OBJECT_ATTRIBUTES`, and the four key/value requests; nested buffers are validated by the registry owner after the outer record is copied.
+- `NtQuerySystemInformation` class `SystemWineVersionInformation` returns a bounded four-field native NTDLL identity record for Wine startup; it accepts only NT-personality callers and reports short buffers without writing partial state.

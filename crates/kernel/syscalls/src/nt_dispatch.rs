@@ -824,6 +824,7 @@ pub fn dispatch(call: NtCall) -> u64 {
     if let Some(result) = crate::nt_fls::dispatch(call) { return result; }
     if let Some(result) = crate::nt_format::dispatch(call) { return result; }
     if let Some(result) = crate::nt_oem::dispatch(call) { return result; }
+    if let Some(result) = crate::nt_system_info::dispatch(call) { return result; }
     if let Ok(system) = nt::decode_system_information_ex(call) {
         const SYSTEM_SUPPORTED_PROCESSOR_ARCHITECTURES: u32 = 181;
         const ARCHITECTURE_RECORD_BYTES: u32 = 4;
