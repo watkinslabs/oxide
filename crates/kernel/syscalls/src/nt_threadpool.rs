@@ -1,6 +1,8 @@
 //! Native NT thread-pool and timer-queue lifecycle boundaries.
 #![cfg(target_os = "oxide-kernel")]
 use syscall::nt::{NtCall, NtService};
+#[cfg(target_arch = "x86_64")]
+const STATUS_SUCCESS: u64 = 0;
 const STATUS_INVALID_HANDLE: u64 = 0xc000_0008;
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 const STATUS_NO_MEMORY: u64 = 0xc000_0017;
@@ -99,10 +101,12 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RtlQueueWorkItem {
         let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
         if !cur.is_nt_personality() || call.args.a0 == 0 { return Some(STATUS_INVALID_PARAMETER); }
-        // The scheduler workqueue executes kernel WorkFn values. A Windows
-        // callback is a user instruction pointer and needs a user-thread
-        // callback trampoline/ownership path before it can be queued safely.
-        return Some(STATUS_NOT_IMPLEMENTED);
+        let flags = crate::nt_dispatch::stack_argument(6).unwrap_or(0);
+        if flags > u32::MAX as u64 || flags as u32 & !WT_SUPPORTED != 0 { return Some(STATUS_INVALID_PARAMETER); }
+        #[cfg(target_arch = "x86_64")]
+        { return Some(spawn_rtl_work_item(&cur, call.args.a0, call.args.a1)); }
+        #[cfg(target_arch = "aarch64")]
+        { return Some(STATUS_NOT_IMPLEMENTED); }
     }
     if call.service == NtService::RtlRegisterWait { return Some(register(call)); }
     if call.service == NtService::RtlDeregisterWait {
@@ -381,4 +385,51 @@ fn post_work(cur: &sched::Task, callback: u64, userdata: u64, environment: u64) 
         kind: sched::nt_callback::RegistrationKind::Work { pool: 0, environment, queued: true },
     });
     0
+}
+
+/// Start one Wine `RtlQueueWorkItem` callback in a real NT user thread.
+/// The callback's return address is the synthetic ntdll exit entry, so the
+/// thread cannot fall into unmapped memory when the callback returns. This is
+/// deliberately separate from kernel workqueue functions: kernel work may
+/// discover the work, but only a user thread may execute its instruction
+/// pointer.
+#[cfg(target_arch = "x86_64")]
+fn spawn_rtl_work_item(cur: &sched::Task, callback: u64, context: u64) -> u64 {
+    const STACK_SIZE: u64 = 64 * 1024;
+    if !uaccess::access_ok(callback, 1) { return STATUS_INVALID_PARAMETER; }
+    let Some(mm) = (unsafe { cur.mm_ref() }).map(|mm| mm.clone()) else { return STATUS_INVALID_PARAMETER; };
+    let stack = match mm.mmap(None, STACK_SIZE as usize, vmm::VmaProt::READ | vmm::VmaProt::WRITE,
+        vmm::VmaFlags::PRIVATE, vmm::VmaBacking::Anonymous, false) {
+        Ok(stack) => stack, Err(_) => return STATUS_NO_MEMORY,
+    };
+    let stack_limit = stack.as_u64();
+    let stack_top = match stack_limit.checked_add(STACK_SIZE).map(|value| value & !0xf) {
+        Some(value) => value, None => { let _ = mm.munmap(stack, STACK_SIZE as usize); return STATUS_NO_MEMORY; }
+    };
+    let user_sp = match stack_top.checked_sub(8) { Some(value) => value, None => { let _ = mm.munmap(stack, STACK_SIZE as usize); return STATUS_NO_MEMORY; } };
+    let ntdll = crate::nt_loader_proc::module_base_by_name(cur, b"ntdll.dll").unwrap_or(0);
+    let Some(exit_entry) = elf_load::pe_loader::resolve_nt_runtime_export(ntdll, b"RtlExitUserThread") else {
+        let _ = mm.munmap(stack, STACK_SIZE as usize); return STATUS_NOT_IMPLEMENTED;
+    };
+    if uaccess::put_user_u64(user_sp, exit_entry).is_err() {
+        let _ = mm.munmap(stack, STACK_SIZE as usize); return STATUS_INVALID_PARAMETER;
+    }
+    let tid = sched::live::next_tid();
+    let teb = match elf_load::process_env::build_thread_teb_with_stack(
+        cur.tgid.load(core::sync::atomic::Ordering::Acquire), tid, cur.nt_peb(),
+        stack_limit, stack_top, &mm) {
+        Ok(teb) => teb.as_u64(),
+        Err(_) => { let _ = mm.munmap(stack, STACK_SIZE as usize); return STATUS_NO_MEMORY; }
+    };
+    let child = match unsafe { sched::live::new_nt_thread_unpublished(
+        tid, callback, user_sp, context, teb, mm.clone(), cur.thread_group.clone()) } {
+        Ok(child) => child,
+        Err(_) => {
+            if let Some(teb) = hal::UserVirtAddr::new(teb) { let _ = elf_load::process_env::unmap_thread_teb(teb, &mm); }
+            let _ = mm.munmap(stack, STACK_SIZE as usize); return STATUS_NO_MEMORY;
+        }
+    };
+    sched::live::publish_new_task(&child);
+    sched::live::wake_new_task(&child);
+    STATUS_SUCCESS
 }
