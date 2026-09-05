@@ -151,6 +151,21 @@ fn timer_expiry_is_not_hidden_by_an_infinite_wait_timeout() {
 }
 
 #[test]
+fn timer_wait_retries_after_expiry_or_cancellation_wakeup() {
+    assert!(super::timer_expiry_may_have_woken(0, Some(500), 500));
+    assert!(super::timer_expiry_may_have_woken(700, Some(500), 500));
+    assert!(!super::timer_expiry_may_have_woken(400, Some(500), 500));
+    assert!(!super::timer_expiry_may_have_woken(0, None, 500));
+
+    let timer = NtObject::new_timer(9, false).timer().unwrap();
+    timer.arm(500, 0);
+    let observed = timer.deadline();
+    timer.cancel();
+    assert!(super::timer_expiry_may_have_woken(0, observed, 500));
+    assert_eq!(timer.deadline(), None);
+}
+
+#[test]
 fn timer_cancel_clears_readiness_after_a_periodic_expiry() {
     let timer = NtObject::new_timer(8, false).timer().unwrap();
     timer.arm(100, 10);

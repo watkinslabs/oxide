@@ -37,7 +37,7 @@ pub use namespace::{create_event, create_semaphore, directory_entries, directory
 pub use object::{NtEvent, NtFileInfo, NtObject, NtObjectType, NtSection, NtSemaphore, NtSignalError, NtSymbolicLink};
 pub use pipe::{NtPipe, NtPipeConfig, NtPipeEndpoint, NtPipeIo, NtPipeListen, NtPipePeek,
     NtPipeSide, NtPipeWait};
-pub use timer::{merge_wait_deadline, NtTimer};
+pub use timer::{merge_wait_deadline, timer_expiry_may_have_woken, NtTimer};
 pub use token::{sid_for_id, NtToken, NtTokenGroup, NtTokenPrivilege};
 
 #[cfg(test)]

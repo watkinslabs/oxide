@@ -1,6 +1,6 @@
 # Known issues
 
-**Live issue count: 304** — 297 `OPEN`, 7 `IN-PROGRESS`.
+**Live issue count: 306** — 299 `OPEN`, 7 `IN-PROGRESS`.
 
 | Id | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|---|
@@ -309,6 +309,7 @@
 | KI-0349 | OPEN | INFRA | med | origin/main windows compatibility gate fails before launcher verification because sched::NtSection::file_share is dead code under -D warnings | make windows-compat-test on fresh origin/main d57edf64f10e9ae4810734f537f40e153c6c1685 reaches launcher/static checks, then kernel target build fails at crates/kernel/sched/src/nt_object/object.rs:121; launcher files are untouched by this failure | P1401-steam-proton-runtime-contract |
 | KI-0350 | OPEN | MISSING | med | Native NtQueryInformationProcess did not expose ProcessImageInformation (class 37), so Wine’s main-module setup could not obtain SECTION_IMAGE_INFORMATION from an NT PE process. | Verified on origin/main: the query owner admitted basic/name/VM classes but returned STATUS_INVALID_INFO_CLASS for class 37. Wine’s loader calls this class while building the main module; the implementation now derives the result from the canonical PEB image pointer and mapped PE headers. | NT runtime |
 | KI-0351 | IN-PROGRESS F1572-nt-alertable-wait-order | MISSING | med | [CLAIMED F1572-nt-alertable-wait-order 2026-09-04] NtWaitForSingleObject alertable waits check queued APC state before rechecking the canonical object predicate after wake, so simultaneous object signal and APC incorrectly return STATUS_USER_APC instead of object success. | origin/main nt_dispatch::WaitEvent calls the alertable wait loop; live::wait_event_interruptible_until_user_apc tests apc before cond after park and after wake, unlike the NT wait ordering where signaled object wins before APC and timeout. | F1572-nt-alertable-wait-order |
+| KI-0352 | OPEN | INFRA | med | Windows Notepad compatibility harness requires removed head -c fixture declaration | make test stops in tools/test-windows-notepad-harness.sh before Rust tests; origin/main has no matching declaration in tools/xtask/src/rootfs_disks/windows_notepad.rs, while the harness still requires it. | P501-windows-timer-wait-contract |
 
 ## Ext4 master program
 
