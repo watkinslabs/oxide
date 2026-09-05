@@ -11,6 +11,9 @@ use std::ptr;
 const VK_SUCCESS: i32 = 0;
 const VK_INCOMPLETE: i32 = 5;
 const VK_API_VERSION_1_0: u32 = 1 << 22;
+const VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO: u32 = 2;
+const VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO: u32 = 3;
+const VK_QUEUE_GRAPHICS_BIT: u32 = 1;
 
 #[repr(C)]
 struct ApplicationInfo {
@@ -35,16 +38,60 @@ struct InstanceCreateInfo {
     enabled_extension_names: *const *const c_char,
 }
 
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct QueueFamilyProperties {
+    queue_flags: u32,
+    queue_count: u32,
+    timestamp_valid_bits: u32,
+    min_image_transfer_granularity: [u32; 3],
+}
+
+#[repr(C)]
+struct DeviceQueueCreateInfo {
+    s_type: u32,
+    next: *const c_void,
+    flags: u32,
+    queue_family_index: u32,
+    queue_count: u32,
+    queue_priorities: *const f32,
+}
+
+#[repr(C)]
+struct DeviceCreateInfo {
+    s_type: u32,
+    next: *const c_void,
+    flags: u32,
+    queue_create_info_count: u32,
+    queue_create_infos: *const DeviceQueueCreateInfo,
+    enabled_layer_count: u32,
+    enabled_layer_names: *const *const c_char,
+    enabled_extension_count: u32,
+    enabled_extension_names: *const *const c_char,
+    enabled_features: *const c_void,
+}
+
 type GetProcAddr = unsafe extern "C" fn(*mut c_void, *const c_char) -> *const c_void;
 type CreateInstance = unsafe extern "C" fn(*const InstanceCreateInfo, *const c_void, *mut *mut c_void) -> i32;
 type DestroyInstance = unsafe extern "C" fn(*mut c_void, *const c_void);
 type EnumeratePhysicalDevices = unsafe extern "C" fn(*mut c_void, *mut u32, *mut *mut c_void) -> i32;
 type EnumerateInstanceVersion = unsafe extern "C" fn(*mut u32) -> i32;
+type GetPhysicalDeviceQueueFamilyProperties = unsafe extern "C" fn(*mut c_void, *mut u32, *mut QueueFamilyProperties);
+type CreateDevice = unsafe extern "C" fn(*mut c_void, *const DeviceCreateInfo, *const c_void, *mut *mut c_void) -> i32;
+type GetDeviceQueue = unsafe extern "C" fn(*mut c_void, u32, u32, *mut *mut c_void);
+type DeviceWaitIdle = unsafe extern "C" fn(*mut c_void) -> i32;
+type DestroyDevice = unsafe extern "C" fn(*mut c_void, *const c_void);
 
 fn usable_device_handles(status: i32, handles: &[*mut c_void]) -> bool {
     (status == VK_SUCCESS || status == VK_INCOMPLETE)
         && !handles.is_empty()
         && handles.iter().all(|handle| !handle.is_null())
+}
+
+fn graphics_queue_family(properties: &[QueueFamilyProperties]) -> Option<u32> {
+    properties.iter().enumerate().find(|(_, property)| {
+        property.queue_count != 0 && property.queue_flags & VK_QUEUE_GRAPHICS_BIT != 0
+    }).map(|(index, _)| index as u32)
 }
 
 unsafe fn symbol<T>(get_proc: GetProcAddr, instance: *mut c_void, name: &'static CStr) -> Option<T> {
@@ -102,16 +149,62 @@ fn run(loader: *mut c_void) -> Result<(), &'static str> {
     if !usable_device_handles(status, &devices) {
         return Err("Vulkan returned no usable physical-device handles");
     }
+    let queue_properties = unsafe { symbol::<GetPhysicalDeviceQueueFamilyProperties>(get_proc, instance, c"vkGetPhysicalDeviceQueueFamilyProperties") }.ok_or("queue-family enumeration is unavailable")?;
+    let mut queue_count = 0;
+    // SAFETY: the physical device belongs to the live instance and the null
+    // properties pointer requests the loader's required count-only query.
+    unsafe { queue_properties(devices[0], &mut queue_count, ptr::null_mut()); }
+    if queue_count == 0 { return Err("Vulkan reports no queue families"); }
+    let mut properties = vec![QueueFamilyProperties { queue_flags: 0, queue_count: 0, timestamp_valid_bits: 0, min_image_transfer_granularity: [0; 3] }; queue_count as usize];
+    // SAFETY: properties has exactly the capacity returned by the preceding
+    // count query and remains owned and writable for this call.
+    unsafe { queue_properties(devices[0], &mut queue_count, properties.as_mut_ptr()); }
+    properties.truncate(queue_count as usize);
+    let queue_family = graphics_queue_family(&properties).ok_or("Vulkan has no graphics queue family")?;
+    let priority = 1.0f32;
+    let queue_info = DeviceQueueCreateInfo { s_type: VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, next: ptr::null(), flags: 0, queue_family_index: queue_family, queue_count: 1, queue_priorities: &priority };
+    let device_info = DeviceCreateInfo { s_type: VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, next: ptr::null(), flags: 0, queue_create_info_count: 1, queue_create_infos: &queue_info, enabled_layer_count: 0, enabled_layer_names: ptr::null(), enabled_extension_count: 0, enabled_extension_names: ptr::null(), enabled_features: ptr::null() };
+    let create_device = unsafe { symbol::<CreateDevice>(get_proc, instance, c"vkCreateDevice") }.ok_or("vkCreateDevice is unavailable")?;
+    let get_queue = unsafe { symbol::<GetDeviceQueue>(get_proc, instance, c"vkGetDeviceQueue") }.ok_or("vkGetDeviceQueue is unavailable")?;
+    let wait_idle = unsafe { symbol::<DeviceWaitIdle>(get_proc, instance, c"vkDeviceWaitIdle") }.ok_or("vkDeviceWaitIdle is unavailable")?;
+    let destroy_device = unsafe { symbol::<DestroyDevice>(get_proc, instance, c"vkDestroyDevice") }.ok_or("vkDestroyDevice is unavailable")?;
+    let destroy_instance = unsafe { symbol::<DestroyInstance>(get_proc, instance, c"vkDestroyInstance") }.ok_or("vkDestroyInstance is unavailable")?;
+    let mut device = ptr::null_mut();
+    // SAFETY: the selected physical device and queue description came from the
+    // live instance; device is writable storage owned by this function.
+    let status = unsafe { create_device(devices[0], &device_info, ptr::null(), &mut device) };
+    if status != VK_SUCCESS || device.is_null() { return Err("vkCreateDevice failed"); }
+    let mut queue = ptr::null_mut();
+    // SAFETY: device owns the selected queue family and queue is writable
+    // storage for the first queue requested from that family.
+    unsafe { get_queue(device, queue_family, 0, &mut queue); }
+    if queue.is_null() {
+        // SAFETY: device creation succeeded, no queue was returned, and the
+        // device is the sole child object that must be retired before instance.
+        unsafe { destroy_device(device, ptr::null()); }
+        return Err("Vulkan returned a null graphics queue");
+    }
+    // SAFETY: device is live and no command is submitted; this still proves
+    // the synchronization entry point is callable before teardown.
+    if unsafe { wait_idle(device) } != VK_SUCCESS {
+        // SAFETY: device creation succeeded and the failed idle query still
+        // leaves its ownership with this function for deterministic teardown.
+        unsafe { destroy_device(device, ptr::null()); }
+        return Err("vkDeviceWaitIdle failed");
+    }
+    // SAFETY: queue is owned by device and is idle, so device destruction is
+    // the first valid lifetime boundary before destroying its parent instance.
+    unsafe { destroy_device(device, ptr::null()); }
     println!("native-vulkan: PASS api={} physical_devices={}", version_text(api_version), devices.len());
-    // SAFETY: instance was created by this function and no child objects exist.
-    let destroy = unsafe { symbol::<DestroyInstance>(get_proc, instance, c"vkDestroyInstance") }.ok_or("vkDestroyInstance is unavailable")?;
-    unsafe { destroy(instance, ptr::null()); }
+    // SAFETY: the device was destroyed above, so the instance has no live child
+    // objects and remains owned by this function until this call completes.
+    unsafe { destroy_instance(instance, ptr::null()); }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{usable_device_handles, version_text, VK_INCOMPLETE, VK_SUCCESS};
+    use super::{graphics_queue_family, usable_device_handles, version_text, QueueFamilyProperties, VK_INCOMPLETE, VK_SUCCESS, VK_QUEUE_GRAPHICS_BIT};
 
     #[test]
     fn vulkan_version_fields_are_rendered_without_losing_bits() {
@@ -127,5 +220,19 @@ mod tests {
         assert!(!usable_device_handles(VK_SUCCESS, &[]));
         assert!(!usable_device_handles(VK_SUCCESS, &[std::ptr::null_mut()]));
         assert!(!usable_device_handles(-1, &valid));
+    }
+
+    #[test]
+    fn device_admission_requires_a_live_graphics_queue() {
+        let compute_only = [QueueFamilyProperties { queue_flags: 2, queue_count: 1, timestamp_valid_bits: 0, min_image_transfer_granularity: [1; 3] }];
+        assert_eq!(graphics_queue_family(&compute_only), None);
+        let graphics = [QueueFamilyProperties { queue_flags: VK_QUEUE_GRAPHICS_BIT, queue_count: 1, timestamp_valid_bits: 0, min_image_transfer_granularity: [1; 3] }];
+        assert_eq!(graphics_queue_family(&graphics), Some(0));
+    }
+
+    #[test]
+    fn queue_family_with_no_queues_is_not_admitted() {
+        let empty = [QueueFamilyProperties { queue_flags: VK_QUEUE_GRAPHICS_BIT, queue_count: 0, timestamp_valid_bits: 0, min_image_transfer_granularity: [1; 3] }];
+        assert_eq!(graphics_queue_family(&empty), None);
     }
 }
