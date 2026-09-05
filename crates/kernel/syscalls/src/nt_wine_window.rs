@@ -478,8 +478,15 @@ pub fn dispatch_raw(ordinal: u64, args: SyscallArgs) -> Option<u64> {
     if ordinal == WINE_CALL_ONE_PARAM {
         let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
         if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
-        if args.a1 != CALL_ONE_PARAM_GET_MENU_ITEM_COUNT { return Some(STATUS_NOT_IMPLEMENTED); }
-        return Some(crate::nt_window::menu_item_count_for_current(args.a0));
+        if args.a1 == CALL_ONE_PARAM_GET_MENU_ITEM_COUNT { return Some(crate::nt_window::menu_item_count_for_current(args.a0)); }
+        if args.a1 == crate::nt_window_policy::CALL_ONE_PARAM_GET_SYSTEM_METRICS {
+            let (width, height) = drm::primary_card().map(|card| {
+                let mode = card.mode_for(0);
+                (mode.hdisplay as u32, mode.vdisplay as u32)
+            }).filter(|(width, height)| *width != 0 && *height != 0).unwrap_or((DEFAULT_WINDOW_SURFACE_WIDTH as u32, DEFAULT_WINDOW_SURFACE_HEIGHT as u32));
+            return Some(crate::nt_window_policy::display_metric(args.a0, width, height).unwrap_or(STATUS_NOT_IMPLEMENTED));
+        }
+        return Some(STATUS_NOT_IMPLEMENTED);
     }
     if ordinal == WINE_THUNKED_MENU_ITEM_INFO {
         return Some(crate::nt_window::thunked_menu_item_info(args.a0, args.a1, args.a2, args.a3, args.a4));
