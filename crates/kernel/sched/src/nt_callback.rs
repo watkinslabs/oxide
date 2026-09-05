@@ -9,7 +9,8 @@ const MAX_DEPTH: usize = 64;
 /// adapters.
 pub enum RegistrationKind {
     Wait { object: u64, timeout_ms: u32, flags: u32 },
-    Timer { due_ms: u32, period_ms: u32 },
+    TimerQueue,
+    Timer { queue: u64, due_ms: u32, period_ms: u32, flags: u32 },
     Callback,
 }
 
