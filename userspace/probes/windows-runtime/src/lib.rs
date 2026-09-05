@@ -292,7 +292,7 @@ impl RuntimeRequest {
     /// # C: O(PE + DLL catalog bytes)
     pub fn from_launch_config(image_path: &Path, windows_path: &[u8], command_line: &[u8], config: &ProtonLaunchConfig) -> Result<Self, BuildError> {
         let dxvk = config.validate_and_admit_dxvk()?;
-        Self::from_paths_with_environment_and_paths(image_path, windows_path, command_line, &config.dll_catalog, &dxvk.modules, config.profile().environment())
+        Self::from_paths_with_environment_and_paths_and_snapshots(image_path, windows_path, command_line, &config.dll_catalog, dxvk.modules(), dxvk.module_images(), config.profile().environment())
     }
 
     /// Read a PE32+ root and every non-native DLL in `dll_dir` using the Linux personality.
@@ -321,6 +321,16 @@ impl RuntimeRequest {
     /// # C: O(root + component paths + DLL bytes + environment bytes)
     fn from_paths_with_environment_and_paths<I>(image_path: &Path, windows_path: &[u8], command_line: &[u8], dll_dir: &Path, component_paths: &[PathBuf], environment: I) -> Result<Self, BuildError>
     where I: IntoIterator<Item = (String, String)> {
+        Self::from_paths_with_environment_and_paths_and_snapshots(image_path, windows_path, command_line, dll_dir, component_paths, &[], environment)
+    }
+
+    /// Build the catalog from explicitly admitted component bytes. The
+    /// snapshots close the admission-to-handoff window; a later replacement
+    /// at an admitted path cannot change the bytes sent to the kernel.
+    /// # C: O(root + component paths + component bytes + DLL catalog bytes)
+    fn from_paths_with_environment_and_paths_and_snapshots<I>(image_path: &Path, windows_path: &[u8], command_line: &[u8], dll_dir: &Path, component_paths: &[PathBuf], component_images: &[Box<[u8]>], environment: I) -> Result<Self, BuildError>
+    where I: IntoIterator<Item = (String, String)> {
+        if component_paths.len() != component_images.len() && !component_images.is_empty() { return Err(BuildError::InvalidLaunchConfiguration { field: "dxvk" }); }
         if windows_path.is_empty() || windows_path.len() > u32::MAX as usize || windows_path.contains(&0) { return Err(BuildError::InvalidUtf8Path); }
         if command_line.is_empty() || command_line.len() > u32::MAX as usize || command_line.contains(&0) { return Err(BuildError::InvalidUtf8Path); }
         let image = fs::read(image_path).map_err(|error| {
@@ -337,9 +347,13 @@ impl RuntimeRequest {
         while let Some(name) = pending.pop() {
             if name.eq_ignore_ascii_case(b"ntdll.dll") || !seen.insert(name.clone()) { continue; }
             let path = available.get(&name).ok_or_else(|| BuildError::MissingModule { name: name.clone() })?;
-            let blob = fs::read(&path).map_err(|error| {
-                eprintln!("windows-runtime: read {}: {error}", path.display()); BuildError::Io(error)
-            })?;
+            let blob = if let Some((_, image)) = component_paths.iter().zip(component_images).find(|(admitted, _)| *admitted == path) {
+                image.to_vec()
+            } else {
+                fs::read(&path).map_err(|error| {
+                    eprintln!("windows-runtime: read {}: {error}", path.display()); BuildError::Io(error)
+                })?
+            };
             validate_size(blob.len() as u64)?;
             let dependency = pe::parse(&blob).map_err(|error| BuildError::InvalidModule { path: path.clone(), error })?;
             pending.extend(dependency.imports().map_err(|error| BuildError::InvalidModule { path: path.clone(), error })?
