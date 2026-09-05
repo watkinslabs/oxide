@@ -31,6 +31,7 @@ FROZEN 2026-09-04. Dep:`01`,`02`,`31a`,`31b`,`31d`,`31e`,`52`,`53`. Provides: PE
 ## 4 Tests
 
 - malformed import descriptors, thunk overflows, unterminated lookup tables, and invalid name RVAs fail without indexing outside the image;
+- `RtlQueryEnvironmentVariable_U` matches a case-insensitive variable name only when the entry has exactly one `=` delimiter; malformed entries with a second delimiter and absent names return `STATUS_VARIABLE_NOT_FOUND` without changing the value buffer;
 - name and ordinal thunks preserve their exact values;
 - loaded module export tables resolve name and ordinal imports to base-plus-RVA addresses, with forwarders left for runtime policy;
 - the native NTDLL page owns the bootstrap module in the production catalog; a

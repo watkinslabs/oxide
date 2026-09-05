@@ -10,4 +10,5 @@ pub mod apiset;
 pub mod loader_list;
 pub mod loader_name;
 pub mod relay;
+pub mod ntdll;
 #[cfg(test)] mod tests;

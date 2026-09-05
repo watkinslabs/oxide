@@ -290,8 +290,7 @@ fn environment_entry(environment: &[u16], name: &[u16]) -> Option<(usize, usize)
     while start + 1 < environment.len() {
         let end = environment[start..].iter().position(|&unit| unit == 0).map(|offset| start + offset)?;
         if end == start { return None; }
-        if end > name.len() && environment[start + name.len()] == b'=' as u16
-            && environment[start..start + name.len()].iter().zip(name).all(|(&left, &right)| ascii_fold(left) == ascii_fold(right)) {
+        if end > name.len() && pe::ntdll::environment_entry_value(&environment[start..end], name).is_some() {
             return Some((start, end + 1));
         }
         start = end + 1;
@@ -346,11 +345,7 @@ fn find_environment_value(environment: u64, name: &[u16]) -> Option<Vec<u16>> {
         let unit = u16::from_le_bytes(bytes);
         if unit == 0 {
             if entry.is_empty() { return None; }
-            if let Some(equal) = entry.iter().position(|unit| *unit == b'=' as u16) {
-                if equal == name.len() && entry[..equal].iter().zip(name).all(|(left, right)| ascii_fold(*left) == ascii_fold(*right)) {
-                    return Some(entry[equal + 1..].to_vec());
-                }
-            }
+            if let Some(value) = pe::ntdll::environment_entry_value(&entry, name) { return Some(value.to_vec()); }
             entry.clear();
         } else { entry.push(unit); }
     }
@@ -475,13 +470,9 @@ fn environment_value(environment: u64, name: &[u16]) -> Option<Vec<u16>> {
         let unit = u16::from_le_bytes(bytes);
         if unit == 0 {
             if entry.is_empty() { return None; }
-            if let Some(equal) = entry.iter().position(|unit| *unit == b'=' as u16) {
-                if equal == name.len() && entry[..equal].iter().zip(name).all(|(left, right)| ascii_fold(*left) == ascii_fold(*right)) { return Some(entry[equal + 1..].to_vec()); }
-            }
+            if let Some(value) = pe::ntdll::environment_entry_value(&entry, name) { return Some(value.to_vec()); }
             entry.clear();
         } else { entry.push(unit); }
     }
     None
 }
-
-fn ascii_fold(unit: u16) -> u16 { if (b'A' as u16..=b'Z' as u16).contains(&unit) { unit + 32 } else { unit } }
