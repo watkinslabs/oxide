@@ -9,6 +9,13 @@ pub const WM_KILLFOCUS: u32 = 0x0008;
 pub const WM_KEYDOWN: u32 = 0x0100;
 pub const WM_KEYUP: u32 = 0x0101;
 pub const WM_MOUSEMOVE: u32 = 0x0200;
+pub const WM_LBUTTONDOWN: u32 = 0x0201;
+pub const WM_LBUTTONUP: u32 = 0x0202;
+pub const WM_RBUTTONDOWN: u32 = 0x0204;
+pub const WM_RBUTTONUP: u32 = 0x0205;
+pub const WM_MBUTTONDOWN: u32 = 0x0207;
+pub const WM_MBUTTONUP: u32 = 0x0208;
+pub const WM_MOUSEWHEEL: u32 = 0x020a;
 pub const WM_NCHITTEST: u32 = 0x0084;
 pub const WM_NCACTIVATE: u32 = 0x0086;
 pub const WM_PAINT: u32 = 0x000f;
@@ -21,6 +28,17 @@ const KEY_TRANSITION_STATE: u32 = 1 << 31;
 pub const HTCLIENT: i64 = 1;
 pub const HTNOWHERE: i64 = 0;
 pub const SW_HIDE: u32 = 0;
+pub const EV_KEY: u16 = 0x01;
+pub const EV_REL: u16 = 0x02;
+pub const REL_X: u16 = 0x00;
+pub const REL_Y: u16 = 0x01;
+pub const REL_WHEEL: u16 = 0x08;
+pub const BTN_LEFT: u16 = 0x110;
+pub const BTN_RIGHT: u16 = 0x111;
+pub const BTN_MIDDLE: u16 = 0x112;
+pub const MK_LBUTTON: u16 = 0x0001;
+pub const MK_RBUTTON: u16 = 0x0002;
+pub const MK_MBUTTON: u16 = 0x0010;
 
 /// Encode signed client coordinates in the Win32 mouse-message lParam. # C: O(1)
 pub const fn mouse_lparam(x: i32, y: i32) -> i64 {
@@ -184,7 +202,7 @@ pub struct WindowPresentRecord { pub window: WindowId, pub bounds: WindowRect, p
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum WindowError { NoSuchWindow, InvalidParent, ClassInUse, WrongThread, NoFocus, QueueFull, PaintActive, PaintNotActive, NotVisible }
 
-pub struct WindowManager { next: u32, next_atom: u16, classes: Vec<WindowClass>, windows: Vec<(WindowId, WindowRecord)>, rects: Vec<(WindowId, WindowRect)>, texts: Vec<(WindowId, Vec<u16>)>, dirty: Vec<(WindowId, WindowRect)>, painting: Vec<(WindowId, Option<WindowRect>)>, queues: Vec<(u64, MessageQueue)>, timers: Vec<WindowTimer>, focus: Option<WindowId>, cursor: (i32, i32), destroying: Vec<WindowId> }
+pub struct WindowManager { next: u32, next_atom: u16, classes: Vec<WindowClass>, windows: Vec<(WindowId, WindowRecord)>, rects: Vec<(WindowId, WindowRect)>, texts: Vec<(WindowId, Vec<u16>)>, dirty: Vec<(WindowId, WindowRect)>, painting: Vec<(WindowId, Option<WindowRect>)>, queues: Vec<(u64, MessageQueue)>, timers: Vec<WindowTimer>, focus: Option<WindowId>, capture: Option<WindowId>, cursor: (i32, i32), buttons: u16, destroying: Vec<WindowId> }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 struct WindowTimer { owner_tid: u64, hwnd: Option<WindowId>, id: u64, period_ns: u64, due_ns: u64, proc: u64 }
@@ -195,7 +213,7 @@ pub enum QueueResult { Message(WinMessage), Quit(i32), Empty }
 impl Default for WindowManager { fn default() -> Self { Self::new() } }
 
 impl WindowManager {
-    pub fn new() -> Self { Self { next: 1, next_atom: 1, classes: Vec::new(), windows: Vec::new(), rects: Vec::new(), texts: Vec::new(), dirty: Vec::new(), painting: Vec::new(), queues: Vec::new(), timers: Vec::new(), focus: None, cursor: (0, 0), destroying: Vec::new() } }
+    pub fn new() -> Self { Self { next: 1, next_atom: 1, classes: Vec::new(), windows: Vec::new(), rects: Vec::new(), texts: Vec::new(), dirty: Vec::new(), painting: Vec::new(), queues: Vec::new(), timers: Vec::new(), focus: None, capture: None, cursor: (0, 0), buttons: 0, destroying: Vec::new() } }
     /// Register one process-local window class and retain its procedure. # C: O(N_classes)
     pub fn register_class(&mut self, name: &[u16], wndproc: u64) -> Result<u16, WindowError> {
         if name.is_empty() || self.classes.iter().any(|class| same_name(&class.name, name)) { return Err(WindowError::InvalidParent); }
@@ -307,6 +325,24 @@ impl WindowManager {
     }
     /// Return the canonical focused window. # C: O(1)
     pub fn focused(&self) -> Option<WindowId> { self.focus }
+    /// Set pointer capture and return the previous window. # C: O(1)
+    pub fn set_capture(&mut self, tid: u64, id: WindowId) -> Result<Option<WindowId>, WindowError> {
+        let record = self.get(id).ok_or(WindowError::NoSuchWindow)?;
+        if record.owner_tid != tid { return Err(WindowError::WrongThread); }
+        let previous = self.capture;
+        self.capture = Some(id);
+        Ok(previous)
+    }
+    /// Release pointer capture from its owning thread. # C: O(1)
+    pub fn release_capture(&mut self, tid: u64) -> Result<bool, WindowError> {
+        let Some(id) = self.capture else { return Ok(false); };
+        let record = self.get(id).ok_or(WindowError::NoSuchWindow)?;
+        if record.owner_tid != tid { return Err(WindowError::WrongThread); }
+        self.capture = None;
+        Ok(true)
+    }
+    /// Return the live pointer-capture window. # C: O(1)
+    pub const fn captured(&self) -> Option<WindowId> { self.capture }
     /// Change visibility and return the previous state. # C: O(N_windows)
     pub fn show(&mut self, tid: u64, id: WindowId, visible: bool) -> Result<bool, WindowError> {
         let Some(record) = self.get(id) else { return Err(WindowError::NoSuchWindow); };
@@ -392,6 +428,7 @@ impl WindowManager {
         self.dirty.retain(|(window, _)| *window != id);
         self.painting.retain(|(window, _)| *window != id);
         self.destroying.retain(|window| *window != id);
+        if self.capture == Some(id) { self.capture = None; }
         if self.focus == Some(id) { self.focus = None; }
         Ok(self.windows.remove(index).1)
     }
@@ -456,6 +493,38 @@ impl WindowManager {
         let limit = if code == 0 { rect.right } else { rect.bottom };
         if limit > 0 { *axis = (*axis).clamp(0, limit - 1); }
         self.post_to_window(window, WinMessage { hwnd: Some(window), message: WM_MOUSEMOVE, wparam: 0, lparam: mouse_lparam(self.cursor.0, self.cursor.1) })
+    }
+    /// Convert one accepted Linux pointer event into a capture-aware message. # C: O(N_windows)
+    pub fn post_hardware_mouse(&mut self, ev_type: u16, code: u16, value: i32) -> Result<(), WindowError> {
+        if ev_type == EV_REL && (code == REL_X || code == REL_Y) {
+            let axis = if code == REL_X { &mut self.cursor.0 } else { &mut self.cursor.1 };
+            *axis = axis.saturating_add(value);
+            return self.post_pointer(WM_MOUSEMOVE);
+        }
+        if ev_type == EV_REL && code == REL_WHEEL {
+            let delta = value.saturating_mul(120).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+            return self.post_pointer_with(WM_MOUSEWHEEL, self.buttons as u32 | ((delta as u16 as u32) << 16));
+        }
+        if ev_type != EV_KEY { return Ok(()); }
+        let (message, bit) = match code {
+            BTN_LEFT => (if value != 0 { WM_LBUTTONDOWN } else { WM_LBUTTONUP }, MK_LBUTTON),
+            BTN_RIGHT => (if value != 0 { WM_RBUTTONDOWN } else { WM_RBUTTONUP }, MK_RBUTTON),
+            BTN_MIDDLE => (if value != 0 { WM_MBUTTONDOWN } else { WM_MBUTTONUP }, MK_MBUTTON),
+            _ => return Ok(()),
+        };
+        if value != 0 { self.buttons |= bit; } else { self.buttons &= !bit; }
+        self.post_pointer_with(message, self.buttons as u32)
+    }
+    fn post_pointer(&mut self, message: u32) -> Result<(), WindowError> { self.post_pointer_with(message, self.buttons as u32) }
+    fn post_pointer_with(&mut self, message: u32, wparam: u32) -> Result<(), WindowError> {
+        let window = self.capture.or_else(|| self.windows.iter().rev().find_map(|(id, record)| {
+            if !record.visible { return None; }
+            let rect = self.rect(*id)?;
+            (self.cursor.0 >= rect.left && self.cursor.0 < rect.right && self.cursor.1 >= rect.top && self.cursor.1 < rect.bottom).then_some(*id)
+        }));
+        let Some(window) = window else { return Err(WindowError::NoFocus); };
+        let rect = self.rect(window).ok_or(WindowError::NoSuchWindow)?;
+        self.post_to_window(window, WinMessage { hwnd: Some(window), message, wparam: wparam as u64, lparam: mouse_lparam(self.cursor.0.saturating_sub(rect.left), self.cursor.1.saturating_sub(rect.top)) })
     }
     /// Arm or replace one process-owned timer using the canonical window queue. # C: O(N_timers)
     pub fn set_timer(&mut self, owner_tid: u64, hwnd: Option<WindowId>, id: u64, timeout_ms: u32, proc: u64, now_ns: u64) -> Result<u64, WindowError> {
@@ -1021,6 +1090,35 @@ mod tests {
         let filter = MessageFilter { hwnd: Some(window), first: WM_MOUSEMOVE, last: WM_MOUSEMOVE };
         assert_eq!(manager.take_for_thread(9, filter), QueueResult::Message(WinMessage { hwnd: Some(window), message: WM_MOUSEMOVE, wparam: 0, lparam: mouse_lparam(99, 0) }));
         assert_eq!(manager.take_for_thread(9, filter), QueueResult::Message(WinMessage { hwnd: Some(window), message: WM_MOUSEMOVE, wparam: 0, lparam: mouse_lparam(99, 79) }));
+    }
+
+    #[test]
+    fn captured_pointer_routes_buttons_and_signed_wheel_to_capture_owner() {
+        let mut manager = WindowManager::new();
+        let window = manager.create(9, None, 0).unwrap();
+        manager.set_rect(window, WindowRect { left: 40, top: 50, right: 140, bottom: 130 }).unwrap();
+        manager.show(9, window, true).unwrap();
+        manager.set_capture(9, window).unwrap();
+        manager.post_hardware_mouse(EV_REL, REL_X, 200).unwrap();
+        manager.post_hardware_mouse(EV_REL, REL_WHEEL, -1).unwrap();
+        manager.post_hardware_mouse(EV_KEY, BTN_LEFT, 1).unwrap();
+        manager.post_hardware_mouse(EV_KEY, BTN_LEFT, 0).unwrap();
+        let any = MessageFilter { hwnd: Some(window), first: WM_MOUSEMOVE, last: WM_MOUSEWHEEL };
+        assert_eq!(manager.take_for_thread(9, any), QueueResult::Message(WinMessage { hwnd: Some(window), message: WM_MOUSEMOVE, wparam: 0, lparam: mouse_lparam(160, -50) }));
+        assert_eq!(manager.take_for_thread(9, any), QueueResult::Message(WinMessage { hwnd: Some(window), message: WM_MOUSEWHEEL, wparam: ((-120i16 as u16) as u64) << 16, lparam: mouse_lparam(160, -50) }));
+        assert_eq!(manager.take_for_thread(9, any), QueueResult::Message(WinMessage { hwnd: Some(window), message: WM_LBUTTONDOWN, wparam: MK_LBUTTON as u64, lparam: mouse_lparam(160, -50) }));
+        assert_eq!(manager.take_for_thread(9, any), QueueResult::Message(WinMessage { hwnd: Some(window), message: WM_LBUTTONUP, wparam: 0, lparam: mouse_lparam(160, -50) }));
+    }
+
+    #[test]
+    fn pointer_capture_is_thread_owned_and_destroy_releases_it() {
+        let mut manager = WindowManager::new();
+        let window = manager.create(9, None, 0).unwrap();
+        assert_eq!(manager.set_capture(8, window), Err(WindowError::WrongThread));
+        manager.set_capture(9, window).unwrap();
+        assert_eq!(manager.captured(), Some(window));
+        manager.destroy(window).unwrap();
+        assert_eq!(manager.captured(), None);
     }
 
     #[test]
