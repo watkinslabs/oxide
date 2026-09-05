@@ -596,6 +596,22 @@
     }
 
     #[test]
+    fn entry_transfer_rejects_stack_outside_canonical_vma_and_rolls_back() {
+        let as_ = AddressSpace::new(0x40_000).unwrap();
+        let stack = as_.mmap(None, 0x8000, VmaProt::READ | VmaProt::WRITE,
+            VmaFlags::PRIVATE, VmaBacking::Anonymous, false).unwrap();
+        let stack_top = stack.as_u64() + 0x8000;
+        let vmas_before = as_.vma_count();
+        let result = load_pe_process_with_resolver_and_modules_and_params_with_stack_bounds(
+            &tiny_pe(), &as_, &process_env::EnvironmentInput {
+                image_base: 0, image_size: 0, image_path: "C:\\hello.exe",
+                command_line: "hello.exe", environment: &[], process_id: 1, thread_id: 2,
+            }, stack.as_u64(), stack_top + 0x1000, &RejectImports, &[], None);
+        assert!(matches!(result, Err(pe::Error::Einval)));
+        assert_eq!(as_.vma_count(), vmas_before);
+    }
+
+    #[test]
     fn failed_environment_setup_rolls_back_the_pe_mapping() {
         let as_ = AddressSpace::new(0x20_000).unwrap();
         let result = load_pe_process(&tiny_pe(), &as_, &process_env::EnvironmentInput {

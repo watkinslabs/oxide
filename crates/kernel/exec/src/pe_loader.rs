@@ -1016,6 +1016,30 @@ pub fn initial_entry_state_with_environment(image: &PeLoadedImage, stack_top: u6
     state.gs_base = env.teb;
     Ok(state)
 }
+
+/// Admit the complete first-user-context contract against one address space.
+/// The PE entry must be executable, the stack must be the canonical anonymous
+/// writable VMA with room for the Windows x64 home area, and GS/PEB must point
+/// into the environment block being committed.
+/// # C: O(1)
+fn validate_entry_context(as_: &AddressSpace, image: &PeLoadedImage,
+    env: &process_env::NtProcessEnvironment, stack_base: u64, stack_top: u64,
+    state: &PeEntryState) -> Result<(), pe::Error> {
+    if !executable_entry(as_, state.rip) || state.rip != image.entry || state.gs_base != env.teb { return Err(pe::Error::Einval); }
+    if stack_base == 0 { return Ok(()); }
+    let stack_vma = as_.find_vma(UserVirtAddr::new(stack_top.checked_sub(1).ok_or(pe::Error::Einval)?).ok_or(pe::Error::Einval)?)
+        .ok_or(pe::Error::Einval)?;
+    if stack_base >= stack_top || stack_vma.start.as_u64() != stack_base
+        || stack_vma.end.as_u64() != stack_top || !stack_vma.prot.contains(VmaProt::READ | VmaProt::WRITE)
+        || !matches!(stack_vma.backing, VmaBacking::Anonymous) { return Err(pe::Error::Einval); }
+    let rsp = state.rsp.as_u64();
+    if rsp < stack_base || rsp.checked_add(process_env::X64_SHADOW_SPACE).ok_or(pe::Error::Einval)? > stack_top { return Err(pe::Error::Einval); }
+    let env_end = env.base.as_u64().checked_add(env.bytes as u64).ok_or(pe::Error::Einval)?;
+    for address in [env.peb.as_u64(), env.teb.as_u64()] {
+        if address < env.base.as_u64() || address >= env_end || as_.find_vma(UserVirtAddr::new(address).ok_or(pe::Error::Einval)?).is_none() { return Err(pe::Error::Einval); }
+    }
+    Ok(())
+}
 pub fn load_pe_process(blob: &[u8], as_: &AddressSpace, input: &process_env::EnvironmentInput<'_>, stack_top: u64) -> Result<PeProcess, pe::Error> {
     load_pe_process_with_resolver(blob, as_, input, stack_top, &RejectImports)
 }
@@ -1087,6 +1111,11 @@ fn load_pe_process_with_catalog_with_stack_bounds<R: ImportResolver>(blob: &[u8]
             return Err(error);
         }
     };
+    if validate_entry_context(as_, &loaded[0].image, &environment, stack_base, stack_top, &entry).is_err() {
+        let _ = as_.munmap(environment.base, environment.bytes);
+        unmap_loaded_modules(as_, &loaded);
+        return Err(pe::Error::Einval);
+    }
     let initializers = match pe_init::collect_initializers(&loaded, &owned) {
         Ok(initializers) => initializers,
         Err(error) => { let _ = as_.munmap(environment.base, environment.bytes); unmap_loaded_modules(as_, &loaded); return Err(error); }
@@ -1160,6 +1189,11 @@ pub fn load_pe_process_with_resolver_and_modules_and_params_with_stack_bounds<R:
         Ok(entry) => entry,
         Err(error) => { let _ = as_.munmap(environment.base, environment.bytes); let _ = as_.munmap(UserVirtAddr::new(image.base).ok_or(pe::Error::Einval)?, image.size as usize); return Err(error); }
     };
+    if validate_entry_context(as_, &image, &environment, stack_base, stack_top, &entry).is_err() {
+        let _ = as_.munmap(environment.base, environment.bytes);
+        let _ = as_.munmap(UserVirtAddr::new(image.base).ok_or(pe::Error::Einval)?, image.size as usize);
+        return Err(pe::Error::Einval);
+    }
     let initializers = match pe_init::collect_root_initializers(blob, &image) { Ok(initializers) => initializers, Err(error) => { let _ = as_.munmap(environment.base, environment.bytes); let _ = as_.munmap(UserVirtAddr::new(image.base).ok_or(pe::Error::Einval)?, image.size as usize); return Err(error); } };
     let initializer_trampoline = match pe_init::map(as_, entry.rip, &initializers) {
         Ok(trampoline) => trampoline,
