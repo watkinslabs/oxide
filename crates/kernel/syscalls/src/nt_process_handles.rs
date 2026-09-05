@@ -5,6 +5,7 @@
 use syscall::nt::{NtCall, NtObjectCall};
 use crate::nt_process_vm_counters;
 use crate::nt_process_image_policy;
+use crate::nt_process_command_line;
 
 const STATUS_SUCCESS: u64 = 0;
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
@@ -154,6 +155,9 @@ fn query_process(process: u64, class: u32, info: syscall::UserPtr<u8>, length: u
     if class == PROCESS_IMAGE_INFORMATION_CLASS {
         return query_process_image_information(target, info, length, return_length);
     }
+    if class == nt_process_command_line::CLASS {
+        return query_process_command_line(target, info, length, return_length);
+    }
     if class == nt_process_vm_counters::CLASS {
         return query_process_vm_counters(target, info, length, return_length);
     }
@@ -237,6 +241,69 @@ fn query_process_image_information(target: &sched::Task, info: syscall::UserPtr<
         return Some(STATUS_INVALID_PARAMETER);
     }
     write_process_return_length(return_length, nt_process_image_policy::BYTES)
+}
+
+fn query_process_command_line(target: &sched::Task, info: syscall::UserPtr<u8>, length: u32,
+    return_length: Option<syscall::UserPtr<u32>>) -> Option<u64> {
+    const PEB_PROCESS_PARAMETERS_OFF: u64 = 0x20;
+    const PARAM_COMMAND_LINE_OFF: u64 = 0x70;
+    let peb = target.nt_peb();
+    if peb == 0 || info.as_u64() == 0 { return Some(STATUS_INVALID_PARAMETER); }
+    let params_address = match peb.checked_add(PEB_PROCESS_PARAMETERS_OFF) {
+        Some(value) => value,
+        None => return Some(STATUS_INVALID_PARAMETER),
+    };
+    let params = match read_u64(params_address) {
+        Some(value) => value,
+        None => return Some(STATUS_INVALID_PARAMETER),
+    };
+    if params == 0 { return Some(STATUS_INVALID_PARAMETER); }
+    let length_address = match params.checked_add(PARAM_COMMAND_LINE_OFF) {
+        Some(value) => value,
+        None => return Some(STATUS_INVALID_PARAMETER),
+    };
+    let buffer_address = match length_address.checked_add(8) {
+        Some(value) => value,
+        None => return Some(STATUS_INVALID_PARAMETER),
+    };
+    let packed_lengths = match uaccess::get_user_u32(length_address) {
+        Ok(value) => value,
+        Err(_) => return Some(STATUS_INVALID_PARAMETER),
+    };
+    let string_buffer = match read_u64(buffer_address) {
+        Some(value) => value,
+        None => return Some(STATUS_INVALID_PARAMETER),
+    };
+    let string_bytes = match nt_process_command_line::source_bytes(
+        packed_lengths as u16, (packed_lengths >> 16) as u16, string_buffer) {
+        Ok(value) => value,
+        Err(status) => return Some(status),
+    };
+    let required = match nt_process_command_line::required_bytes(string_bytes) {
+        Some(value) => value,
+        None => return Some(STATUS_INVALID_PARAMETER),
+    };
+    if let Some(return_length) = return_length {
+        if uaccess::put_user_u32(return_length.as_u64(), required as u32).is_err() {
+            return Some(STATUS_INVALID_PARAMETER);
+        }
+    }
+    if (length as usize) < required { return Some(STATUS_INFO_LENGTH_MISMATCH); }
+    let output_buffer = match info.as_u64().checked_add(nt_process_command_line::HEADER_BYTES as u64) {
+        Some(value) => value,
+        None => return Some(STATUS_INVALID_PARAMETER),
+    };
+    let header = match nt_process_command_line::encode_header(string_bytes, output_buffer) {
+        Some(value) => value,
+        None => return Some(STATUS_INVALID_PARAMETER),
+    };
+    let mut output = alloc::vec![0u8; required];
+    output[..nt_process_command_line::HEADER_BYTES].copy_from_slice(&header);
+    if string_bytes != 0 && uaccess::copy_from_user(&mut output[nt_process_command_line::HEADER_BYTES..required - 2], string_buffer).is_err() {
+        return Some(STATUS_INVALID_PARAMETER);
+    }
+    if uaccess::copy_to_user(info.as_u64(), &output).is_err() { return Some(STATUS_INVALID_PARAMETER); }
+    Some(STATUS_SUCCESS)
 }
 
 fn image_contains_code(nt: u64, optional_size: usize, count: usize) -> bool {
