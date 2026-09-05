@@ -42,7 +42,11 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         let _ = table.close(duplicate);
         return Some(STATUS_INVALID_PARAMETER);
     }
-    if options & DUPLICATE_CLOSE_SOURCE != 0 { let _ = table.close_duplicate_source(source_handle); }
+    if options & DUPLICATE_CLOSE_SOURCE != 0 {
+        // Source consumption is a normal NT close: object-specific owners
+        // must observe it, while protected sources remain live.
+        let _ = crate::nt_dispatch::close_native_handle(&table, source_handle.raw());
+    }
     Some(STATUS_SUCCESS)
 }
 

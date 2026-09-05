@@ -152,6 +152,29 @@ const STATUS_TIMEOUT: u64 = 0x0000_0102;
 const STATUS_ALERTED: u64 = 0x0000_0101;
 #[cfg(target_os = "oxide-kernel")]
 const STATUS_USER_APC: u64 = 0x0000_00c0;
+
+#[cfg(target_os = "oxide-kernel")]
+/// Close one native handle and run every handle-owned cleanup hook. # C: O(N_handles)
+pub(crate) fn close_native_handle(table: &sched::nt_object::NtHandleTable, raw: u32) -> u64 {
+    let native = sched::nt_object::NtHandle::from_raw(raw);
+    let live = table.get(native, 0).is_some();
+    let protected = table.is_protected_from_close(native);
+    if !crate::nt_handle_close_policy::admits_cleanup(live, protected) {
+        return if live { STATUS_HANDLE_NOT_CLOSABLE } else { STATUS_INVALID_HANDLE };
+    }
+    let key = table.get(native, 0).filter(|object| object.kind() == sched::nt_object::NtObjectType::Key).map(|object| object.id());
+    // Notify the owner before removing the entry, but only after the same
+    // validity and protection checks that govern the actual close.
+    crate::nt_directory_notify::close(raw);
+    match table.close_with_last(native) {
+        Some(true) => {
+            if let Some(key) = key { crate::nt_registry::close_watches(key); crate::nt_registry::close_remote(key); }
+            STATUS_SUCCESS
+        }
+        Some(false) => STATUS_SUCCESS,
+        None => STATUS_INVALID_HANDLE,
+    }
+}
 #[cfg(target_os = "oxide-kernel")]
 const STATUS_NOT_MAPPED_DATA: u64 = 0xc000_001d;
 #[cfg(target_os = "oxide-kernel")]
@@ -1039,15 +1062,7 @@ pub fn dispatch(call: NtCall) -> u64 {
                 } else { STATUS_SUCCESS }
             }
             NtObjectCall::Close { handle } => {
-                let native = sched::nt_object::NtHandle::from_raw(handle);
-                crate::nt_directory_notify::close(handle);
-                if table.is_protected_from_close(native) { return STATUS_HANDLE_NOT_CLOSABLE; }
-                let key = table.get(native, 0).filter(|object| object.kind() == sched::nt_object::NtObjectType::Key).map(|object| object.id());
-                match table.close_with_last(native) {
-                    Some(true) => { if let Some(key) = key { crate::nt_registry::close_watches(key); crate::nt_registry::close_remote(key); } STATUS_SUCCESS }
-                    Some(false) => STATUS_SUCCESS,
-                    None => STATUS_INVALID_HANDLE,
-                }
+                close_native_handle(&table, handle)
             }
             NtObjectCall::SetEvent { handle, previous } => {
                 let native = sched::nt_object::NtHandle::from_raw(handle);
