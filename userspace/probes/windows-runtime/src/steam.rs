@@ -23,6 +23,8 @@ pub struct SteamLaunchRecord {
     pub command_line: Vec<u8>,
     pub compat_data: PathBuf,
     pub config: ProtonLaunchConfig,
+    source_path: PathBuf,
+    source_bytes: Vec<u8>,
 }
 
 /// Canonical Proton compatibility-data handoff for one Steam launch.
@@ -38,7 +40,8 @@ impl SteamLaunchRecord {
     /// Parse one complete record; duplicate, unknown, missing, and malformed fields fail closed.
     /// # C: O(record bytes)
     pub fn from_path(path: &Path) -> Result<Self, BuildError> {
-        let bytes = fs::read(path).map_err(BuildError::Io)?;
+        let source_path = canonical_record(path)?;
+        let bytes = fs::read(&source_path).map_err(BuildError::Io)?;
         let text = std::str::from_utf8(&bytes).map_err(|_| BuildError::InvalidLaunchConfiguration { field: "steam launch record" })?;
         let mut fields = std::collections::HashMap::new();
         let mut lines = text.lines();
@@ -77,7 +80,7 @@ impl SteamLaunchRecord {
             vkd3d: Vkd3dProtonRuntime { path: path("vkd3d")?, version: get("vkd3d_version")?.to_owned(), identity: get("vkd3d_identity")?.to_owned() },
             faudio: path("faudio")?,
         };
-        Ok(Self { appid, image, windows_path, command_line, compat_data, config })
+        Ok(Self { appid, image, windows_path, command_line, compat_data, config, source_path, source_bytes: bytes })
     }
 
     /// Validate and canonicalize Proton compatibility roots before PE or
@@ -87,7 +90,9 @@ impl SteamLaunchRecord {
         let data_path = canonical_directory("compat_data", &self.compat_data)?;
         let prefix = canonical_directory("prefix", &self.config.prefix)?;
         let tool_path = canonical_directory("runtime", &self.config.runtime)?;
-        if prefix.file_name().and_then(|name| name.to_str()) != Some("pfx") || !prefix.starts_with(&data_path) || prefix == data_path {
+        if data_path.file_name().and_then(|name| name.to_str()).and_then(|name| name.parse::<u32>().ok()) != Some(self.appid)
+            || prefix.file_name().and_then(|name| name.to_str()) != Some("pfx")
+            || !prefix.starts_with(&data_path) || prefix == data_path {
             return Err(BuildError::InvalidLaunchConfiguration { field: "compatibility roots" });
         }
         Ok(ProtonCompatibilityHandoff { appid: self.appid, data_path, prefix, tool_path })
@@ -96,6 +101,9 @@ impl SteamLaunchRecord {
     /// Validate record-owned paths and build the existing owned NT request.
     /// # C: O(path bytes + filesystem metadata + PE/catalog bytes)
     pub fn into_request(self) -> Result<RuntimeRequest, BuildError> {
+        if fs::read(&self.source_path).map_err(BuildError::Io)? != self.source_bytes {
+            return Err(BuildError::InvalidLaunchConfiguration { field: "steam launch source" });
+        }
         let image_bytes = self.image.as_os_str().as_bytes();
         if image_bytes.is_empty() || image_bytes.contains(&0) || !self.image.is_absolute() || !self.image.is_file() {
             return Err(BuildError::InvalidLaunchConfiguration { field: "image" });
@@ -109,6 +117,18 @@ impl SteamLaunchRecord {
         environment.push(("SteamGameId".to_owned(), self.appid.to_string()));
         RuntimeRequest::from_paths_with_environment(&self.image, &self.windows_path, &self.command_line, &self.config.dll_catalog, environment)
     }
+}
+
+fn canonical_record(path: &Path) -> Result<PathBuf, BuildError> {
+    let bytes = path.as_os_str().as_bytes();
+    if bytes.is_empty() || bytes.contains(&0) || !path.is_absolute() {
+        return Err(BuildError::InvalidLaunchConfiguration { field: "steam launch source" });
+    }
+    let canonical = fs::canonicalize(path).map_err(|_| BuildError::InvalidLaunchConfiguration { field: "steam launch source" })?;
+    if !fs::metadata(&canonical).map(|metadata| metadata.is_file()).unwrap_or(false) {
+        return Err(BuildError::InvalidLaunchConfiguration { field: "steam launch source" });
+    }
+    Ok(canonical)
 }
 
 fn canonical_directory(field: &'static str, path: &Path) -> Result<PathBuf, BuildError> {
@@ -162,7 +182,7 @@ mod tests {
     #[test]
     fn compatibility_handoff_canonicalizes_data_root_and_tool_path() {
         let base = std::env::temp_dir().join(format!("oxide-proton-handoff-{}", std::process::id()));
-        let data = base.join("compatdata");
+        let data = base.join("1234");
         let prefix = data.join("pfx");
         let runtime = base.join("proton");
         fs::create_dir_all(&prefix).unwrap();
@@ -185,6 +205,30 @@ mod tests {
         let prefix = base.join("foreign").join("pfx");
         let runtime = base.join("proton");
         fs::create_dir_all(&data).unwrap();
+        fs::create_dir_all(&prefix).unwrap();
+        fs::create_dir_all(&runtime).unwrap();
+        let record_path = write_record(&base, &format!("compat_data={}\nprefix={}\nruntime={}\n", data.display(), prefix.display(), runtime.display()));
+        let launch = SteamLaunchRecord::from_path(&record_path).unwrap();
+        assert!(matches!(launch.compatibility_handoff(), Err(BuildError::InvalidLaunchConfiguration { field: "compatibility roots" })));
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn mutated_record_source_fails_before_image_or_catalog_admission() {
+        let base = std::env::temp_dir().join(format!("oxide-steam-record-mutated-{}", std::process::id()));
+        let record_path = write_record(&base, "");
+        let launch = SteamLaunchRecord::from_path(&record_path).unwrap();
+        fs::write(&record_path, record("command_line=C:\\\\game.exe -safe\n")).unwrap();
+        assert!(matches!(launch.into_request(), Err(BuildError::InvalidLaunchConfiguration { field: "steam launch source" })));
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn appid_must_own_the_compatibility_data_directory() {
+        let base = std::env::temp_dir().join(format!("oxide-steam-record-appid-{}", std::process::id()));
+        let data = base.join("5678");
+        let prefix = data.join("pfx");
+        let runtime = base.join("proton");
         fs::create_dir_all(&prefix).unwrap();
         fs::create_dir_all(&runtime).unwrap();
         let record_path = write_record(&base, &format!("compat_data={}\nprefix={}\nruntime={}\n", data.display(), prefix.display(), runtime.display()));
