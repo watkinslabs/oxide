@@ -37,6 +37,7 @@ const TEB_TLS_EXPANSION_SLOTS_OFF: usize = 0x1780;
 // bitmap at 0x240..0x2c0. The loader list/module records follow it.
 const PARAM_OFF: usize = 0x300;
 const PARAM_CURRENT_DIRECTORY_OFF: usize = 0x38;
+const PARAM_COMMAND_LINE_OFF: usize = 0x70;
 const PARAM_CURRENT_DIRECTORY_HANDLE_OFF: usize = 0x48;
 const PARAM_SIZE: u32 = (ENV_OFF - PARAM_OFF) as u32;
 const PARAM_FLAGS_NORMALIZED: u32 = 1;
@@ -105,6 +106,30 @@ pub struct NtModuleInput<'a> {
     pub size: u32,
     pub full_name: &'a str,
     pub base_name: &'a str,
+}
+
+/// Validated x64 `UNICODE_STRING` metadata for a process-parameter string.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct X64ProcessParameterString {
+    pub length: u16,
+    pub maximum_length: u16,
+    pub buffer: u64,
+}
+
+/// Validate and encode one normalized process-parameter string.
+///
+/// The returned UTF-16 vector includes its terminating WCHAR. Descriptor
+/// lengths are byte counts: `length` excludes that terminator and
+/// `maximum_length` is the supplied storage capacity. The same contract is
+/// used for `CURDIR.DosPath` and `CommandLine` in the native x64 layout.
+/// # C: O(value length)
+pub fn encode_x64_process_parameter_string(value: &str, buffer: u64, capacity_bytes: usize) -> Result<(X64ProcessParameterString, Vec<u16>), Error> {
+    if buffer & 1 != 0 || capacity_bytes == 0 || capacity_bytes & 1 != 0 || capacity_bytes > u16::MAX as usize { return Err(Error::Einval); }
+    let encoded = utf16(value)?;
+    let length_bytes = encoded.len().checked_sub(1).and_then(|n| n.checked_mul(2)).ok_or(Error::Einval)?;
+    let required = length_bytes.checked_add(2).ok_or(Error::Einval)?;
+    if required > capacity_bytes || length_bytes > u16::MAX as usize { return Err(Error::Einval); }
+    Ok((X64ProcessParameterString { length: length_bytes as u16, maximum_length: capacity_bytes as u16, buffer }, encoded))
 }
 
 /// Build and map the initial PEB/TEB/process-parameters block.
@@ -214,6 +239,12 @@ pub fn build_with_modules_and_params_and_stack(input: &EnvironmentInput<'_>, mod
     let env_off = ENV_OFF;
     let total = env_off.checked_add(env.len() * 2).ok_or(Error::Einval)?;
     if total > STR_OFF || module_text_off > API_SET_OFF { return Err(Error::Einval); }
+    // Validate both native descriptors before reserving an address-space
+    // range. The final pass below only substitutes the published buffer
+    // addresses, so malformed input cannot leave a reservation behind.
+    let command_capacity = command_line.len().checked_mul(2).ok_or(Error::Einval)?;
+    let _ = encode_x64_process_parameter_string(input.command_line, 2, command_capacity)?;
+    let _ = encode_x64_process_parameter_string(params.current_directory, 2, CURRENT_DIR_STORAGE)?;
     let reservation = as_.mmap(None, BLOCK_BYTES, VmaProt::READ | VmaProt::WRITE,
         VmaFlags::PRIVATE, VmaBacking::Anonymous, false).map_err(|_| Error::Einval)?;
     let base = reservation.as_u64();
@@ -266,9 +297,12 @@ pub fn build_with_modules_and_params_and_stack(input: &EnvironmentInput<'_>, mod
         put_u64(&mut block, PARAM_OFF + offset, handle);
     }
     put_unicode(&mut block, PARAM_OFF + 0x60, &image_path, base + image_path_off as u64);
-    put_unicode(&mut block, PARAM_OFF + 0x70, &command_line, base + command_off as u64);
-    put_unicode_with_capacity(&mut block, PARAM_OFF + PARAM_CURRENT_DIRECTORY_OFF, &current_dir,
-        base + current_dir_off as u64, CURRENT_DIR_STORAGE);
+    let (command_desc, command_line) = encode_x64_process_parameter_string(input.command_line,
+        base + command_off as u64, command_capacity)?;
+    let (current_dir_desc, current_dir) = encode_x64_process_parameter_string(params.current_directory,
+        base + current_dir_off as u64, CURRENT_DIR_STORAGE)?;
+    put_x64_unicode(&mut block, PARAM_OFF + PARAM_COMMAND_LINE_OFF, command_desc);
+    put_x64_unicode(&mut block, PARAM_OFF + PARAM_CURRENT_DIRECTORY_OFF, current_dir_desc);
     put_u64(&mut block, PARAM_OFF + 0x80, base + env_off as u64);
     put_u32(&mut block, LDR_OFF, 0x58);
     block[LDR_OFF + 4] = 1;
@@ -404,9 +438,8 @@ fn put_u32(b: &mut [u8], o: usize, v: u32) { b[o..o + 4].copy_from_slice(&v.to_l
 fn put_u16(b: &mut [u8], o: usize, v: u16) { b[o..o + 2].copy_from_slice(&v.to_le_bytes()); }
 fn put_u64(b: &mut [u8], o: usize, v: u64) { b[o..o + 8].copy_from_slice(&v.to_le_bytes()); }
 fn put_unicode(b: &mut [u8], o: usize, v: &[u16], ptr: u64) { let len = (v.len() - 1).saturating_mul(2) as u16; let max = v.len().saturating_mul(2) as u16; put_u16(b, o, len); put_u16(b, o + 2, max); put_u64(b, o + 8, ptr); }
-fn put_unicode_with_capacity(b: &mut [u8], o: usize, v: &[u16], ptr: u64, capacity: usize) {
-    let len = (v.len() - 1).saturating_mul(2) as u16;
-    put_u16(b, o, len); put_u16(b, o + 2, capacity as u16); put_u64(b, o + 8, ptr);
+fn put_x64_unicode(b: &mut [u8], o: usize, desc: X64ProcessParameterString) {
+    put_u16(b, o, desc.length); put_u16(b, o + 2, desc.maximum_length); put_u64(b, o + 8, desc.buffer);
 }
 fn copy_u16(b: &mut [u8], o: usize, v: &[u16]) { for (i, x) in v.iter().enumerate() { b[o + i * 2..o + i * 2 + 2].copy_from_slice(&x.to_le_bytes()); } }
 
@@ -414,6 +447,21 @@ fn copy_u16(b: &mut [u8], o: usize, v: &[u16]) { for (i, x) in v.iter().enumerat
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn x64_process_parameter_string_has_native_byte_counts_and_terminator() {
+        let (desc, encoded) = encode_x64_process_parameter_string("notepad.exe", 0x4000, 24).unwrap();
+        assert_eq!(desc, X64ProcessParameterString { length: 22, maximum_length: 24, buffer: 0x4000 });
+        assert_eq!(encoded, "notepad.exe\0".encode_utf16().collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn x64_process_parameter_string_rejects_invalid_capacity_pointer_and_text() {
+        for (value, buffer, capacity) in [("", 0x4001, 2), ("", 0x4000, 3), ("abc", 0x4000, 6),
+            ("a\0b", 0x4000, 8), ("x", 0x4000, (u16::MAX as usize) + 2)] {
+            assert_eq!(encode_x64_process_parameter_string(value, buffer, capacity), Err(Error::Einval));
+        }
+    }
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(256))]
@@ -483,6 +531,9 @@ mod tests {
         assert_eq!(read64(TEB_OFF + TEB_SYSCALL_FRAME_OFFSET), base as u64 + PROCESS_SYSCALL_FRAME_OFF as u64);
         assert_eq!(read16(PARAM_OFF + 0x60), ("C:\\Windows\\notepad.exe".encode_utf16().count() * 2) as u16);
         assert_eq!(read16(PARAM_OFF + 0x70), ("notepad.exe a.txt".encode_utf16().count() * 2) as u16);
+        assert_eq!(read16(PARAM_OFF + PARAM_COMMAND_LINE_OFF + 2), (("notepad.exe a.txt".encode_utf16().count() + 1) * 2) as u16);
+        assert_eq!(read16(PARAM_OFF + PARAM_CURRENT_DIRECTORY_OFF), ("C:\\Windows".encode_utf16().count() * 2) as u16);
+        assert_eq!(read16(PARAM_OFF + PARAM_CURRENT_DIRECTORY_OFF + 2), CURRENT_DIR_STORAGE as u16);
         assert_eq!(read64(PARAM_OFF + 0x80), base as u64 + ENV_OFF as u64);
         assert_eq!(read64(PEB_OFF + 0x68), base as u64 + API_SET_OFF as u64);
         assert_eq!(read64(PEB_OFF + PEB_PROCESS_HEAP_OFF), PROCESS_HEAP_HANDLE);
@@ -568,6 +619,22 @@ mod tests {
         let path = "x".repeat(BLOCK_BYTES);
         let result = build(&EnvironmentInput { image_base: 1, image_size: 1,
             image_path: &path, command_line: "", environment: &[], process_id: 1, thread_id: 1 }, &as_);
+        assert_eq!(result, Err(Error::Einval));
+        assert_eq!(as_.vma_count(), 0);
+    }
+
+    #[test]
+    fn rejects_oversized_current_directory_before_mapping_any_bytes() {
+        let as_ = AddressSpace::new(0x20_000).unwrap();
+        let current_directory = "x".repeat(CURRENT_DIR_STORAGE / 2);
+        let result = build_with_modules_and_params(&EnvironmentInput {
+            image_base: 0x1400_0000, image_size: 0x5000, image_path: "C:\\notepad.exe",
+            command_line: "notepad.exe", environment: &[], process_id: 1, thread_id: 1,
+        }, &[NtModuleInput { base: 0x1400_0000, entry: 0x1400_1000, size: 0x5000,
+            full_name: "C:\\notepad.exe", base_name: "notepad.exe" }], &NtProcessParameters {
+            current_directory: &current_directory, current_directory_handle: 0,
+            console_handle: 0, standard_handles: [0; 3],
+        }, &as_);
         assert_eq!(result, Err(Error::Einval));
         assert_eq!(as_.vma_count(), 0);
     }
