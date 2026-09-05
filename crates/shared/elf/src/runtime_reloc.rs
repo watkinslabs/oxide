@@ -7,6 +7,7 @@ pub const R_X86_64_GLOB_DAT: u32 = 6;
 pub const R_X86_64_JUMP_SLOT: u32 = 7;
 pub const R_X86_64_RELATIVE: u32 = 8;
 pub const R_AARCH64_ABS64: u32 = 257;
+const MAX_DYNAMIC_SYMBOLS: u64 = 65_536;
 
 /// Apply the dynamic relocation tables of a mapped shared object to one
 /// contiguous staged image. The resolver owns process-wide symbol lookup;
@@ -118,6 +119,7 @@ pub fn collect_dynamic_symbols<'a>(file: &'a [u8], object: &SharedObject<'_>) ->
     let count = if let Some(hash) = object.dynamic.hash_addr { sysv_symbol_count(file, object, hash)? }
         else if let Some(hash) = object.dynamic.gnu_hash_addr { gnu_symbol_count(file, object, hash)? }
         else { return Err(ElfError::Einval); };
+    if count > MAX_DYNAMIC_SYMBOLS { return Err(ElfError::Einval); }
     let mut symbols = alloc::vec::Vec::new();
     for index in 0..count {
         let symbol = read_dynamic_symbol(file, object, index)?;

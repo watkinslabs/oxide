@@ -31,7 +31,7 @@ pub use relocatable::{
 
 pub mod dynamic;
 pub mod shared_object;
-pub use shared_object::{parse_shared_object, SharedObject};
+pub use shared_object::{needed_names, parse_dependency_object, parse_shared_object, soname, SharedObject};
 pub mod runtime_reloc;
 pub use runtime_reloc::{apply_runtime_relocations, collect_dynamic_symbols, read_dynamic_symbol, DynamicSymbol};
 pub mod hash;
@@ -44,7 +44,7 @@ pub use cfa::{evaluate as evaluate_cfa, evaluate_frame, CfaContext};
 pub use sections::{eh_frame, find as find_section, publish_eh_frame, PublishedEhFrame, SectionView};
 pub use hash::{elf_hash, gnu_hash, lookup_sysv, lookup_gnu};
 pub use dynamic::{
-    parse_dynamic, read_strtab, DynEntry, DynInfo,
+    parse_dynamic, read_strtab, read_strtab_bytes, DynEntry, DynInfo,
     DT_NULL, DT_NEEDED, DT_STRTAB, DT_SYMTAB, DT_RELA, DT_JMPREL, DT_HASH, DT_GNU_HASH,
     DT_INIT, DT_FINI, DT_INIT_ARRAY, DT_FINI_ARRAY, DT_SONAME, DT_FLAGS, DT_RUNPATH,
 };

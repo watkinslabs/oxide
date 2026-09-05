@@ -41,6 +41,10 @@ pub const DT_RELRSZ:      i64 = 35;
 pub const DT_RELR:        i64 = 36;
 pub const DT_RELRENT:     i64 = 37;
 
+/// Hard bounds applied before any dynamic metadata is retained.
+pub const MAX_DYNAMIC_ENTRIES: usize = 4096;
+pub const MAX_NEEDED_LIBRARIES: usize = 256;
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct DynEntry {
     pub tag: i64,
@@ -85,16 +89,25 @@ pub struct DynInfo {
 /// Returns `DynInfo` populated with every recognized tag.
 /// # C: O(N entries)
 pub fn parse_dynamic(file: &[u8], dyn_off: usize, dyn_size: usize) -> Result<DynInfo, ElfError> {
-    if dyn_off + dyn_size > file.len() { return Err(ElfError::Einval); }
+    if dyn_off.checked_add(dyn_size).map_or(true, |end| end > file.len()) || dyn_size % 16 != 0 {
+        return Err(ElfError::Einval);
+    }
     let mut info = DynInfo::default();
     let mut o = dyn_off;
     let end = dyn_off + dyn_size;
+    let mut entries = 0;
+    let mut terminated = false;
     while o + 16 <= end {
+        entries += 1;
+        if entries > MAX_DYNAMIC_ENTRIES { return Err(ElfError::Einval); }
         let tag = i64::from_le_bytes(file[o..o+8].try_into().unwrap());
         let val = u64::from_le_bytes(file[o+8..o+16].try_into().unwrap());
         match tag {
-            DT_NULL          => break,
-            DT_NEEDED        => info.needed.push(val),
+            DT_NULL          => { terminated = true; break; },
+            DT_NEEDED        => {
+                if info.needed.len() == MAX_NEEDED_LIBRARIES { return Err(ElfError::Einval); }
+                info.needed.push(val);
+            },
             DT_STRTAB        => info.strtab_addr = Some(val),
             DT_STRSZ         => info.strtab_size = Some(val),
             DT_SYMTAB        => info.symtab_addr = Some(val),
@@ -124,6 +137,7 @@ pub fn parse_dynamic(file: &[u8], dyn_off: usize, dyn_size: usize) -> Result<Dyn
         }
         o += 16;
     }
+    if !terminated { return Err(ElfError::Einval); }
     Ok(info)
 }
 
@@ -138,6 +152,17 @@ pub fn read_strtab(strtab: &[u8], off: u64) -> Result<String, ElfError> {
     core::str::from_utf8(&s[..end])
         .map(|s| s.into())
         .map_err(|_| ElfError::Einval)
+}
+
+/// Read one required NUL-terminated dynamic-string entry without changing
+/// its byte representation. Library names are ABI bytes, not Rust text.
+/// # C: O(strlen)
+pub fn read_strtab_bytes(strtab: &[u8], off: u64) -> Result<Vec<u8>, ElfError> {
+    let off: usize = off.try_into().map_err(|_| ElfError::Einval)?;
+    let s = strtab.get(off..).ok_or(ElfError::Einval)?;
+    let end = s.iter().position(|&b| b == 0).ok_or(ElfError::Einval)?;
+    if end == 0 { return Err(ElfError::Einval); }
+    Ok(s[..end].to_vec())
 }
 
 #[cfg(test)]
@@ -189,5 +214,25 @@ mod tests {
     fn read_strtab_oob_errors() {
         let strtab = b"\0lib\0";
         assert!(read_strtab(strtab, 100).is_err());
+    }
+
+    #[test]
+    fn dynamic_table_requires_terminator_and_exact_entries() {
+        let mut buf = std::vec::Vec::new();
+        write_dyn(&mut buf, DT_NEEDED, 1);
+        assert!(parse_dynamic(&buf, 0, buf.len()).is_err());
+        buf.extend_from_slice(&[0; 8]);
+        assert!(parse_dynamic(&buf, 0, buf.len()).is_err());
+        let mut valid = std::vec::Vec::new();
+        write_dyn(&mut valid, DT_NEEDED, 1);
+        write_dyn(&mut valid, DT_NULL, 0);
+        assert!(parse_dynamic(&valid, 0, valid.len()).is_ok());
+    }
+
+    #[test]
+    fn required_dynamic_string_rejects_missing_nul_and_empty_name() {
+        assert!(read_strtab_bytes(b"\0libc.so.6", 1).is_err());
+        assert!(read_strtab_bytes(b"\0libc.so.6\0", 0).is_err());
+        assert_eq!(read_strtab_bytes(b"\0libc.so.6\0", 1).unwrap(), b"libc.so.6");
     }
 }

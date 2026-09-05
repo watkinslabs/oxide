@@ -21,6 +21,75 @@ pub struct MappedUnixlib {
     pub end: u64,
 }
 
+/// One admitted native object. The loader publishes this transaction only
+/// after the complete dependency closure has been parsed and ordered.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnixlibDependency {
+    pub name: Vec<u8>,
+    pub soname: Option<Vec<u8>>,
+    pub needed: Vec<Vec<u8>>,
+    pub exports: Vec<UnixlibExport>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnixlibExport {
+    pub name: Vec<u8>,
+    pub value: u64,
+}
+
+/// Admit one ET_DYN Unixlib and its transitive `DT_NEEDED` closure. `open`
+/// is the canonical VFS/catalog lookup supplied by the caller. The result is
+/// dependency-first and is not published until every node succeeds; missing
+/// names, duplicate identity, malformed metadata, and cycles abort atomically.
+/// # C: O(objects * (dynamic entries + symbols))
+pub fn admit_dependency_closure<F>(root_name: &[u8], root_file: &[u8], mut open: F)
+    -> Result<Vec<UnixlibDependency>, LoadError>
+where F: FnMut(&[u8]) -> Option<Vec<u8>> {
+    let mut active = Vec::new();
+    let mut done = Vec::new();
+    let mut result = Vec::new();
+    admit_one(root_name, root_file, true, &mut open, &mut active, &mut done, &mut result)?;
+    Ok(result)
+}
+
+fn admit_one<F>(name: &[u8], file: &[u8], root: bool, open: &mut F, active: &mut Vec<Vec<u8>>,
+    done: &mut Vec<Vec<u8>>, result: &mut Vec<UnixlibDependency>) -> Result<(), LoadError>
+where F: FnMut(&[u8]) -> Option<Vec<u8>> {
+    if active.iter().any(|seen| seen.as_slice() == name) { return Err(LoadError::Einval); }
+    if done.iter().any(|seen| seen.as_slice() == name) { return Ok(()); }
+    let object = if root { parse_shared_object(file, ARCH_MACHINE) }
+        else { elf::parse_dependency_object(file, ARCH_MACHINE) }
+        .map_err(LoadError::from)?;
+    let needed = elf::needed_names(file, &object).map_err(LoadError::from)?;
+    active.push(name.to_vec());
+    for dependency in &needed {
+        let bytes = open(dependency).ok_or(LoadError::Enoexec)?;
+        admit_one(dependency, &bytes, false, open, active, done, result)?;
+    }
+    active.pop();
+    let exports = match elf::collect_dynamic_symbols(file, &object) {
+        Ok(symbols) => symbols.into_iter().map(|symbol| UnixlibExport {
+            name: symbol.name.to_vec(), value: symbol.value,
+        }).collect(),
+        // A library without a dynamic hash has no safely enumerable export
+        // scope. It remains admissible for code that has no relocations.
+        Err(elf::ElfError::Einval) if object.dynamic.hash_addr.is_none() && object.dynamic.gnu_hash_addr.is_none() => Vec::new(),
+        Err(error) => return Err(LoadError::from(error)),
+    };
+    let soname = elf::soname(file, &object).map_err(LoadError::from)?;
+    done.push(name.to_vec());
+    result.push(UnixlibDependency { name: name.to_vec(), soname, needed, exports });
+    Ok(())
+}
+
+/// Resolve an export in an already admitted, dependency-first scope. The
+/// caller adds the mapped object's load bias; no address is published here.
+/// # C: O(objects * exports)
+pub fn resolve_admitted_symbol(scope: &[UnixlibDependency], name: &[u8]) -> Option<u64> {
+    scope.iter().find_map(|object| object.exports.iter()
+        .find(|export| export.name.as_slice() == name).map(|export| export.value))
+}
+
 /// Map a validated native Unixlib into `as_` as one contiguous ET_DYN image.
 /// The input is copied into address-space-owned staging pages before this
 /// function returns, so the caller may release its file buffer.
@@ -176,5 +245,84 @@ mod tests {
         let as_ = AddressSpace::new(0x20_000).unwrap();
         assert!(map_shared_object_with_resolver(&bytes, &as_, |_| None).is_err());
         assert_eq!(as_.vma_count(), 0);
+    }
+
+    #[test]
+    fn admitted_symbol_scope_resolves_exact_export_and_has_lifecycle_boundary() {
+        let scope = vec![UnixlibDependency {
+            name: b"ntdll.so".to_vec(), soname: None, needed: Vec::new(),
+            exports: vec![UnixlibExport { name: b"__wine_unix_call_funcs".to_vec(), value: 0x2400 }],
+        }];
+        assert_eq!(resolve_admitted_symbol(&scope, b"__wine_unix_call_funcs"), Some(0x2400));
+        assert_eq!(resolve_admitted_symbol(&scope, b"__WINE_UNIX_CALL_FUNCS"), None);
+        let released = scope;
+        assert_eq!(released.len(), 1);
+        drop(released);
+    }
+
+    #[test]
+    fn dependency_admission_rejects_missing_library_before_mapping() {
+        let Some(bytes) = installed_unixlib() else { return };
+        let result = admit_dependency_closure(b"winevulkan.so", &bytes, |_| None);
+        assert_eq!(result, Err(LoadError::Enoexec));
+    }
+
+    #[test]
+    fn dependency_admission_rejects_cycle_before_publishing_scope() {
+        let Some(bytes) = installed_unixlib() else { return };
+        let result = admit_dependency_closure(b"winevulkan.so", &bytes, |_| Some(bytes.clone()));
+        assert_eq!(result, Err(LoadError::Einval));
+    }
+
+    #[test]
+    fn dependency_admission_rejects_malformed_needed_offset() {
+        let Some(mut bytes) = installed_unixlib() else { return };
+        let object = parse_shared_object(&bytes, ARCH_MACHINE).unwrap();
+        assert!(object.parsed.dynamic.is_some());
+        let (dynamic, size) = object.parsed.dynamic.unwrap();
+        let mut offset = dynamic as usize;
+        let end = offset + size as usize;
+        let mut found = false;
+        while offset + 16 <= end {
+            let tag = i64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
+            if tag == elf::DT_NEEDED {
+                bytes[offset + 8..offset + 16].copy_from_slice(&u64::MAX.to_le_bytes());
+                found = true;
+                break;
+            }
+            if tag == elf::DT_NULL { break; }
+            offset += 16;
+        }
+        assert!(found);
+        assert!(admit_dependency_closure(b"winevulkan.so", &bytes, |_| None).is_err());
+    }
+
+    #[test]
+    fn dependency_admission_orders_real_wine_closure_dependency_first() {
+        let Some(root) = installed_unixlib() else { return };
+        let scope = admit_dependency_closure(b"winevulkan.so", &root, |name| {
+            let text = core::str::from_utf8(name).ok()?;
+            let paths = [
+                alloc::format!("/usr/lib64/wine/x86_64-unix/{text}"),
+                alloc::format!("/usr/lib/wine/x86_64-unix/{text}"),
+                alloc::format!("/usr/lib64/{text}"),
+                alloc::format!("/usr/lib/{text}"),
+                alloc::format!("/usr/lib/x86_64-linux-gnu/{text}"),
+                alloc::format!("/lib64/{text}"),
+                alloc::format!("/lib/{text}"),
+            ];
+            paths.iter().find_map(|path| std::fs::read(path).ok())
+        }).unwrap();
+        assert!(!scope.is_empty());
+        assert_eq!(scope.last().unwrap().name, b"winevulkan.so");
+        assert!(scope.iter().all(|object| object.name != b""));
+    }
+
+    fn installed_unixlib() -> Option<Vec<u8>> {
+        let paths = [
+            "/usr/lib64/wine/x86_64-unix/winevulkan.so",
+            "/usr/lib/wine/x86_64-unix/winevulkan.so",
+        ];
+        paths.iter().find_map(|path| std::fs::read(path).ok())
     }
 }
