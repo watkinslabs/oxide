@@ -7,6 +7,7 @@ extern crate std;
 // - `absolute`: absolute-axis filtering and multi-touch slot state.
 // - `identity`: normalized capabilities, modalias, and uevent rendering.
 // - `packet`: synchronization-frame assembly.
+// - `controller`: bounded XInput snapshots over canonical EV_KEY/EV_ABS state.
 // - `registry`: canonical device identities, publication, and hook boundary.
 // - `repeat`: software key autorepeat lifecycle.
 // - `state`: event validation and canonical dynamic state.
@@ -16,6 +17,7 @@ extern crate std;
 mod absolute;
 mod identity;
 mod packet;
+mod controller;
 mod query;
 mod raw;
 mod registry;
@@ -39,13 +41,17 @@ pub use registry::{
 pub use query::{abs_snapshot_by_identity, apply_output_by_identity, inhibited_by_identity,
     is_pointer, repeat_by_identity, set_inhibited_by_identity, set_repeat_by_identity, AbsSnapshot};
 pub use raw::{RawInputEvent, RawInputKind, RawInputPublish};
+pub use controller::{controller_state, ControllerError, XInputGamepad, XInputState,
+    XINPUT_MAX_CONTROLLERS};
 pub use packet::InputValue;
 pub use state::with_state_bits_by_identity;
 pub use state::{OutputBatch, OutputEvent};
 pub use types::{InputEvent, VirtioInputAbsInfo, VirtioInputDevIds, VirtioInputEvent};
 pub use uapi::{
-    ABS_CNT, ABS_MAX, ABS_MT_FIRST, ABS_MT_LAST, ABS_MT_SLOT, ABS_MT_TRACKING_ID, ABS_X, ABS_Y,
-    BTN_LEFT, BTN_MIDDLE, BTN_RIGHT,
+    ABS_CNT, ABS_MAX, ABS_MT_FIRST, ABS_MT_LAST, ABS_MT_SLOT, ABS_MT_TRACKING_ID, ABS_RX, ABS_RY,
+    ABS_RZ, ABS_X, ABS_Y, ABS_Z, BTN_A, BTN_B, BTN_DPAD_DOWN, BTN_DPAD_LEFT, BTN_DPAD_RIGHT,
+    BTN_DPAD_UP, BTN_LEFT, BTN_MIDDLE, BTN_RIGHT, BTN_SELECT, BTN_START, BTN_THUMBL, BTN_THUMBR,
+    BTN_TL, BTN_TR, BTN_WEST, BTN_NORTH, BTN_SOUTH, BTN_EAST,
     EVENT_MINOR_BASE, EV_ABS, EV_CNT, EV_FF, EV_KEY, EV_LED, EV_MAX, EV_MSC, EV_PWR,
     EV_REL, EV_REP, EV_SND,
     EV_SW, EV_SYN, FF_CNT, FF_MAX, INPUT_PROP_CNT, INPUT_PROP_MAX, KEY_CNT, KEY_MAX,
