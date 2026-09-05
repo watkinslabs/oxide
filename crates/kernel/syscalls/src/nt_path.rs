@@ -50,14 +50,20 @@ pub fn normalize_path(raw: &str) -> Option<String> {
             return None;
         }
         let drive = (bytes[0] as char).to_ascii_lowercase();
-        let suffix = lexical_normalize(&path[2..])?;
         let mut translated = String::from("/windows/");
         translated.push(drive);
-        if suffix != "/" { translated.push_str(&suffix); }
-        else { translated.push('/'); }
-        return Some(translated);
+        translated.push_str(&path[2..]);
+        return lexical_normalize(&translated);
     }
     lexical_normalize(&path)
+}
+
+/// Translate an NT object name that has no `RootDirectory`.  NT object
+/// attributes without a root name an absolute object, never the caller's
+/// Linux current directory. # C: O(path length)
+pub fn normalize_absolute_path(raw: &str) -> Option<String> {
+    let path = normalize_path(raw)?;
+    path.starts_with('/').then_some(path)
 }
 
 fn normalize_unc(path: &str) -> Option<String> {
@@ -116,12 +122,18 @@ pub fn join_root_path(root: &str, relative: &str) -> Option<String> {
 
 fn lexical_normalize(path: &str) -> Option<String> {
     let absolute = path.starts_with('/');
+    let drive_floor = if absolute && path.get(..9).is_some_and(|prefix| prefix.eq_ignore_ascii_case("/windows/")) {
+        let rest = &path[9..];
+        (rest.as_bytes().first().is_some_and(|drive| drive.is_ascii_alphabetic()) && rest.as_bytes().get(1) == Some(&b'/'))
+            .then_some(2)
+    } else { None };
     let mut parts: alloc::vec::Vec<&str> = alloc::vec::Vec::new();
     for part in path.split('/') {
         match part {
             "" | "." => {}
             ".." => match parts.last() {
-                Some(last) if *last != ".." => { parts.pop(); }
+                Some(last) if *last != ".." && drive_floor.is_none_or(|floor| parts.len() > floor) => { parts.pop(); }
+                Some(_) if drive_floor.is_some_and(|floor| parts.len() <= floor) => return None,
                 _ if !absolute => parts.push(".."),
                 _ => {}
             },
@@ -141,7 +153,7 @@ fn lexical_normalize(path: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use alloc::string::String;
-    use super::{join_root_path, normalize_path, render_windows_path};
+    use super::{join_root_path, normalize_absolute_path, normalize_path, render_windows_path};
 
     #[test]
     fn maps_absolute_drive_paths_to_windows_root() {
@@ -174,7 +186,7 @@ mod tests {
     fn preserves_non_drive_absolute_paths() {
         assert_eq!(normalize_path(r"\Device\Null"), Some(String::from("/Device/Null")));
         assert_eq!(normalize_path(r"\DosDevices\C:\"),
-            Some(String::from("/windows/c/")));
+            Some(String::from("/windows/c")));
     }
 
     #[test]
@@ -187,8 +199,7 @@ mod tests {
     fn collapses_windows_dot_segments_without_escaping_the_drive_root() {
         assert_eq!(normalize_path(r"C:\Games\.\Demo\..\data.pak"),
             Some(String::from("/windows/c/Games/data.pak")));
-        assert_eq!(normalize_path(r"C:\..\..\data.pak"),
-            Some(String::from("/windows/c/data.pak")));
+        assert_eq!(normalize_path(r"C:\..\..\data.pak"), None);
         assert_eq!(normalize_path(r"C:\Games\\data.pak"),
             Some(String::from("/windows/c/Games/data.pak")));
     }
@@ -199,11 +210,25 @@ mod tests {
     }
 
     #[test]
+    fn rejects_relative_object_names_without_a_root_directory() {
+        assert_eq!(normalize_absolute_path("notepad.exe"), None);
+        assert_eq!(normalize_absolute_path(r"C:\Windows\notepad.exe"),
+            Some(String::from("/windows/c/Windows/notepad.exe")));
+    }
+
+    #[test]
+    fn rejects_escape_past_a_drive_root() {
+        assert_eq!(normalize_path("/windows/c/.."), None);
+        assert_eq!(normalize_path("/windows/c/Games/../../etc"), None);
+    }
+
+    #[test]
     fn joins_relative_names_to_the_canonical_root() {
         assert_eq!(join_root_path("/windows/c/Games", "data.pak"),
             Some(String::from("/windows/c/Games/data.pak")));
         assert_eq!(join_root_path("/windows/c/Games", "..\\data.pak"),
             Some(String::from("/windows/c/data.pak")));
+        assert_eq!(join_root_path("/windows/c", "..\\data.pak"), None);
         assert_eq!(join_root_path("/windows/c/Games", "/absolute"), None);
     }
 

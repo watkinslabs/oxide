@@ -1065,7 +1065,7 @@ fn filetime(time: vfs::Timespec64) -> i64 {
 fn object_path(attrs: u64) -> Option<String> {
     if read_u32(attrs).ok()? < 48 || read_u64_at(attrs, 8).ok()? != 0 { return None; }
     let (_, path) = object_name(attrs)?;
-    crate::nt_path::normalize_path(&path)
+    crate::nt_path::normalize_absolute_path(&path)
 }
 
 fn object_path_with_root(attrs: u64, table: &sched::nt_object::NtHandleTable) -> Option<String> {
@@ -1073,7 +1073,8 @@ fn object_path_with_root(attrs: u64, table: &sched::nt_object::NtHandleTable) ->
     let root = read_u64_at(attrs, 8).ok()?;
     let (_, raw) = object_name(attrs)?;
     let path = crate::nt_path::normalize_path(&raw)?;
-    if path.starts_with('/') || root == 0 { return Some(path); }
+    if path.starts_with('/') { return Some(path); }
+    if root == 0 { return None; }
     let object = table.get(sched::nt_object::NtHandle::from_raw(root as u32), 0)?;
     let file = object.file()?;
     if file.inode().file_type() != vfs::FileType::Directory { return None; }
