@@ -13,9 +13,10 @@ const MAX_COMPONENT_BYTES: u64 = 512 * 1024 * 1024;
 /// Immutable, owned DXVK admission record for one Proton runtime.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DxvkRuntimeAdmission {
-    pub root: PathBuf,
-    pub version: Box<str>,
-    pub modules: Box<[PathBuf]>,
+    root: PathBuf,
+    version: Box<str>,
+    modules: Box<[PathBuf]>,
+    module_images: Box<[Box<[u8]>]>,
 }
 
 impl DxvkRuntimeAdmission {
@@ -40,6 +41,7 @@ impl DxvkRuntimeAdmission {
             if (lower == D3D11 || lower == DXGI) && name.as_bytes() != lower { return Err(invalid()); }
         }
         let mut modules = Vec::new();
+        let mut module_images = Vec::new();
         for name in [D3D11, DXGI] {
             let path = root.join(std::str::from_utf8(name).map_err(|_| invalid())?);
             let canonical = fs::canonicalize(&path).map_err(|_| invalid())?;
@@ -49,9 +51,24 @@ impl DxvkRuntimeAdmission {
             let parsed = pe::parse(&image).map_err(|_| invalid())?;
             if parsed.sections.is_empty() { return Err(invalid()); }
             modules.push(canonical);
+            module_images.push(image.into_boxed_slice());
         }
-        Ok(Self { root, version: version.into(), modules: modules.into_boxed_slice() })
+        Ok(Self { root, version: version.into(), modules: modules.into_boxed_slice(), module_images: module_images.into_boxed_slice() })
     }
+
+    /// Return the canonical component directory from the immutable record.
+    /// # C: O(1)
+    pub fn root(&self) -> &Path { &self.root }
+
+    /// Return the validated semantic version from the immutable record.
+    /// # C: O(1)
+    pub fn version(&self) -> &str { &self.version }
+
+    /// Return the two canonical DXVK module paths in catalog order.
+    /// # C: O(1)
+    pub fn modules(&self) -> &[PathBuf] { &self.modules }
+
+    pub(super) fn module_images(&self) -> &[Box<[u8]>] { &self.module_images }
 }
 
 fn canonical_dir(path: &Path) -> Result<PathBuf, BuildError> {
@@ -92,7 +109,16 @@ mod tests {
         fs::create_dir_all(&root).unwrap(); fs::write(root.join(VERSION_FILE), version).unwrap(); (runtime, root)
     }
 
-    #[test] fn admits_owned_versioned_x86_64_identity() { let (runtime, root) = fixture("valid", "2.6.1"); let image = pe_image(); fs::write(root.join("d3d11.dll"), &image).unwrap(); fs::write(root.join("dxgi.dll"), &image).unwrap(); let record = DxvkRuntimeAdmission::admit(&root, &runtime).unwrap(); assert_eq!(&*record.version, "2.6.1"); assert!(record.modules.iter().all(|p| p.is_absolute() && p.starts_with(&record.root))); fs::remove_dir_all(runtime.parent().unwrap()).unwrap(); }
+    #[test] fn admits_owned_versioned_x86_64_identity() { let (runtime, root) = fixture("valid", "2.6.1"); let image = pe_image(); fs::write(root.join("d3d11.dll"), &image).unwrap(); fs::write(root.join("dxgi.dll"), &image).unwrap(); let record = DxvkRuntimeAdmission::admit(&root, &runtime).unwrap(); assert_eq!(record.version(), "2.6.1"); assert!(record.modules().iter().all(|p| p.is_absolute() && p.starts_with(record.root()))); fs::remove_dir_all(runtime.parent().unwrap()).unwrap(); }
+
+    #[test] fn admitted_catalog_bytes_survive_source_replacement() {
+        let (runtime, root) = fixture("immutable", "2.6.1"); let original = pe_image();
+        fs::write(root.join("d3d11.dll"), &original).unwrap(); fs::write(root.join("dxgi.dll"), &original).unwrap();
+        let record = DxvkRuntimeAdmission::admit(&root, &runtime).unwrap();
+        fs::write(root.join("d3d11.dll"), b"replacement").unwrap();
+        assert_eq!(&*record.module_images[0], &original);
+        fs::remove_dir_all(runtime.parent().unwrap()).unwrap();
+    }
     #[test] fn rejects_missing_version() { let (runtime, root) = fixture("no-version", ""); fs::remove_file(root.join(VERSION_FILE)).unwrap(); assert!(DxvkRuntimeAdmission::admit(&root, &runtime).is_err()); fs::remove_dir_all(runtime.parent().unwrap()).unwrap(); }
     #[test] fn rejects_malformed_version() { let (runtime, root) = fixture("bad-version", "2.6"); assert!(DxvkRuntimeAdmission::admit(&root, &runtime).is_err()); fs::remove_dir_all(runtime.parent().unwrap()).unwrap(); }
     #[test] fn rejects_oversized_version_manifest_before_reading_modules() { let (runtime, root) = fixture("oversized-version", &("2.6.1".to_string() + &" ".repeat(64))); let image = pe_image(); fs::write(root.join("d3d11.dll"), &image).unwrap(); fs::write(root.join("dxgi.dll"), &image).unwrap(); assert!(DxvkRuntimeAdmission::admit(&root, &runtime).is_err()); fs::remove_dir_all(runtime.parent().unwrap()).unwrap(); }
