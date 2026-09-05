@@ -19,6 +19,50 @@ pub struct PreparedPeProcess {
     pub process: elf_load::pe_loader::PeProcess,
 }
 
+#[cfg(target_arch = "x86_64")]
+struct NtStandardHandles {
+    params: elf_load::process_env::NtProcessParameters<'static>,
+    handles: [sched::nt_object::NtHandle; 3],
+}
+
+#[cfg(target_arch = "x86_64")]
+impl NtStandardHandles {
+    fn close(self, table: &sched::nt_object::NtHandleTable) {
+        for handle in self.handles { let _ = table.close(handle); }
+    }
+}
+
+/// Wrap the invoking Linux fd 0/1/2 descriptions as inherited NT file
+/// objects. The NT process parameters point at these same VFS open
+/// descriptions; no second console or output buffer is created.
+#[cfg(target_arch = "x86_64")]
+fn inherit_nt_standard_handles(cur: &sched::Task) -> Option<NtStandardHandles> {
+    const FILE_READ_DATA: u32 = 0x0001;
+    const FILE_WRITE_DATA: u32 = 0x0002;
+    const SYNCHRONIZE: u32 = 0x0010_0000;
+    let fdt = cur.clone_fd_table()?;
+    let files = [fdt.get(0).ok()?, fdt.get(1).ok()?, fdt.get(2).ok()?];
+    if !files[0].f_mode().contains(vfs::Fmode::READ)
+        || !files[1].f_mode().contains(vfs::Fmode::WRITE)
+        || !files[2].f_mode().contains(vfs::Fmode::WRITE) { return None; }
+    let table = cur.thread_group.nt_handles();
+    let access = [FILE_READ_DATA | SYNCHRONIZE, FILE_WRITE_DATA | SYNCHRONIZE, FILE_WRITE_DATA | SYNCHRONIZE];
+    let mut handles = [sched::nt_object::NtHandle::invalid(); 3];
+    for index in 0..3 {
+        let handle = table.insert(table.new_file(files[index].clone()), access[index]);
+        let Some(handle) = handle else {
+            for previous in handles.into_iter().filter(|handle| *handle != sched::nt_object::NtHandle::invalid()) { let _ = table.close(previous); }
+            return None;
+        };
+        handles[index] = handle;
+    }
+    let raw = handles.map(|handle| handle.raw() as u64);
+    Some(NtStandardHandles { params: elf_load::process_env::NtProcessParameters {
+        current_directory: "C:\\Windows", current_directory_handle: 0,
+        console_handle: raw[1], standard_handles: raw,
+    }, handles })
+}
+
 /// `None` means the image is not PE. `Some(Ok(()))` commits the PE task;
 /// `Some(Err(errno))` means it was PE but could not be committed.
 /// # C: O(image + N_vmas)
@@ -56,12 +100,18 @@ pub fn try_commit_with_catalog_and_environment(cur: &sched::Task, path: &[u8], b
 #[cfg(target_arch = "x86_64")]
 fn commit_x86(cur: &sched::Task, path: &[u8], blob: &[u8], exec_vp: Option<&vfs::VfsPath>, catalog: Option<&pe::catalog::ModuleCatalog>, command_line: Option<&str>, environment: &[(&str, &str)]) -> Result<(), i64> {
     let enoexec = || -(syscall::errno::Errno::Enoexec.as_i32() as i64);
-    let prepared = prepare_pe_process(cur, path, blob, command_line, environment, None, exec_vp, catalog,
-        cur.tgid.load(core::sync::atomic::Ordering::Acquire), cur.tid, true)?;
+    let table = cur.thread_group.nt_handles();
+    let stdio = inherit_nt_standard_handles(cur);
+    let params = stdio.as_ref().map(|stdio| &stdio.params);
+    let prepared = match prepare_pe_process(cur, path, blob, command_line, environment, params, exec_vp, catalog,
+        cur.tgid.load(core::sync::atomic::Ordering::Acquire), cur.tid, true) {
+        Ok(prepared) => prepared,
+        Err(error) => { if let Some(stdio) = stdio { stdio.close(&table); } return Err(error); },
+    };
     let PreparedPeProcess { mm: as_, stack, stack_top, process } = prepared;
-    let path = core::str::from_utf8(path).map_err(|_| enoexec())?;
-    let mut creds = decide_exec_box(cur, exec_vp)?;
-    let selinux = decide_selinux_box(cur, exec_vp)?;
+    let path = match core::str::from_utf8(path) { Ok(path) => path, Err(_) => { if let Some(stdio) = stdio { stdio.close(&table); } return Err(enoexec()); } };
+    let mut creds = match decide_exec_box(cur, exec_vp) { Ok(creds) => creds, Err(error) => { if let Some(stdio) = stdio { stdio.close(&table); } return Err(error); } };
+    let selinux = match decide_selinux_box(cur, exec_vp) { Ok(selinux) => selinux, Err(error) => { if let Some(stdio) = stdio { stdio.close(&table); } return Err(error); } };
     creds.secure_exec |= selinux.secure_exec;
     // Diagnostic experiment for the AMD64 relay first-touch failure: populate
     // executable PE/runtime pages before the first user instruction. This is
