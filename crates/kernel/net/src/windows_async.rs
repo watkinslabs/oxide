@@ -6,6 +6,9 @@
 
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
+const PUBLISHING: u32 = u32::MAX - 1;
+const REARMING: u32 = u32::MAX - 2;
+
 /// NT status values used by asynchronous Winsock completion.
 pub mod status {
     pub const SUCCESS: u32 = 0;
@@ -45,11 +48,16 @@ pub struct Completion {
     pub flags: u32,
 }
 
+/// Identity returned for one submission; callbacks must return the same
+/// identity so a late completion cannot finish a rearmed operation.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct OperationToken(u64);
+
 /// One 64-bit `OVERLAPPED` completion record.
 pub struct Overlapped {
-    /// Status is published last, pairing with the acquire load in `result`.
+    /// Lifecycle state is the single claim word for submit, complete, and rearm.
     status: AtomicU32,
-    claimed: core::sync::atomic::AtomicBool,
+    generation: AtomicU64,
     information: AtomicU64,
     flags: AtomicU32,
 }
@@ -58,24 +66,37 @@ impl Overlapped {
     /// Allocate a record in the pending state used at async submission. # C: O(1)
     pub const fn new() -> Self {
         Self { status: AtomicU32::new(status::PENDING),
-            claimed: core::sync::atomic::AtomicBool::new(false), information: AtomicU64::new(0),
+            generation: AtomicU64::new(1),
+            information: AtomicU64::new(0),
             flags: AtomicU32::new(0) }
     }
 
     /// Re-arm only a terminal record; a live operation cannot be overwritten. # C: O(1)
-    pub fn begin(&self) -> bool {
-        if self.status.load(Ordering::Acquire) == status::PENDING { return false; }
-        self.claimed.store(false, Ordering::Release);
+    pub fn begin(&self) -> Option<OperationToken> {
+        let current = self.status.load(Ordering::Acquire);
+        if current == status::PENDING || current == PUBLISHING || current == REARMING { return None; }
+        if self.status.compare_exchange(current, REARMING, Ordering::AcqRel,
+            Ordering::Acquire).is_err() { return None; }
+        let generation = self.generation.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
+        self.information.store(0, Ordering::Relaxed);
+        self.flags.store(0, Ordering::Relaxed);
         self.status.store(status::PENDING, Ordering::Release);
-        true
+        Some(OperationToken(generation))
+    }
+
+    /// Return the identity of the initial pending submission. # C: O(1)
+    pub fn token(&self) -> Option<OperationToken> {
+        if self.status.load(Ordering::Acquire) == status::PENDING {
+            Some(OperationToken(self.generation.load(Ordering::Acquire)))
+        } else { None }
     }
 
     /// Publish bytes and flags before the terminal status. Exactly one producer wins. # C: O(1)
-    pub fn complete(&self, status: u32, bytes: u64, flags: u32) -> bool {
-        if status == status::PENDING { return false; }
-        if self.status.load(Ordering::Acquire) != status::PENDING
-            || self.claimed.compare_exchange(false, true, Ordering::AcqRel,
-                Ordering::Acquire).is_err() { return false; }
+    pub fn complete(&self, token: OperationToken, status: u32, bytes: u64, flags: u32) -> bool {
+        if status == status::PENDING || status == PUBLISHING || status == REARMING { return false; }
+        if self.generation.load(Ordering::Acquire) != token.0 { return false; }
+        if self.status.compare_exchange(status::PENDING, PUBLISHING, Ordering::AcqRel,
+            Ordering::Acquire).is_err() { return false; }
         self.information.store(bytes, Ordering::Relaxed);
         self.flags.store(flags, Ordering::Relaxed);
         self.status.store(status, Ordering::Release);
@@ -83,18 +104,25 @@ impl Overlapped {
     }
 
     /// Cancel a pending operation and retain the same terminal publication rules. # C: O(1)
-    pub fn cancel(&self) -> bool { self.complete(status::CANCELLED, 0, 0) }
+    pub fn cancel(&self, token: OperationToken) -> bool {
+        self.complete(token, status::CANCELLED, 0, 0)
+    }
 
     /// Read the status with acquire ordering, then return the completed payload. # C: O(1)
     pub fn result(&self) -> Result<Completion, u32> {
         let current = self.status.load(Ordering::Acquire);
-        if current == status::PENDING { return Err(error::IO_INCOMPLETE); }
+        if current == status::PENDING || current == PUBLISHING || current == REARMING {
+            return Err(error::IO_INCOMPLETE);
+        }
         Ok(Completion { status: current, bytes: self.information.load(Ordering::Relaxed),
             flags: self.flags.load(Ordering::Relaxed) })
     }
 
     /// Return the native status for an adapter that needs to wait on readiness. # C: O(1)
-    pub fn is_complete(&self) -> bool { self.status.load(Ordering::Acquire) != status::PENDING }
+    pub fn is_complete(&self) -> bool {
+        let current = self.status.load(Ordering::Acquire);
+        current != status::PENDING && current != PUBLISHING && current != REARMING
+    }
 }
 
 /// Translate a terminal NT status to the Winsock result namespace. # C: O(1)
@@ -133,7 +161,7 @@ pub const fn errno_error(errno: i32) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{error, errno_error, status, status_error, Overlapped};
+    use super::{error, errno_error, status, status_error, Overlapped, PUBLISHING, REARMING};
     use syscall::errno::Errno;
 
     #[test]
@@ -141,7 +169,7 @@ mod tests {
         let op = Overlapped::new();
         assert_eq!(op.result(), Err(error::IO_INCOMPLETE));
         assert!(!op.is_complete());
-        assert!(op.complete(status::SUCCESS, 37, 9));
+        assert!(op.complete(op.token().unwrap(), status::SUCCESS, 37, 9));
         assert_eq!(op.result().unwrap().bytes, 37);
         assert_eq!(op.result().unwrap().flags, 9);
     }
@@ -149,20 +177,36 @@ mod tests {
     #[test]
     fn duplicate_completion_and_pending_status_are_rejected() {
         let op = Overlapped::new();
-        assert!(!op.complete(status::PENDING, 1, 0));
-        assert!(op.complete(status::SUCCESS, 1, 0));
-        assert!(!op.complete(status::CONNECTION_RESET, 2, 0));
+        let token = op.token().unwrap();
+        assert!(!op.complete(token, status::PENDING, 1, 0));
+        assert!(!op.complete(token, PUBLISHING, 1, 0));
+        assert!(!op.complete(token, REARMING, 1, 0));
+        assert!(op.complete(token, status::SUCCESS, 1, 0));
+        assert!(!op.complete(token, status::CONNECTION_RESET, 2, 0));
     }
 
     #[test]
     fn cancellation_is_terminal_and_rearm_is_explicit() {
         let op = Overlapped::new();
-        assert!(op.cancel());
+        assert!(op.cancel(op.token().unwrap()));
         assert_eq!(op.result().unwrap().status, status::CANCELLED);
         assert_eq!(status_error(status::CANCELLED), error::OPERATION_ABORTED);
-        assert!(op.begin());
+        assert!(op.begin().is_some());
         assert_eq!(op.result(), Err(error::IO_INCOMPLETE));
-        assert!(!op.begin());
+        assert!(op.begin().is_none());
+    }
+
+    #[test]
+    fn rearm_claim_is_atomic_against_a_late_completion() {
+        let op = Overlapped::new();
+        let old = op.token().unwrap();
+        assert!(op.complete(old, status::SUCCESS, 11, 3));
+        let current = op.begin().unwrap();
+        assert_eq!(op.result(), Err(error::IO_INCOMPLETE));
+        assert!(!op.complete(old, status::CONNECTION_RESET, 99, 7));
+        assert_eq!(op.result(), Err(error::IO_INCOMPLETE));
+        assert!(op.complete(current, status::SUCCESS, 22, 4));
+        assert_eq!(op.result(), Ok(super::Completion { status: status::SUCCESS, bytes: 22, flags: 4 }));
     }
 
     #[test]
