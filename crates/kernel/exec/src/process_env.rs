@@ -4,6 +4,7 @@ use pe::Error;
 use vmm::{AddressSpace, MmapPlacement, VmaBacking, VmaFlags, VmaProt};
 
 mod publish;
+pub mod runtime;
 #[cfg(target_os = "oxide-kernel")]
 pub use publish::{publish_module, publish_modules};
 

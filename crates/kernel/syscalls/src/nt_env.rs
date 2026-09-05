@@ -198,18 +198,7 @@ fn set_current_environment(new_environment: u64, old_environment: u64) -> u64 {
 }
 
 fn valid_environment_block(environment: u64) -> bool {
-    let mut previous_zero = false;
-    for index in 0..MAX_ENVIRONMENT_UNITS {
-        let Some(address) = environment.checked_add((index * 2) as u64) else { return false; };
-        let mut bytes = [0u8; 2];
-        if uaccess::copy_from_user(&mut bytes, address).is_err() { return false; }
-        let unit = u16::from_le_bytes(bytes);
-        if unit == 0 {
-            if previous_zero { return true; }
-            previous_zero = true;
-        } else { previous_zero = false; }
-    }
-    false
+    read_environment_block(environment).and_then(|block| elf_load::process_env::runtime::clone_environment_block(&block)).is_some()
 }
 
 fn set_environment_variable(environment_pointer: u64, name_descriptor: u64, value_descriptor: u64) -> u64 {
@@ -337,19 +326,8 @@ fn read_unicode_descriptor_parts(address: u64) -> Option<(Vec<u16>, u16)> {
 }
 
 fn find_environment_value(environment: u64, name: &[u16]) -> Option<Vec<u16>> {
-    let mut entry = Vec::new();
-    for index in 0..65536usize {
-        let address = environment.checked_add((index * 2) as u64)?;
-        let mut bytes = [0u8; 2];
-        uaccess::copy_from_user(&mut bytes, address).ok()?;
-        let unit = u16::from_le_bytes(bytes);
-        if unit == 0 {
-            if entry.is_empty() { return None; }
-            if let Some(value) = pe::ntdll::environment_entry_value(&entry, name) { return Some(value.to_vec()); }
-            entry.clear();
-        } else { entry.push(unit); }
-    }
-    None
+    let block = read_environment_block(environment)?;
+    elf_load::process_env::runtime::environment_value(&block, name).map(|value| value.to_vec())
 }
 
 fn copy_units(target: u64, values: &[u16]) -> Result<(), ()> {
