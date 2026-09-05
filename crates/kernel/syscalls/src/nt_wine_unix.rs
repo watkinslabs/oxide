@@ -27,6 +27,9 @@ const STATUS_INVALID_ADDRESS: u64 = 0xc000_0141;
 const MAX_WINE_DEBUG_WRITE: usize = 1 << 20;
 const WINE_LOAD_SO_DLL_PARAMS_BYTES: u64 = 24;
 const WINE_LOAD_SO_DLL_MODULE_OFFSET: u64 = 16;
+const WINE_LOAD_SO_DLL_NAME_LENGTH_OFFSET: u64 = 0;
+const WINE_LOAD_SO_DLL_NAME_MAXIMUM_OFFSET: u64 = 2;
+const WINE_LOAD_SO_DLL_NAME_BUFFER_OFFSET: u64 = 8;
 
 const UNW_FLAG_MASK: u32 = 0x7;
 
@@ -103,6 +106,16 @@ fn load_so_dll_output_address(args: u64) -> Result<u64, u64> {
         return Err(STATUS_INVALID_PARAMETER);
     }
     wine_arg(args, WINE_LOAD_SO_DLL_MODULE_OFFSET).ok_or(STATUS_INVALID_PARAMETER)
+}
+
+/// Validate Wine's embedded `UNICODE_STRING` without reading its pointed-to
+/// name. The native Unixlib owner receives the same bounded string contract;
+/// it must not inherit malformed length or null-pointer state from the shim.
+/// # C: O(1)
+fn load_so_dll_request_valid(name_length: u16, name_maximum: u16,
+    name_buffer: u64, module_output: u64) -> bool {
+    name_length & 1 == 0 && name_maximum & 1 == 0 && name_length <= name_maximum
+        && (name_maximum == 0 || name_buffer != 0) && module_output != 0
 }
 
 /// Convert the Linux-shaped result of the shared usermode-helper owner to the
@@ -746,7 +759,16 @@ fn validate_builtin_unwind(args: u64) -> u64 {
 
 #[cfg(target_os = "oxide-kernel")]
 fn load_so_dll(args: u64) -> u64 {
-    if load_so_dll_output_address(args).is_err() { return STATUS_INVALID_PARAMETER; }
+    let Ok(module_output) = load_so_dll_output_address(args) else { return STATUS_INVALID_PARAMETER; };
+    let Some(length_address) = wine_arg(args, WINE_LOAD_SO_DLL_NAME_LENGTH_OFFSET) else { return STATUS_INVALID_PARAMETER; };
+    let Some(maximum_address) = wine_arg(args, WINE_LOAD_SO_DLL_NAME_MAXIMUM_OFFSET) else { return STATUS_INVALID_PARAMETER; };
+    let Some(buffer_address) = wine_arg(args, WINE_LOAD_SO_DLL_NAME_BUFFER_OFFSET) else { return STATUS_INVALID_PARAMETER; };
+    let Ok(name_length) = uaccess::get_user_u16(length_address) else { return STATUS_INVALID_PARAMETER; };
+    let Ok(name_maximum) = uaccess::get_user_u16(maximum_address) else { return STATUS_INVALID_PARAMETER; };
+    let Ok(name_buffer) = uaccess::get_user_u64(buffer_address) else { return STATUS_INVALID_PARAMETER; };
+    if !load_so_dll_request_valid(name_length, name_maximum, name_buffer, module_output) {
+        return STATUS_INVALID_PARAMETER;
+    }
     // A Wine unixlib is an ELF ET_DYN object. The request carries neither its
     // VFS source nor a native dependency provider, so routing it through the
     // PE catalog would turn a malformed ownership boundary into a false load.
@@ -831,6 +853,20 @@ mod tests {
     fn load_so_dll_rejects_request_envelope_overflow_before_loader_dispatch() {
         assert_eq!(load_so_dll_output_address(u64::MAX - 23), Err(STATUS_INVALID_PARAMETER));
         assert_eq!(load_so_dll_output_address(0), Err(STATUS_INVALID_PARAMETER));
+    }
+
+    #[test]
+    fn load_so_dll_accepts_a_bounded_even_unicode_request() {
+        assert!(load_so_dll_request_valid(12, 16, 0x2000, 0x3000));
+        assert!(load_so_dll_request_valid(0, 0, 0, 0x3000));
+    }
+
+    #[test]
+    fn load_so_dll_rejects_malformed_unicode_request_before_native_handoff() {
+        assert!(!load_so_dll_request_valid(3, 4, 0x2000, 0x3000));
+        assert!(!load_so_dll_request_valid(8, 6, 0x2000, 0x3000));
+        assert!(!load_so_dll_request_valid(8, 8, 0, 0x3000));
+        assert!(!load_so_dll_request_valid(8, 8, 0x2000, 0));
     }
 
     #[test]
