@@ -305,7 +305,8 @@ fn decode_reply(frame: &[u8]) -> Option<Reply> {
 fn flush_key_native(call: NtCall) -> u64 {
     let Some(current) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !current.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
-    let Some(remote) = remote_key(&current, call.args.a0 as u32, 0) else { return STATUS_INVALID_PARAMETER; };
+    let key = match crate::nt_registry_policy::flush_handle(call.args.a0) { Ok(key) => key, Err(status) => return status };
+    let Some(remote) = remote_key(&current, key, 0) else { return STATUS_INVALID_HANDLE; };
     match transact(&frame_key(registry_wire::FLUSH, remote)) { Some(Reply::Success) => STATUS_SUCCESS, Some(reply) => reply_status(reply), None => STATUS_UNSUCCESSFUL }
 }
 

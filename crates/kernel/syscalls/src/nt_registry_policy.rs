@@ -3,6 +3,14 @@
 //! host while the delivery owner remains target-specific.
 
 pub const REG_NOTIFY_CHANGE_LAST_SET: u64 = 0x0000_0004;
+pub const STATUS_INVALID_HANDLE: u64 = 0xc000_0008;
+
+/// Admit the 64-bit NT handle argument without truncation. Native key handles
+/// are 32-bit table values, and an unrepresentable value is an invalid handle,
+/// not a different key selected by low bits.
+pub const fn flush_handle(raw: u64) -> Result<u32, u64> {
+    if raw > u32::MAX as u64 { Err(STATUS_INVALID_HANDLE) } else { Ok(raw as u32) }
+}
 
 /// Whether the ABI shape can be owned by the current synchronous NT bridge.
 /// APC delivery, subtree traversal, and output records remain separate
@@ -31,7 +39,19 @@ pub const fn supported_request(
 
 #[cfg(test)]
 mod tests {
-    use super::{supported_request, REG_NOTIFY_CHANGE_LAST_SET};
+    use super::{flush_handle, supported_request, STATUS_INVALID_HANDLE, REG_NOTIFY_CHANGE_LAST_SET};
+
+    #[test]
+    fn flush_rejects_unrepresentable_64_bit_handle_without_truncation() {
+        assert_eq!(flush_handle(u32::MAX as u64 + 1), Err(STATUS_INVALID_HANDLE));
+        assert_eq!(flush_handle(u64::MAX), Err(STATUS_INVALID_HANDLE));
+    }
+
+    #[test]
+    fn flush_preserves_native_handle_width() {
+        assert_eq!(flush_handle(0), Ok(0));
+        assert_eq!(flush_handle(u32::MAX as u64), Ok(u32::MAX));
+    }
 
     fn valid() -> bool {
         supported_request(0, 0, 0x1000, 0, 0, 1, 0, REG_NOTIFY_CHANGE_LAST_SET)
