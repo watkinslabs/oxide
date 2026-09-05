@@ -931,6 +931,13 @@ Profile:
 -   shader compilation
 -   frame-time variance
 
+The syscall-transition boundary is measured by the `debug-syscost` NT entry
+instrumentation. It samples the architecture monotonic timer immediately
+around `oxide_nt_syscall_dispatch`, records invalid and successful returns, and
+reports count, total, average, minimum, and maximum nanoseconds as
+`[NT-SYSCOST]`. The hosted accumulator tests cover extrema and overflow
+handling; the harness verifies both production return paths remain connected.
+
 Move functionality into native NT kernel facilities only where there is
 a measurable architectural or performance benefit.
 

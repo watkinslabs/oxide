@@ -311,14 +311,21 @@ pub unsafe extern "C" fn oxide_nt_syscall_dispatch(
     entry: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64,
     #[cfg(target_arch = "aarch64")] _entry_frame: *mut hal_aarch64::SvcFrame,
 ) -> u64 {
+    #[cfg(feature = "debug-syscost")]
+    let transition_start = crate::nt_transition_measure::start();
     // SAFETY: `syscall_a5` reads the sixth argument saved by this
     // architecture's syscall entry stub before any nested call can replace it.
     let a5 = unsafe { crate::syscall_a5::read() };
     let args = SyscallArgs { a0, a1, a2, a3, a4, a5 };
     let Some(call) = crate::nt_dispatch::decode_entry(entry, args) else {
+        #[cfg(feature = "debug-syscost")]
+        crate::nt_transition_measure::record(transition_start);
         return crate::nt_dispatch::STATUS_INVALID_PARAMETER;
     };
-    crate::nt_dispatch::dispatch(call)
+    let rv = crate::nt_dispatch::dispatch(call);
+    #[cfg(feature = "debug-syscost")]
+    crate::nt_transition_measure::record(transition_start);
+    rv
 }
 
 mod desktop_trace;
