@@ -25,6 +25,8 @@ const STATUS_CONFLICTING_ADDRESSES: u64 = 0xc000_0018;
 const STATUS_MEMORY_NOT_ALLOCATED: u64 = 0xc000_00a0;
 const STATUS_INVALID_ADDRESS: u64 = 0xc000_0141;
 const MAX_WINE_DEBUG_WRITE: usize = 1 << 20;
+const WINE_LOAD_SO_DLL_PARAMS_BYTES: u64 = 24;
+const WINE_LOAD_SO_DLL_MODULE_OFFSET: u64 = 16;
 
 const UNW_FLAG_MASK: u32 = 0x7;
 
@@ -91,6 +93,17 @@ const WINE_OBJ_INHERIT: u32 = 0x0000_0002;
 const NT_HANDLE_INHERIT: u32 = 0x0000_0001;
 
 fn wine_arg(base: u64, offset: u64) -> Option<u64> { base.checked_add(offset) }
+
+/// Validate the complete x86-64 `load_so_dll_params` envelope and return its
+/// nested module-output pointer location. The complete object must remain
+/// addressable even though the loader reads only its two nested fields.
+/// # C: O(1)
+fn load_so_dll_output_address(args: u64) -> Result<u64, u64> {
+    if args == 0 || args.checked_add(WINE_LOAD_SO_DLL_PARAMS_BYTES).is_none() {
+        return Err(STATUS_INVALID_PARAMETER);
+    }
+    wine_arg(args, WINE_LOAD_SO_DLL_MODULE_OFFSET).ok_or(STATUS_INVALID_PARAMETER)
+}
 
 /// Convert the Linux-shaped result of the shared usermode-helper owner to the
 /// result Wine's `spawnvp` ABI exposes: a negated exec errno, or an 8-bit exit
@@ -733,10 +746,9 @@ fn validate_builtin_unwind(args: u64) -> u64 {
 
 #[cfg(target_os = "oxide-kernel")]
 fn load_so_dll(args: u64) -> u64 {
-    if args == 0 || args.checked_add(16).is_none() { return STATUS_INVALID_PARAMETER; }
+    let Ok(module_output) = load_so_dll_output_address(args) else { return STATUS_INVALID_PARAMETER; };
     // The process catalog is the canonical Wine builtin source in Oxide. Its
     // PE image loader owns mapping, imports, PEB publication, and attach order.
-    let Some(module_output) = wine_arg(args, 16) else { return STATUS_INVALID_PARAMETER; };
     crate::nt_loader_dir::load(args, module_output)
 }
 
@@ -808,6 +820,17 @@ mod tests {
     use super::*;
     use alloc::vec;
     use alloc::vec::Vec;
+
+    #[test]
+    fn load_so_dll_accepts_the_complete_x64_request_envelope() {
+        assert_eq!(load_so_dll_output_address(0x1000), Ok(0x1010));
+    }
+
+    #[test]
+    fn load_so_dll_rejects_request_envelope_overflow_before_loader_dispatch() {
+        assert_eq!(load_so_dll_output_address(u64::MAX - 23), Err(STATUS_INVALID_PARAMETER));
+        assert_eq!(load_so_dll_output_address(0), Err(STATUS_INVALID_PARAMETER));
+    }
 
     #[test]
     fn mapping_size_defaults_to_remaining_section_and_rejects_overrun() {
