@@ -19,7 +19,7 @@ FROZEN 2026-08-31. Dep:`01`,`02`,`06`,`11`,`14`,`31a`,`52`. Provides: NT process
 |---|---|
 | PEB | image base, loader data, process parameters, TLS state |
 | loader data | executable plus mapped runtime module entries, image bases, image sizes, full/base names |
-| process parameters | image path, command line, environment pointer |
+| process parameters | native `CURDIR` (`UNICODE_STRING` then handle), image path, command line, environment pointer |
 | environment | UTF-16 `NAME=VALUE` strings separated by NUL and terminated by NUL |
 | TEB | self pointer, PEB pointer, process id, thread id, TLS pointer |
 
