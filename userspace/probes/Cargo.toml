@@ -11,6 +11,7 @@
 # - windows-vkd3d: bounded D3D12-to-Vulkan component handoff -> `windows_vkd3d_probe`.
 # - windows-console: strict code-page/UTF-16 console boundary -> `windows_console`.
 # - windows-exceptions: canonical exception-code dispatch boundary -> `windows_exceptions`.
+# - windows-performance: bounded W10 launch/transition evidence -> `windows_performance`.
 # - swapfile:    ext4 swapfile lifecycle + memcg swap accounting -> `swapfile_probe`.
 # - request_key: request_key(2) upcall reaches a real helper -> `request_key_probe`.
 # - sockopt_diff: SOL_NETLINK / SOL_SOCKET-on-netlink-fd differential -> `sockopt_diff`.
@@ -25,7 +26,7 @@
 # sides already target `*-unknown-linux-gnu` through the same toolchain.
 [workspace]
 resolver = "2"
-members = ["support", "drm", "vulkan", "windows-vulkan", "windows-vkd3d", "swapfile", "request_key", "sockopt_diff", "v4l2_capture", "ldt", "ata_identity", "ata_sat", "usb_scsi", "io_uring_ext4", "windows-runtime", "windows-registry", "windows-user32", "windows-gdi", "windows-audio", "windows-path", "windows-xinput", "windows-winsock", "windows-contracts", "windows-console", "windows-exceptions"]
+members = ["support", "drm", "vulkan", "windows-vulkan", "windows-vkd3d", "windows-performance", "swapfile", "request_key", "sockopt_diff", "v4l2_capture", "ldt", "ata_identity", "ata_sat", "usb_scsi", "io_uring_ext4", "windows-runtime", "windows-registry", "windows-user32", "windows-gdi", "windows-audio", "windows-path", "windows-xinput", "windows-winsock", "windows-contracts", "windows-console", "windows-exceptions"]
 
 [workspace.package]
 version = "0.1.0"
