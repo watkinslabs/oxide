@@ -4,13 +4,11 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-use core::sync::atomic::Ordering;
-
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
 use crate::affinity_abi::{self, CPUMASK_SIZE};
-use crate::affinity_common::{active_cpu_mask, affinity_target};
+use crate::affinity_common::affinity_target;
 use crate::userbuf::validate_user_buf_readable;
 
 /// `sys_sched_setaffinity(pid, len, user_mask_ptr)` — slot 203. `len` is in
@@ -40,34 +38,16 @@ pub fn sys_sched_setaffinity(args: &SyscallArgs) -> i64 {
         Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
     };
 
-    let decided = affinity_abi::setaffinity_decide(
-        want,
-        t.cpuset_cpus_allowed.load(Ordering::Acquire),
-        active_cpu_mask(),
-        t.no_setaffinity.load(Ordering::Acquire),
-        crate::sched_policy::check_same_owner(cur, &t),
-        cur.has_cap(sched::cap::SYS_NICE),
-    );
-    let eff = match decided { Ok(m) => m, Err(e) => return -(e.as_i32() as i64) };
-
-    // A `SCHED_DEADLINE` task's reservation was admitted against the whole span
-    // the class schedules over. Confining it to fewer CPUs would leave that
-    // reservation booked against capacity it can no longer reach, so the
-    // request is refused as a CAPACITY answer (`EBUSY`), after the argument and
-    // permission answers above.
-    if let Err(rv) = crate::sched_policy::dl::setaffinity_allowed(
-        crate::sched_policy::dl_policy(crate::sched_policy::task_policy(&t)),
-        sched::deadline::span(), eff)
-    {
-        return rv;
+    if t.no_setaffinity.load(core::sync::atomic::Ordering::Acquire) {
+        return -(Errno::Einval.as_i32() as i64);
     }
-
-    // Linux parks the raw request in `user_cpus_ptr` so a later cpuset change
-    // re-applies it instead of erasing it.
-    // Honor the new mask now: relocate the task off any disallowed CPU. A
-    // queued task moves immediately; a RUNNING one is nudged to reschedule and
-    // the switch itself re-queues it on an allowed CPU rather than back on the
-    // forbidden one, so a CPU-bound thread leaves without having to block.
-    sched::live::update_affinity(&t, Some(want), None);
-    0
+    if !affinity_abi::setaffinity_permitted(
+        crate::sched_policy::check_same_owner(cur, &t), cur.has_cap(sched::cap::SYS_NICE))
+    {
+        return -(Errno::Eperm.as_i32() as i64);
+    }
+    match t.set_user_affinity(want) {
+        Ok(_) => 0,
+        Err(e) => -(e.as_i32() as i64),
+    }
 }

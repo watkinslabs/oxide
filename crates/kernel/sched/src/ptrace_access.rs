@@ -11,6 +11,10 @@ use core::sync::atomic::Ordering;
 use crate::task::cap;
 use crate::{Task, SUID_DUMP_USER};
 
+#[path = "ptrace_access/native_debug.rs"]
+mod native_debug;
+pub use native_debug::{native_debug_event_visible, NativeDebugEvent};
+
 /// Errno returned for every denial, matching Linux (`-EPERM`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Denied;

@@ -1390,7 +1390,7 @@ pub fn dispatch(call: NtCall) -> u64 {
                     let target = match resolve_thread_target(&cur, thread, &table, THREAD_QUERY_INFORMATION) {
                         Ok(target) => target, Err(error) => return error,
                     };
-                    let mask = target.cpus_allowed.load(core::sync::atomic::Ordering::Acquire).low_word();
+                    let mask = target.affinity_snapshot().low_word();
                     let mut out = [0u8; THREAD_GROUP_INFORMATION_BYTES];
                     out[..8].copy_from_slice(&mask.to_ne_bytes());
                     if uaccess::copy_to_user(info.as_u64(), &out).is_err() { return STATUS_INVALID_PARAMETER; }
@@ -1404,7 +1404,7 @@ pub fn dispatch(call: NtCall) -> u64 {
                     let target = match resolve_thread_target(&cur, thread, &table, THREAD_QUERY_INFORMATION) {
                         Ok(target) => target, Err(error) => return error,
                     };
-                    let affinity = target.cpus_allowed.load(core::sync::atomic::Ordering::Acquire).low_word();
+                    let affinity = target.affinity_snapshot().low_word();
                     if uaccess::put_user_u64(info.as_u64(), affinity).is_err() { return STATUS_INVALID_PARAMETER; }
                     if let Some(return_length) = return_length {
                         if uaccess::put_user_u32(return_length.as_u64(), THREAD_AFFINITY_MASK_BYTES as u32).is_err() { return STATUS_INVALID_PARAMETER; }

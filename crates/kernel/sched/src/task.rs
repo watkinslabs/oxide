@@ -135,6 +135,9 @@ pub struct Task {
     /// Per-thread activation-context frames and opaque deactivation cookies.
     pub nt_activation_stack: Spinlock<crate::nt_activation::Stack, TaskListClass>,
 
+    /// Canonical native NT thread description and debugger-hidden latch.
+    pub nt_thread_info: crate::nt_thread_info::State,
+
     /// Per-thread native NT exception state, retained until the Windows user
     /// dispatcher resolves or terminates the exception.
     pub nt_exception: crate::nt_exception::State,
