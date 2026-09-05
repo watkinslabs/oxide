@@ -1219,8 +1219,9 @@ pub fn load_pe_image_with_resolver_at<R: ImportResolver>(blob: &[u8], as_: &Addr
 }
 fn load_pe_image_with_resolver_at_mode<R: ImportResolver>(blob: &[u8], as_: &AddressSpace, resolver: &R, exact_base: Option<UserVirtAddr>, relay_call: u64, validate_imports: bool) -> Result<PeLoadedImage, pe::Error> {
     let parsed = pe::parse(blob)?;
-    // Validate callback-array termination and image-relative addresses before
-    // binding or reserving anything; malformed TLS must leave no VMA behind.
+    // Validate every image-owned TLS address before binding or reserving
+    // anything; malformed TLS must leave no VMA behind.
+    validate_tls_directory(&parsed)?;
     let _tls_callbacks = parsed.tls_callback_rvas()?;
     let mut image = parsed.materialize()?;
     let len = parsed.size_of_image as usize;
@@ -1295,6 +1296,31 @@ fn load_pe_image_with_resolver_at_mode<R: ImportResolver>(blob: &[u8], as_: &Add
     let tls = parsed.directories[pe::IMAGE_DIRECTORY_ENTRY_TLS];
     transaction.commit();
     Ok(PeLoadedImage { base, preferred_base: parsed.image_base, entry, size: parsed.size_of_image, exception_directory: (exception.rva, exception.size), tls_directory: (tls.rva, tls.size) })
+}
+
+/// Validate the image-owned addresses consumed by the initial TLS setup.
+/// Callback-array contents are checked separately by `tls_callback_rvas`.
+/// `AddressOfIndex` is a loader write target, so admitting it outside the
+/// image would make a later process-attach mutation target unrelated memory.
+fn validate_tls_directory(image: &pe::Image<'_>) -> Result<(), pe::Error> {
+    let Some(tls) = image.tls()? else { return Ok(()); };
+    let image_base = image.image_base;
+    let image_size = image.size_of_image as u64;
+    let to_rva = |address: u64| address.checked_sub(image_base).ok_or(pe::Error::Einval);
+    let in_image = |rva: u64, bytes: u64| {
+        rva.checked_add(bytes).map_or(false, |end| end <= image_size)
+    };
+    if (tls.start_raw == 0) != (tls.end_raw == 0) { return Err(pe::Error::Einval); }
+    let (start, end) = if tls.start_raw == 0 { (0, 0) } else {
+        (to_rva(tls.start_raw)?, to_rva(tls.end_raw)?)
+    };
+    if start > end || !in_image(start, end - start) { return Err(pe::Error::Einval); }
+    if tls.index != 0 {
+        let index = to_rva(tls.index)?;
+        if !in_image(index, core::mem::size_of::<u32>() as u64) { return Err(pe::Error::Einval); }
+    }
+    let _ = (tls.zero_fill as u64).checked_add(end - start).ok_or(pe::Error::Einval)?;
+    Ok(())
 }
 pub fn load_pe_module_set_with_resolver<'a, R: ImportResolver>(modules: &[pe::Module<'a>], as_: &AddressSpace, resolver: &R) -> Result<alloc::vec::Vec<PeLoadedModule<'a>>, pe::Error> {
     let mut loaded = alloc::vec::Vec::new();

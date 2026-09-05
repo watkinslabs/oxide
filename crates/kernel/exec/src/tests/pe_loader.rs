@@ -179,6 +179,38 @@
     }
 
     #[test]
+    fn malformed_tls_template_and_index_are_rejected_before_mapping() {
+        let mut blob = tiny_pe();
+        let directory = 0x98 + 112 + pe::IMAGE_DIRECTORY_ENTRY_TLS * 8;
+        blob[directory..directory + 4].copy_from_slice(&0x1100u32.to_le_bytes());
+        blob[directory + 4..directory + 8].copy_from_slice(&40u32.to_le_bytes());
+        blob[0x98 + 108..0x98 + 112].copy_from_slice(&16u32.to_le_bytes());
+        let tls = 0x500;
+        blob[tls..tls + 8].copy_from_slice(&(0x1000_0000u64 + 0x4000).to_le_bytes());
+        blob[tls + 8..tls + 16].copy_from_slice(&(0x1000_0000u64 + 0x4008).to_le_bytes());
+        blob[tls + 16..tls + 24].copy_from_slice(&(0x1000_0000u64 + 0x4000).to_le_bytes());
+        let as_ = AddressSpace::new(0x20_000).unwrap();
+        assert_eq!(load_pe_image(&blob, &as_), Err(pe::Error::Einval));
+        assert_eq!(as_.vma_count(), 0);
+    }
+
+    #[test]
+    fn valid_tls_template_and_index_are_admitted_as_image_owned_ranges() {
+        let mut blob = tiny_pe();
+        let directory = 0x98 + 112 + pe::IMAGE_DIRECTORY_ENTRY_TLS * 8;
+        blob[directory..directory + 4].copy_from_slice(&0x1100u32.to_le_bytes());
+        blob[directory + 4..directory + 8].copy_from_slice(&40u32.to_le_bytes());
+        blob[0x98 + 108..0x98 + 112].copy_from_slice(&16u32.to_le_bytes());
+        let tls = 0x500;
+        blob[tls..tls + 8].copy_from_slice(&(0x1000_0000u64 + 0x1000).to_le_bytes());
+        blob[tls + 8..tls + 16].copy_from_slice(&(0x1000_0000u64 + 0x1008).to_le_bytes());
+        blob[tls + 16..tls + 24].copy_from_slice(&(0x1000_0000u64 + 0x1010).to_le_bytes());
+        let as_ = AddressSpace::new(0x20_000).unwrap();
+        let image = load_pe_image(&blob, &as_).unwrap();
+        assert_eq!(image.tls_directory, (0x1100, 40));
+    }
+
+    #[test]
     fn export_resolver_matches_module_names_without_case_sensitivity() {
         let blob = exported_pe();
         let parsed = pe::parse(&blob).unwrap();
