@@ -328,7 +328,7 @@ git worktree add -b "$name" ../kernel-${name%%-*} origin/main
 ```
 `--claim` pushes a `claim/<T><NN>` ref so the number is yours atomically; reading (`--dry-run`, `metadata/index.md`) is NOT claiming — three lanes once drew the same number and one implementation was discarded. Never invent or hand-pick a number; git refs are the only source of truth. `make counters` prints next free per type.
 
-**Single-active-worktree rule (HARD RULE):** this clone has exactly one active worktree and one active feature branch. Start each item from freshly fetched `origin/main`, commit, push, PR, merge, update the checkout, delete the feature branch after merge, then start the next item in the same sole checkout. Never create parallel worktrees, omnibus branches, reused dirty branches, or hidden WIP. The `tools/worktree-guard.sh` pre-commit, post-checkout, and pre-push hooks reject a clone with more than one registered worktree. Parallelism uses independent clones, never this clone.
+**Worktree reconciliation rule (HARD RULE):** fan-out is allowed for independent lanes, but every linked worktree must be merged, refreshed from current `origin/main`, or explicitly closed before it exceeds 2 hours. No abandoned dirty branches, omnibus branches, or hidden WIP. `tools/worktree-guard.sh` runs on commit, checkout, and push; it rejects any linked worktree older than 2 hours and prints its path, branch, and age. Set the threshold only in the repository policy change, not as a per-lane bypass.
 
 **Phase prefix matches `00§3`;** phases are sequential — no phase-`n+1` work before phase-`n` exit gates; pick the lowest unfinished phase.
 
