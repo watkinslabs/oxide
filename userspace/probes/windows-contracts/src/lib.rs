@@ -4,6 +4,8 @@
 //! object table, registry owner, path adapter, and user32 class registry. They
 //! never invoke a kernel or depend on an installed Wine tree.
 
+#[cfg(test)]
+use elf_load::pe_loader::ImportResolver;
 use pe::{parse, IMAGE_FILE_MACHINE_AMD64, IMAGE_NT_OPTIONAL_HDR64_MAGIC, SectionFlags};
 use sched::nt_object::{NtObjectType, NtHandleTable};
 use syscall::nt::{NtService, NtWindowMessage, NtWindowRect};
@@ -40,6 +42,23 @@ fn pe_fixture() -> Vec<u8> {
     image[SEC + 36..SEC + 40].copy_from_slice(&(SectionFlags::MEM_READ | SectionFlags::MEM_EXECUTE).to_le_bytes());
     image[0x410] = 0xcc;
     image
+}
+
+fn launch_fixture() -> (std::path::PathBuf, std::path::PathBuf) {
+    let base = std::env::temp_dir().join(format!("oxide-windows-e2e-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).expect("fixture directory");
+    let image = base.join("notepad.exe");
+    std::fs::write(&image, pe_fixture()).expect("fixture image");
+    (base, image)
+}
+
+#[cfg(test)]
+struct NoImports;
+
+#[cfg(test)]
+impl ImportResolver for NoImports {
+    fn resolve(&self, _dll: &[u8], _import: &pe::ImportThunk<'_>) -> Result<u64, pe::Error> { Err(pe::Error::Unsupported) }
 }
 
 /// Run the complete hosted contract suite. # C: O(1) plus fixture sizes
@@ -80,12 +99,83 @@ pub fn run() {
     let atom = classes.register_class_ex_w(&name, 0x1400_1010).unwrap();
     assert_eq!(classes.atom(&name).unwrap(), atom);
     assert!(classes.register_class_ex_w(&name, 0x1400_2020).is_err());
+
+    let (fixture_dir, image_path) = launch_fixture();
+    let request = windows_runtime::RuntimeRequest::from_paths_with_environment(
+        &image_path, b"C:\\Windows\\notepad.exe", b"notepad.exe", &fixture_dir,
+        [(String::from("OXIDE_NT_PERSONALITY"), String::from("native"))],
+    ).expect("owned launcher handoff");
+    assert_eq!(request.module_count(), 0);
+    assert_eq!(request.abi().module_count, 0);
+    assert!(request.abi().image_len > 0);
+    std::fs::remove_dir_all(fixture_dir).expect("fixture cleanup");
 }
 
 #[cfg(test)]
 mod tests {
     use super::run;
+    use super::NoImports;
+    use elf_load::pe_loader::load_pe_process_with_resolver_and_modules_and_params_with_stack_bounds;
+    use elf_load::process_env::EnvironmentInput;
+    use std::os::unix::net::UnixListener;
+    use std::sync::mpsc;
+    use std::thread;
+    use vmm::AddressSpace;
+    use windows_registry::{serve_connection, Client, RegistryStore, Request, Response, Root, Value, ValueType};
+    use windows_user32::{ClassError, User32};
 
     #[test]
     fn native_notepad_contract_is_wired_across_all_owned_boundaries() { run(); }
+
+    #[test]
+    fn registry_endpoint_preserves_the_same_key_and_value_contract_as_advapi() {
+        let base = std::env::temp_dir().join(format!("oxide-windows-e2e-reg-{}", std::process::id()));
+        let socket = base.with_extension("sock");
+        let database = base.with_extension("db");
+        let _ = std::fs::remove_file(&socket);
+        let _ = std::fs::remove_file(&database);
+        let listener = UnixListener::bind(&socket).expect("registry endpoint");
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let server_database = database.clone();
+        let server = thread::spawn(move || {
+            let mut store = RegistryStore::open(&server_database).expect("registry store");
+            ready_tx.send(()).unwrap();
+            let (mut stream, _) = listener.accept().unwrap();
+            serve_connection(&mut stream, &mut store).unwrap();
+        });
+        ready_rx.recv().unwrap();
+        let mut client = Client::connect(&socket).expect("registry client");
+        let key = match client.execute(Request::Create { root: Root::CurrentUser, subkey: String::from("Software\\Oxide\\Notepad") }).unwrap() {
+            Response::Handle(key) => key,
+            response => panic!("unexpected registry response: {response:?}"),
+        };
+        assert_eq!(client.execute(Request::Set { key, name: String::from("WindowTitle"), value: Value { kind: ValueType::String, data: "Untitled - Notepad\0".encode_utf16().flat_map(u16::to_le_bytes).collect() } }).unwrap(), Response::Success);
+        assert!(matches!(client.execute(Request::Query { key, name: String::from("windowtitle") }).unwrap(), Response::Value(_)));
+        drop(client);
+        server.join().unwrap();
+        let _ = std::fs::remove_file(socket);
+        let _ = std::fs::remove_file(database);
+    }
+
+    #[test]
+    fn failed_host_window_handoff_does_not_mutate_the_class_lifecycle() {
+        let mut classes = super::ClassRegistry::new();
+        let name = "NotepadE2E\0".encode_utf16().collect::<Vec<_>>();
+        let atom = classes.register_class_ex_w(&name, 0x1400_1010).unwrap();
+        let result = classes.create_window_ex_w(&User32, &name, 0);
+        assert!(matches!(result, Err(ClassError::Service(_))));
+        assert_eq!(classes.atom(&name).unwrap(), atom);
+        assert!(classes.unregister_class_w(&name).is_ok());
+    }
+
+    #[test]
+    fn malformed_launch_rolls_back_every_vma_after_process_environment_failure() {
+        let image = super::pe_fixture();
+        let as_ = AddressSpace::new(0).expect("address space");
+        let before = as_.vma_count();
+        let input = EnvironmentInput { image_base: 0, image_size: 0, image_path: "C:\\notepad.exe", command_line: "notepad.exe", environment: &[("SystemRoot", "C:\\Windows")], process_id: 7, thread_id: 8 };
+        let result = load_pe_process_with_resolver_and_modules_and_params_with_stack_bounds(&image, &as_, &input, 0, 0, &NoImports, &[], None);
+        assert!(result.is_err(), "zero stack bound must fail before publication");
+        assert_eq!(as_.vma_count(), before, "failed launch must remove image and environment mappings");
+    }
 }

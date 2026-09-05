@@ -12,9 +12,12 @@ name = "windows-contracts"
 path = "src/main.rs"
 
 [dependencies]
+elf-load = { path = "../../../crates/kernel/exec" }
 pe = { path = "../../../crates/shared/pe" }
 sched = { path = "../../../crates/kernel/sched", features = ["hosted"] }
 syscall = { path = "../../../crates/kernel/syscall" }
+vmm = { path = "../../../crates/kernel/mm-vmm", features = ["hosted"] }
 windows-path = { path = "../windows-path" }
 windows-registry = { path = "../windows-registry" }
+windows-runtime = { path = "../windows-runtime" }
 windows-user32 = { path = "../windows-user32" }
