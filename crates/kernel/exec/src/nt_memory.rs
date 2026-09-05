@@ -10,7 +10,7 @@ pub enum NtStatus { Success, InvalidParameter, NoMemory, ConflictingAddresses, N
 pub struct NtAllocation { pub base: UserVirtAddr, pub size: usize, pub protection: VmaProt, pub reserved: bool }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct NtMemoryInfo { pub base: UserVirtAddr, pub allocation_base: UserVirtAddr, pub size: usize, pub protection: VmaProt, pub may_protection: VmaProt, pub committed: bool }
+pub struct NtMemoryInfo { pub base: UserVirtAddr, pub allocation_base: UserVirtAddr, pub size: usize, pub protection: VmaProt, pub may_protection: VmaProt, pub committed: bool, pub mapped_view: bool }
 
 /// Result of one native NT process-memory transfer. The destination is
 /// validated by the syscall boundary before this owner is called; a failed
@@ -184,7 +184,7 @@ pub fn protect(as_: &AddressSpace, base: UserVirtAddr, size: usize, protection: 
 pub fn query(as_: &AddressSpace, address: UserVirtAddr) -> Result<NtMemoryInfo, NtStatus> {
     let base = UserVirtAddr::new(address.as_u64() & !(PAGE as u64 - 1)).ok_or(NtStatus::InvalidParameter)?;
     let vma = as_.find_vma(base).ok_or(NtStatus::NotMapped)?;
-    Ok(NtMemoryInfo { base, allocation_base: vma.start, size: (vma.end.as_u64() - base.as_u64()) as usize, protection: vma.prot, may_protection: vma.may_prot, committed: !vma.flags.contains(VmaFlags::NT_RESERVED) })
+    Ok(NtMemoryInfo { base, allocation_base: vma.mapping_origin.unwrap_or(vma.start), size: (vma.end.as_u64() - base.as_u64()) as usize, protection: vma.prot, may_protection: vma.may_prot, committed: !vma.flags.contains(VmaFlags::NT_RESERVED), mapped_view: vma.flags.contains(VmaFlags::NT_SECTION_VIEW) })
 }
 
 /// Describe the free region beginning at an unmapped address.
@@ -195,7 +195,7 @@ pub fn query_free(as_: &AddressSpace, address: UserVirtAddr) -> Result<NtMemoryI
         .filter_map(|vma| (vma.start.as_u64() > base.as_u64()).then_some(vma.start.as_u64()))
         .min().unwrap_or(hal::USER_VA_END);
     if end <= base.as_u64() { return Err(NtStatus::InvalidParameter); }
-    Ok(NtMemoryInfo { base, allocation_base: UserVirtAddr::new(0).unwrap(), size: (end - base.as_u64()) as usize, protection: VmaProt::empty(), may_protection: VmaProt::empty(), committed: false })
+    Ok(NtMemoryInfo { base, allocation_base: UserVirtAddr::new(0).unwrap(), size: (end - base.as_u64()) as usize, protection: VmaProt::empty(), may_protection: VmaProt::empty(), committed: false, mapped_view: false })
 }
 
 #[cfg(test)]
@@ -333,5 +333,18 @@ mod tests {
             protection: VmaProt::empty(), reserved: true }), NtStatus::Success);
         assert_eq!(free(&as_, NtAllocation { base: UserVirtAddr::new(0x4000_2000).unwrap(),
             size: PAGE, protection: VmaProt::empty(), reserved: true }), NtStatus::Success);
+    }
+
+    #[test]
+    fn query_keeps_section_view_origin_after_protection_split() {
+        let as_ = AddressSpace::new(0x20_000).unwrap();
+        let origin = UserVirtAddr::new(0x4000_0000).unwrap();
+        let a = allocate(&as_, Some(origin), PAGE * 3, VmaProt::READ | VmaProt::WRITE, true).unwrap();
+        assert!(as_.set_mapping_origin(a.base));
+        let middle = UserVirtAddr::new(origin.as_u64() + PAGE as u64).unwrap();
+        assert_eq!(protect(&as_, middle, PAGE, VmaProt::READ).unwrap(), VmaProt::READ | VmaProt::WRITE);
+        let q = query(&as_, middle).unwrap();
+        assert_eq!(q.allocation_base, origin);
+        assert_eq!(q.protection, VmaProt::READ);
     }
 }
