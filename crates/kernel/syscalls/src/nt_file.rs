@@ -68,6 +68,7 @@ const FSCTL_PIPE_LISTEN: u32 = 0x0011_0008;
 const FSCTL_PIPE_PEEK: u32 = 0x0011_000c;
 const FSCTL_PIPE_TRANSCEIVE: u32 = 0x0011_0014;
 const STATUS_PENDING: u64 = 0x0000_0103;
+const EVENT_MODIFY_STATE: u32 = 0x0002;
 const STATUS_PIPE_CONNECTED: u64 = 0xc000_00b2;
 const REGISTRY_HIVE_MAX_BYTES: usize = 16 * 1024 * 1024;
 
@@ -313,11 +314,11 @@ fn native_io(call: NtCall, write: bool) -> u64 {
         || length > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
     let offset = if offset == 0 { 0 } else { read_u64(offset).unwrap_or(u64::MAX) };
     if offset == u64::MAX { return STATUS_INVALID_PARAMETER; }
-    native_io_values(cur, call.args.a0 as u32, call.args.a4, call.args.a5,
+    native_io_values(cur, call.args.a0 as u32, call.args.a1, call.args.a4, call.args.a5,
         length as u32, offset, write)
 }
 
-fn native_io_values(cur: &sched::Task, handle: u32, io_status: u64, buffer: u64,
+fn native_io_values(cur: &sched::Task, handle: u32, event: u64, io_status: u64, buffer: u64,
                     length: u32, offset: u64, write: bool) -> u64 {
     if length as usize > MAX_NT_IO { return STATUS_INVALID_PARAMETER; }
     let required = if write { FILE_WRITE_DATA } else { FILE_READ_DATA };
@@ -326,6 +327,8 @@ fn native_io_values(cur: &sched::Task, handle: u32, io_status: u64, buffer: u64,
     let Some(object) = table.get(native, required) else {
         return if table.contains(native) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE };
     };
+    let event_status = validate_io_event(cur, event);
+    if event_status != STATUS_SUCCESS { return event_status; }
     if let Some(endpoint) = object.pipe_endpoint() {
         let mut data = vec![0u8; length as usize];
         let mut result = if write {
@@ -344,14 +347,14 @@ fn native_io_values(cur: &sched::Task, handle: u32, io_status: u64, buffer: u64,
             endpoint.pipe().end_io(cur.tid, io_status);
             if matches!(outcome, sched::nt_object::NtPipeWait::Cancelled) {
                 write_io_status(io_status, STATUS_CANCELLED, 0);
-                post_completion(&object, io_status, STATUS_CANCELLED, 0);
+                post_completion(&object, io_status, STATUS_CANCELLED, 0); signal_io_event(cur, event);
                 return STATUS_CANCELLED;
             }
             if matches!(outcome, sched::nt_object::NtPipeWait::Ready) {
                 result = if write { endpoint.write(&data) } else { endpoint.read(&mut data) };
             } else if matches!(outcome, sched::nt_object::NtPipeWait::TimedOut) {
                 write_io_status(io_status, STATUS_TIMEOUT, 0);
-                post_completion(&object, io_status, STATUS_TIMEOUT, 0);
+                post_completion(&object, io_status, STATUS_TIMEOUT, 0); signal_io_event(cur, event);
                 return STATUS_TIMEOUT;
             }
         }
@@ -359,17 +362,17 @@ fn native_io_values(cur: &sched::Task, handle: u32, io_status: u64, buffer: u64,
             sched::nt_object::NtPipeIo::Complete(bytes) => {
                 if !write && uaccess::copy_to_user(buffer, &data[..bytes]).is_err() { return STATUS_ACCESS_VIOLATION; }
                 write_io_status(io_status, STATUS_SUCCESS, bytes as u64);
-                post_completion(&object, io_status, STATUS_SUCCESS, bytes as u64);
+                post_completion(&object, io_status, STATUS_SUCCESS, bytes as u64); signal_io_event(cur, event);
                 STATUS_SUCCESS
             }
             sched::nt_object::NtPipeIo::WouldBlock => {
                 write_io_status(io_status, STATUS_PIPE_EMPTY, 0);
-                post_completion(&object, io_status, STATUS_PIPE_EMPTY, 0);
+                post_completion(&object, io_status, STATUS_PIPE_EMPTY, 0); signal_io_event(cur, event);
                 STATUS_PIPE_EMPTY
             }
             sched::nt_object::NtPipeIo::BrokenPipe => {
                 write_io_status(io_status, STATUS_PIPE_DISCONNECTED, 0);
-                post_completion(&object, io_status, STATUS_PIPE_DISCONNECTED, 0);
+                post_completion(&object, io_status, STATUS_PIPE_DISCONNECTED, 0); signal_io_event(cur, event);
                 STATUS_PIPE_DISCONNECTED
             }
         };
@@ -385,11 +388,11 @@ fn native_io_values(cur: &sched::Task, handle: u32, io_status: u64, buffer: u64,
         result.map(|n| n as u64)
     };
     match result {
-        Ok(0) => { write_io_status(io_status, STATUS_END_OF_FILE, 0); post_completion(&object, io_status, STATUS_END_OF_FILE, 0); STATUS_END_OF_FILE }
-        Ok(bytes) => { write_io_status(io_status, STATUS_SUCCESS, bytes); post_completion(&object, io_status, STATUS_SUCCESS, bytes); STATUS_SUCCESS }
+        Ok(0) => { write_io_status(io_status, STATUS_END_OF_FILE, 0); post_completion(&object, io_status, STATUS_END_OF_FILE, 0); signal_io_event(cur, event); STATUS_END_OF_FILE }
+        Ok(bytes) => { write_io_status(io_status, STATUS_SUCCESS, bytes); post_completion(&object, io_status, STATUS_SUCCESS, bytes); signal_io_event(cur, event); STATUS_SUCCESS }
         Err(error) => {
             let status = crate::nt_file_policy::status_from_errno(-(error as i64));
-            write_io_status(io_status, status, 0); post_completion(&object, io_status, status, 0); status
+            write_io_status(io_status, status, 0); post_completion(&object, io_status, status, 0); signal_io_event(cur, event); status
         }
     }
 }
@@ -636,6 +639,8 @@ fn io(cur: &sched::Task, addr: u64, write: bool) -> u64 {
     let Some(object) = table.get(native, required) else {
         return if table.contains(native) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE };
     };
+    let event_status = validate_io_event(cur, request.event as u64);
+    if event_status != STATUS_SUCCESS { return event_status; }
     let Some(file) = object.file() else { return STATUS_INVALID_HANDLE; };
     let mut data = vec![0u8; request.length as usize];
     let result = if write {
@@ -652,18 +657,18 @@ fn io(cur: &sched::Task, addr: u64, write: bool) -> u64 {
     match result {
         Ok(0) => {
             write_io_status(request.io_status, STATUS_END_OF_FILE, 0);
-            post_completion(&object, request.io_status, STATUS_END_OF_FILE, 0);
+            post_completion(&object, request.io_status, STATUS_END_OF_FILE, 0); signal_io_event(cur, request.event as u64);
             STATUS_END_OF_FILE
         }
         Ok(bytes) => {
             write_io_status(request.io_status, STATUS_SUCCESS, bytes);
-            post_completion(&object, request.io_status, STATUS_SUCCESS, bytes);
+            post_completion(&object, request.io_status, STATUS_SUCCESS, bytes); signal_io_event(cur, request.event as u64);
             STATUS_SUCCESS
         }
         Err(error) => {
             let status = crate::nt_file_policy::status_from_errno(-(error as i64));
             write_io_status(request.io_status, status, 0);
-            post_completion(&object, request.io_status, status, 0);
+            post_completion(&object, request.io_status, status, 0); signal_io_event(cur, request.event as u64);
             status
         }
     }
@@ -678,6 +683,26 @@ pub(crate) fn write_io_status(addr: u64, status: u64, information: u64) {
 pub(crate) fn post_completion(object: &sched::nt_object::NtObject, overlapped: u64, status: u64, information: u64) {
     let Some((port, key)) = object.file_completion() else { return; };
     port.post(sched::nt_object::NtCompletionPacket { key, overlapped, status: status as u32, information });
+}
+
+fn validate_io_event(cur: &sched::Task, event: u64) -> u64 {
+    if event == 0 { return STATUS_SUCCESS; }
+    if event > u32::MAX as u64 { return crate::nt_file_async_policy::io_event_status(event, false, false, false); }
+    let handle = sched::nt_object::NtHandle::from_raw(event as u32);
+    let table = cur.thread_group.nt_handles();
+    let exists = table.contains(handle);
+    let is_event = table.get(handle, 0).and_then(|object| object.event()).is_some();
+    let can_modify = table.get(handle, EVENT_MODIFY_STATE).and_then(|object| object.event()).is_some();
+    crate::nt_file_async_policy::io_event_status(event, exists, is_event, can_modify)
+}
+
+fn signal_io_event(cur: &sched::Task, event: u64) {
+    if event == 0 || event > u32::MAX as u64 { return; }
+    let handle = sched::nt_object::NtHandle::from_raw(event as u32);
+    let table = cur.thread_group.nt_handles();
+    if let Some(object) = table.get(handle, EVENT_MODIFY_STATE) {
+        if let Some(event) = object.event() { event.set(); table.wake_waiters(); }
+    }
 }
 
 fn query_information(cur: &sched::Task, addr: u64) -> u64 {
