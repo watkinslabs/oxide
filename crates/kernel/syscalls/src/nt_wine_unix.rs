@@ -182,6 +182,19 @@ fn lookup_unixlib_entry(root: u64, table_address: u64, entry: u64) -> Result<u64
     Ok(target)
 }
 
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+fn current_x64_unix_call(callable: u64, call: NtCall) -> Result<pe::nt_stub::X64UnixCallHandoff, u64> {
+    let frame = hal_x86_64::current_pt_regs();
+    if frame.is_null() { return Err(STATUS_INVALID_PARAMETER); }
+    // SAFETY: current_pt_regs is this task's live syscall frame and the NT
+    // dispatcher exclusively owns it until the architecture epilogue returns.
+    let (return_rip, syscall_rsp) = unsafe { ((*frame).rip, (*frame).rsp) };
+    pe::nt_stub::prepare_x64_unix_call(
+        call.args.a0, call.args.a1, call.args.a2, callable,
+        return_rip, syscall_rsp, hal::USER_VA_END,
+    ).ok_or(STATUS_INVALID_PARAMETER)
+}
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 enum ServerRequest { CloseHandle, CreateEvent, EventOp, QueryEvent, Select, CreateMutex, ReleaseMutex, QueryMutex, CreateSemaphore, ReleaseSemaphore, QuerySemaphore, CreateMapping, OpenMapping, GetMappingInfo, GetImageMapAddress, MapView, MapImageView, GetImageViewInfo, UnmapView }
 
@@ -792,11 +805,17 @@ fn dispatch_for_address_space(root: u64, call: NtCall) -> u64 {
     let Some(descriptor) = elf_load::elf_modules::unixlib_descriptor(root) else {
         return STATUS_INVALID_PARAMETER;
     };
-    if let Err(status) = lookup_unixlib_entry(root, descriptor.table_address, call.args.a1) {
-        return status;
-    }
+    let callable = match lookup_unixlib_entry(root, descriptor.table_address, call.args.a1) {
+        Ok(callable) => callable,
+        Err(status) => return status,
+    };
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+    let handoff = match current_x64_unix_call(callable, call) {
+        Ok(handoff) => handoff,
+        Err(status) => return status,
+    };
     crate::nt_milestone::unix_entry();
-    match WineUnixFunction::decode(call.args.a1) {
+    let status = match WineUnixFunction::decode(call.args.a1) {
         Some(WineUnixFunction::LoadSoDll) => load_so_dll(call.args.a2),
         Some(WineUnixFunction::UnwindBuiltinDll) => validate_builtin_unwind(call.args.a2),
         // unix_wine_dbg_write: `{ const char *str; size_t len; }`.
@@ -822,7 +841,11 @@ fn dispatch_for_address_space(root: u64, call: NtCall) -> u64 {
         // The remaining entries require Wine's server protocol or a Unix
         // module loader and are deliberately kept behind this typed boundary.
         _ => STATUS_NOT_IMPLEMENTED,
-    }
+    };
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+    { pe::nt_stub::complete_x64_unix_call(handoff, status).status }
+    #[cfg(not(all(target_os = "oxide-kernel", target_arch = "x86_64")))]
+    { let _ = callable; status }
 }
 
 /// Enter the native Wine Unix-call boundary for the current address space.
