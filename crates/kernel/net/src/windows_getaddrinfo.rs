@@ -149,7 +149,6 @@ mod tests {
     use super::*;
     use alloc::vec;
     use crate::Ipv4Addr;
-    use crate::Ipv4Addr;
 
     fn v4(last: u8, canon_name: Option<&[u8]>) -> NativeAddrInfo {
         NativeAddrInfo { flags: 0, socktype: 1, protocol: 6,

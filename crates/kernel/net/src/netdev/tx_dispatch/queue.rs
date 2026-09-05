@@ -34,8 +34,33 @@ impl TxQueue {
     pub(super) fn pop(&mut self) -> Option<TxJob> {
         let band = (0..super::super::tx_band::TX_BANDS).find(|band| self.len[*band] != 0)?;
         // A nonzero length implies `push` ran, so the slots are materialised.
-        let job = self.jobs[band * super::TX_BAND_CAPACITY + self.head[band]].take();
-        self.head[band] = (self.head[band] + 1) % super::TX_BAND_CAPACITY;
+        // Within a transmit band, Linux's departure-time qdisc consumes the
+        // earliest requested timestamp first. Zero is the immediate-send
+        // value and therefore sorts before timestamped packets. The ring is
+        // retained for equal timestamps so FIFO remains the tie-breaker.
+        let mut selected = self.head[band];
+        let mut selected_time = u64::MAX;
+        for offset in 0..self.len[band] {
+            let slot = (self.head[band] + offset) % super::TX_BAND_CAPACITY;
+            let job = self.jobs[band * super::TX_BAND_CAPACITY + slot].as_ref()
+                .expect("a nonempty transmit band has materialised jobs");
+            let time = job.transmit_time();
+            if time < selected_time {
+                selected = slot;
+                selected_time = time;
+            }
+        }
+        let job = self.jobs[band * super::TX_BAND_CAPACITY + selected].take();
+        // Remove from the ring while preserving its FIFO order for the
+        // remaining entries. This is bounded by the per-band queue capacity.
+        let mut cursor = selected;
+        for _ in 0..self.len[band] - 1 {
+            let next = (cursor + 1) % super::TX_BAND_CAPACITY;
+            self.jobs[band * super::TX_BAND_CAPACITY + cursor] =
+                self.jobs[band * super::TX_BAND_CAPACITY + next].take();
+            cursor = next;
+        }
+        self.jobs[band * super::TX_BAND_CAPACITY + cursor] = None;
         self.len[band] -= 1;
         job
     }

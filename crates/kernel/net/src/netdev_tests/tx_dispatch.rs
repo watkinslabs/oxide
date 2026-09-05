@@ -68,6 +68,12 @@ fn prioritised_packet(id: u8, priority: u32) -> Pkt {
     pkt
 }
 
+fn timed_packet(id: u8, transmit_time: u64) -> Pkt {
+    let mut pkt = packet(id);
+    pkt.tx.transmit_time = transmit_time;
+    pkt
+}
+
 fn unresolved_packet() -> Pkt {
     let mut pkt = Pkt::new(20);
     pkt.proto = crate::eth_p::IPV4;
@@ -264,4 +270,32 @@ fn a_packet_priority_selects_the_band_it_drains_in() {
     holding.join().unwrap().unwrap();
     for tx in pending { tx.join().unwrap().unwrap(); }
     assert_eq!(*dev.calls.lock().unwrap(), vec![1u8, 0x00, 0x11, 0x22]);
+}
+
+/// A queued SO_TXTIME packet is consumed in requested departure order within
+/// its transmit band. Immediate packets retain precedence and equal times
+/// retain FIFO order, matching the qdisc contract's tie-breakers.
+#[test]
+fn queued_transmit_time_selects_earliest_departure_first() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
+    let stack = Arc::new(crate::NetStack::new());
+    let dev = Arc::new(DispatchDev::new(true));
+    let iface = stack.ifaces.register(dev.clone());
+    let lease = stack.ifaces.acquire_egress_in_ns(iface, 0).unwrap();
+    let held = lease.clone();
+    let holding = std::thread::spawn(move || held.xmit(packet(1)));
+    crate::hosted_fixture::spin_until("the device xmit is entered",
+        || dev.entered.load(Ordering::Acquire));
+
+    for (id, when) in [(2, 30), (3, 10), (4, 20), (5, 10)] {
+        let queued = lease.clone();
+        std::thread::spawn(move || queued.xmit(timed_packet(id, when)));
+        crate::hosted_fixture::spin_until("the next frame is queued",
+            || lease.queued_tx() >= usize::from(id - 1));
+    }
+    dev.release.store(true, Ordering::Release);
+    holding.join().unwrap().unwrap();
+    crate::hosted_fixture::spin_until("all timestamped frames transmit",
+        || dev.calls.lock().unwrap().len() == 5);
+    assert_eq!(*dev.calls.lock().unwrap(), vec![1, 3, 5, 4, 2]);
 }
