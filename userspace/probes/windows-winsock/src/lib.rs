@@ -11,7 +11,9 @@ mod select;
 mod readiness;
 mod ipv6_options;
 
-pub use dns::addrinfo_error;
+pub use dns::{addrinfo_error, resolve_addrinfo, NativeAddrInfo, NativeAddress, NativeResolver,
+    NativeResolverError, ResolveError, ResolvedAddrInfo, MAX_ADDRINFO_RESULTS,
+    MAX_CANONICAL_NAME};
 pub use ipv6_options::{Ipv6OnlyOptions, Ipv6OnlyOptionError, IPV6_V6ONLY};
 pub use select::{project_select, SelectProjection, SocketReadiness};
 pub use select::{READY_ACCEPT, READY_CONNECT_ERROR, READY_ERROR, READY_HUP, READY_OOB,
