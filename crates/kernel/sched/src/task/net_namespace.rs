@@ -60,6 +60,11 @@ impl Task {
     /// # Lk: takes `Namespace` (rank 75), then `TaskPi` (rank 105)
     /// # Sleeps: no
     pub fn mark_done(&self) {
+        // Native NT process/thread handles wait on the task-owned terminal
+        // completion before the task's namespaces and scheduler ownership are
+        // released. The task Arc retained by the handle keeps this predicate
+        // valid through zombie reaping.
+        self.nt_termination.complete();
         // Linux `exe_file_allow_write_access` when the mm goes away. Without
         // this the exec-time deny leaks and the binary stays permanently
         // unwritable — every exited program would make its own file ETXTBSY

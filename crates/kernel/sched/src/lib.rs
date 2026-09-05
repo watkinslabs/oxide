@@ -88,6 +88,7 @@ pub mod nt_apc;
 pub mod nt_activation;
 pub mod nt_thread_info;
 pub mod nt_exception;
+pub mod nt_termination;
 pub mod rlimit;
 pub mod ioport;
 pub mod ioprio;
