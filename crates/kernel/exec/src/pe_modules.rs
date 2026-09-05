@@ -13,6 +13,32 @@ pub struct PeRuntimeModule {
     pub exception_functions: Vec<RuntimeFunction>,
 }
 
+/// Runtime metadata prepared before a loader transaction publishes process state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PeRuntimeRegistration {
+    pub module: PeRuntimeModule,
+    pub export_rvas: Option<Vec<u32>>,
+}
+
+/// Parse every mapped catalog image before PEB publication or module refs change.
+/// # C: O(N_modules * (PE metadata + export table))
+pub fn prepare_registrations<'a>(loaded: &[super::pe_loader::PeLoadedModule<'a>], owned: &[pe::OwnedModule]) -> Result<Vec<PeRuntimeRegistration>, pe::Error> {
+    if loaded.len() != owned.len() || loaded.is_empty() { return Err(pe::Error::Einval); }
+    loaded.iter().zip(owned).map(|(loaded, owned)| {
+        let parsed = pe::parse(&owned.blob)?;
+        Ok(PeRuntimeRegistration {
+            module: PeRuntimeModule {
+                base: loaded.image.base,
+                size: loaded.image.size,
+                exception_rva: loaded.image.exception_directory.0,
+                exception_size: loaded.image.exception_directory.1,
+                exception_functions: parsed.exception_functions()?,
+            },
+            export_rvas: parsed.export_rvas()?,
+        })
+    }).collect()
+}
+
 /// Validate one PE32+ runtime-function record against its mapped image. # C: O(1)
 pub fn runtime_function_valid(begin: u32, end: u32, unwind_data: u32, image_size: u32) -> bool {
     if begin >= end || end > image_size { return false; }

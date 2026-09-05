@@ -17,6 +17,11 @@ module bytes are PE32+ images supplied by the Wine runtime package. No second
 `.so` catalog or alternate loader path is introduced. A missing module and a
 failed image transaction retain the loader's typed NT status.
 
+Exception/unwind and export metadata are parsed for the complete mapped graph
+before PEB loader lists, runtime module metadata, or process module references
+are published. A metadata failure therefore unmaps the private graph and leaves
+existing process state unchanged.
+
 ## 2
 
 Hosted dispatch keeps the slot and ABI compilable; target checks compile the
