@@ -157,6 +157,7 @@ fn commit_x86(cur: &sched::Task, path: &[u8], blob: &[u8], exec_vp: Option<&vfs:
     // SAFETY: current_pt_regs is the live syscall frame of this running task;
     // the exec path owns it until the common return-to-user epilogue.
     let frame = unsafe { &mut *regs };
+    crate::nt_milestone::reset();
     klog::write_raw(b"[WINDOWS-PE-START] entry=");
     klog::write_hex_u64(process.entry.rip.as_u64());
     klog::write_raw(b" rsp=");

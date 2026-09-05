@@ -56,6 +56,19 @@ vendor_preflight || exit 2
 # SMOKE_MARKER='oxide login:' for a serial-getty profile, or 'MB2' for a
 # GRUB bring-up milestone.
 MARKER="${SMOKE_MARKER:-Reached target basic.target}"
+# Optional ordered acceptance milestones. The value is a `|`-separated list
+# of literal substrings; all must be present before the passive marker or
+# userspace probe can admit the workload.
+REQUIRED_MARKERS="${SMOKE_REQUIRED_MARKERS:-}"
+required_markers_present() {
+    [ -z "$REQUIRED_MARKERS" ] && return 0
+    local marker
+    while IFS= read -r marker; do
+        [ -z "$marker" ] && continue
+        grep -qF "$marker" "$LOG" 2>/dev/null || return 1
+    done < <(printf '%s\n' "$REQUIRED_MARKERS" | tr '|' '\n')
+    return 0
+}
 
 # ...but the passive marker CANNOT be the only proof, because whether it is
 # printed at all is the IMAGE's decision, not the kernel's. Measured on a
@@ -444,9 +457,9 @@ attempt_boot() {
         # printed enough that init could plausibly have run. Typing costs
         # nothing on a boot that is going to print the passive marker anyway.
         local proof=""
-        if grep -qF "$MARKER" "$LOG" 2>/dev/null; then
+        if required_markers_present && grep -qF "$MARKER" "$LOG" 2>/dev/null; then
             proof="marker '$MARKER'"
-        elif probe_userspace_alive; then
+        elif required_markers_present && probe_userspace_alive; then
             proof="userspace answered '$ALIVE_CMD' on serial"
         fi
         if [ -n "$proof" ]; then

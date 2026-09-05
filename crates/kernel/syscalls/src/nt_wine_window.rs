@@ -271,7 +271,7 @@ pub fn dispatch(call: NtCall) -> u64 {
             match (right, bottom) {
                 (Some(right), Some(bottom)) => {
                     let result = native(NtService::SetWindowRectValues, SyscallArgs { a0: hwnd, a1: args[5], a2: args[6], a3: right as u64, a4: bottom as u64, a5: 0 });
-                    if result == STATUS_SUCCESS { hwnd } else { let _ = native(NtService::DestroyWindow, SyscallArgs { a0: hwnd, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 }); STATUS_INVALID_PARAMETER }
+                    if result == STATUS_SUCCESS { crate::nt_milestone::window_create(); hwnd } else { let _ = native(NtService::DestroyWindow, SyscallArgs { a0: hwnd, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 }); STATUS_INVALID_PARAMETER }
                 }
                 _ => { let _ = native(NtService::DestroyWindow, SyscallArgs { a0: hwnd, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 }); STATUS_INVALID_PARAMETER }
             }
@@ -279,7 +279,7 @@ pub fn dispatch(call: NtCall) -> u64 {
         WINE_POST_MESSAGE => win_bool(native(NtService::PostMessage, SyscallArgs { a0: args[0], a1: args[1], a2: args[2], a3: args[3], a4: 0, a5: 0 })),
         WINE_DESTROY_WINDOW => win_bool(native(NtService::DestroyWindow, SyscallArgs { a0: args[0], a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 })),
         WINE_PEEK_MESSAGE => win_bool(native(NtService::PeekMessage, SyscallArgs { a0: args[0], a1: args[1], a2: args[2], a3: args[3], a4: args[4], a5: 0 })),
-        WINE_GET_MESSAGE => win_bool(native(NtService::GetMessage, SyscallArgs { a0: args[0], a1: args[1], a2: args[2], a3: args[3], a4: 0, a5: 0 })),
+        WINE_GET_MESSAGE => { let result = win_bool(native(NtService::GetMessage, SyscallArgs { a0: args[0], a1: args[1], a2: args[2], a3: args[3], a4: 0, a5: 0 })); if result != 0 { crate::nt_milestone::message_get(); } result },
         WINE_SHOW_WINDOW => native(NtService::ShowWindow, SyscallArgs { a0: args[0], a1: args[1], a2: 0, a3: 0, a4: 0, a5: 0 }),
         WINE_INVALIDATE_RECT => win_bool(native(NtService::InvalidateWindow, SyscallArgs { a0: args[0], a1: args[1], a2: args[2], a3: 0, a4: 0, a5: 0 })),
         WINE_SET_WINDOW_POS => {
@@ -388,7 +388,7 @@ fn get_class_info_ex(args: &[u64; 17]) -> u64 {
 pub fn dispatch_raw(ordinal: u64, args: SyscallArgs) -> Option<u64> {
     if !raw_ordinal_claimed(ordinal) { return None; }
     if ordinal == WINE_REGISTER_CLASS_EX { return Some(raw_class::register_class(args)); }
-    if ordinal == WINE_CREATE_WINDOW_EX { return Some(raw_class::create_window(args)); }
+    if ordinal == WINE_CREATE_WINDOW_EX { let result = raw_class::create_window(args); if result != 0 && result != STATUS_INVALID_PARAMETER { crate::nt_milestone::window_create(); } return Some(result); }
     if ordinal == WINE_DISPATCH_MESSAGE { return Some(raw_callback::dispatch_message(args.a0)); }
     if ordinal == WINE_MESSAGE_CALL { return Some(raw_callback::message_call(args)); }
     let native = |service: NtService, call_args: SyscallArgs| crate::nt_window::dispatch(NtCall { service, args: call_args }).unwrap_or(STATUS_INVALID_PARAMETER);
@@ -396,7 +396,7 @@ pub fn dispatch_raw(ordinal: u64, args: SyscallArgs) -> Option<u64> {
     if ordinal == WINE_DESTROY_WINDOW { return Some(win_bool(native(NtService::DestroyWindow, SyscallArgs { a0: args.a0, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 }))); }
     if ordinal == WINE_POST_MESSAGE { return Some(win_bool(native(NtService::PostMessage, SyscallArgs { a0: args.a0, a1: args.a1, a2: args.a2, a3: args.a3, a4: 0, a5: 0 }))); }
     if ordinal == WINE_PEEK_MESSAGE { return Some(win_bool(native(NtService::PeekMessage, SyscallArgs { a0: args.a0, a1: args.a1, a2: args.a2, a3: args.a3, a4: args.a4, a5: 0 }))); }
-    if ordinal == WINE_GET_MESSAGE { return Some(win_bool(native(NtService::GetMessage, SyscallArgs { a0: args.a0, a1: args.a1, a2: args.a2, a3: args.a3, a4: 0, a5: 0 }))); }
+    if ordinal == WINE_GET_MESSAGE { let result = win_bool(native(NtService::GetMessage, SyscallArgs { a0: args.a0, a1: args.a1, a2: args.a2, a3: args.a3, a4: 0, a5: 0 })); if result != 0 { crate::nt_milestone::message_get(); } return Some(result); }
     if ordinal == WINE_SHOW_WINDOW { return Some(native(NtService::ShowWindow, SyscallArgs { a0: args.a0, a1: args.a1, a2: 0, a3: 0, a4: 0, a5: 0 })); }
     if ordinal == WINE_INVALIDATE_RECT { return Some(win_bool(native(NtService::InvalidateWindow, SyscallArgs { a0: args.a0, a1: args.a1, a2: args.a2, a3: 0, a4: 0, a5: 0 }))); }
     if ordinal == WINE_BEGIN_PAINT {
@@ -575,6 +575,7 @@ where F: Fn(NtService, SyscallArgs) -> u64, G: Fn(NtService, SyscallArgs) -> u64
         let _ = gdi(NtService::DeleteGdiObject, SyscallArgs { a0: hdc, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 });
         return STATUS_INVALID_PARAMETER;
     }
+    crate::nt_milestone::paint_begin();
     hdc
 }
 
@@ -588,7 +589,9 @@ where F: Fn(NtService, SyscallArgs) -> u64, G: Fn(NtService, SyscallArgs) -> u64
     } else { STATUS_INVALID_PARAMETER };
     let result = native(NtService::EndWindowPaint, SyscallArgs { a0: args[0], a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 });
     if hdc != 0 { let _ = gdi(NtService::DeleteGdiObject, SyscallArgs { a0: hdc, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 }); }
-    win_bool(if result == STATUS_SUCCESS { present } else { result })
+    let status = win_bool(if result == STATUS_SUCCESS { present } else { result });
+    if status != 0 && present == STATUS_SUCCESS { crate::nt_milestone::paint_present(); }
+    status
 }
 
 #[cfg(test)]

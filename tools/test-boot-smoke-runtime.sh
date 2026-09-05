@@ -74,12 +74,34 @@ grep -q 'mock qemu launched' "$RUN_LOG"
 # A successful guest keeps the same exact serial log. This is the supported
 # replacement for redirecting `make qemu-*`, whose stdout is not the guest's
 # early serial stream.
-run_smoke successful MOCK_QEMU_LOG='guest reached ready' MOCK_QEMU_SLEEP=3 \
+run_smoke successful MOCK_QEMU_LOG='guest reached ready' MOCK_QEMU_SLEEP=7 \
     SMOKE_MARKER='guest reached ready' SMOKE_KEEP_LOG_DIR="$TMP/success-attempts"
 [ "$RUN_STATUS" -eq 0 ]
 grep -q 'guest reached ready' "$RUN_LOG"
 grep -q 'guest reached ready' "$TMP/success-attempts/x86-attempt-1-pass.log"
 grep -q 'PASS' "$RUN_OUT"
+
+# An ordered workload admission requires every boundary, not just the first
+# PE marker. The complete trace passes; removing one boundary is a real
+# negative control and must time out without admitting the workload.
+ordered='[WINDOWS-NT-UNIX] entry|[WINDOWS-NT-SERVER] entry|[WINDOWS-USER32] create-window|[WINDOWS-USER32] get-message|[WINDOWS-GDI] begin-paint|[WINDOWS-GDI] present'
+run_smoke ordered-complete MOCK_QEMU_LOG='[WINDOWS-NT-UNIX] entry
+[WINDOWS-NT-SERVER] entry
+[WINDOWS-USER32] create-window
+[WINDOWS-USER32] get-message
+[WINDOWS-GDI] begin-paint
+[WINDOWS-GDI] present
+guest reached ready' MOCK_QEMU_SLEEP=7 SMOKE_MARKER='guest reached ready' SMOKE_REQUIRED_MARKERS="$ordered"
+[ "$RUN_STATUS" -eq 0 ]
+grep -q 'PASS' "$RUN_OUT"
+run_smoke ordered-missing MOCK_QEMU_LOG='[WINDOWS-NT-UNIX] entry
+[WINDOWS-NT-SERVER] entry
+[WINDOWS-USER32] create-window
+[WINDOWS-USER32] get-message
+[WINDOWS-GDI] begin-paint
+guest reached ready' MOCK_QEMU_SLEEP=3 SMOKE_MARKER='guest reached ready' SMOKE_REQUIRED_MARKERS="$ordered"
+[ "$RUN_STATUS" -eq 1 ]
+grep -q 'timeout after 1s' "$RUN_OUT"
 
 # Preparation failures have their own exit class and retained build output.
 run_smoke build-failure MOCK_BUILD_FAIL=1
