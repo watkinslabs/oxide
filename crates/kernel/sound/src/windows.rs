@@ -30,7 +30,7 @@ impl PcmFormat {
 pub enum AudioDirection { Render, Capture }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum StreamError { ZeroDuration, ZeroFrames, PeriodExceedsBuffer, BufferTooLarge, InvalidFrameCount, WouldBlock }
+pub enum StreamError { ZeroDuration, ZeroFrames, PeriodExceedsBuffer, BufferTooLarge, InvalidFrameCount, WouldBlock, BufferOperationPending, OutOfOrder, InvalidBufferSize, WrongDirection }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StreamGeometry { pub buffer_frames: u32, pub period_frames: u32, pub buffer_bytes: u32, pub period_bytes: u32 }
@@ -65,18 +65,19 @@ impl StreamGeometry {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct AudioStream { geometry: StreamGeometry, direction: AudioDirection, queued_frames: u32 }
+pub struct AudioStream { geometry: StreamGeometry, direction: AudioDirection, queued_frames: u32, render_loan: Option<u32> }
 
 impl AudioStream {
     /// Create an endpoint queue starting with no padded frames.
     /// # C: O(1)
-    pub const fn new(geometry: StreamGeometry, direction: AudioDirection) -> Self { Self { geometry, direction, queued_frames: 0 } }
+    pub const fn new(geometry: StreamGeometry, direction: AudioDirection) -> Self { Self { geometry, direction, queued_frames: 0, render_loan: None } }
     pub const fn current_padding(self) -> u32 { self.queued_frames }
     pub const fn available_frames(self) -> u32 { self.geometry.buffer_frames - self.queued_frames }
 
     /// Submit render frames or make capture frames available to the client.
     /// # C: O(1)
     pub fn client_write(&mut self, frames: u32) -> Result<(), StreamError> {
+        if self.render_loan.is_some() { return Err(StreamError::BufferOperationPending); }
         if frames > self.available_frames() { return Err(StreamError::WouldBlock); }
         self.queued_frames += frames; Ok(())
     }
@@ -84,8 +85,29 @@ impl AudioStream {
     /// Consume render frames or read capture frames from the client queue.
     /// # C: O(1)
     pub fn client_read(&mut self, frames: u32) -> Result<(), StreamError> {
+        if self.render_loan.is_some() { return Err(StreamError::BufferOperationPending); }
         if frames > self.queued_frames { return Err(StreamError::WouldBlock); }
         self.queued_frames -= frames; Ok(())
+    }
+
+    /// Reserve one render buffer; its frames do not affect padding until release.
+    /// # C: O(1)
+    pub fn render_get_buffer(&mut self, frames: u32) -> Result<(), StreamError> {
+        if self.direction != AudioDirection::Render { return Err(StreamError::WrongDirection); }
+        if self.render_loan.is_some() { return Err(StreamError::OutOfOrder); }
+        if frames > self.available_frames() { return Err(StreamError::BufferTooLarge); }
+        self.render_loan = Some(frames);
+        Ok(())
+    }
+
+    /// Commit the valid portion of the outstanding render buffer reservation.
+    /// # C: O(1)
+    pub fn render_release_buffer(&mut self, written_frames: u32) -> Result<(), StreamError> {
+        let Some(reserved) = self.render_loan else { return Err(StreamError::OutOfOrder); };
+        if written_frames > reserved { return Err(StreamError::InvalidBufferSize); }
+        self.render_loan = None;
+        self.queued_frames += written_frames;
+        Ok(())
     }
 
     /// Advance the device while preserving the endpoint padding bound.

@@ -1,3 +1,6 @@
+// Contract provenance: the native PCM owner commits application progress only
+// after a valid transfer boundary; the Windows adapter exposes that boundary
+// as one outstanding render buffer loan.
 use super::*;
 
 fn format() -> PcmFormat { PcmFormat::from_alsa(crate::uapi::FMT_S16_LE, 2, 48_000).unwrap() }
@@ -22,6 +25,24 @@ fn render_and_capture_preserve_padding_bounds() {
     assert_eq!(capture.device_advance(1), Err(StreamError::WouldBlock));
     assert!(capture.client_read(4).is_ok());
     assert_eq!(capture.current_padding(), 4);
+}
+
+#[test]
+fn render_buffer_loan_commits_only_on_valid_release() {
+    let g = StreamGeometry::from_frames(format(), 8, 4).unwrap();
+    let mut render = AudioStream::new(g, AudioDirection::Render);
+    assert!(render.render_get_buffer(4).is_ok());
+    assert_eq!(render.current_padding(), 0);
+    assert_eq!(render.render_get_buffer(1), Err(StreamError::OutOfOrder));
+    assert_eq!(render.render_release_buffer(5), Err(StreamError::InvalidBufferSize));
+    assert_eq!(render.current_padding(), 0);
+    assert!(render.render_release_buffer(3).is_ok());
+    assert_eq!(render.current_padding(), 3);
+    assert_eq!(render.render_release_buffer(1), Err(StreamError::OutOfOrder));
+    assert_eq!(render.render_get_buffer(6), Err(StreamError::BufferTooLarge));
+    assert!(render.render_get_buffer(5).is_ok());
+    assert!(render.render_release_buffer(0).is_ok());
+    assert_eq!(render.current_padding(), 3);
 }
 
 #[test]
