@@ -9,6 +9,7 @@ path = "src/lib.rs"
 
 [dependencies]
 pe = { path = "../../shared/pe" }
+elf = { path = "../../shared/elf" }
 hal  = { path = "../../arch/hal" }
 klog = { path = "../../shared/klog" }
 sync = { path = "../../shared/sync" }

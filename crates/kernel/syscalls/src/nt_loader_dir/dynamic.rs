@@ -130,7 +130,8 @@ pub(super) fn load(name_descriptor: u64, module_output: u64) -> u64 {
 }
 
 /// Load one Wine builtin ELF object through the address-space-owned Unixlib
-/// source and dependency owner. The fixed ABI cannot select arbitrary paths.
+/// source and dependency owner. The fixed ABI contributes only the validated
+/// NT name and output location; it cannot select arbitrary host paths.
 /// # C: O(native dependency closure)
 #[cfg(target_arch = "x86_64")]
 pub(super) fn load_unixlib(name_descriptor: u64, module_output: u64) -> u64 {
@@ -139,9 +140,9 @@ pub(super) fn load_unixlib(name_descriptor: u64, module_output: u64) -> u64 {
     let Some(wanted) = read_wide_name(name_descriptor) else { return STATUS_INVALID_PARAMETER; };
     let Some(name) = narrow_name(&wanted) else { return STATUS_INVALID_PARAMETER; };
     let name = narrow_base_name(&name);
-    if name.is_empty() || name.iter().any(|byte| *byte == b'/' || *byte == b'\\' || *byte == 0) { return STATUS_INVALID_PARAMETER; }
     let mut object_name = name.clone();
     if !object_name.ends_with(b".so") { object_name.extend_from_slice(b".so"); }
+    if name.is_empty() || name.iter().any(|byte| *byte == b'/' || *byte == b'\\' || *byte == 0) { return STATUS_INVALID_PARAMETER; }
     // SAFETY: the current task owns this address-space reference for the
     // duration of the loader transaction and the cloned Arc keeps it alive.
     let Some(as_) = (unsafe { cur.mm_ref() }).map(|mm| mm.clone()) else { return STATUS_INVALID_PARAMETER; };
@@ -170,9 +171,6 @@ pub(super) fn load_unixlib(name_descriptor: u64, module_output: u64) -> u64 {
         None => STATUS_DLL_NOT_FOUND,
     }
 }
-
-#[cfg(target_arch = "aarch64")]
-pub(super) fn load_unixlib(_name_descriptor: u64, _module_output: u64) -> u64 { STATUS_NOT_SUPPORTED }
 
 #[cfg(target_arch = "x86_64")]
 const fn staged_root() -> &'static [u8] { b"/usr/local/lib/oxide/windows/x86_64-unix" }
@@ -290,6 +288,9 @@ fn load_locked(cur: &sched::Task, name_descriptor: u64, module_output: u64) -> u
 
 #[cfg(target_arch = "aarch64")]
 fn load_locked(_cur: &sched::Task, _name_descriptor: u64, _module_output: u64) -> u64 { STATUS_NOT_SUPPORTED }
+
+#[cfg(target_arch = "aarch64")]
+pub(super) fn load_unixlib(_name_descriptor: u64, _module_output: u64) -> u64 { STATUS_NOT_SUPPORTED }
 
 #[cfg(target_arch = "x86_64")]
 fn unmap_all(as_: &vmm::AddressSpace, modules: &[elf_load::pe_loader::PeLoadedModule<'_>]) {

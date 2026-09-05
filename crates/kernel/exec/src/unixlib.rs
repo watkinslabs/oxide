@@ -26,6 +26,19 @@ pub struct MappedUnixlib {
     pub end: u64,
 }
 
+/// Admit and map one runtime-owned Wine Unixlib with its complete DT_NEEDED
+/// closure. The source catalog is the only lookup provider at this boundary.
+/// # C: O(objects * (phdrs + bytes + relocations + symbols))
+pub fn load_named(catalog: &elf::UnixlibCatalog, name: &[u8], as_: &AddressSpace)
+    -> Result<MappedUnixlibObject, LoadError> {
+    let source = catalog.load(name).ok_or(LoadError::Enoexec)?;
+    let context = build_load_context(&source.name, &source.path, &source.image, |dependency| {
+        catalog.load(dependency).map(|object| (object.path.clone(), object.image.clone()))
+    })?;
+    let mapped = map_load_context(&context, as_)?;
+    mapped.into_iter().find(|object| object.name == name).ok_or(LoadError::Enoexec)
+}
+
 /// Decode and validate the relocated Unixlib function-pointer table. `image`
 /// covers `[image_base,image_end)`, while each executable range is an image
 /// range already admitted by the ELF loader. No pointer is dereferenced.

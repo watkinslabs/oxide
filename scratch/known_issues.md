@@ -1,6 +1,6 @@
 # Known issues
 
-**Live issue count: 295** — 294 `OPEN`, 1 `IN-PROGRESS`.
+**Live issue count: 296** — 294 `OPEN`, 2 `IN-PROGRESS`.
 
 | Id | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|---|
@@ -746,3 +746,4 @@ the final shared subauthority, preserving the reference count requirement.
 `RtlEqualSid` validates native SID layouts and compares the complete SID byte
 representation, including every subauthority.
 | KI-0359 | FIXED 1185d2beb | MISSING | med | Phase 14 Steam launch records did not carry a canonical Proton compatibility-data root; the environment exported the `WINEPREFIX` itself as `STEAM_COMPAT_DATA_PATH`, allowing per-launch metadata and the Proton compatibility handoff to disagree. | Explicit `compat_data` admission requires canonical `compat_data/pfx` ownership, and the compatibility environment derives from the validated handoff. Focused hosted tests cover canonicalization and outside-root rejection; no DXVK admission changes. | windows-runtime |
+| KI-0361 | IN-PROGRESS F1591-ki0361-wine-load-so-dll | MISSING | high | [CLAIMED F1591-ki0361-wine-load-so-dll 2026-09-05] Wine LoadSoDll has no safe ELF source and dependency-closure handoff | Wine LoadSoDll receives only a 24-byte UNICODE_STRING plus module-output pointer. Current Oxide dispatch sends it to the PE DLL catalog loader; the runtime request carries no unixlib directory, ELF bytes, or dependency provider. The ELF owner has mapping primitives but no request-owned admission/lifecycle entry, so a guessed path or PE fallback would violate ownership. | B3484 |

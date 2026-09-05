@@ -17,6 +17,18 @@ pub struct NtExecModule {
     pub image_len: u64,
 }
 
+/// One runtime-supplied native Wine ELF source record.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct NtExecUnixlib {
+    pub name: UserPtr<u8>,
+    pub name_len: u32,
+    pub path: UserPtr<u8>,
+    pub path_len: u32,
+    pub image: UserPtr<u8>,
+    pub image_len: u64,
+}
+
 /// Root image plus an explicit DLL catalog supplied by the runtime.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -35,6 +47,9 @@ pub struct NtExecRequest {
     pub modules: UserPtr<NtExecModule>,
     pub module_count: u32,
     pub _modules_padding: u32,
+    pub unixlibs: UserPtr<NtExecUnixlib>,
+    pub unixlib_count: u32,
+    pub _unixlibs_padding: u32,
 }
 
 #[cfg(test)]
@@ -44,8 +59,9 @@ mod tests {
     #[test]
     fn handoff_records_are_fixed_x86_64_layouts() {
         assert_eq!(core::mem::size_of::<NtExecModule>(), 32);
+        assert_eq!(core::mem::size_of::<NtExecUnixlib>(), 48);
         assert_eq!(core::mem::align_of::<NtExecModule>(), 8);
-        assert_eq!(core::mem::size_of::<NtExecRequest>(), 80);
+        assert_eq!(core::mem::size_of::<NtExecRequest>(), 96);
         assert_eq!(core::mem::align_of::<NtExecRequest>(), 8);
     }
 }

@@ -34,8 +34,9 @@ pub use registry::{
     install, install_and_publish,
     name_of, publish_evdev, push_evdev_event, remove_device,
     set_evdev_hooks, set_native_key_hook, set_native_rel_hook, dispatch_native_key_event,
-    dispatch_native_rel_event, set_output_hook, unpublish_evdev, CapBitmap, EvdevHooks,
-    NativeKeyHook, NativeRelHook,
+    dispatch_native_rel_event, set_native_mouse_hook, dispatch_native_mouse_event,
+    set_output_hook, unpublish_evdev, CapBitmap, EvdevHooks,
+    NativeKeyHook, NativeRelHook, NativeMouseHook,
     InputDeviceKey, VirtioInputDev,
 };
 pub use query::{abs_snapshot_by_identity, apply_output_by_identity, inhibited_by_identity,

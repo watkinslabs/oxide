@@ -80,6 +80,8 @@ pub struct ThreadGroup {
     /// Canonical mutable PE module catalog shared by the process's NT threads.
     /// The lock permits loader publication without a shadow module registry.
     pub nt_module_catalog: Spinlock<Option<Arc<Spinlock<pe::catalog::ModuleCatalog, TaskListClass>>>, TaskListClass>,
+    /// Canonical process-owned source catalog for Wine builtin ELF modules.
+    pub nt_unixlib_catalog: Spinlock<Option<Arc<Spinlock<elf::UnixlibCatalog, TaskListClass>>>, TaskListClass>,
     /// Modules whose `DLL_THREAD_ATTACH`/`DETACH` callbacks are disabled.
     pub nt_module_no_thread_calls: Spinlock<Vec<u64>, TaskListClass>,
     /// Process-owned Wine client procedure tables initialized by user32.
@@ -273,6 +275,7 @@ impl ThreadGroup {
             nt_dll_directories: Spinlock::new(Vec::new()), nt_dll_directory_next: AtomicU64::new(1),
             nt_module_refs: Spinlock::new(Vec::new()),
             nt_module_catalog: Spinlock::new(None),
+            nt_unixlib_catalog: Spinlock::new(None),
             nt_module_no_thread_calls: Spinlock::new(Vec::new()),
             nt_user_pfn: Spinlock::new(None),
             nt_user_module: Spinlock::new(None),
@@ -333,6 +336,14 @@ impl ThreadGroup {
     /// Install the runtime-owned PE catalog used by later child images. # C: O(1)
     pub fn set_nt_module_catalog(&self, catalog: Arc<pe::catalog::ModuleCatalog>) {
         *self.nt_module_catalog.lock() = Some(Arc::new(Spinlock::new((*catalog).clone())));
+    }
+    /// Return the process-owned Wine ELF source catalog. # C: O(1)
+    pub fn nt_unixlib_catalog(&self) -> Option<Arc<elf::UnixlibCatalog>> {
+        self.nt_unixlib_catalog.lock().as_ref().map(|store| Arc::new(store.lock().clone()))
+    }
+    /// Install the source catalog retained across native loader calls. # C: O(1)
+    pub fn set_nt_unixlib_catalog(&self, catalog: Arc<elf::UnixlibCatalog>) {
+        *self.nt_unixlib_catalog.lock() = Some(Arc::new(Spinlock::new((*catalog).clone())));
     }
     /// The process' `signalfd` readiness source, handed to every thread's
     /// `SignalPending` so both pending sets raise edges on one list. # C: O(1)
