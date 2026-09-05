@@ -24,7 +24,9 @@ impl DxvkRuntimeAdmission {
         let runtime = canonical_dir(runtime)?;
         let root = canonical_dir(component)?;
         if root == runtime || !root.starts_with(&runtime) { return Err(invalid()); }
-        let version = fs::read_to_string(root.join(VERSION_FILE)).map_err(|_| invalid())?;
+        let version_path = fs::canonicalize(root.join(VERSION_FILE)).map_err(|_| invalid())?;
+        if !version_path.starts_with(&root) || !fs::metadata(&version_path).map(|metadata| metadata.is_file()).unwrap_or(false) { return Err(invalid()); }
+        let version = fs::read_to_string(version_path).map_err(|_| invalid())?;
         let version = version.trim();
         if !valid_version(version) { return Err(invalid()); }
 
