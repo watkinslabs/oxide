@@ -65,7 +65,22 @@ Tests verify the dispatcher encoding, service decoding, handle validation, and
 that the three private runtime exports are distinct, mapped, and backed by the
 synthetic NTDLL page.
 
-## 6 Wine server packet bridge
+## 6 PE-to-GNOME runtime frontier
+
+The Notepad rootfs harness must prove the Wine PE/Unixlib pair is available
+before submitting `ExecuteWithCatalog`. It checks the x86-64 Unixlib directory
+and the `ntdll.so`/`win32u.so` sidecars, then emits
+`[WINDOWS-PE-UNIXLIB] ... state=present`. This is an availability diagnostic,
+not a readiness claim: the remaining runtime step is to map the selected ELF
+Unixlib, publish its callable Unix-function table, and dispatch its calls from
+the PE-side `__wine_unix_call_dispatcher` before user32 can create and present a
+window. `[WINDOWS-PE-START]` proves only that the initial PE user frame was
+installed.
+
+The preflight fails before the PE handoff when either sidecar is absent, so a
+missing Unixlib cannot be confused with a PE loader or GNOME scanout failure.
+
+## 7 Wine server packet bridge
 
 Wine server calls use the mapped request/reply union directly. The native
 bridge validates the fixed header, routes by request ID, and writes the reply
@@ -84,7 +99,7 @@ manual-reset at 16, initial-state at 20, and event-operation handle/op at
 implemented. Handle close uses the same registry-key cleanup path as native NT
 close, preventing a second lifetime owner.
 
-## 7 Wine synchronization objects
+## 8 Wine synchronization objects
 
 Wine server synchronization requests use the same process-local NT handle
 table as direct NT calls. Fixed packets are translated without a second object
@@ -100,7 +115,7 @@ uses the current NT thread and semaphore release wakes the native multiple-wait
 queue. Named object attributes use the same canonical object-directory resolver,
 including native symbolic-link traversal and bounded cycle rejection.
 
-## 8 Named server objects
+## 9 Named server objects
 
 Wine’s inline object-attribute vector is decoded at the object-manager
 boundary: root directory handle at 0, security-descriptor length at 8, and
