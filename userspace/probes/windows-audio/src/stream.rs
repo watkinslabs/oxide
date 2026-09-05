@@ -137,8 +137,8 @@ impl AudioStream {
     /// Advance the native device clock, preserving the bounded queue invariant.
     /// # C: O(1)
     pub fn device_advance(&mut self, frames: u32) -> Result<(), StreamError> {
-        if self.state != StreamState::Running { return Err(StreamError::NotRunning); }
         self.ensure_open()?;
+        if self.state != StreamState::Running { return Err(StreamError::NotRunning); }
         if self.render_loan.is_some() { return Err(StreamError::BufferOperationPending); }
         match self.direction {
             AudioDirection::Render => {
@@ -304,6 +304,17 @@ mod tests {
         stream.start().unwrap();
         stream.device_advance(2).unwrap();
         assert_eq!(stream.current_padding(), 2);
+    }
+
+    #[test]
+    fn device_clock_preserves_terminal_error_precedence() {
+        let geometry = StreamGeometry::from_frames(format(), 8, 4).unwrap();
+        let mut invalidated = AudioStream::new(geometry, AudioDirection::Capture);
+        invalidated.invalidate();
+        assert_eq!(invalidated.device_advance(1), Err(StreamError::Invalidated));
+        let mut closed = AudioStream::new(geometry, AudioDirection::Render);
+        closed.close();
+        assert_eq!(closed.device_advance(1), Err(StreamError::Closed));
     }
 
     #[test]
