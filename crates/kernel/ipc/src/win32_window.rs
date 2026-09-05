@@ -546,6 +546,11 @@ fn clip_rect(rect: WindowRect, area: WindowRect) -> Option<WindowRect> {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum DefaultWindowResult { Return(i64), RequestDestroy }
 
+/// Return whether DispatchMessage must enter a window procedure. WM_QUIT is
+/// consumed by the message loop and is never delivered to a window procedure.
+/// # C: O(1)
+pub const fn dispatches_to_window_proc(message: u32) -> bool { message != WM_QUIT }
+
 pub fn default_window_proc(message: u32) -> DefaultWindowResult {
     match message { WM_CLOSE => DefaultWindowResult::RequestDestroy, WM_NCHITTEST => DefaultWindowResult::Return(HTCLIENT), WM_NCACTIVATE => DefaultWindowResult::Return(1), _ => DefaultWindowResult::Return(0) }
 }
@@ -657,6 +662,13 @@ mod tests {
         assert_eq!(default_window_proc(WM_NCHITTEST), DefaultWindowResult::Return(HTCLIENT));
         assert_eq!(default_window_proc(WM_DESTROY), DefaultWindowResult::Return(0));
         assert_eq!(default_window_proc(WM_NCACTIVATE), DefaultWindowResult::Return(1));
+    }
+
+    #[test]
+    fn dispatch_does_not_deliver_thread_quit_to_a_window_procedure() {
+        assert!(!dispatches_to_window_proc(WM_QUIT));
+        assert!(dispatches_to_window_proc(WM_PAINT));
+        assert!(dispatches_to_window_proc(WM_CLOSE));
     }
 
     #[test]

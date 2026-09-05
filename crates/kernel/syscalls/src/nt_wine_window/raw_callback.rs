@@ -12,6 +12,7 @@ pub(super) fn dispatch_message(pointer: u64) -> u64 {
     let Ok(message) = uaccess::get_user_u32(message_address) else { return STATUS_INVALID_PARAMETER; };
     let Ok(wparam) = uaccess::get_user_u64(wparam_address) else { return STATUS_INVALID_PARAMETER; };
     let Ok(lparam) = uaccess::get_user_u64(lparam_address) else { return STATUS_INVALID_PARAMETER; };
+    if !ipc::win32_window::dispatches_to_window_proc(message) { return STATUS_SUCCESS; }
     if message == WM_TIMER as u32 && lparam != 0 {
         let tick_ms = timekeeper::monotonic_ns().saturating_div(1_000_000);
         return crate::nt_rtl::begin_wndproc_callback(hwnd, message as u64, wparam, tick_ms, lparam);
