@@ -200,6 +200,17 @@ fn load_locked(cur: &sched::Task, name_descriptor: u64, module_output: u64) -> u
             Err(_) => { unmap_all(&as_, &loaded); return STATUS_INVALID_PARAMETER; },
         }
     };
+    // Parse metadata while the graph is private. PEB loader lists and process
+    // refs are canonical observable state, so a late failure must not leave
+    // them describing an unmapped dependency.
+    let registrations = match elf_load::pe_modules::prepare_registrations(&loaded, &modules) {
+        Ok(registrations) => registrations,
+        Err(_) => {
+            if let Some(trampoline) = &trampoline { unmap(&as_, trampoline.base.as_u64(), trampoline.bytes as u32); }
+            unmap_all(&as_, &loaded);
+            return STATUS_INVALID_PARAMETER;
+        }
+    };
     let first_base = loaded.first().map(|module| module.image.base).unwrap_or(0);
     if uaccess::copy_to_user(module_output, &first_base.to_le_bytes()).is_err() {
         if let Some(trampoline) = &trampoline { unmap(&as_, trampoline.base.as_u64(), trampoline.bytes as u32); }
@@ -211,10 +222,9 @@ fn load_locked(cur: &sched::Task, name_descriptor: u64, module_output: u64) -> u
         unmap_all(&as_, &loaded);
         return STATUS_INVALID_PARAMETER;
     }
-    for (loaded, module) in loaded.iter().zip(&modules) {
-        let exception_functions = match pe::parse(&module.blob).and_then(|parsed| parsed.exception_functions()) { Ok(functions) => functions, Err(_) => return STATUS_INVALID_PARAMETER };
-        elf_load::pe_modules::append(&as_, elf_load::pe_modules::PeRuntimeModule { base: loaded.image.base, size: loaded.image.size, exception_rva: loaded.image.exception_directory.0, exception_size: loaded.image.exception_directory.1, exception_functions });
-        if let Ok(Some(rvas)) = pe::parse(&module.blob).and_then(|parsed| parsed.export_rvas()) {
+    for (loaded, registration) in loaded.iter().zip(registrations) {
+        elf_load::pe_modules::append(&as_, registration.module);
+        if let Some(rvas) = registration.export_rvas {
             elf_load::pe_modules::register_exports(&as_, loaded.image.base, rvas);
         }
         cur.thread_group.nt_module_refs.lock().push((loaded.image.base, 1));

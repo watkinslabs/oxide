@@ -768,6 +768,37 @@
     }
 
     #[test]
+    fn runtime_registration_preflights_mapped_catalog_metadata() {
+        let as_ = AddressSpace::new(0x40_000).unwrap();
+        let blob = exported_pe();
+        let image = load_pe_image(&blob, &as_).unwrap();
+        let loaded = [PeLoadedModule { name: b"dep.dll".as_slice(), image }];
+        let owned = [pe::OwnedModule { name: b"dep.dll".to_vec(), blob }];
+        let registrations = pe_modules::prepare_registrations(&loaded, &owned).unwrap();
+        assert_eq!(registrations.len(), 1);
+        assert_eq!(registrations[0].module.base, image.base);
+        assert!(registrations[0].export_rvas.is_some());
+        pe_modules::clear(as_.root_pa());
+    }
+
+    #[test]
+    fn runtime_registration_rejects_bad_unwind_metadata_before_publication() {
+        let as_ = AddressSpace::new(0x40_000).unwrap();
+        let valid = exported_pe();
+        let image = load_pe_image(&valid, &as_).unwrap();
+        let vmas_before = as_.vma_count();
+        let mut blob = valid;
+        let exception = 0x98 + 112 + pe::IMAGE_DIRECTORY_ENTRY_EXCEPTION * 8;
+        blob[exception..exception + 4].copy_from_slice(&0x3ff8u32.to_le_bytes());
+        blob[exception + 4..exception + 8].copy_from_slice(&12u32.to_le_bytes());
+        let loaded = [PeLoadedModule { name: b"dep.dll".as_slice(), image }];
+        let owned = [pe::OwnedModule { name: b"dep.dll".to_vec(), blob }];
+        assert_eq!(pe_modules::prepare_registrations(&loaded, &owned), Err(pe::Error::Einval));
+        assert_eq!(as_.vma_count(), vmas_before);
+        pe_modules::clear(as_.root_pa());
+    }
+
+    #[test]
     fn installed_wine_notepad_catalog_covers_its_transitive_runtime_graph() {
         let roots = [
             "/usr/lib64/wine/x86_64-windows",
