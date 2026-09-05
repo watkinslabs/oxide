@@ -4,7 +4,7 @@ use syscall::{nt::{NtCall, NtService}, SyscallArgs}; use alloc::{string::String,
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d; const STATUS_BUFFER_OVERFLOW: u64 = 0x8000_0005; const STATUS_INVALID_PARAMETER_2: u64 = 0xc000_00f0; const STATUS_ACCESS_VIOLATION: u64 = 0xc000_0005;
 const STATUS_PENDING: u64 = 0x0000_0103; const STATUS_UNSUCCESSFUL: u64 = 0xc000_0001;
 const STATUS_NO_CALLBACK_ACTIVE: u64 = 0xc000_0258;
-const STATUS_NAME_TOO_LONG: u64 = 0xc000_0106; const UNICODE_STRING_BYTES: usize = 16; const UNICODE_STRING_MAX: u32 = 0xfffc; const ANSI_STRING_MAX: u32 = 0xfffe;
+const STATUS_NAME_TOO_LONG: u64 = 0xc000_0106; const UNICODE_STRING_BYTES: usize = 16; const CURDIR_BYTES: usize = UNICODE_STRING_BYTES + 8; const UNICODE_STRING_MAX: u32 = 0xfffc; const ANSI_STRING_MAX: u32 = 0xfffe;
 const STATUS_INVALID_SID: u64 = 0xc000_0078; const STATUS_INVALID_ACL: u64 = 0xc000_0077; const STATUS_REVISION_MISMATCH: u64 = 0xc000_0059; const STATUS_ALLOTTED_SPACE_EXCEEDED: u64 = 0xc000_0099;
 const ACL_HEADER_BYTES: usize = 8; const ACE_HEADER_BYTES: usize = 4; const SID_HEADER_BYTES: usize = 8; const MAX_SUBAUTHORITIES: usize = 15; const SECURITY_DESCRIPTOR_BYTES: usize = 20; const STATUS_UNKNOWN_REVISION: u64 = 0xc000_0058;
 const TEXT_UNICODE_STATISTICS: u32 = 0x0002;
@@ -894,7 +894,25 @@ fn dos_path_to_nt(source: u64, target: u64, file_part: u64, curdir: u64) -> u64 
             .and_then(|offset| buffer.checked_add(offset as u64)).unwrap_or(0);
         if uaccess::copy_to_user(file_part, &part.to_le_bytes()).is_err() { free_rtl_buffer(buffer); return 0; }
     }
-    if curdir != 0 { let _ = uaccess::copy_to_user(curdir, &[0u8; 32]); }
+    if curdir != 0 {
+        let Some(task) = sched::live::current() else { return 0; };
+        if !task.is_nt_personality() { return 0; }
+        let teb = task.nt_teb();
+        let Some(peb_address) = teb.checked_add(TEB_PEB_OFFSET) else { return 0; };
+        let Some(peb) = uaccess::get_user_u64(peb_address).ok() else { return 0; };
+        let Some(params_address) = peb.checked_add(PEB_PROCESS_PARAMETERS_OFFSET) else { return 0; };
+        let Some(params) = uaccess::get_user_u64(params_address).ok() else { return 0; };
+        let Some(path_address) = params.checked_add(PARAM_CURRENT_DIRECTORY_OFFSET) else { return 0; };
+        let Some(handle_address) = params.checked_add(0x38) else { return 0; };
+        let mut path = [0u8; UNICODE_STRING_BYTES];
+        let mut handle = [0u8; 8];
+        if uaccess::copy_from_user(&mut path, path_address).is_err()
+            || uaccess::copy_from_user(&mut handle, handle_address).is_err() { return 0; }
+        let mut encoded = [0u8; CURDIR_BYTES];
+        encoded[..UNICODE_STRING_BYTES].copy_from_slice(&path);
+        encoded[UNICODE_STRING_BYTES..].copy_from_slice(&handle);
+        if uaccess::copy_to_user(curdir, &encoded).is_err() { return 0; }
+    }
     1
 }
 fn create_unicode_string_from_ascii(target: u64, source: u64) -> u64 {
