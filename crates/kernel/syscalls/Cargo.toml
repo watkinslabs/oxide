@@ -72,6 +72,7 @@ tty     = { path = "../tty" }
 vfs     = { path = "../vfs" }
 ninep   = { path = "../ninep" }
 fs      = { path = "../fs" }
+umh     = { path = "../umh" }
 vmm     = { path = "../mm-vmm" }
 power    = { path = "../power" }
 firmware = { path = "../firmware" }

@@ -66,7 +66,7 @@ pub fn start(info: &mut SubprocessInfo) -> Result<Arc<sched::Task>, i32> {
     if rc != 0 { return Err(rc); }
 
     stage!(b"init-done");
-    let program = super::image::read_program(info.path_bytes())?;
+    let program = super::image::read_program(info.path_bytes(), &info.envp)?;
     stage!(b"program-read");
     let entry = load_image(&mm, &program, info, &task)?;
     // SAFETY: the task is still unpublished, so this is the sole writer of its arch context; entry/sp were produced by the loader against this task's own address space.
