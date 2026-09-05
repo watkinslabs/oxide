@@ -17,7 +17,38 @@ pub struct PreparedPeProcess {
     pub stack: hal::UserVirtAddr,
     pub stack_top: u64,
     pub process: elf_load::pe_loader::PeProcess,
-    pub startup: elf_load::pe_startup::PeStartupFacts,
+}
+
+/// Private PE launch continuation. The mapped image, environment, and
+/// single-use startup transaction stay unpublished until the caller has
+/// completed every fallible exec/child preparation step. Dropping it is the
+/// rollback for a failed launch: the private address space loses its last Arc
+/// and the mapped image is never installed in the task.
+#[cfg(target_arch = "x86_64")]
+pub(crate) struct PeLaunchContinuation { prepared: Option<PreparedPeProcess> }
+
+#[cfg(target_arch = "x86_64")]
+impl PeLaunchContinuation {
+    pub(crate) fn new(prepared: PreparedPeProcess) -> Result<Self, i64> {
+        if prepared.process.startup.personality != elf_load::pe_loader::ExecutionPersonality::Nt {
+            return Err(-(syscall::errno::Errno::Enoexec.as_i32() as i64));
+        }
+        Ok(Self { prepared: Some(prepared) })
+    }
+    pub(crate) fn prepared(&self) -> &PreparedPeProcess { self.prepared.as_ref().expect("launch continuation present") }
+    pub(crate) fn startup(&self) -> &elf_load::pe_startup::PeStartupFacts { self.prepared().process.startup.facts() }
+    pub(crate) fn take(mut self) -> (PreparedPeProcess, elf_load::pe_startup::PeStartupFacts) {
+        let prepared = self.prepared.take().expect("launch continuation present");
+        let startup = prepared.process.startup.finish();
+        (prepared, startup)
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn select_nt_personality(task: &sched::Task, startup: &elf_load::pe_startup::PeStartupFacts) -> Result<(), i64> {
+    if startup.personality != elf_load::pe_loader::ExecutionPersonality::Nt { return Err(-(syscall::errno::Errno::Enoexec.as_i32() as i64)); }
+    task.set_nt_personality(true);
+    Ok(())
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -102,34 +133,40 @@ pub fn try_commit_with_catalog_and_environment(cur: &sched::Task, path: &[u8], b
 fn commit_x86(cur: &sched::Task, path: &[u8], blob: &[u8], exec_vp: Option<&vfs::VfsPath>, catalog: Option<&pe::catalog::ModuleCatalog>, command_line: Option<&str>, environment: &[(&str, &str)]) -> Result<(), i64> {
     let enoexec = || -(syscall::errno::Errno::Enoexec.as_i32() as i64);
     let table = cur.thread_group.nt_handles();
-    let stdio = inherit_nt_standard_handles(cur);
+    let mut stdio = inherit_nt_standard_handles(cur);
     let params = stdio.as_ref().map(|stdio| &stdio.params);
     let prepared = match prepare_pe_process(cur, path, blob, command_line, environment, params, exec_vp, catalog,
         cur.tgid.load(core::sync::atomic::Ordering::Acquire), cur.tid, true) {
         Ok(prepared) => prepared,
-        Err(error) => { if let Some(stdio) = stdio { stdio.close(&table); } return Err(error); },
+        Err(error) => { close_stdio(&mut stdio, &table); return Err(error); },
     };
-    let PreparedPeProcess { mm: as_, stack, stack_top, process, startup } = prepared;
-    let path = match core::str::from_utf8(path) { Ok(path) => path, Err(_) => { if let Some(stdio) = stdio { stdio.close(&table); } return Err(enoexec()); } };
-    let mut creds = match decide_exec_box(cur, exec_vp) { Ok(creds) => creds, Err(error) => { if let Some(stdio) = stdio { stdio.close(&table); } return Err(error); } };
-    let selinux = match decide_selinux_box(cur, exec_vp) { Ok(selinux) => selinux, Err(error) => { if let Some(stdio) = stdio { stdio.close(&table); } return Err(error); } };
+    let continuation = match PeLaunchContinuation::new(prepared) { Ok(value) => value, Err(error) => { close_stdio(&mut stdio, &table); return Err(error); } };
+    let path = match core::str::from_utf8(path) { Ok(path) => path, Err(_) => { close_stdio(&mut stdio, &table); return Err(enoexec()); } };
+    let mut creds = match decide_exec_box(cur, exec_vp) { Ok(creds) => creds, Err(error) => { close_stdio(&mut stdio, &table); return Err(error); } };
+    let selinux = match decide_selinux_box(cur, exec_vp) { Ok(selinux) => selinux, Err(error) => { close_stdio(&mut stdio, &table); return Err(error); } };
     creds.secure_exec |= selinux.secure_exec;
     // Diagnostic experiment for the AMD64 relay first-touch failure: populate
     // executable PE/runtime pages before the first user instruction. This is
     // deliberately feature-gated; if it changes the failure, the permanent
     // fix belongs in the fault/PTE retry path rather than here.
     #[cfg(feature = "debug-faultdiag")]
+    let as_ = &continuation.prepared().mm;
+    #[cfg(feature = "debug-faultdiag")]
     for vma in as_.snapshot_vmas() {
         if !vma.prot.contains(VmaProt::EXEC) || !matches!(vma.backing, VmaBacking::KernelBytes { .. }) { continue; }
         pmm::user_as::prefault_user_range_with_access(
-            &as_, vma.start.as_u64(), vma.end.as_u64() - vma.start.as_u64(), vmm::FaultAccess::Exec,
-        ).map_err(|_| enoexec())?;
+            as_, vma.start.as_u64(), vma.end.as_u64() - vma.start.as_u64(), vmm::FaultAccess::Exec,
+        ).map_err(|_| { close_stdio(&mut stdio, &table); enoexec() })?;
     }
     // Validate the only live-task mutation target before activating or
     // publishing the replacement address space. A missing frame is a failed
     // commit, so the caller must retain its Linux mm and personality.
     let regs = hal_x86_64::current_pt_regs();
-    if regs.is_null() { return Err(nomem(b"[WINDOWS-PE-NOMEM] regs\n")); }
+    if regs.is_null() { close_stdio(&mut stdio, &table); return Err(nomem(b"[WINDOWS-PE-NOMEM] regs\n")); }
+    let startup_view = continuation.prepared().process.startup.facts();
+    if let Err(error) = select_nt_personality(cur, startup_view) { close_stdio(&mut stdio, &table); return Err(error); }
+    let (prepared, startup) = continuation.take();
+    let PreparedPeProcess { mm: as_, stack, stack_top, process, .. } = prepared;
     let cpu = (hal_x86_64::X86CpuOps::current_cpu() as usize).min(cpu::MAX_CPUS - 1);
     as_.mark_cpu(cpu);
     // SAFETY: root belongs to this freshly-built address space and activation
@@ -146,7 +183,6 @@ fn commit_x86(cur: &sched::Task, path: &[u8], blob: &[u8], exec_vp: Option<&vfs:
         let ctx = cur.arch_ctx_ptr::<hal_x86_64::ContextX86_64>();
         (*ctx).gs_base = startup.gs_base.as_u64();
     }
-    cur.set_nt_personality(true);
     sched::initialize_current_process(cur);
     cur.set_nt_peb(process.environment.peb.as_u64());
     cur.set_nt_teb(process.environment.teb.as_u64());
@@ -174,6 +210,11 @@ fn commit_x86(cur: &sched::Task, path: &[u8], blob: &[u8], exec_vp: Option<&vfs:
     sched::live::vfork_done(cur);
     klog::write_raw(b"[WINDOWS-PE-COMMIT] success\n");
     Ok(())
+}
+
+#[cfg(target_arch = "x86_64")]
+fn close_stdio(stdio: &mut Option<NtStandardHandles>, table: &sched::nt_object::NtHandleTable) {
+    if let Some(handles) = stdio.take() { handles.close(table); }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -243,8 +284,7 @@ pub fn prepare_pe_process(cur: &sched::Task, path: &[u8], blob: &[u8], command_l
             return Err(enoexec());
         }
     };
-    let startup = process.startup;
-    Ok(PreparedPeProcess { mm: as_, stack, stack_top, process, startup })
+    Ok(PreparedPeProcess { mm: as_, stack, stack_top, process })
 }
 
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]

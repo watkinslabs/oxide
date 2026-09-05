@@ -49,6 +49,8 @@ pub fn dispatch(call: NtCall, stack: [u64; 5]) -> u64 {
     let catalog = cur.thread_group.nt_module_catalog();
     let Ok(prepared) = crate::pe_exec::prepare_pe_process(&cur, &image, &blob,
         Some(command.as_str()), &environment_refs, Some(&params), vp.as_ref(), catalog.as_deref(), tid, tid, false) else { return INVALID_PARAMETER; };
+    let Ok(continuation) = crate::pe_exec::PeLaunchContinuation::new(prepared) else { return INVALID_PARAMETER; };
+    let prepared = continuation.prepared();
 
     // Everything above is private and fallible.  From here the task is built
     // unpublished, so a caller cannot observe an image without its PEB/TEB.
@@ -81,8 +83,9 @@ pub fn dispatch(call: NtCall, stack: [u64; 5]) -> u64 {
             unsafe { child.replace_fd_table(Some(Arc::new(fd.fork_clone()))); }
         }
     }
-    unsafe { sched::live::arm_user_entry(&child, prepared.startup.transfer_entry.as_u64(),
-        prepared.startup.stack_pointer.as_u64()); }
+    let startup = continuation.startup();
+    unsafe { sched::live::arm_user_entry(&child, startup.transfer_entry.as_u64(),
+        startup.stack_pointer.as_u64()); }
     // The NT TEB is addressed through GS on x86-64.  `arm_user_entry` builds
     // a generic user context, so the native process transaction must publish
     // the image-specific GS base before the task becomes visible to the
@@ -91,7 +94,7 @@ pub fn dispatch(call: NtCall, stack: [u64; 5]) -> u64 {
     #[cfg(target_arch = "x86_64")]
     unsafe {
         let ctx = child.arch_ctx_ptr::<hal_x86_64::ContextX86_64>();
-        (*ctx).gs_base = prepared.startup.gs_base.as_u64();
+        (*ctx).gs_base = startup.gs_base.as_u64();
     }
 
     let table = cur.thread_group.nt_handles();
@@ -120,6 +123,7 @@ pub fn dispatch(call: NtCall, stack: [u64; 5]) -> u64 {
             return INVALID_PARAMETER;
         }
     }
+    let _ = continuation.take();
     sched::live::publish_new_task(&child);
     if crate::nt_process_policy::initial_thread_suspended(c.process_flags as u32, c.thread_flags as u32) { let _ = child.nt_suspend(); }
     else { sched::live::wake_new_task(&child); }

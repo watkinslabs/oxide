@@ -307,7 +307,7 @@ pub struct PeProcess {
     pub image: PeLoadedImage,
     pub environment: process_env::NtProcessEnvironment,
     pub entry: PeEntryState,
-    pub startup: crate::pe_startup::PeStartupFacts,
+    pub startup: crate::pe_startup::PeStartupTransaction,
     pub initializers: alloc::vec::Vec<PeModuleInitializer>,
     pub initializer_trampoline: Option<pe_init::PeInitTrampoline>,
 }
@@ -1108,7 +1108,7 @@ fn load_pe_process_with_catalog_with_stack_bounds<R: ImportResolver>(blob: &[u8]
     };
     if let Some(trampoline) = initializer_trampoline { entry.rip = trampoline.entry; }
     let startup = match crate::pe_startup::PeStartupTransaction::begin(as_, &loaded[0].image, &environment, stack_base, stack_top, &entry, initializer_trampoline.as_ref()) {
-        Ok(transaction) => transaction.finish(),
+        Ok(transaction) => transaction,
         Err(_) => {
             let _ = as_.munmap(environment.base, environment.bytes);
             unmap_loaded_modules(as_, &loaded);
@@ -1180,7 +1180,7 @@ pub fn load_pe_process_with_resolver_and_modules_and_params_with_stack_bounds<R:
     };
     let entry = if let Some(trampoline) = initializer_trampoline { PeEntryState { rip: trampoline.entry, ..entry } } else { entry };
     let startup = match crate::pe_startup::PeStartupTransaction::begin(as_, &image, &environment, stack_base, stack_top, &entry, initializer_trampoline.as_ref()) {
-        Ok(transaction) => transaction.finish(),
+        Ok(transaction) => transaction,
         Err(_) => {
             let _ = as_.munmap(environment.base, environment.bytes);
             let _ = as_.munmap(UserVirtAddr::new(image.base).ok_or(pe::Error::Einval)?, image.size as usize);
