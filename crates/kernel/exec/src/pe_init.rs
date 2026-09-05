@@ -92,6 +92,7 @@ pub fn map(as_: &AddressSpace, app_entry: UserVirtAddr, initializers: &[super::p
 /// falling through into unmapped user memory.
 pub fn map_with_exit(as_: &AddressSpace, app_entry: UserVirtAddr,
     initializers: &[super::pe_loader::PeModuleInitializer], exit_entry: UserVirtAddr) -> Result<PeInitTrampoline, pe::Error> {
+    validate_initializer_targets(as_, initializers)?;
     let mut code = Vec::with_capacity(initializers.len() * 39 + 12);
     for initializer in initializers {
         // The process entry is reached by a jump, so there is no return
@@ -159,6 +160,7 @@ pub fn map_with_exit(as_: &AddressSpace, app_entry: UserVirtAddr,
 pub fn map_dynamic_return(as_: &AddressSpace, return_entry: UserVirtAddr,
     initializers: &[super::pe_loader::PeModuleInitializer]) -> Result<Option<PeInitTrampoline>, pe::Error> {
     if initializers.is_empty() { return Ok(None); }
+    validate_initializer_targets(as_, initializers)?;
     let mut code = Vec::with_capacity(initializers.len() * 37 + 12);
     code.extend_from_slice(&[0x48, 0xb8]);
     code.extend_from_slice(&return_entry.as_u64().to_le_bytes());
@@ -196,9 +198,27 @@ pub fn map_dynamic_return(_as_: &AddressSpace, _return_entry: UserVirtAddr,
     Err(pe::Error::Unsupported)
 }
 
+/// Require every loader callback to land in executable mapped code before
+/// emitting a user-mode call sequence. PE bounds alone are insufficient:
+/// TLS callback VAs can point into mapped writable data, which must never be
+/// used as an indirect entry point.
+fn validate_initializer_targets(as_: &AddressSpace,
+    initializers: &[super::pe_loader::PeModuleInitializer]) -> Result<(), pe::Error> {
+    if initializers.iter().any(|initializer| {
+        as_.find_vma(initializer.entry).map_or(true, |vma| !vma.prot.contains(VmaProt::EXEC))
+    }) { return Err(pe::Error::Einval); }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn executable_target(as_: &AddressSpace) -> UserVirtAddr {
+        let data = as_.stash_bytes(alloc::boxed::Box::new([0u8; 4096]));
+        as_.mmap(None, 4096, VmaProt::READ | VmaProt::EXEC, VmaFlags::PRIVATE,
+            VmaBacking::KernelBytes { data, off: 0 }, false).unwrap()
+    }
 
     #[test]
     fn zero_address_of_entry_point_is_not_a_dll_initializer() {
@@ -210,8 +230,9 @@ mod tests {
     #[test]
     fn emits_process_attach_calls_then_application_jump() {
         let as_ = AddressSpace::new(0x20_000).unwrap();
+        let entry = executable_target(&as_);
         let initializers = [super::super::pe_loader::PeModuleInitializer {
-            base: 0x5000_0000, entry: UserVirtAddr::new(0x5000_1010).unwrap(), kind: super::super::pe_loader::PeInitializerKind::DllEntry,
+            base: 0x5000_0000, entry, kind: super::super::pe_loader::PeInitializerKind::DllEntry,
         }];
         let trampoline = map_with_exit(&as_, UserVirtAddr::new(0x6000_1010).unwrap(), &initializers, UserVirtAddr::new(0x7000_1010).unwrap()).unwrap();
         let vma = as_.find_vma(trampoline.base).unwrap();
@@ -226,12 +247,27 @@ mod tests {
         assert!(data.windows(2).any(|bytes| bytes == [0x0f, 0x0b]));
     }
 
+    #[test]
+    fn rejects_initializer_in_mapped_non_executable_data() {
+        let as_ = AddressSpace::new(0x20_000).unwrap();
+        let data = as_.stash_bytes(alloc::boxed::Box::new([0u8; 4096]));
+        let base = as_.mmap(None, 4096, VmaProt::READ | VmaProt::WRITE, VmaFlags::PRIVATE,
+            VmaBacking::KernelBytes { data, off: 0 }, false).unwrap();
+        let initializers = [super::super::pe_loader::PeModuleInitializer {
+            base: base.as_u64(), entry: base, kind: super::super::pe_loader::PeInitializerKind::TlsCallback,
+        }];
+        assert_eq!(map_with_exit(&as_, UserVirtAddr::new(0x6000_1010).unwrap(), &initializers,
+            UserVirtAddr::new(0x7000_1010).unwrap()), Err(pe::Error::Einval));
+        assert_eq!(as_.vma_count(), 1, "validation must run before trampoline publication");
+    }
+
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn dynamic_return_trampoline_pushes_caller_and_attach_arguments() {
         let as_ = AddressSpace::new(0x20_000).unwrap();
+        let entry = executable_target(&as_);
         let initializers = [super::super::pe_loader::PeModuleInitializer {
-            base: 0x5000_0000, entry: UserVirtAddr::new(0x5000_1010).unwrap(), kind: super::super::pe_loader::PeInitializerKind::DllEntry,
+            base: 0x5000_0000, entry, kind: super::super::pe_loader::PeInitializerKind::DllEntry,
         }];
         let trampoline = map_dynamic_return(&as_, UserVirtAddr::new(0x6000_1010).unwrap(), &initializers).unwrap().unwrap();
         let vma = as_.find_vma(trampoline.base).unwrap();
@@ -247,12 +283,14 @@ mod tests {
     #[test]
     fn dynamic_return_trampoline_ignores_tls_result_but_maps_dll_result_to_status() {
         let as_ = AddressSpace::new(0x20_000).unwrap();
+        let dll_entry = executable_target(&as_);
+        let tls_entry = executable_target(&as_);
         let dll = [super::super::pe_loader::PeModuleInitializer {
-            base: 0x5000_0000, entry: UserVirtAddr::new(0x5000_1010).unwrap(),
+            base: 0x5000_0000, entry: dll_entry,
             kind: super::super::pe_loader::PeInitializerKind::DllEntry,
         }];
         let tls = [super::super::pe_loader::PeModuleInitializer {
-            base: 0x5100_0000, entry: UserVirtAddr::new(0x5100_1010).unwrap(),
+            base: 0x5100_0000, entry: tls_entry,
             kind: super::super::pe_loader::PeInitializerKind::TlsCallback,
         }];
         let bytes = |initializers: &[super::super::pe_loader::PeModuleInitializer]| {
@@ -287,7 +325,7 @@ mod tests {
     #[test]
     fn dll_initializer_uses_windows_x64_call_alignment() {
         let as_ = AddressSpace::new(0x20_000).unwrap();
-        let initializer = [super::super::pe_loader::PeModuleInitializer { base: 0x5000_0000, entry: UserVirtAddr::new(0x5000_1010).unwrap(), kind: super::super::pe_loader::PeInitializerKind::DllEntry }];
+        let initializer = [super::super::pe_loader::PeModuleInitializer { base: 0x5000_0000, entry: executable_target(&as_), kind: super::super::pe_loader::PeInitializerKind::DllEntry }];
         let trampoline = map_with_exit(&as_, UserVirtAddr::new(0x6000_1010).unwrap(), &initializer, UserVirtAddr::new(0x7000_1010).unwrap()).unwrap();
         let vma = as_.find_vma(trampoline.base).unwrap();
         let data = match vma.backing { VmaBacking::KernelBytes { data, off } => (data, off), _ => panic!("initializer trampoline must be kernel-backed") };
@@ -299,8 +337,9 @@ mod tests {
     #[test]
     fn process_attach_failure_is_transferred_to_exit_status() {
         let as_ = AddressSpace::new(0x20_000).unwrap();
+        let entry = executable_target(&as_);
         let initializers = [super::super::pe_loader::PeModuleInitializer {
-            base: 0x5000_0000, entry: UserVirtAddr::new(0x5000_1010).unwrap(), kind: super::super::pe_loader::PeInitializerKind::DllEntry,
+            base: 0x5000_0000, entry, kind: super::super::pe_loader::PeInitializerKind::DllEntry,
         }];
         let trampoline = map_with_exit(&as_, UserVirtAddr::new(0x6000_1010).unwrap(), &initializers, UserVirtAddr::new(0x7000_1010).unwrap()).unwrap();
         let vma = as_.find_vma(trampoline.base).unwrap();
