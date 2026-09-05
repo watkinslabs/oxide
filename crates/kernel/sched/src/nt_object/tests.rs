@@ -33,6 +33,18 @@ fn process_handle_count_tracks_every_live_duplicate_and_close() {
 }
 
 #[test]
+fn duplicate_keeps_source_lifetime_transactional() {
+    let table = NtHandleTable::new();
+    let source = table.insert(table.new_object(NtObjectType::Event), READ).unwrap();
+    let duplicate = table.duplicate(source, READ).unwrap();
+    assert_ne!(source, duplicate);
+    assert_eq!(table.handle_count(source), Some(2));
+    assert!(table.close(source));
+    assert!(table.get(duplicate, READ).is_some());
+    assert_eq!(table.handle_count(duplicate), Some(1));
+}
+
+#[test]
 fn handle_generation_wrap_retires_slot_and_keeps_stale_handle_invalid() {
     let table = NtHandleTable::new();
     let stale = table.insert(table.new_object(NtObjectType::Event), READ).unwrap();
