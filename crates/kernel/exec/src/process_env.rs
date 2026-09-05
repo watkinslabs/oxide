@@ -100,6 +100,16 @@ pub struct NtProcessParameters<'a> {
     pub standard_handles: [u64; 3],
 }
 
+/// Validate the inherited standard-handle tuple before it is published in
+/// the x64 process-parameter block. A console process receives either no
+/// standard handles or the complete input/output/error triplet; a partial
+/// tuple would make `GetStdHandle` expose stale, non-inherited state.
+/// # C: O(1)
+pub fn standard_handle_slots(handles: [u64; 3]) -> Option<[u64; 3]> {
+    let present = handles.map(|handle| handle != 0);
+    if present.iter().all(|value| !value) || present.iter().all(|value| *value) { Some(handles) } else { None }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NtModuleInput<'a> {
     pub base: u64,
@@ -238,6 +248,7 @@ pub fn build_with_modules_and_params_and_stack(input: &EnvironmentInput<'_>, mod
         }
     } else { (stack_base, stack_top) };
     if (stack_base == 0) != (stack_top == 0) || stack_base > stack_top { return Err(Error::Einval); }
+    let standard_handles = standard_handle_slots(params.standard_handles).ok_or(Error::Einval)?;
     let image_path = utf16(input.image_path)?;
     let command_line = utf16(input.command_line)?;
     let mut env = Vec::new();
@@ -319,7 +330,7 @@ pub fn build_with_modules_and_params_and_stack(input: &EnvironmentInput<'_>, mod
     put_u64(&mut block, TEB_OFF + TEB_SYSCALL_FRAME_OFFSET, base + PROCESS_SYSCALL_FRAME_OFF as u64);
     put_u64(&mut block, PARAM_OFF + 0x10, params.console_handle);
     put_u64(&mut block, PARAM_OFF + PARAM_CURRENT_DIRECTORY_HANDLE_OFF, params.current_directory_handle);
-    for (offset, handle) in [0x20usize, 0x28, 0x30].into_iter().zip(params.standard_handles) {
+    for (offset, handle) in [0x20usize, 0x28, 0x30].into_iter().zip(standard_handles) {
         put_u64(&mut block, PARAM_OFF + offset, handle);
     }
     put_unicode(&mut block, PARAM_OFF + 0x60, &image_path, base + image_path_off as u64);
@@ -533,6 +544,21 @@ mod tests {
         assert_eq!(at(0x10), 0x31);
         assert_eq!(at(PARAM_CURRENT_DIRECTORY_HANDLE_OFF), 0x21);
         assert_eq!([at(0x20), at(0x28), at(0x30)], [0x41, 0x42, 0x43]);
+    }
+
+    #[test]
+    fn partial_standard_handle_triplet_is_rejected_before_mapping() {
+        let as_ = AddressSpace::new(0x20_000).unwrap();
+        let result = build_with_modules_and_params(&EnvironmentInput {
+            image_base: 0x1400_0000, image_size: 0x5000, image_path: "C:\\hello.exe",
+            command_line: "hello.exe", environment: &[], process_id: 1, thread_id: 1,
+        }, &[NtModuleInput { base: 0x1400_0000, entry: 0x1400_1000, size: 0x5000,
+            full_name: "C:\\hello.exe", base_name: "hello.exe" }], &NtProcessParameters {
+            current_directory: "C:\\", current_directory_handle: 0, console_handle: 0,
+            standard_handles: [0x41, 0, 0x43],
+        }, &as_);
+        assert_eq!(result, Err(Error::Einval));
+        assert_eq!(as_.vma_count(), 0);
     }
 
     #[test]
