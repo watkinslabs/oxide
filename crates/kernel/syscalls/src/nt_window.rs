@@ -338,7 +338,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
                 }
                 NtWindowCall::Show { hwnd, command } => {
                     let Some(window) = valid_window(hwnd) else { return Some(STATUS_INVALID_HANDLE); };
-                    let visible = command != ipc::win32_window::SW_HIDE;
+                    let Some(visible) = crate::nt_window_policy::show_command_visibility(command as u64) else { return Some(state.get(window).map(|record| record.visible as u64).unwrap_or(STATUS_INVALID_HANDLE)); };
                     (Some(match state.show(cur.tid as u64, window, visible) {
                         Ok(previous) => {
                             if let Some(wparam) = crate::nt_window_policy::visibility_transition_message(previous, visible) {
