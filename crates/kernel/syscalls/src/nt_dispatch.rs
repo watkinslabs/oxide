@@ -13,6 +13,9 @@ pub fn map_view_ex_parameters_admitted(parameters: u64, count: u64) -> bool {
     count == 0
 }
 
+/// NtCreateSectionEx forwards section creation without consuming its parameter array. # C: O(1)
+pub fn create_section_ex_parameters_admitted(_parameters: u64, _count: u64) -> bool { true }
+
 /// Decode one NT personality entry without making it visible to Linux routes.
 /// # C: O(1)
 pub fn decode_entry(entry: u64, args: SyscallArgs) -> Option<NtCall> {
@@ -41,10 +44,9 @@ const CURRENT_THREAD: u64 = u64::MAX - 1;
 fn native_section_object(call: NtCall) -> Option<NtObjectCall> {
     match call.service {
         nt::NtService::CreateSection | nt::NtService::NtCreateSectionEx => {
-            if call.service == nt::NtService::NtCreateSectionEx {
-                if stack_argument(7)? != 0 || stack_argument(8)? != 0 { return None; }
-            }
             let file = stack_argument(6)?;
+            if call.service == nt::NtService::NtCreateSectionEx
+                && !create_section_ex_parameters_admitted(stack_argument(7)?, stack_argument(8)?) { return None; }
             if file > u32::MAX as u64 { return None; }
             let mut size = if call.args.a3 == 0 { 0 } else { uaccess::get_user_u64(call.args.a3).ok()? };
             if size == 0 && file != 0 {
@@ -1692,5 +1694,11 @@ mod tests {
         assert!(map_view_ex_parameters_admitted(0, 0));
         assert!(map_view_ex_parameters_admitted(0x1000, 0));
         assert!(!map_view_ex_parameters_admitted(0, 1));
+    }
+    #[test]
+    fn create_section_ex_ignores_parameter_pointer_and_count() {
+        assert!(create_section_ex_parameters_admitted(0, 0));
+        assert!(create_section_ex_parameters_admitted(0, 1));
+        assert!(create_section_ex_parameters_admitted(0x1000, 1));
     }
 }
