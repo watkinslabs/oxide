@@ -17,14 +17,38 @@ use syscall::errno::Errno;
 ///   * `-EACCES` — not executable, not a regular file, or a `noexec` mount
 ///   * `-EIO` — the program could not be read off its filesystem
 /// # C: O(components × dir-lookup) + O(size/PAGE)
-pub fn read_program(path: &[u8]) -> Result<Vec<u8>, i32> {
-    let vp = resolve(path)?;
+pub fn read_program(path: &[u8], envp: &[Vec<u8>]) -> Result<Vec<u8>, i32> {
+    let vp = resolve(path, envp)?;
     exec_permitted(&vp)?;
     read_all(&vp.inode).ok_or(-(Errno::Eio.as_i32()))
 }
 
-fn resolve(path: &[u8]) -> Result<vfs::VfsPath, i32> {
+fn resolve(path: &[u8], envp: &[Vec<u8>]) -> Result<vfs::VfsPath, i32> {
     if path.is_empty() { return Err(-(Errno::Enoent.as_i32())); }
+    if path.contains(&b'/') { return lookup(path); }
+
+    let path_value = envp.iter().find_map(|entry| entry.strip_prefix(b"PATH="));
+    let path_value = path_value.unwrap_or(b"/bin:/usr/bin");
+    let mut saw_access = false;
+    for component in path_value.split(|&b| b == b':') {
+        let mut candidate = Vec::with_capacity(component.len() + path.len() + 1);
+        if component.is_empty() { candidate.extend_from_slice(b"/"); }
+        else {
+            candidate.extend_from_slice(component);
+            if !component.ends_with(b"/") { candidate.push(b'/'); }
+        }
+        candidate.extend_from_slice(path);
+        match lookup(&candidate) {
+            Ok(vp) => return Ok(vp),
+            Err(rc) if rc == -(Errno::Eacces.as_i32()) => saw_access = true,
+            Err(_) => {},
+        }
+    }
+    if saw_access { Err(-(Errno::Eacces.as_i32())) }
+    else { Err(-(Errno::Enoent.as_i32())) }
+}
+
+fn lookup(path: &[u8]) -> Result<vfs::VfsPath, i32> {
     let ns = vfs::mount::current_ns();
     let root = vfs::mount::root_path_for_ns(ns).ok_or(-(Errno::Enoent.as_i32()))?;
     let text = vfs::path_from_bytes(path);

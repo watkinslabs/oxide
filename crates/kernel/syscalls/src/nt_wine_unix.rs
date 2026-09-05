@@ -92,6 +92,43 @@ const NT_HANDLE_INHERIT: u32 = 0x0000_0001;
 
 fn wine_arg(base: u64, offset: u64) -> Option<u64> { base.checked_add(offset) }
 
+/// Convert the Linux-shaped result of the shared usermode-helper owner to the
+/// result Wine's `spawnvp` ABI exposes: a negated exec errno, or an 8-bit exit
+/// value. A signal death is Wine's historical 255 result.
+fn wine_spawn_result(result: i32) -> u64 {
+    if result < 0 { return crate::nt_file_policy::status_from_errno(result as i64); }
+    if result & 0x7f != 0 { return 255; }
+    ((result >> 8) & 0xff) as u64
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn wine_spawnvp(args: u64) -> u64 {
+    const ARGV: u64 = 0;
+    const WAIT: u64 = 8;
+    if args == 0 { return STATUS_INVALID_PARAMETER; }
+    let Some(argv_address) = wine_arg(args, ARGV) else { return STATUS_INVALID_PARAMETER; };
+    let Some(wait_address) = wine_arg(args, WAIT) else { return STATUS_INVALID_PARAMETER; };
+    let Ok(argv) = uaccess::get_user_u64(argv_address) else { return STATUS_INVALID_PARAMETER; };
+    let Ok(wait) = uaccess::get_user_u32(wait_address) else { return STATUS_INVALID_PARAMETER; };
+    if argv == 0 { return STATUS_INVALID_PARAMETER; }
+
+    let mut argv_owned = alloc::vec::Vec::new();
+    let mut total = 0;
+    if crate::execve_common::read_user_string_vector(argv, &mut argv_owned, &mut total).is_err()
+        || argv_owned.is_empty() || argv_owned[0].is_empty() { return STATUS_INVALID_PARAMETER; }
+    let argv_refs: alloc::vec::Vec<&[u8]> = argv_owned.iter().map(|value| value.as_slice()).collect();
+    let env_owned = sched::live::current().and_then(|task| task.environ()).map(|value|
+        value.into_bytes().split(|&byte| byte == 0).filter(|value| !value.is_empty()).map(|value| value.to_vec()).collect::<alloc::vec::Vec<_>>())
+        .unwrap_or_else(|| umh::env::UPCALL_ENV.iter().map(|value| value.to_vec()).collect());
+    let env_refs: alloc::vec::Vec<&[u8]> = env_owned.iter().map(|value| value.as_slice()).collect();
+    let mode = if wait == 0 { umh::UMH_NO_WAIT } else { umh::UMH_WAIT_PROC };
+    let result = umh::call_usermodehelper(&argv_owned[0], &argv_refs, &env_refs, mode);
+    if mode == umh::UMH_NO_WAIT && result == 0 { STATUS_SUCCESS } else { wine_spawn_result(result) }
+}
+
+#[cfg(not(target_os = "oxide-kernel"))]
+fn wine_spawnvp(_args: u64) -> u64 { STATUS_NOT_IMPLEMENTED }
+
 /// Validate and locate one entry in the address-space-owned Wine Unixlib table.
 /// The table was decoded at admission; dispatch reads no user table memory.
 /// # C: O(log N)
@@ -733,6 +770,7 @@ fn dispatch_for_address_space(root: u64, call: NtCall) -> u64 {
         Some(WineUnixFunction::WineServerFdToHandle) => unix_fd_to_handle(call.args.a2),
         Some(WineUnixFunction::WineServerHandleToFd) => unix_handle_to_fd(call.args.a2),
         Some(WineUnixFunction::WineServerCall) => server_call(call.args.a2),
+        Some(WineUnixFunction::WineSpawnVp) => wine_spawnvp(call.args.a2),
         // unix_system_time_precise: writes one Windows 100ns timestamp.
         Some(WineUnixFunction::SystemTimePrecise) => {
             if call.args.a2 == 0 { return STATUS_INVALID_PARAMETER; }
@@ -772,6 +810,14 @@ mod tests {
         assert_eq!(mapping_size(0x1000, 0x4000, 0x1000), Some(0x1000));
         assert_eq!(mapping_size(0x3001, 0x4000, 0x1000), None);
         assert_eq!(mapping_size(1, 0x4000, 0x4000), None);
+    }
+
+    #[test]
+    fn wine_spawn_result_decodes_linux_exit_status_and_errno() {
+        assert_eq!(wine_spawn_result(0), 0);
+        assert_eq!(wine_spawn_result(0x2a00), 0x2a);
+        assert_eq!(wine_spawn_result(0x0009), 255);
+        assert_eq!(wine_spawn_result(-(syscall::errno::Errno::Enoent.as_i32())), 0xc000_0034);
     }
 
     fn descriptor(root: u64, table_address: u64, entry_count: u64, module_base: u64, module_end: u64) {
