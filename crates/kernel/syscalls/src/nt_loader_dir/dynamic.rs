@@ -129,6 +129,54 @@ pub(super) fn load(name_descriptor: u64, module_output: u64) -> u64 {
     status
 }
 
+/// Load one Wine builtin ELF object through the address-space-owned Unixlib
+/// source and dependency owner. The fixed ABI contributes only the validated
+/// NT name and output location; it cannot select arbitrary host paths.
+/// # C: O(native dependency closure)
+#[cfg(target_arch = "x86_64")]
+pub(super) fn load_unixlib(name_descriptor: u64, module_output: u64) -> u64 {
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() || name_descriptor == 0 || module_output == 0 { return STATUS_INVALID_PARAMETER; }
+    let Some(wanted) = read_wide_name(name_descriptor) else { return STATUS_INVALID_PARAMETER; };
+    let Some(name) = narrow_name(&wanted) else { return STATUS_INVALID_PARAMETER; };
+    let name = narrow_base_name(&name);
+    let mut object_name = name.clone();
+    if !object_name.ends_with(b".so") { object_name.extend_from_slice(b".so"); }
+    if name.is_empty() || name.iter().any(|byte| *byte == b'/' || *byte == b'\\' || *byte == 0) { return STATUS_INVALID_PARAMETER; }
+    // SAFETY: the current task owns this address-space reference for the
+    // duration of the loader transaction and the cloned Arc keeps it alive.
+    let Some(as_) = (unsafe { cur.mm_ref() }).map(|mm| mm.clone()) else { return STATUS_INVALID_PARAMETER; };
+    let mut root_path = staged_root().to_vec();
+    root_path.push(b'/');
+    root_path.extend_from_slice(&object_name);
+    let Some(root_text) = core::str::from_utf8(&root_path).ok() else { return STATUS_INVALID_PARAMETER; };
+    let Ok(root_file) = vfs::read_abs(root_text) else { return STATUS_DLL_NOT_FOUND; };
+    let context = match elf_load::unixlib::build_load_context(&object_name, &root_path, &root_file, |dependency| {
+        if dependency.is_empty() || dependency.iter().any(|byte| *byte == b'/' || *byte == b'\\' || *byte == 0) { return None; }
+        let mut path = staged_root().to_vec();
+        path.push(b'/');
+        path.extend_from_slice(dependency);
+        let file = core::str::from_utf8(&path).ok().and_then(|text| vfs::read_abs(text).ok())?;
+        Some((path, file))
+    }) { Ok(value) => value, Err(elf_load::LoadError::Enomem) => return 0xc000_0017,
+        Err(elf_load::LoadError::Enoexec) => return STATUS_DLL_NOT_FOUND,
+        Err(elf_load::LoadError::Einval) => return STATUS_INVALID_PARAMETER };
+    let mapped = match elf_load::unixlib::map_load_context(&context, &as_) {
+        Ok(value) => value, Err(elf_load::LoadError::Enomem) => return 0xc000_0017,
+        Err(elf_load::LoadError::Enoexec) => return STATUS_DLL_NOT_FOUND,
+        Err(elf_load::LoadError::Einval) => return STATUS_INVALID_PARAMETER };
+    match mapped.last().map(|object| object.image.base) {
+        Some(base) if uaccess::put_user_u64(module_output, base).is_ok() => STATUS_SUCCESS,
+        Some(_) => STATUS_INVALID_PARAMETER,
+        None => STATUS_DLL_NOT_FOUND,
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+const fn staged_root() -> &'static [u8] { b"/usr/local/lib/oxide/windows/x86_64-unix" }
+#[cfg(target_arch = "aarch64")]
+const fn staged_root() -> &'static [u8] { b"/usr/local/lib/oxide/windows/aarch64-unix" }
+
 #[cfg(target_arch = "x86_64")]
 fn load_locked(cur: &sched::Task, name_descriptor: u64, module_output: u64) -> u64 {
     if name_descriptor == 0 || module_output == 0 { return STATUS_INVALID_PARAMETER; }
@@ -240,6 +288,9 @@ fn load_locked(cur: &sched::Task, name_descriptor: u64, module_output: u64) -> u
 
 #[cfg(target_arch = "aarch64")]
 fn load_locked(_cur: &sched::Task, _name_descriptor: u64, _module_output: u64) -> u64 { STATUS_NOT_SUPPORTED }
+
+#[cfg(target_arch = "aarch64")]
+pub(super) fn load_unixlib(_name_descriptor: u64, _module_output: u64) -> u64 { STATUS_NOT_SUPPORTED }
 
 #[cfg(target_arch = "x86_64")]
 fn unmap_all(as_: &vmm::AddressSpace, modules: &[elf_load::pe_loader::PeLoadedModule<'_>]) {
