@@ -8,6 +8,7 @@ use crate::exit::status::{from_exit_code, wait_status};
 use crate::pid::PidIdentity;
 use crate::signum::{killed_status, Signum};
 use crate::thread_group::ThreadGroup;
+use crate::thread_group::NT_WINDOWS_MILESTONE_INITIAL;
 
 const fn wifexited(s: i32) -> bool { s & 0x7f == 0 }
 const fn wexitstatus(s: i32) -> i32 { (s >> 8) & 0xff }
@@ -23,6 +24,18 @@ fn group(threads: u32) -> ThreadGroup {
 #[test]
 fn a_fresh_group_has_no_latched_exit_code() {
     assert_eq!(group(1).group_exit_status(), None);
+}
+
+#[test]
+fn windows_milestone_state_is_process_local() {
+    let first = ThreadGroup::new(Arc::new(PidIdentity::new(5001)));
+    let second = ThreadGroup::new(Arc::new(PidIdentity::new(5002)));
+
+    assert_eq!(first.nt_windows_milestone.load(core::sync::atomic::Ordering::Relaxed), NT_WINDOWS_MILESTONE_INITIAL);
+    assert_eq!(second.nt_windows_milestone.load(core::sync::atomic::Ordering::Relaxed), NT_WINDOWS_MILESTONE_INITIAL);
+    first.nt_windows_milestone.store(NT_WINDOWS_MILESTONE_INITIAL + 1, core::sync::atomic::Ordering::Release);
+    assert_eq!(first.nt_windows_milestone.load(core::sync::atomic::Ordering::Acquire), NT_WINDOWS_MILESTONE_INITIAL + 1);
+    assert_eq!(second.nt_windows_milestone.load(core::sync::atomic::Ordering::Acquire), NT_WINDOWS_MILESTONE_INITIAL);
 }
 
 #[test]
