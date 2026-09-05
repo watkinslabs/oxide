@@ -1114,6 +1114,13 @@ pub fn dispatch(call: NtCall) -> u64 {
                     // wait loop as explicit NT timeout deadlines.
                     if alertable != 0 { unsafe { timer.wait_alertable(deadline, timekeeper::monotonic_ns, || cur.nt_apc_queue.has_pending()) } }
                     else { unsafe { timer.wait(deadline, timekeeper::monotonic_ns) }.into() }
+                } else if let Some(task) = object.task() {
+                    // Process and thread objects are signaled by the
+                    // task-owned terminal completion, not by a synthetic
+                    // event or a Linux fd. The handle Arc pins that task
+                    // identity until this wait returns.
+                    if alertable != 0 { unsafe { task.nt_termination.wait_alertable(deadline, timekeeper::monotonic_ns, || cur.nt_apc_queue.has_pending()) } }
+                    else { unsafe { task.nt_termination.wait(deadline, timekeeper::monotonic_ns) }.into() }
                 } else { return STATUS_INVALID_HANDLE; };
                 match outcome {
                     sched::NtWaitOutcome::Ready => STATUS_SUCCESS,

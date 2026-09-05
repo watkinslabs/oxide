@@ -142,6 +142,9 @@ pub struct Task {
     /// dispatcher resolves or terminates the exception.
     pub nt_exception: crate::nt_exception::State,
 
+    /// Task-owned terminal completion shared by NT process and thread handles.
+    pub nt_termination: crate::nt_termination::NtTermination,
+
     /// Top of kernel stack (one-past-end). AtomicPtr; read-only on hot.
     pub kernel_stack: AtomicPtr<u8>,
 
