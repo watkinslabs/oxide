@@ -895,6 +895,19 @@ D3D12 -> vkd3d-proton -> Vulkan -> GPU
 
 Launch a Windows Steam game from the Linux-native Steam environment.
 
+The handoff consumes one immutable per-game launch record containing:
+
+-   x86-64 architecture admission
+-   absolute Wine prefix and Proton runtime paths
+-   one staged DLL catalog directory
+-   Wine Unixlib and NLS resources
+-   the prefix-owned registry socket and database
+-   DXVK, vkd3d-proton, and FAudio component paths
+
+The launcher rejects the record before PE/catalog reads when its architecture,
+path ownership, or registry endpoint is invalid. The kernel receives only the
+validated PE catalog ABI; it does not resolve host environment variables.
+
 ## W10 ... Compatibility and Performance
 
 Profile:
