@@ -36,6 +36,15 @@ pub enum BuildError {
     InvalidLaunchConfiguration { field: &'static str },
 }
 
+/// Result of the first kernel operation after userspace admission. A missing
+/// Oxide NT selector is terminal; it must never be reported as a launch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExecuteError {
+    KernelUnavailable { selector: u64, errno: i32 },
+    KernelRejected { selector: u64, status: u64 },
+    KernelError { selector: u64, errno: i32 },
+}
+
 impl From<io::Error> for BuildError {
     fn from(error: io::Error) -> Self { Self::Io(error) }
 }
@@ -271,6 +280,25 @@ impl RuntimeRequest {
         // the complete libc syscall; the kernel copies every referenced range.
         let result = unsafe { libc::syscall(selector as libc::c_long, &self.request as *const NtExecRequest) };
         if result == -1 { Err(io::Error::last_os_error()) } else { Ok(result as u64) }
+    }
+
+    /// Invoke the staged x86-64 launcher handoff and classify its terminal
+    /// boundary result without manufacturing success on Linux or NT reject.
+    /// # C: O(1) plus kernel handoff
+    pub fn execute(&self) -> Result<u64, ExecuteError> {
+        let selector = syscall::nt::NtService::ExecuteWithCatalog.entry();
+        // SAFETY: request and nested buffers remain owned until this syscall
+        // returns; the kernel copies all user ranges before committing state.
+        let result = unsafe { libc::syscall(selector as libc::c_long, &self.request as *const NtExecRequest) };
+        if result == -1 {
+            let errno = io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO);
+            if errno == libc::ENOSYS { Err(ExecuteError::KernelUnavailable { selector, errno }) }
+            else { Err(ExecuteError::KernelError { selector, errno }) }
+        } else {
+            let status = result as u64;
+            if status == 0 { Ok(status) }
+            else { Err(ExecuteError::KernelRejected { selector, status }) }
+        }
     }
 
     /// Inspect staged inputs without entering the NT execution selector.
@@ -692,5 +720,24 @@ mod tests {
         let request = RuntimeRequest::from_paths(&root.join("notepad.exe"), b"C:\\notepad.exe", root).unwrap();
         let error = request.execute_raw().unwrap_err();
         assert!(error.raw_os_error().is_some(), "unsupported selector must remain an error");
+    }
+
+    #[test]
+    fn linux_host_reports_the_first_unavailable_nt_operation_structurally() {
+        if !cfg!(target_os = "linux") { return; }
+        let Some(root) = wine_root() else { return };
+        let request = RuntimeRequest::from_paths(&root.join("notepad.exe"), b"C:\\notepad.exe", root).unwrap();
+        let error = request.execute().unwrap_err();
+        let selector = syscall::nt::NtService::ExecuteWithCatalog.entry();
+        assert!(matches!(error,
+            ExecuteError::KernelUnavailable { selector: got, .. }
+                | ExecuteError::KernelError { selector: got, .. } if got == selector));
+    }
+
+    #[test]
+    fn execution_outcomes_do_not_conflate_rejection_and_unavailability() {
+        let selector = syscall::nt::NtService::ExecuteWithCatalog.entry();
+        assert_ne!(ExecuteError::KernelUnavailable { selector, errno: libc::ENOSYS },
+            ExecuteError::KernelRejected { selector, status: 0xc000_000d });
     }
 }

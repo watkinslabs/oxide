@@ -10,6 +10,7 @@ FROZEN 2026-08-31. Dep:`01`,`02`,`29a`,`31a`,`31h`,`31p`,`31y`,`52`,`53`. Provid
 - The launcher submits `ExecuteWithCatalog` through the shared NT ABI records; it never invokes a Linux syscall number to emulate a Windows call.
 - A Linux host returns its native unsupported-syscall error for the Oxide-only selector; the launcher does not translate that into success.
 - The kernel remains responsible for copying, revalidating, dependency discovery, mapping, and transactional personality transition.
+- The launcher emits phase/operation/outcome diagnostics for preflight and the tagged handoff; `unavailable` is terminal when the Oxide selector returns `ENOSYS`, and only `committed` permits exit success.
 - The Notepad smoke wrapper starts the canonical `registryd` owner before the
   PE handoff and supplies its socket/database locations through the launcher
   environment; registry state is not copied into the kernel.

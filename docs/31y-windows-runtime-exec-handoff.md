@@ -18,3 +18,8 @@ The native NT loader decides the Windows DLL search order and probes the mounted
 VFS. The kernel never searches Linux ELF library directories or uses Unix `.so`
 files as an alternate NT DLL source. The runtime can seed `kernel32`, `user32`,
 `advapi32`, and other Wine-derived PE modules for the same canonical catalog.
+
+The launcher reports the handoff as a phase/operation/outcome record. A host
+without the tagged NT selector reports `handoff/execute_with_catalog/unavailable`
+with the selector and `ENOSYS`; a nonzero NTSTATUS is `rejected`; only zero
+NTSTATUS is `committed`. Preflight success never implies execution.
