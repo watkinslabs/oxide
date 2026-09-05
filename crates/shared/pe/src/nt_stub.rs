@@ -53,6 +53,12 @@ pub fn x64_exception_frame(user_rsp: u64, xstate_bytes: u64) -> Option<X64Except
     })
 }
 
+/// Prove that the complete dispatcher frame is contained by one writable VMA
+/// before a caller performs its single user-memory transaction.
+pub fn valid_x64_exception_frame_range(stack: u64, vma_start: u64, vma_end: u64, writable: bool) -> bool {
+    writable && stack >= vma_start && stack.checked_add(X64_EXCEPTION_FRAME_BYTES).is_some_and(|end| end <= vma_end)
+}
+
 /// Encode Wine's Unix-call dispatcher ABI: `(unixlib_handle, code, args)` in
 /// the Windows x64 registers becomes `(rdi, rsi, rdx)` for the NT entry.
 pub fn encode_x64_unix_call_dispatcher_stub(selector: u64) -> Vec<u8> {
@@ -411,6 +417,14 @@ mod tests {
         assert_eq!(frame.exception_record - frame.stack, 0x4f0);
         assert_eq!(frame.machine_frame - frame.stack, 0x590);
         assert_eq!(x64_exception_frame(0x500, 0), None);
+    }
+
+    #[test]
+    fn exception_frame_range_is_one_writable_transaction() {
+        assert!(valid_x64_exception_frame_range(0x7000, 0x6000, 0x8000, true));
+        assert!(!valid_x64_exception_frame_range(0x7000, 0x6000, 0x8000, false));
+        assert!(!valid_x64_exception_frame_range(0x7000, 0x6000, 0x75bf, true));
+        assert!(!valid_x64_exception_frame_range(u64::MAX - 0x10, 0, u64::MAX, true));
     }
 
     #[test]
