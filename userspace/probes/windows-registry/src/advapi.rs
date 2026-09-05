@@ -10,6 +10,24 @@ pub const ERROR_MORE_DATA: u32 = 234;
 pub const ERROR_GEN_FAILURE: u32 = 31;
 pub const ERROR_NO_MORE_ITEMS: u32 = 259;
 pub const ERROR_KEY_DELETED: u32 = 1018;
+pub const ERROR_DATATYPE_MISMATCH: u32 = 1629;
+pub const ERROR_UNSUPPORTED_TYPE: u32 = 1630;
+
+pub const RRF_RT_REG_NONE: u32 = 1 << 0;
+pub const RRF_RT_REG_SZ: u32 = 1 << 1;
+pub const RRF_RT_REG_EXPAND_SZ: u32 = 1 << 2;
+pub const RRF_RT_REG_BINARY: u32 = 1 << 3;
+pub const RRF_RT_REG_DWORD: u32 = 1 << 4;
+pub const RRF_RT_REG_MULTI_SZ: u32 = 1 << 5;
+pub const RRF_RT_REG_QWORD: u32 = 1 << 6;
+pub const RRF_RT_DWORD: u32 = RRF_RT_REG_BINARY | RRF_RT_REG_DWORD;
+pub const RRF_RT_QWORD: u32 = RRF_RT_REG_BINARY | RRF_RT_REG_QWORD;
+pub const RRF_RT_ANY: u32 = 0xffff;
+pub const RRF_SUBKEY_WOW6464KEY: u32 = 1 << 16;
+pub const RRF_SUBKEY_WOW6432KEY: u32 = 1 << 17;
+pub const RRF_WOW64_MASK: u32 = RRF_SUBKEY_WOW6432KEY | RRF_SUBKEY_WOW6464KEY;
+pub const RRF_NOEXPAND: u32 = 1 << 28;
+pub const RRF_ZEROONFAILURE: u32 = 1 << 29;
 
 /// One Win32 `advapi32` registry view over a native Linux service session.
 pub struct Advapi { client: Client }
@@ -61,6 +79,60 @@ impl Advapi {
             buffer[..needed].copy_from_slice(&value.data); *count = needed as u32;
         } else { *count = needed as u32; }
         ERROR_SUCCESS
+    }
+
+    /// Implement Wine's `RegGetValueW` contract over the canonical service. # C: O(value bytes + environment)
+    pub fn reg_get_value_w(&mut self, key: u64, subkey: Option<&[u16]>, name: Option<&[u16]>, flags: u32,
+        value_type: Option<&mut u32>, mut data: Option<&mut [u8]>, count: Option<&mut u32>) -> u32 {
+        if data.is_some() && count.is_none() { return ERROR_INVALID_PARAMETER; }
+        if flags & RRF_WOW64_MASK == RRF_WOW64_MASK { return ERROR_INVALID_PARAMETER; }
+        if flags & RRF_RT_REG_EXPAND_SZ != 0 && flags & RRF_NOEXPAND == 0 && flags & RRF_RT_ANY != RRF_RT_ANY {
+            return ERROR_INVALID_PARAMETER;
+        }
+        let subkey = match subkey {
+            Some(value) if !value.is_empty() && value != [0] => match terminated_utf16(value) { Ok(value) => Some(value), Err(error) => return error },
+            _ => None,
+        };
+        let name = match name {
+            None => &[][..],
+            Some(value) => match terminated_utf16(value) { Ok(value) => value, Err(error) => return error },
+        };
+        let opened = if let Some(subkey) = subkey {
+            let (status, handle) = self.open(key, subkey);
+            if status != ERROR_SUCCESS { return status; }
+            handle.map(KeyHandle)
+        } else { None };
+        let query_key = opened.unwrap_or(KeyHandle(key));
+        let result = match self.client.query_utf16(query_key, name) {
+            Ok(Response::Value(value)) => value,
+            Ok(Response::Failure(error)) => { if let Some(handle) = opened { let _ = self.client.execute(crate::Request::Close { key: handle }); } return get_failure(status_handle(error), flags, data, count); }
+            Ok(_) | Err(_) => { if let Some(handle) = opened { let _ = self.client.execute(crate::Request::Close { key: handle }); } return get_failure(ERROR_GEN_FAILURE, flags, data, count); }
+        };
+        if let Some(handle) = opened { let _ = self.client.execute(crate::Request::Close { key: handle }); }
+        let mut kind = result.kind;
+        let mut bytes = result.data;
+        if kind == ValueType::ExpandString && flags & RRF_NOEXPAND == 0 {
+            let Some(text) = String::from_utf16(bytes.chunks_exact(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]])).collect::<Vec<_>>().as_slice()).ok() else {
+                return get_failure(ERROR_INVALID_PARAMETER, flags, data, count);
+            };
+            bytes = expand_environment(&text).encode_utf16().flat_map(u16::to_le_bytes).collect();
+            kind = ValueType::String;
+        }
+        if is_string(kind) && (bytes.len() < 2 || bytes[bytes.len() - 2..] != [0, 0]) { bytes.extend_from_slice(&[0, 0]); }
+        let restriction = flags & RRF_RT_ANY;
+        let type_mask = value_type_mask(kind);
+        let mut status = if restriction & type_mask == 0 { ERROR_UNSUPPORTED_TYPE } else { ERROR_SUCCESS };
+        if status == ERROR_SUCCESS && kind == ValueType::Binary && (restriction == RRF_RT_DWORD && bytes.len() != 4 || restriction == RRF_RT_QWORD && bytes.len() != 8) { status = ERROR_DATATYPE_MISMATCH; }
+        if let Some(output) = value_type { *output = kind as u32; }
+        let needed = bytes.len();
+        if let Some(output) = count { *output = needed as u32; }
+        if status == ERROR_SUCCESS {
+            if let Some(buffer) = data.as_deref_mut() {
+                if buffer.len() < needed { status = ERROR_MORE_DATA; } else { buffer[..needed].copy_from_slice(&bytes); }
+            }
+        }
+        if status != ERROR_SUCCESS && flags & RRF_ZEROONFAILURE != 0 { if let Some(buffer) = data { buffer.fill(0); } }
+        status
     }
 
     /// Implement `RegSetValueExW` for bounded safe buffers. # C: O(value bytes)
@@ -169,6 +241,27 @@ fn terminated_utf16(value: &[u16]) -> Result<&[u16], u32> {
     if value.last() == Some(&0) && !value[..value.len() - 1].contains(&0) { Ok(&value[..value.len() - 1]) } else { Err(ERROR_INVALID_PARAMETER) }
 }
 
+fn is_string(kind: ValueType) -> bool { matches!(kind, ValueType::String | ValueType::ExpandString | ValueType::MultiString) }
+fn value_type_mask(kind: ValueType) -> u32 { match kind { ValueType::None => RRF_RT_REG_NONE, ValueType::String => RRF_RT_REG_SZ, ValueType::ExpandString => RRF_RT_REG_EXPAND_SZ, ValueType::Binary => RRF_RT_REG_BINARY, ValueType::Dword => RRF_RT_REG_DWORD, ValueType::MultiString => RRF_RT_REG_MULTI_SZ, ValueType::Qword => RRF_RT_REG_QWORD } }
+fn get_failure(status: u32, flags: u32, data: Option<&mut [u8]>, count: Option<&mut u32>) -> u32 {
+    if flags & RRF_ZEROONFAILURE != 0 { if let Some(buffer) = data { buffer.fill(0); } }
+    let _ = count;
+    status
+}
+fn expand_environment(text: &str) -> String {
+    let mut output = String::with_capacity(text.len()); let mut rest = text;
+    while let Some(start) = rest.find('%') {
+        output.push_str(&rest[..start]); let tail = &rest[start + 1..];
+        let Some(end) = tail.find('%') else { output.push_str(&rest[start..]); break; };
+        let name = &tail[..end];
+        if name.is_empty() { output.push('%'); rest = &tail[1..]; continue; }
+        match std::env::var(name) { Ok(value) => output.push_str(&value), Err(_) => { output.push('%'); output.push_str(name); output.push('%'); } }
+        rest = &tail[end + 1..];
+    }
+    if !rest.is_empty() && !rest.contains('%') { output.push_str(rest); }
+    output
+}
+
 trait AdapterValueType { fn decode_for_adapter(raw: u32) -> Option<ValueType>; }
 impl AdapterValueType for ValueType { fn decode_for_adapter(raw: u32) -> Option<ValueType> { match raw { 0 => Some(ValueType::None), 1 => Some(ValueType::String), 2 => Some(ValueType::ExpandString), 3 => Some(ValueType::Binary), 4 => Some(ValueType::Dword), 7 => Some(ValueType::MultiString), 11 => Some(ValueType::Qword), _ => None } } }
 
@@ -229,6 +322,36 @@ mod tests {
         assert_eq!(api.reg_delete_value_w(key, Some(&[b'x' as u16, 0])), ERROR_FILE_NOT_FOUND);
         assert_eq!(api.reg_delete_value_w(key, Some(&[b'x' as u16])), ERROR_INVALID_PARAMETER);
         assert_eq!(api.reg_delete_value_w(0xdead, None), ERROR_INVALID_HANDLE);
+        drop(api); server.join().unwrap(); let _ = std::fs::remove_file(socket); let _ = std::fs::remove_file(database);
+    }
+
+    #[test]
+    fn get_value_matches_wine_subkey_type_filter_size_and_zero_failure_contract() {
+        use std::os::unix::net::UnixListener;
+        use std::thread;
+        let base = std::env::temp_dir(); let id = std::process::id();
+        let socket = base.join(format!("oxide-advapi-get-{id}.sock")); let database = base.join(format!("oxide-advapi-get-{id}.db"));
+        let _ = std::fs::remove_file(&socket); let _ = std::fs::remove_file(&database);
+        let listener = UnixListener::bind(&socket).unwrap(); let server_database = database.clone();
+        let server = thread::spawn(move || { let (mut stream, _) = listener.accept().unwrap(); let mut store = crate::RegistryStore::open(&server_database).unwrap(); crate::serve_connection(&mut stream, &mut store).unwrap(); });
+        let mut api = Advapi::connect(&socket).unwrap();
+        let key_name: Vec<u16> = "Software\\Game\\Settings".encode_utf16().chain([0]).collect();
+        let (_, key) = api.reg_create_key_ex_w(HKEY_CURRENT_USER, Some(&key_name), 0, 0, 0); let key = key.unwrap();
+        let binary_name: Vec<u16> = "Blob".encode_utf16().chain([0]).collect();
+        assert_eq!(api.reg_set_value_ex_w(key, Some(&binary_name), 0, ValueType::Binary as u32, Some(&[1, 2, 3]), 3), ERROR_SUCCESS);
+        let subkey: Vec<u16> = "Software\\Game\\Settings".encode_utf16().chain([0]).collect();
+        let mut kind = 0; let mut small = [0xaa; 2]; let mut size = small.len() as u32;
+        assert_eq!(api.reg_get_value_w(HKEY_CURRENT_USER, Some(&subkey), Some(&binary_name), RRF_RT_DWORD | RRF_ZEROONFAILURE, Some(&mut kind), Some(&mut small), Some(&mut size)), ERROR_DATATYPE_MISMATCH);
+        assert_eq!(small, [0; 2]);
+        let string_name: Vec<u16> = "Title".encode_utf16().chain([0]).collect();
+        assert_eq!(api.reg_set_value_ex_w(key, Some(&string_name), 0, ValueType::String as u32, Some(b"Oxide"), 5), ERROR_SUCCESS);
+        let mut output = [0u8; 7]; let mut output_size = 0;
+        assert_eq!(api.reg_get_value_w(HKEY_CURRENT_USER, Some(&subkey), Some(&string_name), RRF_RT_REG_SZ, Some(&mut kind), None, Some(&mut output_size)), ERROR_SUCCESS);
+        assert_eq!((kind, output_size), (ValueType::String as u32, 7));
+        output_size = output.len() as u32;
+        assert_eq!(api.reg_get_value_w(HKEY_CURRENT_USER, Some(&subkey), Some(&string_name), RRF_RT_REG_SZ, Some(&mut kind), Some(&mut output), Some(&mut output_size)), ERROR_SUCCESS);
+        assert_eq!((&output[..5], &output[5..]), (b"Oxide".as_slice(), &[0, 0][..]));
+        assert_eq!(api.reg_get_value_w(HKEY_CURRENT_USER, Some(&subkey), Some(&string_name), RRF_RT_REG_EXPAND_SZ, Some(&mut kind), None, None), ERROR_INVALID_PARAMETER);
         drop(api); server.join().unwrap(); let _ = std::fs::remove_file(socket); let _ = std::fs::remove_file(database);
     }
 
