@@ -53,7 +53,7 @@ fn launch(args: &mut impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
 }
 
 fn valid_launch_args(values: &[std::ffi::OsString]) -> bool {
-    values.len() == 14 && values[3] == "x86_64"
+    values.len() == 11 && values[3] == "x86_64"
 }
 
 fn steam_launch(path: PathBuf) -> ExitCode {
@@ -82,7 +82,7 @@ fn preflight(args: &mut impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
 }
 
 fn usage() {
-    eprintln!("usage: windows-runtime --steam-launch <record> | --preflight <image> <dll-directory> <unixlib-directory> <nls-file> <registry-socket> <registry-database> | --launch <image> <windows-path> <command-line> x86_64 <prefix> <runtime> <dll-catalog> <unixlib> <nls-file> <registry-socket> <registry-database> <dxvk> <vkd3d> <faudio>");
+    eprintln!("usage: windows-runtime --steam-launch <record> | --preflight <image> <dll-directory> <unixlib-directory> <nls-file> <registry-socket> <registry-database> | --launch <image> <windows-path> <command-line> x86_64 <prefix> <runtime> <dll-catalog> <unixlib> <nls-file> <registry-socket> <registry-database>");
 }
 
 #[cfg(test)]
@@ -91,16 +91,16 @@ mod tests {
     use std::ffi::OsString;
 
     #[test]
-    fn launch_flag_is_consumed_before_validating_fourteen_fields() {
+    fn launch_flag_is_consumed_before_validating_native_fields() {
         let mut args = vec![OsString::from("image.exe"), OsString::from("C:\\image.exe"), OsString::from("image.exe"), OsString::from("x86_64")];
-        args.extend((0..10).map(|index| OsString::from(format!("field-{index}"))));
-        assert_eq!(args.len(), 14);
+        args.extend((0..7).map(|index| OsString::from(format!("field-{index}"))));
+        assert_eq!(args.len(), 11);
         assert!(valid_launch_args(&args));
     }
 
     #[test]
     fn launch_architecture_must_be_x86_64() {
-        let args = (0..14).map(|index| if index == 3 { OsString::from("aarch64") } else { OsString::from("field") }).collect::<Vec<_>>();
+        let args = (0..11).map(|index| if index == 3 { OsString::from("aarch64") } else { OsString::from("field") }).collect::<Vec<_>>();
         assert!(!valid_launch_args(&args));
     }
 }
