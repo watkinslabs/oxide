@@ -15,6 +15,7 @@ runtime_source="$root/userspace/probes/windows-runtime/src/lib.rs"
 user32_source="$root/userspace/probes/windows-user32/src/lib.rs"
 loader_tests="$root/crates/kernel/exec/src/tests/pe_loader.rs"
 wrapper_source="$root/tools/xtask/src/rootfs_disks/windows_notepad.rs"
+smoke_source="$root/tools/boot-smoke.sh"
 fixture="${OXIDE_WINE_NOTEPAD_FIXTURE:-}"
 
 require_text() {
@@ -68,6 +69,17 @@ fi
 require_text "smoke admission" "$makefile" "SMOKE_MARKER='[WINDOWS-PE-START] entry='"
 require_text "smoke liveness" "$makefile" "SMOKE_ALIVE_MARKER='[WINDOWS-PE-START] entry='"
 require_text "smoke workload" "$makefile" "SMOKE_ALIVE_CMD=/usr/local/bin/windows-notepad-smoke"
+for marker in \
+    "[WINDOWS-NT-UNIX] entry" \
+    "[WINDOWS-NT-SERVER] entry" \
+    "[WINDOWS-USER32] create-window" \
+    "[WINDOWS-USER32] get-message" \
+    "[WINDOWS-GDI] begin-paint" \
+    "[WINDOWS-GDI] present"; do
+    require_text "ordered runtime milestone $marker" "$makefile" "$marker"
+done
+require_text "ordered marker gate" "$smoke_source" "required_markers_present"
+require_text "marker gate admission" "$smoke_source" 'if required_markers_present && grep -qF "$MARKER"'
 if grep -Fq "SMOKE_MARKER='[WINDOWS-PE-COMMIT] success'" "$makefile"; then
     echo "windows-notepad-harness: commit marker must not admit readiness" >&2
     exit 1
@@ -109,7 +121,7 @@ require_test "environment rollback" "$loader_tests" "failed_environment_setup_ro
 # W4/W5: require the user32 class-to-window path and its deterministic
 # malformed/unknown-class coverage; a symbol-only check is not sufficient.
 require_text "user32 class registration" "$wine_window_source" "if ordinal == WINE_REGISTER_CLASS_EX { return Some(raw_class::register_class(args)); }"
-require_text "user32 creation dispatch" "$wine_window_source" "if ordinal == WINE_CREATE_WINDOW_EX { return Some(raw_class::create_window(args)); }"
+require_text "user32 creation dispatch" "$wine_window_source" "if ordinal == WINE_CREATE_WINDOW_EX { let result = raw_class::create_window(args);"
 require_text "user32 class implementation" "$raw_class_source" "pub(super) fn register_class(args: SyscallArgs)"
 require_text "user32 window implementation" "$raw_class_source" "pub(super) fn create_window(args: SyscallArgs)"
 require_text "user32 client creation" "$user32_source" "pub fn create_window_ex_w"
@@ -138,4 +150,4 @@ for contract in \
     "fn server_map_view(" "fn server_unmap_view("; do
     require_text "Wine image mapping" "$wine_unix_source" "$contract"
 done
-echo "windows-notepad-harness: PASS (W1-W5 PE, graph, environment, and user32 contracts verified; entry marker precedes commit marker)"
+echo "windows-notepad-harness: PASS (W1-W5 PE, graph, environment, user32/GDI contracts, and ordered runtime milestones verified)"

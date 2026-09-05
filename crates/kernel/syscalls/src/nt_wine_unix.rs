@@ -760,6 +760,7 @@ fn dispatch_for_address_space(root: u64, call: NtCall) -> u64 {
     if let Err(status) = lookup_unixlib_entry(root, descriptor.table_address, call.args.a1) {
         return status;
     }
+    crate::nt_milestone::unix_entry();
     match WineUnixFunction::decode(call.args.a1) {
         Some(WineUnixFunction::LoadSoDll) => load_so_dll(call.args.a2),
         Some(WineUnixFunction::UnwindBuiltinDll) => validate_builtin_unwind(call.args.a2),
@@ -769,7 +770,11 @@ fn dispatch_for_address_space(root: u64, call: NtCall) -> u64 {
         Some(WineUnixFunction::WineDbgWrite) => write_unix_debug(call.args.a2),
         Some(WineUnixFunction::WineServerFdToHandle) => unix_fd_to_handle(call.args.a2),
         Some(WineUnixFunction::WineServerHandleToFd) => unix_handle_to_fd(call.args.a2),
-        Some(WineUnixFunction::WineServerCall) => server_call(call.args.a2),
+        Some(WineUnixFunction::WineServerCall) => {
+            let status = server_call(call.args.a2);
+            if status == STATUS_SUCCESS { crate::nt_milestone::server_entry(); }
+            status
+        }
         Some(WineUnixFunction::WineSpawnVp) => wine_spawnvp(call.args.a2),
         // unix_system_time_precise: writes one Windows 100ns timestamp.
         Some(WineUnixFunction::SystemTimePrecise) => {

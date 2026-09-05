@@ -917,6 +917,7 @@ WINDOWS_NOTEPAD_SMOKE_TIMEOUT ?= 900
 smoke-windows-notepad-x86:
 	OXIDE_WINDOWS_NOTEPAD_SMOKE=1 \
 	SMOKE_MARKER='[WINDOWS-PE-START] entry=' SMOKE_ALIVE_MARKER='[WINDOWS-PE-START] entry=' \
+	SMOKE_REQUIRED_MARKERS='[WINDOWS-NT-UNIX] entry|[WINDOWS-NT-SERVER] entry|[WINDOWS-USER32] create-window|[WINDOWS-USER32] get-message|[WINDOWS-GDI] begin-paint|[WINDOWS-GDI] present' \
 	SMOKE_ALIVE_READY_MARKER='sh-5.2#' SMOKE_KEEP_LOG_DIR=target/windows-smoke-logs \
 	SMOKE_ALIVE_CMD=/usr/local/bin/windows-notepad-smoke \
 	SMOKE_RX_MARKER= ./tools/boot-smoke.sh x86 $(WINDOWS_NOTEPAD_SMOKE_TIMEOUT)
