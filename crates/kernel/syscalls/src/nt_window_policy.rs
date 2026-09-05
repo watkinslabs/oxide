@@ -2,6 +2,22 @@
 
 pub(crate) const WM_SHOWWINDOW: u32 = 0x0018;
 
+pub(crate) const CALL_ONE_PARAM_GET_SYSTEM_METRICS: u64 = 9;
+pub(crate) const SM_XVIRTUALSCREEN: u64 = 76;
+pub(crate) const SM_YVIRTUALSCREEN: u64 = 77;
+pub(crate) const SM_CXVIRTUALSCREEN: u64 = 78;
+pub(crate) const SM_CYVIRTUALSCREEN: u64 = 79;
+
+/// Resolve display-backed metrics from the canonical primary scanout geometry. # C: O(1)
+pub(crate) fn display_metric(index: u64, width: u32, height: u32) -> Option<u64> {
+    match index {
+        SM_XVIRTUALSCREEN | SM_YVIRTUALSCREEN => Some(0),
+        SM_CXVIRTUALSCREEN => Some(width as u64),
+        SM_CYVIRTUALSCREEN => Some(height as u64),
+        _ => None,
+    }
+}
+
 /// Return the WM_SHOWWINDOW wParam for one real visibility transition. # C: O(1)
 pub(crate) fn visibility_transition_message(previous: bool, visible: bool) -> Option<u64> {
     (previous != visible).then_some(visible as u64)
@@ -9,7 +25,8 @@ pub(crate) fn visibility_transition_message(previous: bool, visible: bool) -> Op
 
 #[cfg(test)]
 mod tests {
-    use super::{visibility_transition_message, WM_SHOWWINDOW};
+    use super::{display_metric, visibility_transition_message, SM_CXVIRTUALSCREEN,
+        SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, WM_SHOWWINDOW};
 
     #[test]
     fn show_window_notifies_when_visibility_changes() {
@@ -22,5 +39,19 @@ mod tests {
     fn show_window_does_not_notify_for_an_idempotent_request() {
         assert_eq!(visibility_transition_message(false, false), None);
         assert_eq!(visibility_transition_message(true, true), None);
+    }
+
+    #[test]
+    fn display_metrics_follow_the_primary_virtual_screen_geometry() {
+        assert_eq!(display_metric(SM_XVIRTUALSCREEN, 1920, 1080), Some(0));
+        assert_eq!(display_metric(SM_YVIRTUALSCREEN, 1920, 1080), Some(0));
+        assert_eq!(display_metric(SM_CXVIRTUALSCREEN, 1920, 1080), Some(1920));
+        assert_eq!(display_metric(SM_CYVIRTUALSCREEN, 1920, 1080), Some(1080));
+    }
+
+    #[test]
+    fn display_metrics_do_not_claim_unowned_settings_metrics() {
+        assert_eq!(display_metric(0, 1920, 1080), None);
+        assert_eq!(display_metric(u64::MAX, 1920, 1080), None);
     }
 }
