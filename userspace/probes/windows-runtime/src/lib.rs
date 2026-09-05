@@ -16,7 +16,7 @@ use syscall::UserPtr;
 mod preflight;
 mod dxvk;
 mod steam;
-pub use preflight::{BootArtifactReport, PreflightError};
+pub use preflight::{BootArtifactReport, NotepadGuiReadiness, NotepadRuntimeHandoff, PreflightError};
 pub use dxvk::DxvkRuntimeAdmission;
 pub use steam::{ProtonCompatibilityHandoff, SteamLaunchRecord};
 
