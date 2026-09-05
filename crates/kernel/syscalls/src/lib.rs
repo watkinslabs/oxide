@@ -31,6 +31,7 @@ mod nt_process_parameters;
 mod nt_process_policy;
 mod nt_directory_abi;
 pub(crate) mod nt_file_policy;
+mod nt_file_async_policy;
 mod nt_file_scatter_policy;
 mod nt_file_gather_policy;
 mod nt_file_volume_abi;
