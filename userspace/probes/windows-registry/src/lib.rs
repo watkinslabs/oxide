@@ -89,8 +89,9 @@ pub enum Request {
     QueryKey { key: KeyHandle },
     Close { key: KeyHandle },
     Flush { key: KeyHandle },
-    Export { key: KeyHandle },
-    Import { key: KeyHandle, bytes: Vec<u8> },
+    SaveHive { key: KeyHandle },
+    LoadHive { root: Root, subkey: String, bytes: Vec<u8> },
+    LoadHiveRelative { key: KeyHandle, subkey: String, bytes: Vec<u8> },
     QueryPath { key: KeyHandle },
     Subscribe { key: KeyHandle, filter: u64, subtree: bool },
     PollSubscription { subscription: u64 },
@@ -154,15 +155,11 @@ impl RegistryStore {
                 if !self.registry.handles.contains_key(&key) { return Response::Failure(Error::MissingKey); }
                 self.flush().map_or_else(|error| Response::Failure(error), |_| Response::Success)
             }
-            Request::Export { key } => self.registry.export_handle(key).map_or_else(Response::Failure, Response::Bytes),
-            Request::Import { key, bytes } => {
-                let mut candidate = self.registry.clone();
-                candidate.import_handle(key, &bytes).map_or_else(Response::Failure, |_| {
-                    self.registry = candidate;
-                    self.dirty = true;
-                    Response::Success
-                })
-            }
+            Request::SaveHive { key } => self.registry.export_handle(key).map_or_else(Response::Failure, Response::Bytes),
+            Request::LoadHive { root, subkey, bytes } => self.load_hive(root, &subkey, &bytes)
+                .map_or_else(Response::Failure, |_| Response::Success),
+            Request::LoadHiveRelative { key, subkey, bytes } => self.load_hive_relative(key, &subkey, &bytes)
+                .map_or_else(Response::Failure, |_| Response::Success),
             Request::QueryPath { key } => self.registry.path_for_handle(key).map_or_else(Response::Failure, Response::Text),
             Request::Subscribe { key, filter, subtree } => {
                 if filter != crate::REG_NOTIFY_CHANGE_LAST_SET || self.registry.path_for_handle(key).is_err() { return Response::Failure(Error::InvalidPath); }
@@ -185,6 +182,25 @@ impl RegistryStore {
             let matches = state.key == key || state.subtree && changed.starts_with(&format!("{}\\", watched));
             if matches && state.filter & REG_NOTIFY_CHANGE_LAST_SET != 0 { state.pending = true; }
         }
+    }
+
+    fn load_hive(&mut self, root: Root, subkey: &str, bytes: &[u8]) -> Result<(), Error> {
+        let target = join_path(root.name(), subkey)?;
+        self.commit_hive(target, bytes)
+    }
+
+    fn load_hive_relative(&mut self, key: KeyHandle, subkey: &str, bytes: &[u8]) -> Result<(), Error> {
+        let parent = self.registry.live_handle_path(key)?;
+        let target = join_path(&parent, subkey)?;
+        self.commit_hive(target, bytes)
+    }
+
+    fn commit_hive(&mut self, target: String, bytes: &[u8]) -> Result<(), Error> {
+        let mut candidate = self.registry.clone();
+        candidate.import_path(&target, bytes)?;
+        self.registry = candidate;
+        self.dirty = true;
+        Ok(())
     }
 }
 
@@ -226,8 +242,9 @@ fn decode_request(frame: &[u8]) -> Result<Request, Error> {
         registry_wire::ENUM_VALUES => Request::EnumValues { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?) },
         registry_wire::QUERY_KEY => Request::QueryKey { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?) },
         registry_wire::FLUSH => Request::Flush { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?) },
-        registry_wire::EXPORT => Request::Export { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?) },
-        registry_wire::IMPORT => Request::Import { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?), bytes: take_bytes(frame, &mut at)?.to_vec() },
+        registry_wire::SAVE_HIVE => Request::SaveHive { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?) },
+        registry_wire::LOAD_HIVE_ROOT => Request::LoadHive { root: take_root(frame, &mut at)?, subkey: take_text(frame, &mut at)?, bytes: take_bytes(frame, &mut at)?.to_vec() },
+        registry_wire::LOAD_HIVE_RELATIVE => Request::LoadHiveRelative { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?), subkey: take_text(frame, &mut at)?, bytes: take_bytes(frame, &mut at)?.to_vec() },
         registry_wire::QUERY_PATH => Request::QueryPath { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?) },
         registry_wire::SUBSCRIBE => Request::Subscribe { key: KeyHandle(take_u64(frame, &mut at).ok_or(Error::InvalidFile)?), filter: take_u64(frame, &mut at).ok_or(Error::InvalidFile)?, subtree: take_u8(frame, &mut at).ok_or(Error::InvalidFile)? != 0 },
         registry_wire::POLL_SUBSCRIPTION => Request::PollSubscription { subscription: take_u64(frame, &mut at).ok_or(Error::InvalidFile)? },
@@ -619,18 +636,18 @@ impl Registry {
         let mut out = Vec::new(); out.extend_from_slice(SUBTREE_MAGIC); put_bytes(&mut out, path.as_bytes())?; out.extend_from_slice(&payload); Ok(out)
     }
 
-    fn import_handle(&mut self, handle: KeyHandle, bytes: &[u8]) -> Result<(), Error> {
-        let target = self.handles.get(&handle).cloned().ok_or(Error::MissingKey)?;
+    fn import_path(&mut self, target: &str, bytes: &[u8]) -> Result<(), Error> {
         if bytes.get(..SUBTREE_MAGIC.len()) != Some(SUBTREE_MAGIC.as_slice()) { return Err(Error::InvalidFile); }
         let mut at = SUBTREE_MAGIC.len(); let source = text(get_bytes(bytes, &mut at).ok_or(Error::InvalidFile)?)?;
         let incoming = Self::decode(bytes.get(at..).ok_or(Error::InvalidFile)?)?;
-        let source_root = source.split_once('\\').map_or(source.as_str(), |(_, rest)| rest.split_once('\\').map_or(rest, |(head, _)| head));
-        let target_root = target.split_once('\\').map_or(target.as_str(), |(_, rest)| rest.split_once('\\').map_or(rest, |(head, _)| head));
-        if !source_root.eq_ignore_ascii_case(target_root) { return Err(Error::InvalidPath); }
+        let target_root = target.split_once('\\').map_or(target, |(root, _)| root);
+        let root = persisted_root(target).ok_or(Error::InvalidPath)?;
+        let target_relative = target.split_once('\\').map_or("", |(_, rest)| rest);
+        let target = self.create_key(root, target_relative)?;
+        let target = if target_root == "HKCR" { canonical(&target) } else { target };
         for key in incoming.keys.values() {
             let identity = canonical(&key.path);
             if is_root(&key.path) || (identity != canonical(&source) && !identity.starts_with(&format!("{}\\", canonical(&source)))) { continue; }
-            let root = if target.starts_with("HKLM") { Root::LocalMachine } else if target.starts_with("HKCU") { Root::CurrentUser } else { Root::Classes };
             let source_identity = canonical(&source);
             let relative = if identity == source_identity { String::new() } else { identity.strip_prefix(&(source_identity + "\\")).ok_or(Error::InvalidPath)?.to_string() };
             let destination = relative_for_target(&target, &relative);
@@ -1086,12 +1103,12 @@ mod tests {
         let source = match store.execute(Request::Create { root: Root::CurrentUser, subkey: "Software\\Source".into() }) { Response::Handle(key) => key, response => panic!("unexpected response: {response:?}") };
         let child = match store.execute(Request::CreateRelative { key: source, subkey: "Child".into() }) { Response::Handle(key) => key, response => panic!("unexpected response: {response:?}") };
         assert_eq!(store.execute(Request::Set { key: child, name: "Value".into(), value: Value { kind: ValueType::Binary, data: vec![1, 2, 3] } }), Response::Success);
-        let bytes = match store.execute(Request::Export { key: source }) { Response::Bytes(bytes) => bytes, response => panic!("unexpected response: {response:?}") };
+        let bytes = match store.execute(Request::SaveHive { key: source }) { Response::Bytes(bytes) => bytes, response => panic!("unexpected response: {response:?}") };
         let target = match store.execute(Request::Create { root: Root::CurrentUser, subkey: "Software\\Target".into() }) { Response::Handle(key) => key, response => panic!("unexpected response: {response:?}") };
-        assert_eq!(store.execute(Request::Import { key: target, bytes: bytes.clone() }), Response::Success);
+        assert_eq!(store.execute(Request::LoadHiveRelative { key: target, subkey: String::new(), bytes: bytes.clone() }), Response::Success);
         let imported = match store.execute(Request::OpenRelative { key: target, subkey: "Child".into() }) { Response::Handle(key) => key, response => panic!("unexpected response: {response:?}") };
         assert_eq!(store.execute(Request::Query { key: imported, name: "value".into() }), Response::Value(Value { kind: ValueType::Binary, data: vec![1, 2, 3] }));
-        assert_eq!(store.execute(Request::Import { key: target, bytes: b"invalid".to_vec() }), Response::Failure(Error::InvalidFile));
+        assert_eq!(store.execute(Request::LoadHiveRelative { key: target, subkey: String::new(), bytes: b"invalid".to_vec() }), Response::Failure(Error::InvalidFile));
         assert_eq!(store.execute(Request::Query { key: imported, name: "value".into() }), Response::Value(Value { kind: ValueType::Binary, data: vec![1, 2, 3] }));
     }
 }
