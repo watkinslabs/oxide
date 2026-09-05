@@ -707,6 +707,17 @@
     }
 
     #[test]
+    fn non_executable_transfer_address_rejects_and_rolls_back_image() {
+        let as_ = AddressSpace::new(0x40_000).unwrap();
+        let mut blob = tiny_pe();
+        // IMAGE_SCN_MEM_READ | IMAGE_SCN_CNT_CODE is deliberately absent:
+        // the entry RVA is mapped, but its final VMA is not executable.
+        blob[0x188 + 36..0x188 + 40].copy_from_slice(&0x4000_0040u32.to_le_bytes());
+        assert_eq!(load_pe_image(&blob, &as_), Err(pe::Error::Einval));
+        assert_eq!(as_.vma_count(), 0, "failed transfer validation must unmap the image");
+    }
+
+    #[test]
     fn catalog_loader_emits_dependency_first_initializers() {
         let as_ = AddressSpace::new(0x40_000).unwrap();
         let runtime = map_nt_runtime(&as_).unwrap();
