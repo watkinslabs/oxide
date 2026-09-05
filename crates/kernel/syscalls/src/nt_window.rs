@@ -35,6 +35,17 @@ fn callback_index(argument: u64) -> usize { argument as u32 as usize }
 
 struct GuiEntry { group: Weak<sched::thread_group::ThreadGroup>, state: ipc::win32_window::WindowManager, menus: ipc::win32_menu::MenuManager, wait: Arc<sched::live::WaitList>, foreground: bool }
 static GUI: Spinlock<Vec<GuiEntry>, GuiLockClass> = Spinlock::new(Vec::new());
+#[cfg(target_os = "oxide-kernel")]
+static USER_ATOMS: Spinlock<ipc::win32_window::UserAtomTable, GuiLockClass> = Spinlock::new(ipc::win32_window::UserAtomTable::new());
+
+/// Register one system-wide message name in the canonical user atom table.
+/// # C: O(N_user_atoms * N_name)
+#[cfg(target_os = "oxide-kernel")]
+pub fn register_window_message_for_current(name: &[u16]) -> Option<u16> {
+    let cur = sched::live::current()?;
+    if !cur.is_nt_personality() { return None; }
+    USER_ATOMS.lock().register(name)
+}
 
 /// Resolve a visible window rectangle from the current NT process's canonical HWND state. # C: O(N_process_gui_states + N_windows)
 pub fn window_rect_for_current(hwnd: u32) -> Option<(ipc::win32_window::WindowRect, bool)> {
