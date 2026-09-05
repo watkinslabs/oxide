@@ -328,7 +328,7 @@ git worktree add -b "$name" ../kernel-${name%%-*} origin/main
 ```
 `--claim` pushes a `claim/<T><NN>` ref so the number is yours atomically; reading (`--dry-run`, `metadata/index.md`) is NOT claiming — three lanes once drew the same number and one implementation was discarded. Never invent or hand-pick a number; git refs are the only source of truth. `make counters` prints next free per type.
 
-**Short-lived feature branches / worktree loop (HARD RULE):** each item gets a fresh branch from current `origin/main` in its own worktree; commit, push, PR, merge, update main, delete branch + worktree, then start the next item from a new worktree. No omnibus branches, no reused worktrees, no piling onto a dirty branch. Refactors are features too. Misshapen branch: archive-tag it, cherry-pick the good commits onto clean branches.
+**Single-active-worktree rule (HARD RULE):** this clone has exactly one active worktree and one active feature branch. Start each item from freshly fetched `origin/main`, commit, push, PR, merge, update the checkout, delete the feature branch after merge, then start the next item in the same sole checkout. Never create parallel worktrees, omnibus branches, reused dirty branches, or hidden WIP. The `tools/worktree-guard.sh` pre-commit, post-checkout, and pre-push hooks reject a clone with more than one registered worktree. Parallelism uses independent clones, never this clone.
 
 **Phase prefix matches `00§3`;** phases are sequential — no phase-`n+1` work before phase-`n` exit gates; pick the lowest unfinished phase.
 
