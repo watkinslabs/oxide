@@ -747,6 +747,22 @@
     }
 
     #[test]
+    fn unresolved_import_target_rejects_before_image_commit() {
+        struct BadResolver(u64);
+        impl ImportResolver for BadResolver {
+            fn resolve(&self, _dll: &[u8], _import: &pe::ImportThunk<'_>) -> Result<u64, pe::Error> {
+                Ok(self.0)
+            }
+        }
+        let as_ = AddressSpace::new(0x40_000).unwrap();
+        let data = as_.stash_bytes(alloc::boxed::Box::new([0u8; 4096]));
+        let target = as_.mmap(None, 4096, VmaProt::READ | VmaProt::WRITE,
+            VmaFlags::PRIVATE, VmaBacking::KernelBytes { data, off: 0 }, false).unwrap();
+        assert_eq!(load_pe_image_with_resolver(&imported_pe(), &as_, &BadResolver(target.as_u64())), Err(pe::Error::Einval));
+        assert_eq!(as_.vma_count(), 1, "invalid IAT target must roll back the image");
+    }
+
+    #[test]
     fn catalog_loader_emits_dependency_first_initializers() {
         let as_ = AddressSpace::new(0x40_000).unwrap();
         let runtime = map_nt_runtime(&as_).unwrap();

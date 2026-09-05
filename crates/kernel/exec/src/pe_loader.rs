@@ -1211,6 +1211,9 @@ pub fn load_pe_image_with_resolver<R: ImportResolver>(blob: &[u8], as_: &Address
 }
 /// Map one validated image using the shared import resolver and optional exact placement. # C: O(SizeOfImage + N_sections)
 pub fn load_pe_image_with_resolver_at<R: ImportResolver>(blob: &[u8], as_: &AddressSpace, resolver: &R, exact_base: Option<UserVirtAddr>, relay_call: u64) -> Result<PeLoadedImage, pe::Error> {
+    load_pe_image_with_resolver_at_mode(blob, as_, resolver, exact_base, relay_call, true)
+}
+fn load_pe_image_with_resolver_at_mode<R: ImportResolver>(blob: &[u8], as_: &AddressSpace, resolver: &R, exact_base: Option<UserVirtAddr>, relay_call: u64, validate_imports: bool) -> Result<PeLoadedImage, pe::Error> {
     let parsed = pe::parse(blob)?;
     // Validate callback-array termination and image-relative addresses before
     // binding or reserving anything; malformed TLS must leave no VMA behind.
@@ -1260,9 +1263,10 @@ pub fn load_pe_image_with_resolver_at<R: ImportResolver>(blob: &[u8], as_: &Addr
     }
     as_.munmap(reservation, len).map_err(|_| pe::Error::Einval)?;
     let data: Arc<[u8]> = as_.stash_bytes(image.into_boxed_slice());
+    let image = &*data;
     as_.mmap_with_may_at(MmapPlacement::FixedNoReplace(reservation), len,
         VmaProt::READ, VmaProt::READ | VmaProt::WRITE | VmaProt::EXEC,
-        VmaFlags::PRIVATE, VmaBacking::KernelBytes { data, off: 0 })
+        VmaFlags::PRIVATE, VmaBacking::KernelBytes { data: Arc::clone(&data), off: 0 })
         .map_err(|_| pe::Error::Einval)?;
     let mut transaction = PeImageTransaction::new(as_, reservation, len);
     let header_len = align_up(parsed.size_of_headers, parsed.section_alignment);
@@ -1274,6 +1278,10 @@ pub fn load_pe_image_with_resolver_at<R: ImportResolver>(blob: &[u8], as_: &Addr
         let start = base.checked_add(section.virtual_address as u64).ok_or(pe::Error::Einval)?;
         as_.mprotect(UserVirtAddr::new(start).ok_or(pe::Error::Einval)?, span as usize, prot).map_err(|_| pe::Error::Einval)?;
     }
+    // IAT entries are indirect code-transfer targets. Validate them only
+    // after final section protections are installed, so the resolver cannot
+    // admit a mapped writable target that faults on the first import.
+    if validate_imports { validate_bound_imports(&parsed, image, as_)?; }
     let entry = UserVirtAddr::new(base.checked_add(parsed.entry_rva as u64).ok_or(pe::Error::Einval)?).ok_or(pe::Error::Einval)?;
     // The transfer address is executable code, not merely an in-range RVA.
     // Keep this check in the loader transaction so a malformed image cannot
@@ -1325,7 +1333,7 @@ pub fn load_pe_module_graph<'a, R: ImportResolver>(modules: &[pe::Module<'a>], a
     let resolver = PeGraphResolver { modules: &exports, fallback };
     let mut loaded = alloc::vec::Vec::new();
     for (module, base) in modules.iter().zip(&bases) {
-        match load_pe_image_with_resolver_at(module.image.raw, as_, &resolver, UserVirtAddr::new(base.base), relay_call) {
+        match load_pe_image_with_resolver_at_mode(module.image.raw, as_, &resolver, UserVirtAddr::new(base.base), relay_call, false) {
             Ok(image) => loaded.push(PeLoadedModule { name: module.name, image }),
             Err(error) => {
                 for entry in &bases { if let Some(address) = UserVirtAddr::new(entry.base) { let _ = as_.munmap(address, entry.size as usize); } }
@@ -1342,6 +1350,23 @@ pub fn load_owned_pe_module_graph<'a, R: ImportResolver>(modules: &'a [pe::Owned
     }
     load_pe_module_graph(&views, as_, fallback, relay_call)
 }
+fn validate_bound_imports(parsed: &pe::Image<'_>, image: &[u8], as_: &AddressSpace) -> Result<(), pe::Error> {
+    for import in parsed.imports()? {
+        let thunks = parsed.import_thunks(&import)?;
+        for (index, _) in thunks.iter().enumerate() {
+            let offset = (import.first_thunk as usize).checked_add(index.checked_mul(8).ok_or(pe::Error::Einval)?).ok_or(pe::Error::Einval)?;
+            let end = offset.checked_add(8).ok_or(pe::Error::Einval)?;
+            let address = u64::from_le_bytes(image.get(offset..end).ok_or(pe::Error::Einval)?.try_into().map_err(|_| pe::Error::Einval)?);
+            if let Some(target) = UserVirtAddr::new(address) {
+                if let Some(vma) = as_.find_vma(target) {
+                    if !vma.prot.contains(VmaProt::EXEC) { return Err(pe::Error::Einval); }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn bind_imports<R: ImportResolver>(parsed: &pe::Image<'_>, image: &mut [u8], resolver: &R) -> Result<(), pe::Error> {
     for import in parsed.imports()? {
         let thunks = parsed.import_thunks(&import)?;
