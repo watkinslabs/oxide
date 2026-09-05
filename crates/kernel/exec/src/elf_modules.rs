@@ -25,12 +25,14 @@ pub struct ElfRuntimeSymbol {
 }
 
 /// Address-space-owned bounds for one Wine Unixlib function table.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ElfUnixlibDescriptor {
     pub table_address: u64,
     pub entry_count: u64,
     pub module_base: u64,
     pub module_end: u64,
+    pub entries: Vec<u64>,
+    pub executable_ranges: Vec<(u64, u64)>,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -93,9 +95,20 @@ pub fn register_unixlib_table(as_: &AddressSpace, descriptor: ElfUnixlibDescript
     }
     let bytes = descriptor.entry_count.checked_mul(core::mem::size_of::<u64>() as u64)
         .ok_or(UnixlibRegistrationError::ArithmeticOverflow)?;
+    if descriptor.entries.len() as u64 != descriptor.entry_count {
+        return Err(UnixlibRegistrationError::InvalidRange);
+    }
     let table_end = descriptor.table_address.checked_add(bytes)
         .ok_or(UnixlibRegistrationError::ArithmeticOverflow)?;
     if table_end > descriptor.module_end { return Err(UnixlibRegistrationError::InvalidRange); }
+    if descriptor.executable_ranges.iter().any(|(start, end)| *start < descriptor.module_base
+        || *start >= *end || *end > descriptor.module_end) {
+        return Err(UnixlibRegistrationError::InvalidRange);
+    }
+    if descriptor.entries.iter().any(|entry| *entry == 0 || !descriptor.executable_ranges.iter()
+        .any(|(start, end)| *entry >= *start && *entry < *end)) {
+        return Err(UnixlibRegistrationError::InvalidRange);
+    }
     let mut tables = UNIXLIBS.lock();
     match tables.get(&as_.root_pa()) {
         Some(existing) if *existing != descriptor => Err(UnixlibRegistrationError::AlreadyRegistered),
@@ -107,7 +120,7 @@ pub fn register_unixlib_table(as_: &AddressSpace, descriptor: ElfUnixlibDescript
 /// Read the Unixlib descriptor owned by an address space.
 /// # C: O(log N)
 pub fn unixlib_descriptor(root: u64) -> Option<ElfUnixlibDescriptor> {
-    UNIXLIBS.lock().get(&root).copied()
+    UNIXLIBS.lock().get(&root).cloned()
 }
 
 /// Resolve one exact ELF symbol name in the current process scope.
@@ -125,6 +138,7 @@ pub fn clear(root: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
 
     #[test]
     fn registry_finds_eh_frame_metadata_by_instruction_pointer() {
@@ -156,8 +170,9 @@ mod tests {
     fn unixlib_descriptor_is_scoped_to_one_address_space() {
         let as_ = AddressSpace::new(0x7_2000).unwrap();
         let descriptor = ElfUnixlibDescriptor { table_address: 0x4200, entry_count: 3,
-            module_base: 0x4000, module_end: 0x5000 };
-        register_unixlib_table(&as_, descriptor).unwrap();
+            module_base: 0x4000, module_end: 0x5000, entries: vec![0x4100, 0x4108, 0x4110],
+            executable_ranges: vec![(0x4100, 0x4200)] };
+        register_unixlib_table(&as_, descriptor.clone()).unwrap();
         assert_eq!(unixlib_descriptor(as_.root_pa()), Some(descriptor));
         assert_eq!(unixlib_descriptor(as_.root_pa() + 1), None);
         clear(as_.root_pa());
