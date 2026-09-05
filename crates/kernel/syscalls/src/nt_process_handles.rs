@@ -57,9 +57,18 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         let Some(target) = process_task(process, &table, PROCESS_TERMINATE) else {
             return Some(STATUS_INVALID_HANDLE);
         };
-        if target.tgid.load(core::sync::atomic::Ordering::Acquire)
-            != cur.tgid.load(core::sync::atomic::Ordering::Acquire) {
-            return Some(STATUS_INVALID_HANDLE);
+        let current_tgid = cur.tgid.load(core::sync::atomic::Ordering::Acquire);
+        let target_tgid = target.tgid.load(core::sync::atomic::Ordering::Acquire);
+        if crate::nt_process_policy::terminates_external_process(current_tgid, target_tgid) {
+            // Wine's server marks the named process for termination, rather
+            // than applying the caller's exit path to the caller. Latch the
+            // requested NT code first: the target's SIGKILL delivery then
+            // enters the normal Linux group-exit path and inherits this code.
+            target.thread_group.group_exit(
+                crate::nt_process_policy::termination_exit_status(status));
+            sched::live::send_sig_priv_group(
+                &target, sched::signum::Signum::Sigkill as u32);
+            return Some(STATUS_SUCCESS);
         }
         return Some(crate::s060_exit::sys_exit_group(&syscall::SyscallArgs {
             a0: status as u64, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0,
