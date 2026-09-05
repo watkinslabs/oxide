@@ -43,6 +43,17 @@ pub fn process_granted_access(desired: u32, all_access: u32, synchronize: u32) -
     if desired & !all_access != 0 { None } else { Some(desired | synchronize) }
 }
 
+/// Preserve the full signed NT exit value when a process handle names another
+/// process. The target's group-exit latch is the value later read by every
+/// thread's terminal path. # C: O(1)
+pub const fn termination_exit_status(raw: u32) -> i32 { raw as i32 }
+
+/// Identify a process-handle termination that must target another process
+/// group rather than dispatching the caller's own exit path. # C: O(1)
+pub const fn terminates_external_process(current_tgid: u32, target_tgid: u32) -> bool {
+    current_tgid != target_tgid
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -98,5 +109,17 @@ mod tests {
         assert!(!inherits_process_handles(0));
         assert!(inherits_process_handles(PROCESS_CREATE_FLAGS_INHERIT_HANDLES));
         assert!(inherits_process_handles(PROCESS_CREATE_FLAGS_SUPPORTED));
+    }
+
+    #[test]
+    fn external_termination_targets_the_named_group() {
+        assert!(terminates_external_process(41, 42));
+        assert!(!terminates_external_process(41, 41));
+    }
+
+    #[test]
+    fn nt_termination_preserves_the_full_signed_exit_value() {
+        assert_eq!(termination_exit_status(0x0000_1234), 0x1234);
+        assert_eq!(termination_exit_status(0xffff_ffff), -1);
     }
 }
