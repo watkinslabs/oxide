@@ -111,7 +111,7 @@ impl RegistryStore {
         let registry = match fs::symlink_metadata(path) {
             Ok(_) => Registry::load(path)?,
             Err(error) if error.kind() == ErrorKind::NotFound => {
-                let registry = Registry::new();
+                let registry = Registry::new_with_startup_state()?;
                 registry.save(path)?;
                 registry
             }
@@ -280,6 +280,22 @@ impl Registry {
             handles.insert(KeyHandle(root_handle(root)), identity);
         }
         Self { keys, handles, deleted: BTreeSet::new(), next_handle: 0x1000 }
+    }
+
+    /// Construct a first-run registry with Windows startup state. # C: O(startup key depth)
+    pub fn new_with_startup_state() -> Result<Self, Error> {
+        let mut registry = Self::new();
+        const MACHINE_ENV: &str = r"System\CurrentControlSet\Control\Session Manager\Environment";
+        const CURRENT_VERSION: &str = r"Software\Microsoft\Windows NT\CurrentVersion";
+        let machine_env = registry.create_key(Root::LocalMachine, MACHINE_ENV)?;
+        registry.set_value(&machine_env, "SystemRoot", reg_string(r"C:\Windows"))?;
+        registry.set_value(&machine_env, "SystemDrive", reg_string("C:"))?;
+        registry.create_key(Root::CurrentUser, "Environment")?;
+        registry.create_key(Root::CurrentUser, "Volatile Environment")?;
+        let current_version = registry.create_key(Root::LocalMachine, CURRENT_VERSION)?;
+        registry.set_value(&current_version, "ProgramFilesDir", reg_string(r"C:\Program Files"))?;
+        registry.set_value(&current_version, "CommonFilesDir", reg_string(r"C:\Program Files\Common Files"))?;
+        Ok(registry)
     }
 
     /// Open an existing key relative to a predefined root. # C: O(log N)
@@ -635,6 +651,7 @@ fn classes_backing_path(root: &str, relative: &str) -> String {
 }
 
 fn canonical(text: &str) -> String { text.to_ascii_uppercase() }
+fn reg_string(value: &str) -> Value { Value { kind: ValueType::String, data: value.encode_utf16().chain([0]).flat_map(u16::to_le_bytes).collect() } }
 fn is_root(path: &str) -> bool { matches!(path, "HKLM" | "HKCU" | "HKCR") }
 fn persisted_root(path: &str) -> Option<Root> {
     let (root, suffix) = path.split_once('\\').map_or((path, ""), |(root, suffix)| (root, suffix));
@@ -670,6 +687,33 @@ mod tests {
         let opened = match reopened.execute(Request::Open { root: Root::CurrentUser, subkey: "software\\oxide".into() }) { Response::Handle(key) => key, other => panic!("unexpected response: {other:?}") };
         assert_eq!(reopened.execute(Request::Query { key: opened, name: "installpath".into() }), Response::Value(Value { kind: ValueType::String, data: b"C:\\Oxide".to_vec() }));
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn first_run_materializes_canonical_windows_startup_environment() {
+        let registry = Registry::new_with_startup_state().unwrap();
+        let machine = registry.open_key(Root::LocalMachine, r"System\CurrentControlSet\Control\Session Manager\Environment").unwrap();
+        let value = registry.query_value(&machine, "systemroot").unwrap();
+        assert_eq!(value.kind, ValueType::String);
+        assert_eq!(String::from_utf16(&value.data.chunks_exact(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]])).collect::<Vec<_>>()).unwrap(), "C:\\Windows\0");
+        assert!(registry.open_key(Root::CurrentUser, "Environment").is_ok());
+        assert!(registry.open_key(Root::CurrentUser, "Volatile Environment").is_ok());
+        let current_version = registry.open_key(Root::LocalMachine, r"Software\Microsoft\Windows NT\CurrentVersion").unwrap();
+        assert!(registry.query_value(&current_version, "ProgramFilesDir").is_ok());
+    }
+
+    #[test]
+    fn existing_database_is_not_reseeded_on_open() {
+        let path = std::env::temp_dir().join(format!("oxide-registry-no-reseed-{}", std::process::id()));
+        let _ = fs::remove_file(&path);
+        let mut registry = Registry::new();
+        registry.create_key(Root::CurrentUser, "Software\\OnlyUserState").unwrap();
+        registry.save(&path).unwrap();
+        let restored = RegistryStore::open(&path).unwrap();
+        assert!(restored.registry().open_key(Root::CurrentUser, "Software\\OnlyUserState").is_ok());
+        assert_eq!(restored.registry().open_key(Root::LocalMachine, r"System\CurrentControlSet\Control\Session Manager\Environment"), Err(Error::MissingKey));
+        drop(restored);
+        fs::remove_file(path).unwrap();
     }
 
     #[test]
