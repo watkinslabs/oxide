@@ -139,6 +139,41 @@ impl UserAtomTable {
 
 impl Default for UserAtomTable { fn default() -> Self { Self::new() } }
 
+/// Shared clipboard admission state for one window station.
+///
+/// Clipboard data is intentionally not stored here yet; this owner records
+/// the server-side open transaction so later format operations cannot invent
+/// a second lock beside the canonical window-station state.
+pub struct ClipboardManager { open_thread: Option<u64>, open_window: Option<WindowId> }
+
+impl ClipboardManager {
+    /// Create an unopened clipboard state. # C: O(1)
+    pub const fn new() -> Self { Self { open_thread: None, open_window: None } }
+
+    /// Admit one `OpenClipboard` request using its window-station lock rule.
+    /// # C: O(1)
+    pub fn open(&mut self, thread: u64, window: Option<WindowId>) -> bool {
+        if self.open_thread.is_some() && self.open_window != window { return false; }
+        self.open_thread = Some(thread);
+        self.open_window = window;
+        true
+    }
+
+    /// Close the clipboard only from the thread that currently opened it.
+    /// # C: O(1)
+    pub fn close(&mut self, thread: u64) -> bool {
+        if self.open_thread != Some(thread) { return false; }
+        self.open_thread = None;
+        self.open_window = None;
+        true
+    }
+
+    /// Return whether this state has an active open transaction. # C: O(1)
+    pub const fn is_open(&self) -> bool { self.open_thread.is_some() }
+}
+
+impl Default for ClipboardManager { fn default() -> Self { Self::new() } }
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct WindowRect { pub left: i32, pub top: i32, pub right: i32, pub bottom: i32 }
 
@@ -984,5 +1019,27 @@ mod tests {
         assert_eq!(queue.peek(MessageFilter { hwnd: None, first: 15, last: 25 }, true), Some(message(None, 20)));
         assert_eq!(queue.peek(MessageFilter { hwnd: None, first: 0, last: 100 }, true), Some(message(None, 10)));
         assert_eq!(queue.len(), 0);
+    }
+
+    #[test]
+    fn clipboard_open_is_shared_by_window_and_close_is_thread_owned() {
+        let mut clipboard = ClipboardManager::new();
+        let window = WindowId::from_raw(7);
+        assert!(clipboard.open(11, window));
+        assert!(clipboard.is_open());
+        assert!(clipboard.open(22, window));
+        assert!(!clipboard.close(11));
+        assert!(clipboard.close(22));
+        assert!(!clipboard.is_open());
+    }
+
+    #[test]
+    fn clipboard_rejects_a_different_window_until_the_owner_closes() {
+        let mut clipboard = ClipboardManager::new();
+        assert!(clipboard.open(11, WindowId::from_raw(7)));
+        assert!(!clipboard.open(11, WindowId::from_raw(8)));
+        assert!(!clipboard.open(22, None));
+        assert!(clipboard.close(11));
+        assert!(clipboard.open(22, None));
     }
 }
