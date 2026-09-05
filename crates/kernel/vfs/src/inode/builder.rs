@@ -153,6 +153,7 @@ impl InodeBuilder {
             i_dquot: InodeDquots::new(),
             i_rwsem: super::rwsem::InodeRwsem::new(),
             i_flctx: super::file_lock::FileLockContext::new(),
+            i_windows_share: super::windows_share::WindowsShareContext::new(),
             i_security: AtomicU32::new(super::metadata::SECURITY_SID_UNSET),
             i_security_class: core::sync::atomic::AtomicU16::new(0),
             i_security_seq: AtomicU32::new(0),

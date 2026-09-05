@@ -13,6 +13,7 @@ mod builder;
 mod fileattr_shmem;
 mod flags;
 mod file_lock;
+mod windows_share;
 mod helpers;
 mod locking;
 mod metadata;
@@ -47,6 +48,9 @@ pub use file_lock::{
     F_RDLCK, F_UNLCK, F_WRLCK, FileLockContext, FlockKind, FlockTry, RECORD_END_MAX, RecordLock,
     RecordOwner, RecordTry, record_lock_block_on, record_lock_unblock,
 };
+pub use windows_share::{mapping_claim, WindowsFileShare, WindowsShareContext, DELETE,
+    FILE_APPEND_DATA, FILE_EXECUTE, FILE_READ_DATA, FILE_WRITE_DATA, GENERIC_ALL,
+    GENERIC_READ, GENERIC_WRITE, SHARE_DELETE, SHARE_READ, SHARE_WRITE};
 pub use helpers::{
     generic_update_time, get_next_ino, inode_inc_iversion, inode_init_owner,
     inode_init_owner_idmap, inode_maybe_inc_iversion, inode_owner_or_capable,
