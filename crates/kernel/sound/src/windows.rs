@@ -9,10 +9,10 @@ pub const MIN_RATE_HZ: u32 = 1_000;
 pub const MAX_RATE_HZ: u32 = 200_000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct PcmFormat { pub alsa_format: u32, pub channels: u32, pub rate_hz: u32, pub frame_bytes: u32 }
+pub struct PcmFormat { alsa_format: u32, channels: u32, rate_hz: u32, frame_bytes: u32 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FormatError { UnsupportedFormat, InvalidChannels, InvalidRate }
+pub enum FormatError { UnsupportedFormat, InvalidChannels, InvalidRate, InvalidFrameBytes }
 
 impl PcmFormat {
     /// Build adapter geometry from an already-negotiated native format.
@@ -22,18 +22,36 @@ impl PcmFormat {
                      crate::uapi::FMT_S24_LE | crate::uapi::FMT_S32_LE) { return Err(FormatError::UnsupportedFormat); }
         if channels == 0 || channels > MAX_CHANNELS { return Err(FormatError::InvalidChannels); }
         if !(MIN_RATE_HZ..=MAX_RATE_HZ).contains(&rate_hz) { return Err(FormatError::InvalidRate); }
-        Ok(Self { alsa_format, channels, rate_hz, frame_bytes: format::frame_bytes(alsa_format, channels) })
+        let frame_bytes = format::frame_bytes(alsa_format, channels);
+        Ok(Self { alsa_format, channels, rate_hz, frame_bytes })
     }
+
+    /// Validate the complete negotiated tuple, including its derived storage width.
+    /// # C: O(1)
+    pub fn validate(self) -> Result<(), FormatError> {
+        if self.frame_bytes != format::frame_bytes(self.alsa_format, self.channels) {
+            return Err(FormatError::InvalidFrameBytes);
+        }
+        Ok(())
+    }
+    /// ALSA sample format selected by negotiation. # C: O(1)
+    pub const fn alsa_format(self) -> u32 { self.alsa_format }
+    /// Channel count selected by negotiation. # C: O(1)
+    pub const fn channels(self) -> u32 { self.channels }
+    /// Sample rate selected by negotiation. # C: O(1)
+    pub const fn rate_hz(self) -> u32 { self.rate_hz }
+    /// Bytes in one interleaved frame. # C: O(1)
+    pub const fn frame_bytes(self) -> u32 { self.frame_bytes }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AudioDirection { Render, Capture }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum StreamError { ZeroDuration, ZeroFrames, PeriodExceedsBuffer, BufferTooLarge, InvalidFrameCount, WouldBlock, BufferOperationPending, OutOfOrder, InvalidBufferSize, WrongDirection, AlreadyStarted, NotStopped, Invalidated }
+pub enum StreamError { ZeroDuration, ZeroFrames, PeriodExceedsBuffer, BufferTooLarge, InvalidFrameCount, InvalidFormat, WouldBlock, BufferOperationPending, OutOfOrder, InvalidBufferSize, WrongDirection, AlreadyStarted, NotStopped, Invalidated, Closed }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum StreamState { Initialized, Running, Stopped, Invalidated }
+pub enum StreamState { Initialized, Running, Stopped, Invalidated, Closed }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StreamGeometry { pub buffer_frames: u32, pub period_frames: u32, pub buffer_bytes: u32, pub period_bytes: u32 }
@@ -49,6 +67,7 @@ impl StreamGeometry {
     /// Validate geometry allocated by the native PCM backend.
     /// # C: O(1)
     pub fn from_frames(format: PcmFormat, buffer_frames: u64, period_frames: u64) -> Result<Self, StreamError> {
+        if format.validate().is_err() { return Err(StreamError::InvalidFormat); }
         if buffer_frames == 0 || period_frames == 0 { return Err(StreamError::ZeroFrames); }
         if buffer_frames > MAX_BUFFER_FRAMES { return Err(StreamError::BufferTooLarge); }
         if period_frames > buffer_frames { return Err(StreamError::PeriodExceedsBuffer); }
@@ -81,7 +100,10 @@ impl AudioStream {
     pub const fn with_format(format: PcmFormat, geometry: StreamGeometry, direction: AudioDirection) -> Self {
         Self { format: Some(format), geometry, direction, state: StreamState::Initialized, queued_frames: 0, render_loan: None }
     }
+    /// Return the immutable format committed at stream creation. # C: O(1)
     pub const fn format(self) -> Option<PcmFormat> { self.format }
+    /// Return the negotiated ALSA format. # C: O(1)
+    pub const fn negotiated_format(self) -> Option<u32> { match self.format { Some(format) => Some(format.alsa_format), None => None } }
     pub const fn state(self) -> StreamState { self.state }
     pub const fn current_padding(self) -> u32 { self.queued_frames }
     pub const fn available_frames(self) -> u32 { self.geometry.buffer_frames - self.queued_frames }
@@ -91,6 +113,7 @@ impl AudioStream {
     pub fn start(&mut self) -> Result<(), StreamError> {
         match self.state {
             StreamState::Invalidated => Err(StreamError::Invalidated),
+            StreamState::Closed => Err(StreamError::Closed),
             StreamState::Running => Err(StreamError::AlreadyStarted),
             StreamState::Initialized | StreamState::Stopped => { self.state = StreamState::Running; Ok(()) }
         }
@@ -100,6 +123,7 @@ impl AudioStream {
     /// # C: O(1)
     pub fn stop(&mut self) -> Result<(), StreamError> {
         if self.state == StreamState::Invalidated { return Err(StreamError::Invalidated); }
+        if self.state == StreamState::Closed { return Err(StreamError::Closed); }
         self.state = StreamState::Stopped;
         self.render_loan = None;
         Ok(())
@@ -110,6 +134,7 @@ impl AudioStream {
     pub fn reset(&mut self) -> Result<(), StreamError> {
         match self.state {
             StreamState::Invalidated => Err(StreamError::Invalidated),
+            StreamState::Closed => Err(StreamError::Closed),
             StreamState::Running => Err(StreamError::NotStopped),
             StreamState::Initialized | StreamState::Stopped => {
                 self.queued_frames = 0;
@@ -122,7 +147,16 @@ impl AudioStream {
     /// Permanently invalidate an endpoint after native device removal.
     /// # C: O(1)
     pub fn invalidate(&mut self) {
+        if self.state == StreamState::Closed { return; }
         self.state = StreamState::Invalidated;
+        self.queued_frames = 0;
+        self.render_loan = None;
+    }
+
+    /// Release the endpoint; close is terminal and rejects all later operations.
+    /// # C: O(1)
+    pub fn close(&mut self) {
+        self.state = StreamState::Closed;
         self.queued_frames = 0;
         self.render_loan = None;
     }
@@ -131,6 +165,7 @@ impl AudioStream {
     /// # C: O(1)
     pub fn client_write(&mut self, frames: u32) -> Result<(), StreamError> {
         if self.state == StreamState::Invalidated { return Err(StreamError::Invalidated); }
+        if self.state == StreamState::Closed { return Err(StreamError::Closed); }
         if self.render_loan.is_some() { return Err(StreamError::BufferOperationPending); }
         if frames > self.available_frames() { return Err(StreamError::WouldBlock); }
         self.queued_frames += frames; Ok(())
@@ -140,6 +175,7 @@ impl AudioStream {
     /// # C: O(1)
     pub fn client_read(&mut self, frames: u32) -> Result<(), StreamError> {
         if self.state == StreamState::Invalidated { return Err(StreamError::Invalidated); }
+        if self.state == StreamState::Closed { return Err(StreamError::Closed); }
         if self.render_loan.is_some() { return Err(StreamError::BufferOperationPending); }
         if frames > self.queued_frames { return Err(StreamError::WouldBlock); }
         self.queued_frames -= frames; Ok(())
@@ -149,6 +185,7 @@ impl AudioStream {
     /// # C: O(1)
     pub fn render_get_buffer(&mut self, frames: u32) -> Result<(), StreamError> {
         if self.state == StreamState::Invalidated { return Err(StreamError::Invalidated); }
+        if self.state == StreamState::Closed { return Err(StreamError::Closed); }
         if self.direction != AudioDirection::Render { return Err(StreamError::WrongDirection); }
         if self.render_loan.is_some() { return Err(StreamError::OutOfOrder); }
         if frames > self.available_frames() { return Err(StreamError::BufferTooLarge); }
@@ -159,6 +196,8 @@ impl AudioStream {
     /// Commit the valid portion of the outstanding render buffer reservation.
     /// # C: O(1)
     pub fn render_release_buffer(&mut self, written_frames: u32) -> Result<(), StreamError> {
+        if self.state == StreamState::Invalidated { return Err(StreamError::Invalidated); }
+        if self.state == StreamState::Closed { return Err(StreamError::Closed); }
         let Some(reserved) = self.render_loan else { return Err(StreamError::OutOfOrder); };
         if written_frames > reserved { return Err(StreamError::InvalidBufferSize); }
         self.render_loan = None;

@@ -9,7 +9,7 @@ fn format() -> PcmFormat { PcmFormat::from_alsa(crate::uapi::FMT_S16_LE, 2, 48_0
 fn duration_geometry_matches_wasapi_frame_rounding() {
     let g = StreamGeometry::from_durations(format(), 10_000_000, 1_000_000).unwrap();
     assert_eq!((g.buffer_frames, g.period_frames, g.buffer_bytes), (48_000, 4_800, 192_000));
-    assert_eq!(g.duration_hns(format().rate_hz).unwrap(), 10_000_000);
+    assert_eq!(g.duration_hns(format().rate_hz()).unwrap(), 10_000_000);
 }
 
 #[test]
@@ -67,6 +67,7 @@ fn stream_lifecycle_matches_wasapi_start_stop_reset_contract() {
     assert_eq!(stream.reset(), Ok(()));
     assert_eq!(stream.state(), StreamState::Stopped);
     assert_eq!(stream.format(), Some(f));
+    assert_eq!(stream.negotiated_format(), Some(crate::uapi::FMT_S16_LE));
 }
 
 #[test]
@@ -81,4 +82,35 @@ fn invalidated_endpoint_rejects_all_client_lifecycle_operations() {
     assert_eq!(stream.client_write(1), Err(StreamError::Invalidated));
     assert_eq!(stream.client_read(1), Err(StreamError::Invalidated));
     assert_eq!(stream.render_get_buffer(1), Err(StreamError::Invalidated));
+}
+
+#[test]
+fn negotiated_format_is_immutable_and_geometry_rejects_tampering() {
+    let f = format();
+    assert_eq!(f.alsa_format(), crate::uapi::FMT_S16_LE);
+    assert_eq!(f.channels(), 2);
+    assert_eq!(f.rate_hz(), 48_000);
+    assert_eq!(f.frame_bytes(), 4);
+    let forged = PcmFormat { frame_bytes: 8, ..f };
+    assert_eq!(forged.validate(), Err(FormatError::InvalidFrameBytes));
+    assert_eq!(StreamGeometry::from_frames(forged, 8, 4), Err(StreamError::InvalidFormat));
+}
+
+#[test]
+fn close_releases_loans_and_rejects_operations_without_reviving_endpoint() {
+    let f = format();
+    let g = StreamGeometry::from_frames(f, 8, 4).unwrap();
+    let mut stream = AudioStream::with_format(f, g, AudioDirection::Render);
+    stream.start().unwrap();
+    stream.render_get_buffer(2).unwrap();
+    stream.close();
+    assert_eq!(stream.state(), StreamState::Closed);
+    assert_eq!(stream.current_padding(), 0);
+    assert_eq!(stream.stop(), Err(StreamError::Closed));
+    assert_eq!(stream.start(), Err(StreamError::Closed));
+    assert_eq!(stream.reset(), Err(StreamError::Closed));
+    assert_eq!(stream.render_release_buffer(0), Err(StreamError::Closed));
+    assert_eq!(stream.client_write(1), Err(StreamError::Closed));
+    stream.invalidate();
+    assert_eq!(stream.state(), StreamState::Closed);
 }
