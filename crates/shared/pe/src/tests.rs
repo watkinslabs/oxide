@@ -39,9 +39,10 @@ impl<'a> ModuleSource<'a> for TwoModules<'a> {
     let b = image(); let p = parse(&b).unwrap(); assert_eq!(p.entry_rva, 0x1010); assert_eq!(p.sections.len(), 1); assert_eq!(p.materialize().unwrap()[0x1010], 0xcc); assert_eq!(p.rva_range(0x1010, 1).unwrap(), &[0xcc]);
 }
 
-#[test] fn rejects_pe32_and_wx_sections() {
+#[test] fn rejects_pe32_and_accepts_wx_sections() {
     let mut b = image(); b[OPT..OPT + 2].copy_from_slice(&0x10bu16.to_le_bytes()); assert_eq!(parse(&b).err(), Some(Error::Enoexec));
-    let mut b = image(); b[SEC + 36..SEC + 40].copy_from_slice(&(SectionFlags::MEM_READ | SectionFlags::MEM_WRITE | SectionFlags::MEM_EXECUTE).to_le_bytes()); assert_eq!(parse(&b).err(), Some(Error::Einval));
+    let mut b = image(); b[SEC + 36..SEC + 40].copy_from_slice(&(SectionFlags::MEM_READ | SectionFlags::MEM_WRITE | SectionFlags::MEM_EXECUTE).to_le_bytes());
+    let parsed = parse(&b).unwrap(); assert!(parsed.sections[0].characteristics.contains(SectionFlags::MEM_WRITE | SectionFlags::MEM_EXECUTE));
 }
 
 #[test] fn rejects_entry_in_an_unmapped_image_gap() {
