@@ -118,11 +118,14 @@ fn present_surface(state: &ipc::win32_gdi::GdiManager, dc: u32, x: i32, y: i32) 
 }
 
 fn present_window(state: &ipc::win32_gdi::GdiManager, hwnd: u32, dc: u32) -> u64 {
-    let Some((rect, visible)) = super::nt_window::window_rect_for_current(hwnd) else { return STATUS_INVALID_HANDLE; };
-    if !visible || rect.right <= rect.left || rect.bottom <= rect.top { return STATUS_INVALID_PARAMETER; }
+    let Some(record) = super::nt_window::window_present_record_for_current(hwnd) else { return STATUS_INVALID_PARAMETER; };
     let Some((width, height, pixels)) = state.surface(dc) else { return STATUS_INVALID_HANDLE; };
     if width <= 0 || height <= 0 { return STATUS_INVALID_PARAMETER; }
-    if drv_virtio_gpu::post_init::present_window_pixels(pixels, width as u32, height as u32, rect.left, rect.top) { STATUS_SUCCESS } else { STATUS_INVALID_PARAMETER }
+    let Some(damage) = record.damage else { return STATUS_SUCCESS; };
+    if damage.left < 0 || damage.top < 0 || damage.right <= damage.left || damage.bottom <= damage.top { return STATUS_INVALID_PARAMETER; }
+    if drv_virtio_gpu::post_init::present_window_pixels_region(pixels, width as u32, height as u32,
+        record.bounds.left, record.bounds.top, damage.left as u32, damage.top as u32,
+        damage.right as u32, damage.bottom as u32) { STATUS_SUCCESS } else { STATUS_INVALID_PARAMETER }
 }
 
 fn present_window_region(state: &ipc::win32_gdi::GdiManager, hwnd: u32, dc: u32, left: i32, top: i32, right: i32, bottom: i32) -> u64 {

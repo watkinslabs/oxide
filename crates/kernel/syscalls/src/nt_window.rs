@@ -50,6 +50,18 @@ pub fn window_rect_for_current(hwnd: u32) -> Option<(ipc::win32_window::WindowRe
     Some((state.rect(window)?, record.visible))
 }
 
+/// Resolve the canonical compositor record for the current window paint. # C: O(N_process_gui_states + N_windows)
+pub fn window_present_record_for_current(hwnd: u32) -> Option<ipc::win32_window::WindowPresentRecord> {
+    let cur = sched::live::current()?;
+    if !cur.is_nt_personality() { return None; }
+    let group = Arc::clone(&cur.thread_group);
+    let window = ipc::win32_window::WindowId::from_raw(hwnd)?;
+    let mut entries = GUI.lock();
+    entries.retain(|entry| entry.group.upgrade().is_some());
+    let index = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group)))?;
+    entries[index].state.present_record(window).ok()
+}
+
 /// Route one accepted physical key transition to the desktop foreground NT window. # C: O(N_nt_processes + N_windows)
 pub fn route_hardware_key(key: u16, pressed: bool, repeat: bool) -> bool {
     let mut entries = GUI.lock();
