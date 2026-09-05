@@ -187,7 +187,7 @@ pub fn find_exported_routine(module: u64, name_address: u64) -> u64 {
     let result = data
         .or_else(|| resolve_export(&cur, module, module_size, Some(&name), 0, 0))
         .or_else(|| is_ntdll.then(|| elf_load::pe_loader::resolve_nt_runtime_export(module, &name)).flatten());
-    result.unwrap_or(0)
+    result.and_then(|address| callable_win32_export(&cur, address)).unwrap_or(0)
 }
 
 /// Resolve one export by its already validated byte name for kernel-owned
@@ -197,6 +197,7 @@ pub(crate) fn resolve_exported_routine_by_name(cur: &sched::Task, module: u64, n
     let (module_size, is_ntdll) = module_info(cur, module)?;
     resolve_export(cur, module, module_size, Some(name), 0, 0)
         .or_else(|| is_ntdll.then(|| elf_load::pe_loader::resolve_nt_runtime_export(module, name)).flatten())
+        .and_then(|address| callable_win32_export(cur, address))
 }
 
 fn get_procedure(call: NtCall) -> u64 {
@@ -208,7 +209,7 @@ fn get_procedure(call: NtCall) -> u64 {
     let address = resolve_export(&cur, call.args.a0, module_size, name.as_deref(), call.args.a2 as u16, 0)
         .or_else(|| is_ntdll.then(|| name.as_deref().and_then(|value| elf_load::pe_loader::resolve_nt_runtime_export(call.args.a0, value))).flatten())
         .ok_or(STATUS_PROCEDURE_NOT_FOUND);
-    let Ok(address) = address else { return STATUS_PROCEDURE_NOT_FOUND; };
+    let Ok(address) = address.and_then(|address| callable_win32_export(cur, address).ok_or(STATUS_PROCEDURE_NOT_FOUND)) else { return STATUS_PROCEDURE_NOT_FOUND; };
     if address >= call.args.a0 && address - call.args.a0 >= 0x4000 && address - call.args.a0 < 0x5000 {
         klog::write_raw(b"[WINDOWS-PE-DYNAMIC-RELAY] module=");
         klog::write_hex_u64(call.args.a0);
@@ -258,6 +259,19 @@ fn module_info(cur: &sched::Task, module: u64) -> Option<(u32, bool)> {
     }
     None
 }
+
+/// Admit one address for a Win32 caller only when the NT process owns it and
+/// its current address-space VMA is executable. The returned value is safe to
+/// place in an import/procedure slot; arbitrary user pointers are rejected.
+#[cfg(target_arch = "x86_64")]
+fn callable_win32_export(cur: &sched::Task, address: u64) -> Option<u64> {
+    let mm = cur.clone_mm()?;
+    let vma = mm.find_vma(hal::UserVirtAddr::new(address)?)?;
+    vma.prot.contains(vmm::VmaProt::EXEC).then_some(address)
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn callable_win32_export(_cur: &sched::Task, _address: u64) -> Option<u64> { None }
 
 fn module_containing(cur: &sched::Task, address: u64) -> Option<(u64, u32)> {
     let peb = read_u64_checked(cur.nt_teb().checked_add(TEB_PEB_OFFSET)?)?;
@@ -314,6 +328,7 @@ fn resolve_mapped_export(cur: &sched::Task, module: u64, module_size: u32, name:
     if read_u32(nt)? != 0x0000_4550 { return None; }
     let optional = nt.checked_add(24)?;
     if read_u16(optional)? != 0x020b { return None; }
+    if read_u16_at(nt, 4)? != pe::IMAGE_FILE_MACHINE_AMD64 { return None; }
     let directories = read_u32(optional.checked_add(108)?)?;
     if directories == 0 { return None; }
     let export = optional.checked_add(112)?;

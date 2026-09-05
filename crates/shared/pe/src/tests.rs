@@ -45,6 +45,30 @@ impl<'a> ModuleSource<'a> for TwoModules<'a> {
     let parsed = parse(&b).unwrap(); assert!(parsed.sections[0].characteristics.contains(SectionFlags::MEM_WRITE | SectionFlags::MEM_EXECUTE));
 }
 
+#[test]
+fn executable_export_admission_rejects_data_section_targets() {
+    let mut b = image();
+    b[SEC + 36..SEC + 40].copy_from_slice(&SectionFlags::MEM_READ.to_le_bytes());
+    let dir = OPT + 112 + IMAGE_DIRECTORY_ENTRY_EXPORT * 8;
+    b[dir..dir + 4].copy_from_slice(&0x1100u32.to_le_bytes());
+    b[dir + 4..dir + 8].copy_from_slice(&0x100u32.to_le_bytes());
+    b[0x500 + 12..0x500 + 16].copy_from_slice(&0x1160u32.to_le_bytes());
+    b[0x500 + 16..0x500 + 20].copy_from_slice(&1u32.to_le_bytes());
+    b[0x500 + 20..0x500 + 24].copy_from_slice(&1u32.to_le_bytes());
+    b[0x500 + 24..0x500 + 28].copy_from_slice(&1u32.to_le_bytes());
+    b[0x500 + 28..0x500 + 32].copy_from_slice(&0x1130u32.to_le_bytes());
+    b[0x500 + 32..0x500 + 36].copy_from_slice(&0x1134u32.to_le_bytes());
+    b[0x500 + 36..0x500 + 40].copy_from_slice(&0x1138u32.to_le_bytes());
+    b[0x530..0x534].copy_from_slice(&0x1010u32.to_le_bytes());
+    b[0x534..0x538].copy_from_slice(&0x1160u32.to_le_bytes());
+    b[0x538..0x53a].copy_from_slice(&0u16.to_le_bytes());
+    b[0x560..0x56b].copy_from_slice(b"DataExport\0");
+    let parsed = parse(&b).unwrap();
+    let import = ImportThunk::Name { hint: 0, name: b"DataExport" };
+    assert_eq!(parsed.export_rva(&import).unwrap(), Some(0x1010));
+    assert_eq!(parsed.executable_export_rva(&import), Err(Error::Unsupported));
+}
+
 #[test] fn rejects_entry_in_an_unmapped_image_gap() {
     let mut b = image(); b[OPT + 16..OPT + 20].copy_from_slice(&0x2000u32.to_le_bytes()); assert_eq!(parse(&b).err(), Some(Error::Einval));
 }
