@@ -479,6 +479,11 @@
     }
 
     #[test]
+    fn self_relative_security_conversion_preserves_the_full_x64_argument_shape() {
+        assert_eq!(runtime_stub_bytes(88), pe::nt_stub::X64_SIX_ARG_STUB_BYTES);
+    }
+
+    #[test]
     fn native_runtime_publishes_wine_dispatcher_entry() {
         let as_ = AddressSpace::new(0x20_000).unwrap();
         let runtime = map_nt_runtime(&as_).unwrap();

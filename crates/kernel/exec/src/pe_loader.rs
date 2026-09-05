@@ -291,7 +291,7 @@ const NTDLL_EXPORTS: [&[u8]; 513] = [
 const WINE_SYSCALL_DISPATCHER: &[u8] = b"__wine_syscall_dispatcher";
 fn runtime_stub_bytes(index: usize) -> usize {
     if index == 505 { pe::nt_stub::X64_ZERO_ARG_STUB_BYTES }
-    else if matches!(index, 6 | 88 | 242 | 435 | 436 | 437 | 483 | 507 | 509 | 510 | 511) { pe::nt_stub::X64_UNARY_STUB_BYTES } else { pe::nt_stub::X64_SIX_ARG_STUB_BYTES }
+    else if matches!(index, 6 | 242 | 435 | 436 | 437 | 483 | 507 | 509 | 510 | 511) { pe::nt_stub::X64_UNARY_STUB_BYTES } else { pe::nt_stub::X64_SIX_ARG_STUB_BYTES }
 }
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct PeEntryState {
@@ -959,7 +959,7 @@ pub fn map_nt_runtime(as_: &AddressSpace) -> Result<NtRuntime, pe::Error> {
             _ => syscall::nt::NtService::FreeHeap,
         }};
         let bytes = if index == 505 { pe::nt_stub::encode_x64_zero_arg_stub(selector.entry()).to_vec() }
-            else if matches!(index, 6 | 88 | 242 | 435 | 436 | 437 | 483 | 507 | 509 | 510 | 511) { pe::nt_stub::encode_x64_unary_stub(selector.entry()).to_vec() }
+            else if matches!(index, 6 | 242 | 435 | 436 | 437 | 483 | 507 | 509 | 510 | 511) { pe::nt_stub::encode_x64_unary_stub(selector.entry()).to_vec() }
             else { pe::nt_stub::encode_x64_six_arg_stub(selector.entry()).to_vec() };
         if offset.checked_add(bytes.len()).filter(|&end| end <= code.len()).is_none() { return Err(pe::Error::Einval); }
         code[offset..offset + bytes.len()].copy_from_slice(&bytes);

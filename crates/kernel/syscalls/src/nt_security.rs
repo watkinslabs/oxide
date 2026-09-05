@@ -45,11 +45,16 @@ const OWNER_DEFAULTED: u16 = 0x0001;
 const GROUP_DEFAULTED: u16 = 0x0002;
 const CONTROL_IMMUTABLE: u32 = OWNER_DEFAULTED as u32 | GROUP_DEFAULTED as u32 | DACL_PRESENT as u32 | 0x0008 | SACL_PRESENT as u32 | SACL_DEFAULTED as u32 | 0x4000 | SELF_RELATIVE as u32;
 const SECURITY_CONTROL_WORD_BYTES: usize = 4;
+const ABSOLUTE_DESCRIPTOR_BYTES: u32 = 40;
+const MAX_SECURITY_COMPONENT_BYTES: usize = 0x10000;
 
 /// Query the stable baseline descriptor attached to an NT object handle.
 /// Linux credentials supply the owner/group identity; no Linux syscall path
 /// reaches this adapter. # C: O(1) plus usercopy
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == syscall::nt::NtService::RtlSelfRelativeToAbsoluteSD {
+        return Some(self_relative_to_absolute(call));
+    }
     if call.service == syscall::nt::NtService::RtlValidSid {
         return Some(valid_sid(call.args.a0));
     }
@@ -120,6 +125,101 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if descriptor.as_u64() == 0 || length < required { return Some(STATUS_BUFFER_TOO_SMALL); }
     if uaccess::copy_to_user(descriptor.as_u64(), &bytes).is_err() { return Some(STATUS_INVALID_PARAMETER); }
     Some(STATUS_SUCCESS)
+}
+
+fn self_relative_to_absolute(call: NtCall) -> u64 {
+    let Some(sacl_size) = crate::nt_dispatch::stack_argument(6) else { return STATUS_INVALID_PARAMETER; };
+    let Some(owner) = crate::nt_dispatch::stack_argument(7) else { return STATUS_INVALID_PARAMETER; };
+    let Some(owner_size) = crate::nt_dispatch::stack_argument(8) else { return STATUS_INVALID_PARAMETER; };
+    let Some(group) = crate::nt_dispatch::stack_argument(9) else { return STATUS_INVALID_PARAMETER; };
+    let Some(group_size) = crate::nt_dispatch::stack_argument(10) else { return STATUS_INVALID_PARAMETER; };
+    if call.args.a0 == 0 || call.args.a1 == 0 || call.args.a2 == 0
+        || call.args.a4 == 0 || sacl_size == 0 || owner_size == 0 || group_size == 0 { return STATUS_INVALID_PARAMETER; }
+    let mut relative = [0u8; 20];
+    if uaccess::copy_from_user(&mut relative, call.args.a0).is_err() { return STATUS_INVALID_PARAMETER; }
+    if relative[0] != SECURITY_DESCRIPTOR_REVISION {
+        return STATUS_UNKNOWN_REVISION;
+    }
+    let control = u16::from_le_bytes([relative[2], relative[3]]);
+    if control & SELF_RELATIVE == 0 { return STATUS_INVALID_SECURITY_DESCR; }
+    let owner_data = match relative_component(call.args.a0, relative, RELATIVE_OWNER_OFFSET, false) {
+        Ok(value) => value, Err(status) => return status,
+    };
+    let group_data = match relative_component(call.args.a0, relative, RELATIVE_GROUP_OFFSET, false) {
+        Ok(value) => value, Err(status) => return status,
+    };
+    let sacl_data = match relative_component(call.args.a0, relative, SACL_OFFSET, true) {
+        Ok(value) => value, Err(status) => return status,
+    };
+    let dacl_data = match relative_component(call.args.a0, relative, DACL_OFFSET, true) {
+        Ok(value) => value, Err(status) => return status,
+    };
+    let required = [owner_data.len(), group_data.len(), sacl_data.len(), dacl_data.len()];
+    if uaccess::get_user_u32(call.args.a2).unwrap_or(0) < ABSOLUTE_DESCRIPTOR_BYTES
+        || uaccess::get_user_u32(call.args.a4).unwrap_or(0) < required[3] as u32
+        || uaccess::get_user_u32(sacl_size).unwrap_or(0) < required[2] as u32
+        || uaccess::get_user_u32(owner_size).unwrap_or(0) < required[0] as u32
+        || uaccess::get_user_u32(group_size).unwrap_or(0) < required[1] as u32 {
+        let _ = uaccess::put_user_u32(call.args.a2, ABSOLUTE_DESCRIPTOR_BYTES);
+        let _ = uaccess::put_user_u32(call.args.a4, required[3] as u32);
+        let _ = uaccess::put_user_u32(sacl_size, required[2] as u32);
+        let _ = uaccess::put_user_u32(owner_size, required[0] as u32);
+        let _ = uaccess::put_user_u32(group_size, required[1] as u32);
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+    if (required[0] != 0 && owner == 0) || (required[1] != 0 && group == 0)
+        || (required[2] != 0 && call.args.a5 == 0) || (required[3] != 0 && call.args.a3 == 0) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let absolute = absolute_descriptor(relative, control, owner, group, call.args.a5, call.args.a3);
+    if copy_component(owner, &owner_data).is_err()
+        || copy_component(group, &group_data).is_err()
+        || copy_component(call.args.a5, &sacl_data).is_err()
+        || copy_component(call.args.a3, &dacl_data).is_err()
+        || uaccess::copy_to_user(call.args.a1, &absolute).is_err() {
+        return STATUS_INVALID_PARAMETER;
+    }
+    STATUS_SUCCESS
+}
+
+fn copy_component(destination: u64, data: &[u8]) -> Result<(), ()> {
+    if data.is_empty() { return Ok(()); }
+    uaccess::copy_to_user(destination, data).map_err(|_| ())
+}
+
+fn absolute_descriptor(relative: [u8; 20], control: u16, owner: u64, group: u64, sacl: u64, dacl: u64) -> [u8; 40] {
+    let mut absolute = [0u8; 40];
+    absolute[..4].copy_from_slice(&relative[..4]);
+    absolute[2..4].copy_from_slice(&(control & !SELF_RELATIVE).to_le_bytes());
+    absolute[8..16].copy_from_slice(&owner.to_le_bytes());
+    absolute[16..24].copy_from_slice(&group.to_le_bytes());
+    absolute[24..32].copy_from_slice(&sacl.to_le_bytes());
+    absolute[32..40].copy_from_slice(&dacl.to_le_bytes());
+    absolute
+}
+
+fn relative_component(base: u64, descriptor: [u8; 20], field: u64, acl: bool) -> Result<Vec<u8>, u64> {
+    let field = usize::try_from(field).map_err(|_| STATUS_INVALID_PARAMETER)?;
+    let offset = u32::from_le_bytes(descriptor[field..field + 4].try_into().unwrap());
+    if offset == 0 { return Ok(Vec::new()); }
+    let address = base.checked_add(offset as u64).ok_or(STATUS_INVALID_PARAMETER)?;
+    let length = if acl {
+        let mut header = [0u8; 4];
+        uaccess::copy_from_user(&mut header, address).map_err(|_| STATUS_INVALID_PARAMETER)?;
+        let size = u16::from_le_bytes([header[2], header[3]]) as usize;
+        if size < 8 { return Err(STATUS_INVALID_PARAMETER); }
+        size
+    } else {
+        let mut header = [0u8; 2];
+        uaccess::copy_from_user(&mut header, address).map_err(|_| STATUS_INVALID_PARAMETER)?;
+        let count = header[1] as usize;
+        if count > SID_MAX_SUB_AUTHORITIES as usize { return Err(STATUS_INVALID_PARAMETER); }
+        8usize.checked_add(count.checked_mul(4).ok_or(STATUS_INVALID_PARAMETER)?).ok_or(STATUS_INVALID_PARAMETER)?
+    };
+    if length > MAX_SECURITY_COMPONENT_BYTES { return Err(STATUS_INVALID_PARAMETER); }
+    let mut data = vec![0u8; length];
+    uaccess::copy_from_user(&mut data, address).map_err(|_| STATUS_INVALID_PARAMETER)?;
+    Ok(data)
 }
 
 fn valid_sid(sid: u64) -> u64 {
@@ -434,6 +534,17 @@ fn descriptor_bytes(info: u32, uid: u32, gid: u32) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn absolute_descriptor_uses_x64_pointer_layout_and_clears_relative_flag() {
+        let relative = [1, 0, 0x04, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let absolute = absolute_descriptor(relative, SELF_RELATIVE | DACL_PRESENT, 0x1111, 0x2222, 0x3333, 0x4444);
+        assert_eq!(&absolute[..4], &[1, 0, DACL_PRESENT as u8, 0]);
+        assert_eq!(u64::from_le_bytes(absolute[8..16].try_into().unwrap()), 0x1111);
+        assert_eq!(u64::from_le_bytes(absolute[16..24].try_into().unwrap()), 0x2222);
+        assert_eq!(u64::from_le_bytes(absolute[24..32].try_into().unwrap()), 0x3333);
+        assert_eq!(u64::from_le_bytes(absolute[32..40].try_into().unwrap()), 0x4444);
+    }
 
     #[test]
     fn descriptor_offsets_and_acl_sizes_are_self_relative() {
