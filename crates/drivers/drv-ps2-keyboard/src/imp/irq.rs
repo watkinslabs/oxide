@@ -34,7 +34,6 @@ pub(super) unsafe fn drain_irq() -> bool {
             if irq_enabled() {
                 if let Some((keycode, pressed)) = decode_byte(byte) {
                     super::keyboard::report_key(keycode, pressed);
-                    drv_virtio_input::drain::handle_key_event(keycode, pressed);
                 }
             }
         } else if AUX_IRQ_ENABLED.load(Ordering::Acquire) {
