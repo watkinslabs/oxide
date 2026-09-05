@@ -165,6 +165,10 @@ mod sock_error;
 pub mod sock_clock;
 /// The socket sleep queue every blocking socket path parks on.
 pub mod sock_wait;
+/// Windows network-event projection from the canonical Linux socket readiness
+/// mask. The projection is pure so the NT/Winsock adapter cannot create a
+/// second readiness owner.
+pub mod windows_events;
 // Linux `sock_intr_errno` — NOT kernel-gated, so the ERESTARTSYS/EINTR rule
 // every socket wait shares is unit-tested hosted.
 pub mod sock_intr;
