@@ -11,6 +11,12 @@ use sync::{Spinlock, TaskList as TaskListClass};
 pub const EXCEPTION_RECORD_BYTES: usize = 0x98;
 pub const CONTEXT_BYTES: usize = 0x4d0;
 const EXCEPTION_CODE_OFFSET: usize = 0;
+const EXCEPTION_FLAGS_OFFSET: usize = 4;
+const EXCEPTION_RECORD_OFFSET: usize = 8;
+const EXCEPTION_ADDRESS_OFFSET: usize = 16;
+const EXCEPTION_NUMBER_PARAMETERS_OFFSET: usize = 24;
+const EXCEPTION_MAXIMUM_PARAMETERS: u32 = 15;
+const EXCEPTION_FLAGS_MASK: u32 = 0x7f;
 const EXCEPTION_BREAKPOINT: u32 = 0x8000_0003;
 #[cfg(target_arch = "x86_64")]
 const CONTEXT_FLAGS_OFFSET: usize = 0x30;
@@ -35,6 +41,7 @@ impl Pending {
     /// Validate the complete x86-64 exception handoff before ownership enters
     /// scheduler state. # C: O(1)
     pub fn is_valid(&self) -> bool {
+        if !exception_record_header_valid(&self.record) { return false; }
         #[cfg(target_arch = "x86_64")]
         {
             let code = u32::from_le_bytes(self.record[EXCEPTION_CODE_OFFSET..EXCEPTION_CODE_OFFSET + 4].try_into().unwrap());
@@ -49,6 +56,27 @@ impl Pending {
         #[cfg(not(target_arch = "x86_64"))]
         { false }
     }
+}
+
+/// Validate the fixed portion of a Windows exception record before it is
+/// retained by the NT scheduler. Pointer ownership is checked by the caller;
+/// this function deliberately does not inspect opaque exception parameters.
+/// # C: O(1)
+pub fn exception_record_header_valid(record: &[u8; EXCEPTION_RECORD_BYTES]) -> bool {
+    let flags = u32::from_le_bytes(record[EXCEPTION_FLAGS_OFFSET..EXCEPTION_FLAGS_OFFSET + 4].try_into().unwrap());
+    let count = u32::from_le_bytes(record[EXCEPTION_NUMBER_PARAMETERS_OFFSET..EXCEPTION_NUMBER_PARAMETERS_OFFSET + 4].try_into().unwrap());
+    flags & !EXCEPTION_FLAGS_MASK == 0 && count <= EXCEPTION_MAXIMUM_PARAMETERS
+}
+
+/// Validate the optional nested-record link without dereferencing it. The
+/// address predicate is the address-space owner’s user-range decision, so NT
+/// validation cannot create a second memory policy.
+/// # C: O(1)
+pub fn exception_record_link_valid<F: Fn(u64) -> bool>(record: &[u8; EXCEPTION_RECORD_BYTES], is_user: F) -> bool {
+    if !exception_record_header_valid(record) { return false; }
+    let nested = u64::from_le_bytes(record[EXCEPTION_RECORD_OFFSET..EXCEPTION_RECORD_OFFSET + 8].try_into().unwrap());
+    let address = u64::from_le_bytes(record[EXCEPTION_ADDRESS_OFFSET..EXCEPTION_ADDRESS_OFFSET + 8].try_into().unwrap());
+    (nested == 0 || is_user(nested)) && (address == 0 || is_user(address))
 }
 
 enum Slot {
@@ -176,6 +204,27 @@ mod tests {
         pending.context[CONTEXT_FLAGS_OFFSET..CONTEXT_FLAGS_OFFSET + 4].fill(0);
         assert_eq!(state.publish(pending), Err(pending));
         assert!(!state.is_pending());
+    }
+
+    #[test]
+    fn exception_record_bounds_parameters_and_nested_user_links() {
+        let mut record = [0u8; EXCEPTION_RECORD_BYTES];
+        record[EXCEPTION_NUMBER_PARAMETERS_OFFSET..EXCEPTION_NUMBER_PARAMETERS_OFFSET + 4].copy_from_slice(&3u32.to_le_bytes());
+        record[EXCEPTION_RECORD_OFFSET..EXCEPTION_RECORD_OFFSET + 8].copy_from_slice(&0x7000u64.to_le_bytes());
+        record[EXCEPTION_ADDRESS_OFFSET..EXCEPTION_ADDRESS_OFFSET + 8].copy_from_slice(&0x401000u64.to_le_bytes());
+        assert!(exception_record_link_valid(&record, |address| address >= 0x4000));
+        record[EXCEPTION_NUMBER_PARAMETERS_OFFSET..EXCEPTION_NUMBER_PARAMETERS_OFFSET + 4].copy_from_slice(&16u32.to_le_bytes());
+        assert!(!exception_record_link_valid(&record, |address| address >= 0x4000));
+    }
+
+    #[test]
+    fn exception_record_rejects_unknown_flags_and_kernel_links() {
+        let mut record = [0u8; EXCEPTION_RECORD_BYTES];
+        record[EXCEPTION_FLAGS_OFFSET..EXCEPTION_FLAGS_OFFSET + 4].copy_from_slice(&0x80u32.to_le_bytes());
+        assert!(!exception_record_link_valid(&record, |_| true));
+        record[EXCEPTION_FLAGS_OFFSET..EXCEPTION_FLAGS_OFFSET + 4].fill(0);
+        record[EXCEPTION_RECORD_OFFSET..EXCEPTION_RECORD_OFFSET + 8].copy_from_slice(&0xffff_8000_0000_0000u64.to_le_bytes());
+        assert!(!exception_record_link_valid(&record, |address| address < 0x0000_8000_0000_0000));
     }
 
     #[test]
