@@ -53,6 +53,17 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         callbacks.swap_remove(index);
         return Some(STATUS_SUCCESS);
     }
+    if call.service == NtService::TpReleaseTimer {
+        let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
+        if !cur.is_nt_personality() || call.args.a0 == 0 { return Some(STATUS_INVALID_PARAMETER); }
+        let mut callbacks = cur.thread_group.nt_callbacks.lock();
+        let Some(index) = callbacks.iter().position(|entry| entry.token == call.args.a0
+            && matches!(entry.kind, sched::nt_callback::RegistrationKind::Timer { .. })) else {
+            return Some(STATUS_INVALID_HANDLE);
+        };
+        callbacks.swap_remove(index);
+        return Some(STATUS_SUCCESS);
+    }
     if call.service == NtService::TpSetPoolStackInformation {
         let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
         if !cur.is_nt_personality() || call.args.a0 == 0 || call.args.a1 == 0 {
@@ -350,9 +361,14 @@ fn allocate_callback(call: NtCall, timer: bool) -> u64 {
     // The process thread-group owns the opaque object until a corresponding
     // release operation exists. It is not a success-only pointer: callback
     // code/context are retained for the later wait/timer dispatch path.
+    let kind = if timer {
+        sched::nt_callback::RegistrationKind::Timer { queue: 0, due_ms: 0, period_ms: 0, flags: 0 }
+    } else {
+        sched::nt_callback::RegistrationKind::Callback
+    };
     cur.thread_group.nt_callbacks.lock().push(sched::nt_callback::Registration {
         token, callback: call.args.a1, context: call.args.a2,
-        kind: sched::nt_callback::RegistrationKind::Callback,
+        kind,
     });
     if uaccess::put_user_u64(call.args.a0, token).is_err() {
         cur.thread_group.nt_callbacks.lock().retain(|entry| entry.token != token);
