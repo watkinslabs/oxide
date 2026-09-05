@@ -305,19 +305,28 @@ fn round_mapping_size(size: u64) -> usize {
     size.saturating_add(hal::PAGE_SIZE_BYTES - 1).min(usize::MAX as u64) as usize & !(hal::PAGE_SIZE_BYTES - 1) as usize
 }
 
+fn mapping_size(requested: u64, section_size: u64, start: u64) -> Option<u64> {
+    if start >= section_size { return None; }
+    let available = section_size - start;
+    let size = if requested == 0 { available } else { requested };
+    if size == 0 || size > available || size > SERVER_MAPPING_MAX_BYTES { None } else { Some(size) }
+}
+
 #[cfg(target_os = "oxide-kernel")]
 fn server_map_view(args: u64, table: &sched::nt_object::NtHandleTable) -> u64 {
     let (Some(mapping_address), Some(access_address), Some(base_address), Some(size_address), Some(start_address)) =
         (wine_arg(args, 12), wine_arg(args, 16), wine_arg(args, 24), wine_arg(args, 32), wine_arg(args, 40)) else { return STATUS_INVALID_PARAMETER; };
     let (Ok(raw), Ok(access), Ok(base), Ok(size), Ok(start)) = (uaccess::get_user_u32(mapping_address), uaccess::get_user_u32(access_address), uaccess::get_user_u64(base_address), uaccess::get_user_u64(size_address), uaccess::get_user_u64(start_address)) else { return STATUS_INVALID_PARAMETER; };
-    if size == 0 || start % hal::PAGE_SIZE_BYTES != 0 { return STATUS_INVALID_PARAMETER; }
+    if start % hal::PAGE_SIZE_BYTES != 0 || base % hal::PAGE_SIZE_BYTES != 0 { return STATUS_INVALID_PARAMETER; }
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     let Some(mm) = (unsafe { cur.mm_ref() }).map(|mm| mm.clone()) else { return STATUS_INVALID_PARAMETER; };
     let required = if access & SERVER_MAPPING_ACCESS_WRITE != 0 { 0x0002 } else { 0x0004 };
     let handle = sched::nt_object::NtHandle::from_raw(raw);
     let Some(object) = table.get(handle, required) else { return if table.contains(handle) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE }; };
     let Some(section) = object.section() else { return STATUS_INVALID_HANDLE; };
-    if start >= section.size() as u64 || size > section.size() as u64 - start || size > SERVER_MAPPING_MAX_BYTES { return STATUS_INVALID_PARAMETER; }
+    let Some(size) = mapping_size(size, section.size() as u64, start) else { return STATUS_INVALID_PARAMETER; };
+    let mapped_size = round_mapping_size(size);
+    if mapped_size == 0 || mapped_size as u64 > section.size() as u64 - start { return STATUS_INVALID_PARAMETER; }
     let protection = if access & SERVER_MAPPING_ACCESS_WRITE != 0 { vmm::VmaProt::READ | vmm::VmaProt::WRITE } else { vmm::VmaProt::READ };
     let backing = if let Some(file) = section.file() {
         vmm::VmaBacking::File { backing: crate::mmap_file::InodeFileBacking::new(file.inode().clone()), off: start }
@@ -325,11 +334,21 @@ fn server_map_view(args: u64, table: &sched::nt_object::NtHandleTable) -> u64 {
         vmm::VmaBacking::KernelBytes { data: section.bytes(), off: start as usize }
     };
     let placement = match base { 0 => vmm::MmapPlacement::Advisory(None), value => { let Some(address) = hal::UserVirtAddr::new(value) else { return STATUS_INVALID_PARAMETER; }; vmm::MmapPlacement::FixedNoReplace(address) } };
-    match mm.mmap_with_may_at(placement, round_mapping_size(size), protection, protection, vmm::VmaFlags::PRIVATE, backing) {
-        Ok(_) => STATUS_SUCCESS,
-        Err(vmm::MmapError::Exists) => STATUS_CONFLICTING_ADDRESSES,
-        Err(vmm::MmapError::Vmm(_)) => STATUS_NO_MEMORY,
+    let mapped = match mm.mmap_with_may_at(placement, mapped_size, protection, protection, vmm::VmaFlags::PRIVATE | vmm::VmaFlags::NT_SECTION_VIEW, backing) {
+        Ok(mapped) => mapped,
+        Err(vmm::MmapError::Exists) => return STATUS_CONFLICTING_ADDRESSES,
+        Err(vmm::MmapError::Vmm(_)) => return STATUS_NO_MEMORY,
+    };
+    if !mm.set_mapping_origin(mapped) {
+        let _ = mm.munmap(mapped, mapped_size);
+        return STATUS_NO_MEMORY;
     }
+    if uaccess::put_user_u64(base_address, mapped.as_u64()).is_err()
+        || uaccess::put_user_u64(size_address, mapped_size as u64).is_err() {
+        let _ = mm.munmap(mapped, mapped_size);
+        return STATUS_INVALID_PARAMETER;
+    }
+    STATUS_SUCCESS
 }
 
 #[cfg(target_os = "oxide-kernel")]
@@ -740,6 +759,14 @@ mod tests {
     use super::*;
     use alloc::vec;
     use alloc::vec::Vec;
+
+    #[test]
+    fn mapping_size_defaults_to_remaining_section_and_rejects_overrun() {
+        assert_eq!(mapping_size(0, 0x4000, 0x1000), Some(0x3000));
+        assert_eq!(mapping_size(0x1000, 0x4000, 0x1000), Some(0x1000));
+        assert_eq!(mapping_size(0x3001, 0x4000, 0x1000), None);
+        assert_eq!(mapping_size(1, 0x4000, 0x4000), None);
+    }
 
     fn descriptor(root: u64, table_address: u64, entry_count: u64, module_base: u64, module_end: u64) {
         let as_ = vmm::AddressSpace::new(root).unwrap();
