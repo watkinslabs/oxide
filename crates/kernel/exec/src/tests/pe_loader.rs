@@ -528,7 +528,7 @@
         let as_ = AddressSpace::new(0x1_0000).unwrap(); as_.set_mmap_layout(0x7000_0000, true);
         let image = load_pe_image(&tiny_pe(), &as_).unwrap(); assert_eq!(image.size, 0x3000); assert_eq!(image.preferred_base, 0x1000_0000); assert_eq!(image.base, image.preferred_base); assert!(image.entry.as_u64() >= image.base); assert!(as_.vma_count() >= 2);
         assert_eq!(image.tls_directory, (0, 0));
-        let entry = initial_entry_state(&image, 0x6000_0001).unwrap(); assert_eq!(entry.rip, image.entry); assert_eq!(entry.rsp.as_u64(), 0x5fff_ffe0);
+        let entry = initial_entry_state(&image, 0x6000_0001).unwrap(); assert_eq!(entry.rip, image.entry); assert_eq!(entry.rsp.as_u64(), 0x5fff_ffd8);
     }
 
     #[test]
@@ -564,7 +564,7 @@
         assert_eq!(&data[0x1010..0x1025], &blob[0x410..0x425]);
         assert_eq!(process.entry.rip, process.image.entry);
         assert_eq!(process.entry.personality, ExecutionPersonality::Nt);
-        assert_eq!(process.entry.rsp.as_u64() % 16, 0);
+        assert_eq!(process.entry.rsp.as_u64() % 16, 8);
         let env_vma = as_.find_vma(process.environment.base).unwrap();
         let data = match env_vma.backing { VmaBacking::KernelBytes { data, .. } => data, _ => panic!("PE environment must be kernel-backed") };
         let read64 = |offset: usize| u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
@@ -592,7 +592,20 @@
         let state = initial_entry_state_with_environment(&image, 0x6000_0000, &env).unwrap();
         assert_eq!(state.personality, ExecutionPersonality::Nt);
         assert_eq!(state.gs_base, env.teb);
-        assert_eq!(state.rsp.as_u64() % 16, 0);
+        assert_eq!(state.rsp.as_u64() % 16, 8);
+    }
+
+    #[test]
+    fn direct_entry_keeps_return_slot_and_home_area_inside_stack() {
+        let as_ = AddressSpace::new(0x20_000).unwrap();
+        let image = load_pe_image(&tiny_pe(), &as_).unwrap();
+        let stack = as_.mmap(None, 0x8000, VmaProt::READ | VmaProt::WRITE,
+            VmaFlags::PRIVATE, VmaBacking::Anonymous, false).unwrap();
+        let stack_top = stack.as_u64() + 0x8000;
+        let entry = initial_entry_state(&image, stack_top).unwrap();
+        assert_eq!(entry.rsp.as_u64() % 16, 8);
+        assert!(entry.rsp.as_u64() >= stack.as_u64());
+        assert!(entry.rsp.as_u64() + process_env::X64_SHADOW_SPACE + process_env::X64_RETURN_SLOT <= stack_top);
     }
 
     #[test]
