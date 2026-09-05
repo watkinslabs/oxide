@@ -1,0 +1,15 @@
+[package]
+name = "windows-vkd3d"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "windows-vkd3d-probe"
+path = "src/main.rs"
+
+[dependencies]
+pe = { path = "../../../crates/shared/pe" }

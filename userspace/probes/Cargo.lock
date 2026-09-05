@@ -712,6 +712,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "windows-vkd3d"
+version = "0.1.0"
+dependencies = [
+ "pe",
+]
+
+[[package]]
 name = "windows-vulkan"
 version = "0.1.0"
 dependencies = [
