@@ -815,7 +815,10 @@ fn set_information(cur: &sched::Task, addr: u64) -> u64 {
 }
 
 fn set_information_values(cur: &sched::Task, handle: u32, io_status: u64, information: u64, length: u32, class: u32) -> u64 {
-    if io_status == 0 || information == 0 || (class != FILE_DISPOSITION_INFORMATION && length < 8) { return STATUS_INVALID_PARAMETER; }
+    if io_status == 0 || information == 0 { return STATUS_INVALID_PARAMETER; }
+    if class == FILE_DISPOSITION_INFORMATION {
+        if !crate::nt_file_policy::disposition_information_valid(length) { return STATUS_INVALID_PARAMETER; }
+    } else if length < 8 { return STATUS_INVALID_PARAMETER; }
     let native = sched::nt_object::NtHandle::from_raw(handle);
     let table = cur.thread_group.nt_handles();
     let required = match class {
@@ -867,10 +870,10 @@ fn set_information_values(cur: &sched::Task, handle: u32, io_status: u64, inform
     }
     if class == FILE_RENAME_INFORMATION { return set_rename_information(file.as_ref(), information, length, io_status); }
     if class == FILE_DISPOSITION_INFORMATION {
-        let Ok(delete) = read_u32(information) else { return STATUS_INVALID_PARAMETER; };
+        let mut value = [0u8; 1];
+        if uaccess::copy_from_user(&mut value, information).is_err() { return STATUS_INVALID_PARAMETER; }
         let Some(state) = object.delete_on_close() else { return STATUS_INVALID_PARAMETER; };
-        if delete > 1 { return STATUS_INVALID_PARAMETER; }
-        state.set_armed(delete != 0);
+        state.set_armed(crate::nt_file_policy::disposition_requests_delete(value[0]));
         write_io_status(io_status, STATUS_SUCCESS, 0);
         return STATUS_SUCCESS;
     }
