@@ -244,9 +244,22 @@ impl WindowManager {
     pub fn focused(&self) -> Option<WindowId> { self.focus }
     /// Change visibility and return the previous state. # C: O(N_windows)
     pub fn show(&mut self, tid: u64, id: WindowId, visible: bool) -> Result<bool, WindowError> {
-        let Some((_, record)) = self.windows.iter_mut().find(|(window, _)| *window == id) else { return Err(WindowError::NoSuchWindow); };
+        let Some(record) = self.get(id) else { return Err(WindowError::NoSuchWindow); };
         if record.owner_tid != tid { return Err(WindowError::WrongThread); }
-        let previous = record.visible; record.visible = visible; Ok(previous)
+        let previous = record.visible;
+        if previous == visible { return Ok(previous); }
+        let Some((_, record)) = self.windows.iter_mut().find(|(window, _)| *window == id) else { return Err(WindowError::NoSuchWindow); };
+        record.visible = visible;
+        if visible {
+            let area = self.client_rect(id);
+            if area.is_some_and(|rect| rect.right > rect.left && rect.bottom > rect.top) {
+                if let Err(error) = self.invalidate(id, None) {
+                    if let Some((_, record)) = self.windows.iter_mut().find(|(window, _)| *window == id) { record.visible = previous; }
+                    return Err(error);
+                }
+            }
+        }
+        Ok(previous)
     }
     /// Read geometry from the canonical HWND record. # C: O(N_windows)
     pub fn rect(&self, id: WindowId) -> Option<WindowRect> { self.rects.iter().find(|(window, _)| *window == id).map(|(_, rect)| *rect) }
@@ -798,6 +811,22 @@ mod tests {
         assert_eq!(manager.take_for_thread(9, MessageFilter { hwnd: Some(window), first: WM_CLOSE, last: WM_CLOSE }), QueueResult::Message(message));
         manager.destroy(window).unwrap();
         assert_eq!(manager.post_to_window(window, message), Err(WindowError::NoSuchWindow));
+    }
+
+    #[test]
+    fn showing_sized_window_admits_one_full_paint_and_hide_does_not_repaint() {
+        let mut manager = WindowManager::new();
+        let window = manager.create(9, None, 0).unwrap();
+        let rect = WindowRect { left: 80, top: 60, right: 720, bottom: 540 };
+        manager.set_rect(window, rect).unwrap();
+        assert_eq!(manager.show(9, window, true), Ok(false));
+        assert_eq!(manager.begin_paint(window), Ok(Some(WindowRect { left: 0, top: 0, right: 640, bottom: 480 })));
+        assert_eq!(manager.end_paint(window), Ok(()));
+        assert_eq!(manager.begin_paint(window), Ok(None));
+        assert_eq!(manager.peek_for_thread(9, MessageFilter { hwnd: Some(window), first: WM_PAINT, last: WM_PAINT }, true).map(|message| message.message), Some(WM_PAINT));
+        assert_eq!(manager.peek_for_thread(9, MessageFilter { hwnd: Some(window), first: WM_PAINT, last: WM_PAINT }, true), None);
+        assert_eq!(manager.show(9, window, false), Ok(true));
+        assert_eq!(manager.peek_for_thread(9, MessageFilter { hwnd: Some(window), first: WM_PAINT, last: WM_PAINT }, true), None);
     }
 
     #[test]
