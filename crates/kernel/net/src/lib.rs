@@ -169,6 +169,10 @@ pub mod sock_wait;
 /// mask. The projection is pure so the NT/Winsock adapter cannot create a
 /// second readiness owner.
 pub mod windows_events;
+/// Per-operation Windows overlapped completion state and Linux-to-Winsock
+/// terminal error translation. It is separate from socket readiness because
+/// Linux owns readiness while each OVERLAPPED owns its completion record.
+pub mod windows_async;
 // Linux `sock_intr_errno` — NOT kernel-gated, so the ERESTARTSYS/EINTR rule
 // every socket wait shares is unit-tested hosted.
 pub mod sock_intr;
