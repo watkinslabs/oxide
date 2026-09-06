@@ -15,6 +15,18 @@ const HEAP_COMPATIBILITY_INFORMATION: u64 = 0;
 
 /// Dispatch the heap subset, returning `None` for every other NT service.
 /// # C: O(log N_vmas)
+/// Bounded trace of heap extents: a control's state block read back as garbage
+/// is either a wrong slot or a reused extent, and this tells the two apart.
+fn trace_heap(op: &'static [u8], a: u64, b: u64, c: u64) {
+    use core::sync::atomic::{AtomicU32, Ordering};
+    static BUDGET: AtomicU32 = AtomicU32::new(0);
+    if BUDGET.fetch_add(1, Ordering::Relaxed) >= 600 { return; }
+    klog::write_raw(b"[WINDOWS-HEAP] op="); klog::write_raw(op);
+    klog::write_raw(b" a="); klog::write_hex_u64(a);
+    klog::write_raw(b" b="); klog::write_hex_u64(b);
+    klog::write_raw(b" c="); klog::write_hex_u64(c); klog::write_raw(b"\n");
+}
+
 pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == nt::NtService::RtlValidateHeap { return Some(validate_heap(call)); }
     if call.service == nt::NtService::RtlWalkHeap { return Some(walk_heap(call)); }
@@ -49,6 +61,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
                 Ok(allocation) => {
                     let base = allocation.base.as_u64();
                     cur.thread_group.nt_heap_user_info.lock().push((base, flags as u32, 0, size));
+                    trace_heap(b"alloc", size as u64, flags, base);
                     base
                 }
                 Err(elf_load::nt_memory::NtStatus::NoMemory) => STATUS_NO_MEMORY,
@@ -60,7 +73,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
             let Some((_, _, _, size)) = cur.thread_group.nt_heap_user_info.lock().iter().find(|entry| entry.0 == base.as_u64()).copied() else { return Some(0); };
             let Some(info) = elf_load::nt_memory::query(&mm, base).ok() else { return Some(0); };
             match elf_load::nt_memory::free(&mm, elf_load::nt_memory::NtAllocation { base, size, protection: info.protection, reserved: !info.committed }) {
-                elf_load::nt_memory::NtStatus::Success => { cur.thread_group.nt_heap_user_info.lock().retain(|entry| entry.0 != base.as_u64()); 1 }
+                elf_load::nt_memory::NtStatus::Success => { cur.thread_group.nt_heap_user_info.lock().retain(|entry| entry.0 != base.as_u64()); trace_heap(b"free", base.as_u64(), size as u64, 1); 1 }
                 _ => 0,
             }
         }
@@ -81,6 +94,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
             let _ = elf_load::nt_memory::free(&mm, elf_load::nt_memory::NtAllocation { base: old_base, size: old_size, protection: old_info.protection, reserved: !old_info.committed });
             let mut user_info = cur.thread_group.nt_heap_user_info.lock();
             if let Some(entry) = user_info.iter_mut().find(|entry| entry.0 == old_base.as_u64()) { entry.0 = new.base.as_u64(); entry.3 = size as usize; }
+            trace_heap(b"realloc", old_base.as_u64(), new.base.as_u64(), size);
             new.base.as_u64()
         }
         NtHeapCall::Size { heap: _, flags: _, base } => {
