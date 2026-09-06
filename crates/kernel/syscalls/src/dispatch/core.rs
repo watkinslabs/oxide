@@ -84,6 +84,24 @@ fn dispatch_routed_syscall(entry: (Option<u64>, u64), nr: u64, args: &SyscallArg
         klog::write_hex_u64(nr);
         klog::write_raw(b"\n");
     }
+    // The message loop retrieves messages and NtUserDispatchMessage never
+    // fires, so whatever DispatchMessage really calls is one of the ordinals
+    // this list does not trace. Trace every raw ordinal an NT task issues,
+    // bounded to the first few hundred so a running system is not flooded:
+    // the loop's shape shows within that.
+    if sched::live::current().is_some_and(|task| task.is_nt_personality()) {
+        use core::sync::atomic::{AtomicU32, Ordering};
+        static LOOP_TRACE: AtomicU32 = AtomicU32::new(0);
+        if LOOP_TRACE.fetch_add(1, Ordering::Relaxed) < 400 {
+            klog::write_raw(b"[WINDOWS-RAW] ordinal=");
+            klog::write_hex_u64(nr);
+            klog::write_raw(b" a0=");
+            klog::write_hex_u64(args.a0);
+            klog::write_raw(b" a1=");
+            klog::write_hex_u64(args.a1);
+            klog::write_raw(b"\n");
+        }
+    }
     // Real Wine win32u PE stubs use their generated raw ordinal namespace
     // rather than Oxide's tagged synthetic dispatcher entry. Only an NT task
     // may claim this otherwise-unreserved raw number.
