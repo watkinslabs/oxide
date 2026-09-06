@@ -228,7 +228,9 @@ impl Advapi {
 }
 
 fn root(raw: u64) -> Option<Root> { match raw { HKEY_LOCAL_MACHINE => Some(Root::LocalMachine), HKEY_CURRENT_USER => Some(Root::CurrentUser), HKEY_CLASSES_ROOT => Some(Root::Classes), _ => None } }
-fn status(error: Error) -> u32 { match error { Error::MissingKey | Error::MissingValue => ERROR_FILE_NOT_FOUND, Error::Deleted => ERROR_KEY_DELETED, Error::InvalidPath => ERROR_INVALID_PARAMETER, Error::Io(_) | Error::InvalidFile => ERROR_GEN_FAILURE } }
+fn status(error: Error) -> u32 { match error { Error::MissingKey | Error::MissingValue => ERROR_FILE_NOT_FOUND, Error::Deleted => ERROR_KEY_DELETED, Error::InvalidPath => ERROR_INVALID_PARAMETER, Error::Io(_) | Error::InvalidFile => ERROR_GEN_FAILURE,
+    // Startup-only: reaching a client at all means the lock was taken.
+    Error::AlreadyServing => ERROR_GEN_FAILURE } }
 fn status_handle(error: Error) -> u32 { match error { Error::MissingKey => ERROR_INVALID_HANDLE, other => status(other) } }
 fn copy_name(value: &str, buffer: &mut [u16], length: &mut u32) -> u32 {
     let encoded: Vec<u16> = value.encode_utf16().collect();

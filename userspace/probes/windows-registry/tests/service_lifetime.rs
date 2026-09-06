@@ -39,6 +39,7 @@ fn wait_until(label: &str, mut ready: impl FnMut() -> bool) {
     while !ready() { assert!(Instant::now() < end, "timed out: {label}"); thread::sleep(POLL); }
 }
 
+#[allow(dead_code)]
 fn blocked_on_owner(owner: u32, waiter: u32) -> bool {
     let locks = fs::read_to_string("/proc/locks").expect("hosted Linux test requires /proc/locks");
     let mut owner_lock = None;
@@ -140,22 +141,37 @@ fn partial_frame_client_does_not_hold_registry_owner() {
 }
 
 #[test]
-fn second_daemon_cannot_orphan_first_socket() {
+fn second_daemon_declines_and_leaves_the_live_owner_serving() {
     let mut fixture = Fixture::new(); let socket = fixture.directory.join("registry.sock");
-    let first = fixture.spawn();
+    fixture.spawn();
     wait_until("first daemon socket", || { assert!(fixture.children[0].try_wait().unwrap().is_none()); socket.exists() });
     query_root(&socket); let original = socket_identity(&socket);
-    let second = fixture.spawn();
-    wait_until("second daemon blocked on first sidecar lock", || {
-        assert!(fixture.children.iter_mut().all(|child| child.try_wait().unwrap().is_none()));
-        blocked_on_owner(first, second)
-    });
-    // Isolated removal-control models a launcher unlink, never mutating production source.
-    if std::env::var_os("OXIDE_REGISTRY_UNLINK_CONTROL").is_some() { fs::remove_file(&socket).unwrap(); }
+    fixture.spawn();
+    // The contender takes the database lock before it can touch the socket, so
+    // finding it held is a normal outcome: it declines and exits successfully
+    // rather than parking forever or replacing a live endpoint.
+    wait_until("second daemon declined", || fixture.children[1].try_wait().unwrap().is_some());
+    assert!(fixture.children[1].try_wait().unwrap().unwrap().success(),
+        "a launch finding the shared service already up is not a failure");
     assert_eq!(socket_identity(&socket), original, "contender replaced the owner's socket");
+    assert!(fixture.children[0].try_wait().unwrap().is_none(), "the original owner must still be serving");
     query_root(&socket);
-    fixture.children[1].kill().unwrap(); fixture.children[1].wait().unwrap();
-    assert!(fixture.children[0].try_wait().unwrap().is_none());
-    assert_eq!(socket_identity(&socket), original);
-    query_root(&socket);
+}
+
+#[test]
+fn declining_daemon_leaves_a_usable_shared_service_for_a_later_application() {
+    let mut fixture = Fixture::new(); let socket = fixture.directory.join("registry.sock");
+    fixture.spawn();
+    wait_until("first daemon socket", || { assert!(fixture.children[0].try_wait().unwrap().is_none()); socket.exists() });
+    let mut first = UnixStream::connect(&socket).unwrap();
+    let key = request_handle(&mut first, registry_wire::CREATE, "Software\\SharedService");
+    set_dword(&mut first, key, "written-before-second-launch", 7);
+    // A second application's launch attempts the daemon again, as the wrapper does.
+    fixture.spawn();
+    wait_until("second daemon declined", || fixture.children[1].try_wait().unwrap().is_some());
+    // That second application then reaches the same live service and the same state.
+    let mut second = UnixStream::connect(&socket).unwrap();
+    let same = request_handle(&mut second, registry_wire::OPEN, "Software\\SharedService");
+    send_frame(&mut second, &value_request(registry_wire::QUERY, same, "written-before-second-launch"));
+    expect_dword(&mut second, 7);
 }

@@ -15,7 +15,18 @@ fn main() -> ExitCode {
     let Some(socket) = args.next() else { usage(); return ExitCode::from(2); };
     let Some(database) = args.next() else { usage(); return ExitCode::from(2); };
     let socket = PathBuf::from(socket); let database = PathBuf::from(database);
-    let store = match RegistryStore::open(&database) { Ok(store) => store, Err(error) => { eprintln!("cannot open registry: {error:?}"); return ExitCode::from(1); } };
+    let store = match RegistryStore::open_exclusive(&database) {
+        Ok(store) => store,
+        // One service per user database. A second launch is a normal outcome:
+        // the shared service is already up and owns the live socket.
+        Err(windows_registry::Error::AlreadyServing) => {
+            eprintln!("registryd: already serving {}", database.display());
+            return ExitCode::SUCCESS;
+        }
+        Err(error) => { eprintln!("cannot open registry: {error:?}"); return ExitCode::from(1); }
+    };
+    // Only the service that owns the database lock may replace the socket, so
+    // this can never unlink an endpoint another service is still serving.
     let _ = std::fs::remove_file(&socket);
     let listener = match UnixListener::bind(&socket) { Ok(listener) => listener, Err(error) => { eprintln!("cannot bind registry socket: {error}"); return ExitCode::from(1); } };
     match serve_listener(listener, store, ServerLimits { max_clients: MAX_ACTIVE_CLIENTS }) {

@@ -40,7 +40,7 @@ impl KeyHandle {
 pub struct Key { pub path: String, pub(crate) values: BTreeMap<String, (String, Value)> }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum Error { InvalidPath, MissingKey, MissingValue, InvalidFile, Io(String), Deleted }
+pub enum Error { InvalidPath, MissingKey, MissingValue, InvalidFile, Io(String), Deleted, AlreadyServing }
 
 impl From<io::Error> for Error { fn from(error: io::Error) -> Self { Self::Io(error.to_string()) } }
 

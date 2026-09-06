@@ -70,7 +70,15 @@ pub struct NtExecRequest {
     /// Its loader owns native relocation, TLS, constructors, and registration.
     pub bootstrap: UserPtr<u8>,
     pub bootstrap_len: u64,
+    /// Registry endpoint the launcher already connected under its own
+    /// credentials in its own namespaces. `NO_REGISTRY_ENDPOINT` supplies
+    /// none; the kernel never reopens a path on the process's behalf.
+    pub registry_socket: i32,
+    pub _registry_padding: u32,
 }
+
+/// Absent registry endpoint. A launch may legitimately carry no registry.
+pub const NO_REGISTRY_ENDPOINT: i32 = -1;
 
 #[cfg(test)]
 mod tests {
@@ -82,7 +90,7 @@ mod tests {
         assert_eq!(core::mem::size_of::<NtExecUnixlib>(), 48);
         assert_eq!(core::mem::size_of::<NtWineUnixlibRegistration>(), 48);
         assert_eq!(core::mem::align_of::<NtExecModule>(), 8);
-        assert_eq!(core::mem::size_of::<NtExecRequest>(), 112);
+        assert_eq!(core::mem::size_of::<NtExecRequest>(), 120);
         assert_eq!(core::mem::align_of::<NtExecRequest>(), 8);
     }
 }

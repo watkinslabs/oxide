@@ -18,6 +18,10 @@ fn main() -> ExitCode {
             if args.next().is_some() { usage(); return ExitCode::from(2); }
             steam_launch(PathBuf::from(path))
         }
+        Some(flag) if flag == std::ffi::OsStr::new("--user-paths") => {
+            if args.next().is_some() { usage(); return ExitCode::from(2); }
+            user_paths()
+        }
         Some(flag) if flag == std::ffi::OsStr::new("--preflight") => preflight(&mut args),
         Some(flag) if flag == std::ffi::OsStr::new("--launch") => launch(&mut args),
         _ => { usage(); ExitCode::from(2) }
@@ -85,6 +89,30 @@ fn parse_hex(value: &str) -> Option<u64> {
     u64::from_str_radix(value, 16).ok()
 }
 
+/// Print this user's launch paths as shell assignments, creating the private
+/// directories that hold them. One owner selects these paths: the wrapper
+/// consumes this output rather than recomputing the policy in shell.
+fn user_paths() -> ExitCode {
+    let input = windows_runtime::user_paths::UserPathInput::from_environment();
+    let paths = match windows_runtime::user_paths::UserRuntimePaths::prepare(&input) {
+        Ok(paths) => paths,
+        Err(error) => { eprintln!("windows-runtime: user paths unavailable: {error:?}"); return ExitCode::from(1); }
+    };
+    for (name, path) in [("OXIDE_WINDOWS_PREFIX", &paths.prefix),
+                         ("OXIDE_WINDOWS_REGISTRY_DATABASE", &paths.database),
+                         ("OXIDE_WINDOWS_REGISTRY_SOCKET", &paths.socket)] {
+        let bytes = path.as_os_str().as_bytes();
+        // A path needing shell quoting cannot be emitted as an assignment
+        // without inventing an escaping dialect; reject it instead.
+        if bytes.iter().any(|byte| !matches!(byte, b'/' | b'.' | b'-' | b'_' | b'0'..=b'9' | b'A'..=b'Z' | b'a'..=b'z')) {
+            eprintln!("windows-runtime: user path is not representable: {}", path.display());
+            return ExitCode::from(1);
+        }
+        println!("{name}={}", path.display());
+    }
+    ExitCode::SUCCESS
+}
+
 fn launch(args: &mut impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
     let values = args.collect::<Vec<_>>();
     if !valid_launch_args(&values) { usage(); return ExitCode::from(2); }
@@ -149,7 +177,7 @@ fn preflight(args: &mut impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
 }
 
 fn usage() {
-    eprintln!("usage: windows-runtime --steam-launch <record> | --preflight <image> <dll-directory> <unixlib-directory> <nls-file> <registry-socket> <registry-database> | --launch <image> <windows-path> <command-line> x86_64 <prefix> <runtime> <dll-catalog> <unixlib> <nls-file> <registry-socket> <registry-database>");
+    eprintln!("usage: windows-runtime --user-paths | --steam-launch <record> | --preflight <image> <dll-directory> <unixlib-directory> <nls-file> <registry-socket> <registry-database> | --launch <image> <windows-path> <command-line> x86_64 <prefix> <runtime> <dll-catalog> <unixlib> <nls-file> <registry-socket> <registry-database>");
 }
 
 #[cfg(test)]

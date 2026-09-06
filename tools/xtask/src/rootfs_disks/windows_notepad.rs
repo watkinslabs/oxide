@@ -151,14 +151,21 @@ fn wrapper_script() -> &'static [u8] {
     br#"#!/bin/sh
 set -eu
 . /etc/oxide/windows-runtime.conf
-mkdir -p /run/oxide /var/lib/oxide
-rm -f "$OXIDE_WINDOWS_REGISTRY_SOCKET"
-/usr/local/bin/registryd "$OXIDE_WINDOWS_REGISTRY_SOCKET" "$OXIDE_WINDOWS_REGISTRY_DATABASE" >/run/oxide/registryd.log 2>&1 &
-registryd_pid=$!
-trap 'kill $registryd_pid 2>/dev/null || true' EXIT
+# The configuration supplies image-owned read-only inputs. The per-user prefix,
+# database and socket come from the runtime itself, which owns that policy: a
+# normal user cannot write the root-owned defaults, and duplicating the
+# selection in shell would be a second source of truth for it.
+eval "$(/usr/local/bin/windows-runtime --user-paths)"
+export OXIDE_WINDOWS_PREFIX OXIDE_WINDOWS_REGISTRY_DATABASE OXIDE_WINDOWS_REGISTRY_SOCKET
+mkdir -p "$OXIDE_WINDOWS_PREFIX"
+# One shared service per user database. The daemon takes the database lock
+# before it touches the socket and exits successfully when another service
+# already holds it, so starting it here can neither unlink a live endpoint nor
+# produce a second owner. It is deliberately not killed on exit: the service
+# outlives any one application, exactly as other per-user session services do.
+/usr/local/bin/registryd "$OXIDE_WINDOWS_REGISTRY_SOCKET" "$OXIDE_WINDOWS_REGISTRY_DATABASE" >>"$(dirname "$OXIDE_WINDOWS_REGISTRY_SOCKET")/registryd.log" 2>&1 &
 for attempt in $(seq 1 100); do
     [ -S "$OXIDE_WINDOWS_REGISTRY_SOCKET" ] && break
-    kill -0 $registryd_pid 2>/dev/null || exit 9
     sleep 0.1
 done
 [ -S "$OXIDE_WINDOWS_REGISTRY_SOCKET" ] || exit 10
@@ -183,6 +190,14 @@ mod tests {
     fn configuration_and_wrapper_use_only_image_owned_paths() {
         let config = String::from_utf8(fs::read(write_config().unwrap()).unwrap()).unwrap(); assert!(config.contains(WINDOWS_DIR)); assert!(!config.contains("/usr/lib64/wine"));
         let script = std::str::from_utf8(wrapper_script()).unwrap(); assert!(script.contains(". /etc/oxide/windows-runtime.conf")); assert!(!script.contains("mount -t 9p")); assert!(script.contains("/usr/local/bin/windows-runtime --launch")); assert!(script.contains("[WINDOWS-NOTEPAD] runtime-exit status=")); let _ = fs::remove_file("target/smoke/windows-runtime.conf");
+        // A normal user owns none of the root defaults, so the wrapper must
+        // take its writable paths from the runtime's own selection.
+        assert!(script.contains("windows-runtime --user-paths"), "wrapper must consume per-user path selection");
+        // Removing a live endpoint or killing the service on one application's
+        // exit is what made a second Windows application fail; neither may return.
+        assert!(!script.contains("rm -f \"$OXIDE_WINDOWS_REGISTRY_SOCKET\""), "wrapper must not unlink a possibly live socket");
+        assert!(!script.contains("kill $registryd_pid"), "wrapper must not kill the shared service");
+        assert!(!script.contains("mkdir -p /run/oxide"), "wrapper must not require root-owned runtime directories");
     }
     #[test]
     fn registry_seed_is_versioned_and_not_executable() { assert_eq!(EMPTY_REGISTRY, b"OXREG\0\x01\0\0\0\0\0"); }
