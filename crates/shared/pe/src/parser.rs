@@ -8,6 +8,10 @@ pub const IMAGE_DIRECTORY_ENTRY_IMPORT: usize = 1;
 pub const IMAGE_DIRECTORY_ENTRY_EXCEPTION: usize = 3;
 pub const IMAGE_DIRECTORY_ENTRY_BASERELOC: usize = 5;
 pub const IMAGE_DIRECTORY_ENTRY_TLS: usize = 9;
+pub const IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT: usize = 13;
+/// One `IMAGE_DELAYLOAD_DESCRIPTOR`: eight `DWORD`s.
+const DELAY_DESCRIPTOR_BYTES: u32 = 32;
+const DELAY_DESCRIPTOR_NAME_OFFSET: usize = 4;
 pub const IMAGE_REL_BASED_ABSOLUTE: u16 = 0;
 pub const IMAGE_REL_BASED_DIR64: u16 = 10;
 const UNW_FLAG_EHANDLER: u8 = 0x01;
@@ -173,6 +177,27 @@ impl<'a> Image<'a> {
         let mut out = Vec::new();
         for import in self.imports()? {
             if !out.iter().any(|name: &&[u8]| ascii_eq_ignore_case(name, import.name)) { out.push(import.name); }
+        }
+        Ok(out)
+    }
+
+    /// Return the DLL names named by the delay-load descriptors. A delayed
+    /// dependency is bound on first use, so it is absent from the import
+    /// directory and still has to reach the module catalog.
+    /// # C: O(delay-load directory + dependency name bytes)
+    pub fn delay_dependencies(&self) -> Result<Vec<&'a [u8]>, Error> {
+        let d = self.directories[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT];
+        let mut out: Vec<&'a [u8]> = Vec::new();
+        if d.size == 0 { return Ok(out); }
+        let end = d.rva.checked_add(d.size).ok_or(Error::Einval)?;
+        let mut at = d.rva;
+        while at.checked_add(DELAY_DESCRIPTOR_BYTES).ok_or(Error::Einval)? <= end {
+            let bytes = self.rva_range(at, DELAY_DESCRIPTOR_BYTES)?;
+            let name_rva = u32(bytes, DELAY_DESCRIPTOR_NAME_OFFSET)?;
+            if name_rva == 0 { break; }
+            let name = self.c_string(name_rva)?;
+            if !out.iter().any(|known: &&[u8]| ascii_eq_ignore_case(known, name)) { out.push(name); }
+            at = at.checked_add(DELAY_DESCRIPTOR_BYTES).ok_or(Error::Einval)?;
         }
         Ok(out)
     }

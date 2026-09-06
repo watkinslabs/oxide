@@ -40,6 +40,11 @@ use crate::nt_loader_dir_policy::{self,
 
 mod dynamic;
 
+/// Load the module a delay-load descriptor names and publish its handle into
+/// the descriptor's module slot. The ASCII name is the descriptor's own.
+/// # C: O(dependency closure of the named module)
+pub(crate) fn load_delay_module(name: &[u8], module_output: u64) -> u64 { dynamic::load_ascii(name, module_output) }
+
 // Loader enumeration is diagnostic only. Keep it off the normal image: each
 // serial write is observable as startup latency during Wine initialization.
 macro_rules! loader_trace {

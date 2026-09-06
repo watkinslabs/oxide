@@ -229,13 +229,10 @@ pub(crate) fn resolve_exported_routine_by_name(cur: &sched::Task, module: u64, n
 fn get_procedure(call: NtCall) -> u64 {
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !cur.is_nt_personality() || call.args.a0 == 0 || call.args.a3 == 0 { return STATUS_INVALID_PARAMETER; }
-    let Some((module_size, is_ntdll)) = module_info(&cur, call.args.a0) else { return STATUS_INVALID_PARAMETER; };
+    if module_info(&cur, call.args.a0).is_none() { return STATUS_INVALID_PARAMETER; }
     let name = if call.args.a1 == 0 { None } else { read_ansi(call.args.a1) };
     if call.args.a1 != 0 && name.is_none() { return STATUS_INVALID_PARAMETER; }
-    let address = resolve_export(&cur, call.args.a0, module_size, name.as_deref(), call.args.a2 as u16, 0)
-        .or_else(|| is_ntdll.then(|| name.as_deref().and_then(|value| elf_load::pe_loader::resolve_nt_runtime_export(call.args.a0, value))).flatten())
-        .ok_or(STATUS_PROCEDURE_NOT_FOUND);
-    let Ok(address) = address.and_then(|address| callable_win32_export(cur, address).ok_or(STATUS_PROCEDURE_NOT_FOUND)) else { return STATUS_PROCEDURE_NOT_FOUND; };
+    let Some(address) = procedure_address(&cur, call.args.a0, name.as_deref(), call.args.a2 as u16) else { return STATUS_PROCEDURE_NOT_FOUND; };
     if address >= call.args.a0 && address - call.args.a0 >= 0x4000 && address - call.args.a0 < 0x5000 {
         pe_trace! {
             klog::write_raw(b"[WINDOWS-PE-DYNAMIC-RELAY] module=");
@@ -269,6 +266,17 @@ fn get_procedure(call: NtCall) -> u64 {
     }
     if uaccess::put_user_u64(call.args.a3, address).is_err() { return STATUS_INVALID_PARAMETER; }
     STATUS_SUCCESS
+}
+
+/// Bind one export of a loaded module to a callable user address, by name
+/// when `name` is given and by ordinal otherwise. The sole export resolver for
+/// both `LdrGetProcedureAddress` and delay-load thunk binding.
+/// # C: O(exports of the module and its forward targets)
+pub(crate) fn procedure_address(cur: &sched::Task, module: u64, name: Option<&[u8]>, ordinal: u16) -> Option<u64> {
+    let (module_size, is_ntdll) = module_info(cur, module)?;
+    let address = resolve_export(cur, module, module_size, name, ordinal, 0)
+        .or_else(|| is_ntdll.then(|| name.and_then(|value| elf_load::pe_loader::resolve_nt_runtime_export(module, value))).flatten())?;
+    callable_win32_export(cur, address)
 }
 
 fn module_info(cur: &sched::Task, module: u64) -> Option<(u32, bool)> {
