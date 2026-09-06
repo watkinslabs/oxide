@@ -38,7 +38,7 @@ pub use region::TYPE_REGION;
 mod stock;
 #[path = "win32_gdi/bitmap.rs"]
 mod bitmap;
-pub use bitmap::{Bitmap, BitmapPattern, TYPE_BITMAP, bitmap_stride, dib_stride, normalize_bpp};
+pub use bitmap::{Bitmap, BitmapPattern, MAX_BITMAP_BYTES, TYPE_BITMAP, bitmap_stride, dib_stride, normalize_bpp};
 #[path = "win32_gdi/brush.rs"]
 mod brush;
 #[path = "win32_gdi/system_brush.rs"]

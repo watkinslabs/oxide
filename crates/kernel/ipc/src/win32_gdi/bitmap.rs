@@ -8,7 +8,7 @@ const MAX_EXTENT: i32 = 0x7ff_ffff;
 /// Device-dependent bitmaps are single-plane; any other count is refused.
 const PLANES: u32 = 1;
 /// Storage budget shared with device-context surfaces, expressed in bytes.
-const MAX_BITMAP_BYTES: i64 = MAX_SURFACE_PIXELS as i64 * 4;
+pub const MAX_BITMAP_BYTES: i64 = MAX_SURFACE_PIXELS as i64 * 4;
 const BITS_PER_BYTE: i64 = 8;
 /// Stored rows are 32-bit aligned; caller-supplied rows are 16-bit aligned.
 const DIB_ALIGN_BITS: i64 = 31;
@@ -131,8 +131,8 @@ impl GdiManager {
         Ok(BitmapPattern { width: bitmap.width, height: bitmap.height, bpp: bitmap.bpp, stride: bitmap.stride, bits })
     }
 
-    /// A bitmap named by a live pattern brush keeps its slot until that brush
-    /// goes; the brush owns its own copy of the bits. # C: O(bitmaps)
+    /// A pattern brush holds its own copy of the bits, so deletion frees the
+    /// bitmap immediately even while such a brush still paints. # C: O(bitmaps)
     pub fn delete_bitmap(&mut self, handle: u32) -> Result<(), GdiError> {
         let bitmap = &mut self.bitmaps.iter_mut().find(|(id, _)| *id == handle).ok_or(GdiError::NoSuchObject)?.1;
         bitmap.deleted = true;

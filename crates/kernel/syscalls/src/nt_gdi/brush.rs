@@ -71,15 +71,15 @@ pub(crate) fn pat_blt_for_current(dc: u64, x: i32, y: i32, width: i32, height: i
     let (_, binding) = text::snapshot_binding(dc)?;
     let dc = u32::try_from(dc).map_err(|_| STATUS_INVALID_HANDLE)?;
     // Usercopy may fault; only copied mapping identity survives the owner lock.
-    let color = match binding {
+    let colors = match binding {
         Some(binding) => {
             let bytes = binding.read_dc_attr(dc).map_err(|_| STATUS_INVALID_PARAMETER)?;
-            Some(shared::snapshot(&bytes).map_err(|_| STATUS_INVALID_PARAMETER)?.1)
+            Some(shared::colors(&bytes).map_err(|_| STATUS_INVALID_PARAMETER)?)
         }
         None => None,
     };
-    with_owner(|state| match color {
-        Some(color) => state.pat_blt_shared_color(dc, x, y, width, height, rop, color),
+    with_owner(|state| match colors {
+        Some(colors) => state.pat_blt_shared_colors(dc, x, y, width, height, rop, colors),
         None => state.pat_blt(dc, x, y, width, height, rop),
     })
 }
