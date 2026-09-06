@@ -120,11 +120,30 @@ fn directory_of_narrow(path: &[u8]) -> &[u8] {
 }
 
 pub(super) fn load(name_descriptor: u64, module_output: u64) -> u64 {
+    with_peb_lock(|cur| load_locked(cur, name_descriptor, module_output))
+}
+
+/// Load one module named by a delay-load descriptor. The descriptor carries
+/// an ASCII name, not a `UNICODE_STRING`; the loaded module handle is
+/// published into the descriptor's module slot.
+/// # C: O(dependency closure of the named module)
+pub(crate) fn load_ascii(name: &[u8], module_output: u64) -> u64 {
+    if name.is_empty() || name.iter().any(|byte| *byte == 0 || !byte.is_ascii()) { return STATUS_INVALID_PARAMETER; }
+    let wide: alloc::vec::Vec<u8> = name.iter().flat_map(|byte| [*byte, 0]).collect();
+    with_peb_lock(|cur| load_wide_locked(cur, &wide, module_output))
+}
+
+/// Run one loader transaction under the process-wide PEB lock. Loader list
+/// mutation and module-handle publication are a single critical section.
+fn with_peb_lock(transaction: impl FnOnce(&sched::Task) -> u64) -> u64 {
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !cur.is_nt_personality() || cur.tid == 0 { return STATUS_INVALID_PARAMETER; }
+    // SAFETY: nt_peb_lock is the process-wide loader lock owned by this thread
+    // group; the tid identifies this waiter and the release below pairs with
+    // this acquisition on every return path.
     let outcome = unsafe { cur.thread_group.nt_peb_lock.wait(cur.tid as u64, 0, timekeeper::monotonic_ns) };
     if outcome != sched::WaitOutcome::Ready { return STATUS_INVALID_PARAMETER; }
-    let status = load_locked(cur, name_descriptor, module_output);
+    let status = transaction(cur);
     let _ = cur.thread_group.nt_peb_lock.release(cur.tid as u64);
     status
 }
@@ -163,19 +182,25 @@ pub(super) fn load_unixlib(name_descriptor: u64, module_output: u64) -> u64 {
 
 #[cfg(target_arch = "x86_64")]
 fn load_locked(cur: &sched::Task, name_descriptor: u64, module_output: u64) -> u64 {
-    if name_descriptor == 0 || module_output == 0 { return STATUS_INVALID_PARAMETER; }
+    if name_descriptor == 0 { return STATUS_INVALID_PARAMETER; }
     let Some(wanted) = read_wide_name(name_descriptor) else { return STATUS_INVALID_PARAMETER; };
-    let Some(narrow_wanted) = narrow_name(&wanted) else { return STATUS_INVALID_PARAMETER; };
+    load_wide_locked(cur, &wanted, module_output)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn load_wide_locked(cur: &sched::Task, wanted: &[u8], module_output: u64) -> u64 {
+    if module_output == 0 { return STATUS_INVALID_PARAMETER; }
+    let Some(narrow_wanted) = narrow_name(wanted) else { return STATUS_INVALID_PARAMETER; };
     let Some(teb_peb) = cur.nt_teb().checked_add(TEB_PEB_OFFSET) else { return STATUS_INVALID_PARAMETER; };
     let peb = super::read_u64(teb_peb);
     if peb == 0 { return STATUS_DLL_NOT_FOUND; }
-    if let Some(base) = existing_module(peb, &wanted) {
+    if let Some(base) = existing_module(peb, wanted) {
         if uaccess::copy_to_user(module_output, &base.to_le_bytes()).is_err() { return STATUS_INVALID_PARAMETER; }
         return STATUS_SUCCESS;
     }
     let Some(as_) = (unsafe { cur.mm_ref() }).map(|mm| mm.clone()) else { return STATUS_INVALID_PARAMETER; };
     let seed = cur.thread_group.nt_module_catalog();
-    let directories = match super::search_directories(cur, &wanted, 0) {
+    let directories = match super::search_directories(cur, wanted, 0) {
         Ok(value) => value.into_iter().filter_map(|value| narrow_name(&value)).collect(),
         Err(status) => return status,
     };
@@ -272,6 +297,9 @@ fn load_locked(cur: &sched::Task, name_descriptor: u64, module_output: u64) -> u
 
 #[cfg(target_arch = "aarch64")]
 fn load_locked(_cur: &sched::Task, _name_descriptor: u64, _module_output: u64) -> u64 { STATUS_NOT_SUPPORTED }
+
+#[cfg(target_arch = "aarch64")]
+fn load_wide_locked(_cur: &sched::Task, _wanted: &[u8], _module_output: u64) -> u64 { STATUS_NOT_SUPPORTED }
 
 #[cfg(target_arch = "aarch64")]
 pub(super) fn load_unixlib(_name_descriptor: u64, _module_output: u64) -> u64 { STATUS_NOT_SUPPORTED }

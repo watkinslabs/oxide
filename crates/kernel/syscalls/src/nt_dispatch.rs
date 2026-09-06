@@ -900,6 +900,7 @@ pub fn dispatch(call: NtCall) -> u64 {
     if let Some(result) = crate::nt_atom::dispatch(call) { return result; }
     if let Some(result) = crate::nt_loader_dir::dispatch(call) { return result; }
     if let Some(result) = crate::nt_loader_proc::dispatch(call) { return result; }
+    if let Some(result) = crate::nt_delay_load::dispatch(call) { return result; }
     if let Some(result) = crate::nt_exec::dispatch(call) { return result; }
     if let Some(result) = crate::nt_duplicate::dispatch(call) { return result; }
     if let Some(result) = crate::nt_timer::dispatch(call) { return result; }
