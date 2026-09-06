@@ -7,17 +7,51 @@ const WM_CREATE: u64 = 0x0001;
 const WM_NCDESTROY: u64 = 0x0082;
 const CALLBACK_CREATE_REJECT_NCDESTROY: u64 = 5;
 
+/// Name a create rejection that would otherwise return NULL in silence. An
+/// application whose main window is NULL exits at once, so an unnamed
+/// rejection here is indistinguishable from a crash.
+fn reject_create_lifecycle(reason: &'static [u8], hwnd: u64, detail: u64) {
+    klog::write_raw(b"[WINDOWS-WINDOW-CREATE-FAIL] stage=lifecycle reason=");
+    klog::write_raw(reason);
+    klog::write_raw(b" hwnd=");
+    klog::write_hex_u64(hwnd);
+    klog::write_raw(b" detail=");
+    klog::write_hex_u64(detail);
+    klog::write_raw(b"\n");
+}
+
 pub(crate) fn begin_create_lifecycle_for_current(hwnd: u64, params: CreateStructArgs, convention: CreateReturnConvention) -> u64 {
     let Some(cur) = sched::live::current() else { return convention.failure(STATUS_INVALID_PARAMETER); };
-    if !cur.is_nt_personality() || hwnd == 0 || hwnd > u32::MAX as u64 { return convention.failure(STATUS_INVALID_PARAMETER); }
+    if !cur.is_nt_personality() || hwnd == 0 || hwnd > u32::MAX as u64 {
+        reject_create_lifecycle(b"caller", hwnd, cur.is_nt_personality() as u64);
+        return convention.failure(STATUS_INVALID_PARAMETER);
+    }
     let group = Arc::clone(&cur.thread_group);
     let (token, wndproc) = {
         let mut entries = GUI.lock();
         entries.retain(|entry| entry.group.upgrade().is_some());
-        let Some(index) = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group))) else { return convention.failure(STATUS_INVALID_PARAMETER); };
-        let Some(window) = ipc::win32_window::WindowId::from_raw(hwnd as u32) else { return convention.failure(STATUS_INVALID_PARAMETER); };
-        let Some(record) = entries[index].state.get(window) else { return convention.failure(STATUS_INVALID_PARAMETER); };
-        if record.owner_tid != cur.tid as u64 || record.wndproc == 0 { return convention.failure(STATUS_INVALID_PARAMETER); }
+        let Some(index) = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group))) else {
+            reject_create_lifecycle(b"no-gui-entry", hwnd, entries.len() as u64);
+            return convention.failure(STATUS_INVALID_PARAMETER);
+        };
+        let Some(window) = ipc::win32_window::WindowId::from_raw(hwnd as u32) else {
+            reject_create_lifecycle(b"bad-window-id", hwnd, 0);
+            return convention.failure(STATUS_INVALID_PARAMETER);
+        };
+        let Some(record) = entries[index].state.get(window) else {
+            reject_create_lifecycle(b"no-window-record", hwnd, 0);
+            return convention.failure(STATUS_INVALID_PARAMETER);
+        };
+        if record.owner_tid != cur.tid as u64 {
+            reject_create_lifecycle(b"foreign-owner", hwnd, record.owner_tid);
+            return convention.failure(STATUS_INVALID_PARAMETER);
+        }
+        if record.wndproc == 0 {
+            // A class registered without a window procedure has nothing to run
+            // the create callbacks on, so the window can never be completed.
+            reject_create_lifecycle(b"no-wndproc", hwnd, 0);
+            return convention.failure(STATUS_INVALID_PARAMETER);
+        }
         let token = entries[index].next_create;
         entries[index].next_create = token.checked_add(1).filter(|value| *value != 0).unwrap_or(1);
         entries[index].pending_creates.push(PendingCreate { token, hwnd, wndproc: record.wndproc, params, convention });
