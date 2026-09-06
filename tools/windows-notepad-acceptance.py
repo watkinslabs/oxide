@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 from notepad_qmp import QmpTransactions, QmpError
 from screenshot_evidence import screenshot_completed, record_screenshot
+from notepad_evidence import token_in_notepad_window
 
 ROOT = Path(__file__).resolve().parents[1]
 IMAGES = ROOT.parent / "images"
@@ -314,8 +315,15 @@ def main():
         after_path, after = screenshot(qmp_sock, "after-token")
         if before == after:
             die("framebuffer did not change after token injection")
-        if TOKEN not in ocr(after_path):
-            die(f"OCR did not find injected token; retained {after_path}")
+        # A screenshot diff plus a whole-frame OCR is satisfied by the token
+        # landing in GNOME's overview search box instead of Notepad (KI-0435).
+        # Locate the Notepad window by its title-bar text and require the
+        # token inside that crop specifically.
+        found, rect = token_in_notepad_window(after_path, TOKEN, crop_path=Path(f"{SCREEN}-after-token-notepad-crop.png"))
+        if rect is None:
+            die(f"no Notepad window title located on screen; retained {after_path}")
+        if not found:
+            die(f"token not found inside located Notepad window {rect}; retained {after_path}")
         print("windows-notepad-acceptance: A1/A2/A3 PASS (PE, window, present, token)")
         # This fixture is an untitled scratch document. Delete our own token
         # through real input before testing close. Notepad's DoCloseFile prompts
