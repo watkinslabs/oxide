@@ -115,7 +115,7 @@ pub fn dispatch(call: NtCall, stack: [u64; 5]) -> u64 {
     // real host pathname; without one the bytes came from the rootfs blob and
     // name no file a reader could open.
     let host_path = vp.as_ref().map(|_| image_path.as_str());
-    identity::publish(&child, &image_path, host_path, command.as_str());
+    identity::publish(&child, crate::nt_process_naming::comm_of(&image_path), host_path, command.as_str());
     if let Some(catalog) = catalog { child.thread_group.set_nt_module_catalog(catalog); }
     child.thread_group.set_nt_bootstrap(bootstrap.as_deref());
     if let Some(unixlib_catalog) = unixlib_catalog { child.thread_group.set_nt_unixlib_catalog(unixlib_catalog); }
