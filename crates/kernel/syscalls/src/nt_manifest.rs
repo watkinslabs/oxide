@@ -23,6 +23,8 @@ mod nt_loader_dir_policy;
 pub(crate) mod nt_file_lock_policy;
 pub(crate) mod nt_registry_policy;
 pub(crate) mod nt_registry_endpoint;
+pub(crate) mod nt_desktop_names;
+pub(crate) mod nt_process_membership;
 pub(crate) mod nt_directory_notify_policy;
 mod nt_path;
 mod nt_path_type;

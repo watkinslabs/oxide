@@ -98,11 +98,34 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
             cur.thread_group.set_nt_unixlib_catalog(alloc::sync::Arc::new(unixlibs));
             cur.thread_group.set_nt_bootstrap(bootstrap.as_deref());
             cur.thread_group.set_nt_registry_endpoint(registry_endpoint);
+            attach_interactive_desktop(cur);
             Some(STATUS_SUCCESS)
         },
         Err(error) if error == -(syscall::errno::Errno::Enomem.as_i32() as i64) => Some(STATUS_NO_MEMORY),
         Err(_) => Some(STATUS_INVALID_IMAGE_FORMAT),
     }
+}
+
+/// Create this launch's interactive station and default desktop and make them
+/// the process's membership. Without it no NT process has a station at all, so
+/// no window can resolve HWND zero and no child has anything to inherit.
+///
+/// A launch whose process already carries membership keeps it: re-entering the
+/// handoff must not unseat a desktop that windows are already published on.
+fn attach_interactive_desktop(cur: &sched::Task) {
+    if cur.thread_group.nt_window_station.lock().is_some() { return; }
+    let table = cur.thread_group.nt_handles();
+    let Ok(bootstrap) = sched::nt_object::bootstrap_desktop(&table,
+        crate::nt_desktop_names::INTERACTIVE_STATION, crate::nt_desktop_names::DEFAULT_DESKTOP,
+        crate::nt_desktop_names::STATION_ACCESS, crate::nt_desktop_names::DESKTOP_ACCESS) else { return; };
+    {
+        let mut selected = cur.nt_desktop.lock();
+        if bootstrap.attach(&mut selected).is_err() { return; }
+    }
+    *cur.thread_group.nt_window_station.lock() = Some(alloc::sync::Arc::clone(&bootstrap.station));
+    let selected = cur.nt_desktop.lock().clone();
+    cur.thread_group.nt_default_desktop.lock().inherit_default(&selected);
+    bootstrap.commit();
 }
 
 fn read_u32(address: u64) -> Option<u32> { uaccess::get_user_u32(address).ok() }

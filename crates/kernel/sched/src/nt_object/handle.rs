@@ -281,6 +281,18 @@ impl NtHandleTable {
         self.entries.lock().iter().filter(|entry| entry.object.is_some()).count() as u32
     }
 
+    /// Return the widest rights this table grants over `object`, or `None` when
+    /// it holds no handle to it. Inheritance uses this so a child receives the
+    /// rights its parent actually holds, never a mask chosen by the caller.
+    /// # C: O(N)
+    pub fn granted_access_for(&self, object: &Arc<NtObject>) -> Option<u32> {
+        let entries = self.entries.lock();
+        entries.iter()
+            .filter(|entry| entry.object.as_ref().is_some_and(|held| Arc::ptr_eq(held, object)))
+            .map(|entry| entry.access)
+            .reduce(|widest, access| widest | access)
+    }
+
     /// Return the rights granted to a live handle without resolving its object.
     /// # C: O(1)
     pub fn access(&self, handle: NtHandle) -> Option<u32> {
@@ -416,6 +428,10 @@ impl Drop for NtHandleTable {
 #[cfg(test)]
 #[path = "handle/lifetime_tests.rs"]
 mod lifetime_tests;
+
+#[cfg(test)]
+#[path = "handle/granted_access_tests.rs"]
+mod granted_access_tests;
 
 impl Default for NtHandleTable {
     fn default() -> Self { Self::new() }

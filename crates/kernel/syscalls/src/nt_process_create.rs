@@ -9,6 +9,7 @@ use syscall::nt::NtCall;
 
 mod policy;
 mod identity;
+mod desktop;
 
 const SUCCESS: u64 = 0;
 const INVALID_PARAMETER: u64 = 0xc000_000d;
@@ -24,6 +25,32 @@ const PARAM_CURRENT_DIRECTORY_OFF: u64 = 0x38;
 const PARAM_CURRENT_DIRECTORY_HANDLE_OFF: u64 = 0x48;
 const PARAM_COMMAND_LINE_OFF: u64 = 0x70;
 const PARAM_ENVIRONMENT_OFF: u64 = 0x80;
+
+/// Select the child's station/desktop from the parent and install it.
+/// The parent's own handles are admitted through its table so the child can
+/// never receive rights the parent did not hold.
+fn inherit_desktop_membership(parent: &sched::Task, child: &sched::Task)
+    -> Result<(), crate::nt_process_membership::DesktopMembershipError> {
+    let table = parent.thread_group.nt_handles();
+    // Rights come from the parent's own handle on each object, so a child can
+    // never be granted access the parent does not hold. A membership object the
+    // parent holds no handle to is not admitted at all.
+    let admit = |object: Option<Arc<sched::nt_object::NtObject>>| object.and_then(|object| {
+        let access = table.granted_access_for(&object)?;
+        Some(crate::nt_process_membership::AdmittedHandle { object, access })
+    });
+    let station = parent.thread_group.nt_window_station.lock().clone();
+    let thread_desktop = parent.nt_desktop.lock().object();
+    let default_desktop = parent.thread_group.nt_default_desktop.lock().object();
+    let membership = crate::nt_process_membership::select_process_membership(crate::nt_process_membership::ProcessDesktopCandidates {
+        inherited_station: None, inherited_desktop: None,
+        explicit_station: None, explicit_desktop: None,
+        parent_station: admit(station),
+        parent_thread_desktop: admit(thread_desktop),
+        parent_default_desktop: admit(default_desktop),
+    })?;
+    desktop::attach_process_membership(child, &membership)
+}
 
 /// Dispatch the real child-image transaction.  Only the x86-64 native path
 /// is exposed: this kernel deliberately does not promise a 32-bit Windows ABI.
@@ -88,6 +115,15 @@ pub fn dispatch(call: NtCall, stack: [u64; 5]) -> u64 {
     if let Some(catalog) = catalog { child.thread_group.set_nt_module_catalog(catalog); }
     child.thread_group.set_nt_bootstrap(bootstrap.as_deref());
     if let Some(unixlib_catalog) = unixlib_catalog { child.thread_group.set_nt_unixlib_catalog(unixlib_catalog); }
+    child.thread_group.set_nt_registry_endpoint(cur.thread_group.nt_registry_endpoint());
+    // The child joins its parent's station and desktop before publication. A
+    // child without membership could create no window that resolves against
+    // the desktop root, and inheriting the objects rather than their names is
+    // what keeps one canonical hierarchy instead of a per-process lookup.
+    if let Err(error) = inherit_desktop_membership(&cur, &child) {
+        let _ = error;
+        return INVALID_PARAMETER;
+    }
     if policy::inherits_process_handles(c.process_flags as u32) {
         if let Some(fd) = cur.clone_fd_table() {
             // A new NT process owns an independent descriptor snapshot. A
