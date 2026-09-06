@@ -20,35 +20,33 @@ const WM_RBUTTONDOWN: u32 = 0x0204;
 const WM_MBUTTONDOWN: u32 = 0x0207;
 const WM_XBUTTONDOWN: u32 = 0x020b;
 
-/// What the default handler does with one WM_SETCURSOR.
+/// Where the cursor for one hit-test code comes from.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SetCursorAction {
-    /// Beep, then answer FALSE: an error area has no cursor of its own.
-    Beep,
-    /// An error area with no button-down message answers FALSE in silence.
-    None,
-    /// Install the class cursor of the named window; a class with no cursor
+pub enum SetCursorTarget {
+    /// The class cursor of the window named in wParam. A class with no cursor
     /// answers FALSE and leaves the pointer alone.
     ClassCursor,
-    /// Load the shared OEM cursor and install it; the answer is the cursor it
-    /// replaced, not a boolean.
+    /// A shared OEM cursor; the answer is the cursor it replaced, not a boolean.
     OemCursor(u32),
 }
 
+/// One default WM_SETCURSOR outcome. An error area beeps for a button press
+/// and still installs the arrow.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SetCursorAction { pub beep: bool, pub target: SetCursorTarget }
+
 /// Hit-test code and originating message decide the action. # C: O(1)
 pub const fn set_cursor_action(hit_test: i16, message: u32) -> SetCursorAction {
-    match hit_test {
-        HTERROR => match message {
-            WM_LBUTTONDOWN | WM_MBUTTONDOWN | WM_RBUTTONDOWN | WM_XBUTTONDOWN => SetCursorAction::Beep,
-            _ => SetCursorAction::None,
-        },
-        HTCLIENT => SetCursorAction::ClassCursor,
-        HTLEFT | HTRIGHT => SetCursorAction::OemCursor(IDC_SIZEWE),
-        HTTOP | HTBOTTOM => SetCursorAction::OemCursor(IDC_SIZENS),
-        HTTOPLEFT | HTBOTTOMRIGHT => SetCursorAction::OemCursor(IDC_SIZENWSE),
-        HTTOPRIGHT | HTBOTTOMLEFT => SetCursorAction::OemCursor(IDC_SIZENESW),
-        _ => SetCursorAction::OemCursor(IDC_ARROW),
-    }
+    let beep = hit_test == HTERROR && matches!(message, WM_LBUTTONDOWN | WM_MBUTTONDOWN | WM_RBUTTONDOWN | WM_XBUTTONDOWN);
+    let target = match hit_test {
+        HTCLIENT => SetCursorTarget::ClassCursor,
+        HTLEFT | HTRIGHT => SetCursorTarget::OemCursor(IDC_SIZEWE),
+        HTTOP | HTBOTTOM => SetCursorTarget::OemCursor(IDC_SIZENS),
+        HTTOPLEFT | HTBOTTOMRIGHT => SetCursorTarget::OemCursor(IDC_SIZENWSE),
+        HTTOPRIGHT | HTBOTTOMLEFT => SetCursorTarget::OemCursor(IDC_SIZENESW),
+        _ => SetCursorTarget::OemCursor(IDC_ARROW),
+    };
+    SetCursorAction { beep, target }
 }
 
 /// A child gives its parent first refusal everywhere but the resize border.

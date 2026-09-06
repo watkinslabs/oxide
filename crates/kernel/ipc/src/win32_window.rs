@@ -62,7 +62,7 @@ pub use class_long::{GCL_MENUNAME, GCLP_HBRBACKGROUND, GCLP_HCURSOR, GCLP_HICON,
 mod cursor;
 #[path = "win32_window/set_cursor.rs"]
 mod set_cursor;
-pub use set_cursor::{SetCursorAction, set_cursor_action, parent_gets_first_chance, split_lparam, WM_SETCURSOR};
+pub use set_cursor::{SetCursorAction, SetCursorTarget, set_cursor_action, parent_gets_first_chance, split_lparam, WM_SETCURSOR};
 pub use cursor::{OEM_CURSOR_BASE, IDC_ARROW, IDC_IBEAM, IDC_SIZENWSE, IDC_SIZENESW, IDC_SIZEWE, IDC_SIZENS};
 
 pub const WM_CLOSE: u32 = 0x0010;

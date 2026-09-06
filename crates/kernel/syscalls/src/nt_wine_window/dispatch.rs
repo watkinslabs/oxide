@@ -24,10 +24,13 @@ pub fn dispatch(call: NtCall) -> u64 {
     if let Some(result) = property_raw::dispatch(ordinal, [args[0], args[1], args[2]]) { return result; }
     if ordinal == object_raw::GET_DC_OBJECT { return crate::nt_gdi::selected_object_current(args[0], args[1] as u32); }
     if let Some(result) = long_raw::dispatch(ordinal, [args[0], args[1], args[2], args[3]]) { return result; }
+    if let Some(result) = class_raw::dispatch_set(ordinal, [args[0], args[1], args[2], args[3]]) { return result; }
+    if let Some(result) = cursor_raw::route(ordinal, &args) { return result; }
     if ordinal == hwnd_param::ORDINAL {
         if let Some(hwnd_param::Request::GetWindowLong { offset, width }) = hwnd_param::decode_request(args[2] as u32, args[1]) {
             return long_raw::get(args[0], offset, width);
         }
+        if let Some(request) = class_raw::decode_get(args[2] as u32, args[0], args[1]) { return class_raw::get(request); }
     }
     if ordinal == hwnd_param::ORDINAL && args[2] as u32 == hwnd_param::GET_WINDOW_RECTS {
         return hwnd_param::dispatch_get_window_rects(args[0], args[1]);
@@ -85,6 +88,7 @@ pub fn dispatch(call: NtCall) -> u64 {
                         ipc::win32_window::DefaultWindowResult::ValidatePaint => STATUS_SUCCESS,
                     };
                 }
+                if message == WM_SETCURSOR { return cursor_raw::default_set_cursor(wparam, lparam); }
                 if message == WM_NCACTIVATE { return 1; }
                 if message == WM_SETTEXT {
                     return win_bool(native(NtService::SetWindowText, SyscallArgs { a0: hwnd, a1: lparam, a2: 0, a3: 0, a4: 0, a5: 0 }));
@@ -188,6 +192,11 @@ pub fn dispatch_raw(ordinal: u64, args: SyscallArgs) -> Option<u64> {
     if ordinal == hwnd_param::ORDINAL && args.a2 as u32 == hwnd_param::GET_WINDOW_RECTS {
         return Some(hwnd_param::dispatch_get_window_rects(args.a0, args.a1));
     }
+    if ordinal == hwnd_param::ORDINAL {
+        if let Some(request) = class_raw::decode_get(args.a2 as u32, args.a0, args.a1) { return Some(class_raw::get(request)); }
+    }
+    if let Some(result) = class_raw::dispatch_set(ordinal, [args.a0, args.a1, args.a2, args.a3]) { return Some(result); }
+    if let Some(result) = cursor_raw::route(ordinal, &[args.a0]) { return Some(result); }
     if let Some(query) = object_raw::decode(ordinal, &[args.a0, args.a1, args.a2]) { return Some(object_raw::kernel::dispatch(query)); }
     if let Some(result) = gdi_route::raw(ordinal, args) { return Some(result); }
     if let Some(result) = bitmap_raw::kernel::route(ordinal, &[args.a0, args.a1, args.a2, args.a3, args.a4, args.a5]) { return Some(result); }

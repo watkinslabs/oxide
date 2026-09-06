@@ -13,7 +13,10 @@ use syscall::nt::{self, NtCall, NtWindowCall, NtWindowMessage};
 mod owner;
 #[path = "nt_window/class_background.rs"]
 mod class_background;
-pub(crate) use class_background::{register_class_with_background_for_current, class_background_for_current, dpi_context_for_current, set_dpi_context_for_current};
+pub(crate) use class_background::{register_class_with_background_for_current, register_class_desc_for_current, class_background_for_current, dpi_context_for_current, set_dpi_context_for_current};
+#[path = "nt_window/class_long.rs"]
+mod class_long_state;
+pub(crate) use class_long_state::{class_long_for_current, set_class_long_for_current, class_cursor_for_current, shared_oem_cursor_for_current, set_current_cursor_for_current, current_cursor_for_current};
 #[path = "nt_window/erase_background.rs"]
 mod erase_background;
 #[cfg(target_os = "oxide-kernel")]

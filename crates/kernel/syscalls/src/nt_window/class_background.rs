@@ -14,6 +14,12 @@ pub(crate) fn register_class_with_background_for_current(name: &[u16], wndproc: 
     entries[index].state.register_class_with_background(name, wndproc, extra, unicode, style, background).ok().map(|atom| atom as u64)
 }
 
+/// Admit a whole WNDCLASSEXW, cursor included, into the canonical class owner.
+/// # C: O(processes + classes)
+pub(crate) fn register_class_desc_for_current(desc: ipc::win32_window::ClassRegistration<'_>) -> Option<u64> {
+    with_entry(|entry| entry.state.register_class_desc(desc).ok().map(|atom| atom as u64)).flatten()
+}
+
 /// Raw class background, class style and client rectangle of a window the
 /// calling process owns. # C: O(processes + windows + classes)
 pub(crate) fn class_background_for_current(hwnd: u64) -> Option<(u64, u32, Option<ipc::win32_window::WindowRect>)> {

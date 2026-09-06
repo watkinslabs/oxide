@@ -39,6 +39,10 @@ pub(crate) mod nt_wine_builtin_classes_contract;
 pub(crate) mod nt_wine_unclaimed_contract;
 #[path = "nt_wine_window/long_raw.rs"]
 pub(crate) mod nt_wine_long_contract;
+#[path = "nt_wine_window/class_raw.rs"]
+pub(crate) mod nt_wine_class_long_contract;
+#[path = "nt_wine_window/cursor_raw.rs"]
+pub(crate) mod nt_wine_cursor_contract;
 #[path = "nt_wine_window/clip_raw.rs"]
 pub(crate) mod nt_wine_clip_contract;
 #[path = "nt_window/rect_query/policy.rs"]

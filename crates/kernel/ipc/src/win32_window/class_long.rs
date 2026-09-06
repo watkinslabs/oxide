@@ -69,15 +69,6 @@ impl WindowManager {
         let atom = self.get(window)?.class_atom?;
         self.classes.iter().find(|class| class.atom == atom).map(|class| class.cursor)
     }
-    /// Class cursor by atom, for a class with no window yet. # C: O(N_classes)
-    pub fn class_cursor_by_atom(&self, atom: u16) -> Option<u64> {
-        self.classes.iter().find(|class| class.atom == atom).map(|class| class.cursor)
-    }
-    /// Install a class cursor by atom once its handle exists. # C: O(N_classes)
-    pub fn set_class_cursor_by_atom(&mut self, atom: u16, cursor: u64) -> Result<u64, LongPtrError> {
-        let class = self.classes.iter_mut().find(|class| class.atom == atom).ok_or(LongPtrError::InvalidWindow)?;
-        Ok(core::mem::replace(&mut class.cursor, cursor))
-    }
 }
 
 const fn truncate(value: u64, width: usize) -> u64 {

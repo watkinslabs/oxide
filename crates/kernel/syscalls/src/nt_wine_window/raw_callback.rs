@@ -83,6 +83,7 @@ pub(super) fn message_call(args: SyscallArgs) -> u64 {
                 ipc::win32_window::DefaultWindowResult::ValidatePaint => STATUS_SUCCESS,
             };
         }
+        if message == WM_SETCURSOR { return cursor_raw::default_set_cursor(wparam, lparam); }
         if message == WM_NCACTIVATE { return 1; }
         if message == WM_SETTEXT {
             return win_bool(native(NtService::SetWindowText, SyscallArgs { a0: hwnd, a1: lparam, a2: 0, a3: 0, a4: 0, a5: 0 }));

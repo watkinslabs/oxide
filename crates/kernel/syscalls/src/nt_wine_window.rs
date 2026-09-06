@@ -15,6 +15,8 @@ pub(crate) mod unclaimed;
 mod geometry;
 mod hwnd_param;
 mod long_raw;
+mod class_raw;
+mod cursor_raw;
 #[cfg(target_os = "oxide-kernel")]
 mod message_send;
 pub(crate) mod placement;
@@ -112,6 +114,7 @@ const WM_NCCREATE: u64 = 0x0081;
 const WM_NCDESTROY: u64 = 0x0082;
 const WM_NCHITTEST: u64 = 0x0084;
 const WM_NCACTIVATE: u64 = 0x0086;
+const WM_SETCURSOR: u64 = 0x0020;
 // `struct win_proc_params` from Wine's ntuser.h.  The layout is stable for
 // the x86-64 client ABI used by the image: pointers are eight bytes, followed
 // by the 32-bit message/flag fields.
