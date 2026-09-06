@@ -188,3 +188,38 @@ fn a_window_with_no_extent_is_told_nothing() {
     let filter = MessageFilter { hwnd: None, first: 0, last: 0 };
     assert!(matches!(state.take_for_thread(7, filter), QueueResult::Empty));
 }
+
+#[test]
+fn a_child_sized_to_fill_its_parent_becomes_paintable() {
+    // The shape Notepad actually has: a top-level window whose whole client
+    // area is one EDIT control. The child is created with no extent and is
+    // sized by the parent when the parent learns its own size. Measured in the
+    // guest, that child sat at 0x0, which is why a window that exists and is
+    // mapped renders nothing. Once it is given an extent it must become
+    // paintable, or there is still nothing to draw.
+    use crate::win32_window::{WindowPosition, PositionOrder};
+    const WS_CHILD: u32 = 0x4000_0000;
+    let mut state = WindowManager::new();
+    let parent = state.create(7, None, 0x1000).unwrap();
+    state.set_rect(parent, WindowRect { left: 0, top: 0, right: 729, bottom: 546 }).unwrap();
+    state.show(7, parent, true).unwrap();
+
+    let child = state.create(7, Some(parent), 0x2000).unwrap();
+    state.set_visible(child, true).unwrap();
+    assert_eq!(state.client_rect(child), Some(WindowRect { left: 0, top: 0, right: 0, bottom: 0 }),
+        "the child starts with no extent, as it does in the guest");
+
+    // The parent lays the child out over its client area.
+    state.apply_position(7, WindowPosition {
+        window: child,
+        rect: WindowRect { left: 0, top: 0, right: 729, bottom: 546 },
+        client: None, order: Some(PositionOrder::Top), visible: Some(true),
+        flags: 0, notify_geometry: true,
+    }).unwrap();
+    let _ = WS_CHILD;
+
+    assert!(state.client_rect(child).is_some_and(|r| r.right == 729 && r.bottom == 546),
+        "a laid-out child must report the extent it was given");
+    assert_eq!(state.next_pending_paint(child, None, PaintChildren::All), Ok(Some(child)),
+        "a child that has just been given a real extent must need painting");
+}
