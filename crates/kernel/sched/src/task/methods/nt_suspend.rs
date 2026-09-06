@@ -14,6 +14,7 @@ impl Task {
             Ok(previous) => {
                 if previous == 0 {
                     crate::preempt::resched::set_tsk_need_resched(self);
+                    #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
                     if self.on_cpu.load(Ordering::Acquire) {
                         crate::live::ttwu::resched_curr(self.cpu.load(Ordering::Acquire) as u32);
                     }
