@@ -149,7 +149,34 @@ pub(crate) fn complete_callback(completion: sched::nt_callback::Completion, call
         }
         CALLBACK_CREATE_NCCREATE => {
             let Some(pending) = pending_create_for_current(completion.argument) else { return STATUS_INVALID_PARAMETER; };
-            if create_lifecycle::after_nc_create(callback_result) == create_lifecycle::CreateTransition::Reject { return reject_create(completion, pending); }
+            if create_lifecycle::after_nc_create(callback_result) == create_lifecycle::CreateTransition::Reject {
+                // The application's own window procedure refused the window.
+                // Everything up to here succeeded, so this is the application
+                // rejecting what it was handed, and the CREATESTRUCT it was
+                // handed is the thing to look at. Report what it saw.
+                klog::write_raw(b"[WINDOWS-WNDPROC-NCCREATE-REJECT] hwnd=");
+                klog::write_hex_u64(pending.hwnd);
+                klog::write_raw(b" result=");
+                klog::write_hex_u64(callback_result);
+                klog::write_raw(b" style=");
+                klog::write_hex_u64(pending.params.style as u64);
+                klog::write_raw(b" exstyle=");
+                klog::write_hex_u64(pending.params.ex_style as u64);
+                klog::write_raw(b" instance=");
+                klog::write_hex_u64(pending.params.instance);
+                klog::write_raw(b" class=");
+                klog::write_hex_u64(pending.params.class);
+                klog::write_raw(b" name=");
+                klog::write_hex_u64(pending.params.name);
+                klog::write_raw(b" parent=");
+                klog::write_hex_u64(pending.params.parent);
+                klog::write_raw(b" cx=");
+                klog::write_hex_u64(pending.params.cx as u64);
+                klog::write_raw(b" cy=");
+                klog::write_hex_u64(pending.params.cy as u64);
+                klog::write_raw(b"\n");
+                return reject_create(completion, pending);
+            }
             let next = crate::nt_rtl::begin_wndproc_create_callback(pending.hwnd, WM_CREATE, pending.wndproc, pending.params, sched::nt_callback::Completion { kind: CALLBACK_CREATE, argument: pending.token });
             if next == STATUS_PENDING { next } else { abort_create_for_current(pending.token); pending.convention.failure(STATUS_INVALID_PARAMETER) }
         }
