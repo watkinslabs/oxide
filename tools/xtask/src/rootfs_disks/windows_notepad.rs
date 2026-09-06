@@ -158,6 +158,22 @@ set -eu
 # A failed selection must stop the launch. Substituting straight into eval
 # would discard its exit status and leave the root-owned configuration
 # defaults in place, which is how a normal user reached /run/oxide at all.
+# The compositor bridge needs the session's X display. gnome-shell creates
+# that display after it starts, so its own environment never carries DISPLAY
+# and neither does anything launched from a copy of it. A systemd user session
+# publishes session-wide variables to the user manager for exactly this reason,
+# so they are imported from there rather than guessed.
+for name in DISPLAY XAUTHORITY DBUS_SESSION_BUS_ADDRESS; do
+    eval "value=\${$name:-}"
+    if [ -z "$value" ]; then
+        value=$(systemctl --user show-environment 2>/dev/null | sed -n "s/^$name=//p" | head -1)
+        if [ -n "$value" ]; then eval "export $name=\$value"; fi
+    fi
+done
+if [ -z "${DISPLAY:-}" ]; then
+    printf '[WINDOWS-NOTEPAD] runtime-exit status=12 no-session-display\n'
+    exit 12
+fi
 user_paths=$(/usr/local/bin/windows-runtime --user-paths) || exit 11
 eval "$user_paths"
 export OXIDE_WINDOWS_PREFIX OXIDE_WINDOWS_REGISTRY_DATABASE OXIDE_WINDOWS_REGISTRY_SOCKET
@@ -205,6 +221,11 @@ mod tests {
         // Substituting straight into eval discards the selector's exit status,
         // which silently left the root-owned configuration defaults in place.
         assert!(script.contains("|| exit 11"), "a failed path selection must stop the launch");
+        // gnome-shell creates the X display after it starts, so its own
+        // environment never carries DISPLAY: the session publishes it to the
+        // user manager, and that is where it must come from.
+        assert!(script.contains("systemctl --user show-environment"), "wrapper must import the session display");
+        assert!(script.contains("no-session-display"), "a session with no display must say so, not fail obscurely");
         assert!(!script.contains("eval \"$(/usr/local/bin/windows-runtime"), "path selection status must not be discarded");
     }
     #[test]
