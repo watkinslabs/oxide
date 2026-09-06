@@ -89,7 +89,10 @@ fn dispatch_routed_syscall(entry: (Option<u64>, u64), nr: u64, args: &SyscallArg
     // this list does not trace. Trace every raw ordinal an NT task issues,
     // bounded to the first few hundred so a running system is not flooded:
     // the loop's shape shows within that.
-    if sched::live::current().is_some_and(|task| task.is_nt_personality()) {
+    // Armed by the first GetMessage return rather than process start: window
+    // creation alone issues more than four hundred calls, and the previous
+    // run's budget was gone before the loop it exists to show had begun.
+    if crate::nt_milestone::message_loop_reached() && sched::live::current().is_some_and(|task| task.is_nt_personality()) {
         use core::sync::atomic::{AtomicU32, Ordering};
         static LOOP_TRACE: AtomicU32 = AtomicU32::new(0);
         if LOOP_TRACE.fetch_add(1, Ordering::Relaxed) < 400 {
