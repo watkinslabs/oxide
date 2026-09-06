@@ -54,6 +54,15 @@ pub(super) fn dispatch_message(pointer: u64) -> u64 {
 pub(super) fn message_call(args: SyscallArgs) -> u64 {
     let Some((callback_type, ansi)) = crate::nt_message_call_abi::tail(args.a5, crate::nt_dispatch::stack_argument) else { return STATUS_INVALID_PARAMETER; };
     let callback_type = callback_type as u64;
+    // Which callback type DispatchMessage arrives with decides whether the
+    // window procedure is ever entered; name every one.
+    klog::write_raw(b"[WINDOWS-MESSAGE-CALL] hwnd=");
+    klog::write_hex_u64(args.a0);
+    klog::write_raw(b" msg=");
+    klog::write_hex_u64(args.a1);
+    klog::write_raw(b" type=");
+    klog::write_hex_u64(callback_type);
+    klog::write_raw(b"\n");
     let hwnd = args.a0;
     let message = args.a1;
     let wparam = args.a2;
