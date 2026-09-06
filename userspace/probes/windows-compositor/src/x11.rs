@@ -39,11 +39,21 @@ impl Backend {
     pub(crate) fn map_input_for_test(&mut self, input: InputEvent) -> Option<BridgeEvent> { self.map_input(input) }
     #[cfg(test)]
     pub(crate) fn pending_event_for_test(&mut self) -> Option<BridgeEvent> { self.pending.pop_front() }
+    /// Name the connect stage that is taking the time. Startup is a series of
+    /// synchronous X round trips and the bridge handshake is bounded, so when
+    /// it does not finish, which round trip is outstanding is the diagnosis.
+    fn stage(start: std::time::Instant, name: &str) {
+        eprintln!("windows-compositor: connect stage {name} at {}ms", start.elapsed().as_millis());
+    }
+
     pub fn connect(display: Option<&str>) -> Result<Self, BackendError> {
+        let started = std::time::Instant::now();
+        Self::stage(started, "begin");
         let display = display.map(CString::new).transpose().map_err(|_| BackendError::DisplayUnavailable)?;
         let mut screen_no = 0;
         let conn = unsafe { ffi::xcb_connect(display.as_ref().map_or(ptr::null(), |v| v.as_ptr()), &mut screen_no) };
         if conn.is_null() || unsafe { ffi::xcb_connection_has_error(conn) } != 0 { if !conn.is_null() { unsafe { ffi::xcb_disconnect(conn); } } return Err(BackendError::DisplayUnavailable); }
+        Self::stage(started, "xcb-connected");
         let setup = unsafe { ffi::xcb_get_setup(conn) };
         let mut it = unsafe { ffi::xcb_setup_roots_iterator(setup) };
         for _ in 0..screen_no { unsafe { ffi::xcb_screen_next(&mut it); } }
@@ -55,6 +65,7 @@ impl Backend {
             net_workarea: intern(conn, "_NET_WORKAREA")?, net_current_desktop: intern(conn, "_NET_CURRENT_DESKTOP")?,
             net_active_window: intern(conn, "_NET_ACTIVE_WINDOW")?, net_wm_state: intern(conn, "_NET_WM_STATE")?, net_wm_state_above: intern(conn, "_NET_WM_STATE_ABOVE")?,
         };
+        Self::stage(started, "atoms-interned");
         let root = screen.root;
         let screen_rect = Rect { left: 0, top: 0, right: screen.width_in_pixels as i32, bottom: screen.height_in_pixels as i32 };
         let root_events = [ffi::EVENT_PROPERTY_CHANGE];
@@ -62,10 +73,12 @@ impl Backend {
         let context = unsafe { ffi::xkb_context_new(0) }; if context.is_null() { unsafe { ffi::xcb_disconnect(conn); } return Err(BackendError::X11); }
         let mut major = 0; let mut minor = 0; let mut base_event = 0; let mut base_error = 0;
         if unsafe { ffi::xkb_x11_setup_xkb_extension(conn, 1, 0, 0, &mut major, &mut minor, &mut base_event, &mut base_error) } == 0 { unsafe { ffi::xkb_context_unref(context); ffi::xcb_disconnect(conn); } return Err(BackendError::X11); }
+        Self::stage(started, "xkb-extension");
         let device = unsafe { ffi::xkb_x11_get_core_keyboard_device_id(conn) }; if device < 0 { unsafe { ffi::xkb_context_unref(context); ffi::xcb_disconnect(conn); } return Err(BackendError::X11); }
         let keymap = unsafe { ffi::xkb_x11_keymap_new_from_device(context, conn, device, 0) }; if keymap.is_null() { unsafe { ffi::xkb_context_unref(context); ffi::xcb_disconnect(conn); } return Err(BackendError::X11); }
         let state = unsafe { ffi::xkb_x11_state_new_from_device(keymap, conn, device) };
         if state.is_null() { unsafe { ffi::xkb_keymap_unref(keymap); ffi::xkb_context_unref(context); ffi::xcb_disconnect(conn); } return Err(BackendError::X11); }
+        Self::stage(started, "keymap-ready");
         let max_request_bytes = (unsafe { ffi::xcb_get_maximum_request_length(conn) } as usize).saturating_mul(4).min(64 * 1024);
         Ok(Self { conn, keymap, state, context, max_request_bytes, root, visual: screen.root_visual, depth: screen.root_depth, screen: screen_rect, atoms, windows: BTreeMap::new(), xid_to_hwnd: BTreeMap::new(), down_keys: BTreeMap::new(), pending: VecDeque::new() })
     }
