@@ -155,7 +155,11 @@ set -eu
 # database and socket come from the runtime itself, which owns that policy: a
 # normal user cannot write the root-owned defaults, and duplicating the
 # selection in shell would be a second source of truth for it.
-eval "$(/usr/local/bin/windows-runtime --user-paths)"
+# A failed selection must stop the launch. Substituting straight into eval
+# would discard its exit status and leave the root-owned configuration
+# defaults in place, which is how a normal user reached /run/oxide at all.
+user_paths=$(/usr/local/bin/windows-runtime --user-paths) || exit 11
+eval "$user_paths"
 export OXIDE_WINDOWS_PREFIX OXIDE_WINDOWS_REGISTRY_DATABASE OXIDE_WINDOWS_REGISTRY_SOCKET
 mkdir -p "$OXIDE_WINDOWS_PREFIX"
 # One shared service per user database. The daemon takes the database lock
@@ -198,6 +202,10 @@ mod tests {
         assert!(!script.contains("rm -f \"$OXIDE_WINDOWS_REGISTRY_SOCKET\""), "wrapper must not unlink a possibly live socket");
         assert!(!script.contains("kill $registryd_pid"), "wrapper must not kill the shared service");
         assert!(!script.contains("mkdir -p /run/oxide"), "wrapper must not require root-owned runtime directories");
+        // Substituting straight into eval discards the selector's exit status,
+        // which silently left the root-owned configuration defaults in place.
+        assert!(script.contains("|| exit 11"), "a failed path selection must stop the launch");
+        assert!(!script.contains("eval \"$(/usr/local/bin/windows-runtime"), "path selection status must not be discarded");
     }
     #[test]
     fn registry_seed_is_versioned_and_not_executable() { assert_eq!(EMPTY_REGISTRY, b"OXREG\0\x01\0\0\0\0\0"); }

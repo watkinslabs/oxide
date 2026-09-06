@@ -43,8 +43,15 @@ FAULT = re.compile(r"\[FAULT\]|\[BADSTACK\]|\[BUG\]|Kernel panic|segfault at|bus
 # Keep stdout on the acceptance UART but inherit the actual graphical session
 # environment (DISPLAY/XAUTHORITY), never a guessed display or cookie path.
 # This private guest gate refuses ambiguous sessions instead of selecting one.
+# The application must run AS the session user, not as root holding the user's
+# environment: everything a desktop application touches -- XDG_RUNTIME_DIR, the
+# X cookie, its own per-user state -- is owned by that user and is refused to
+# anyone else. nsenter --env alone keeps root's credentials, so the uid/gid of
+# the session leader are adopted with it.
 DESKTOP_LAUNCH = (b'set -- $(pgrep -x gnome-shell); if [ "$#" -eq 1 ]; then '
-                  b'nsenter --target "$1" --env /usr/local/bin/windows-notepad-smoke; '
+                  b'uid=$(stat -c %u /proc/"$1"); gid=$(stat -c %g /proc/"$1"); '
+                  b'nsenter --target "$1" --env --setuid "$uid" --setgid "$gid" '
+                  b'/usr/local/bin/windows-notepad-smoke; '
                   b'else echo "[WINDOWS-NOTEPAD] runtime-exit status=11 desktop-session-ambiguous"; fi\n')
 qemu = None
 
