@@ -9,6 +9,7 @@ pub(crate) mod hwnd_call;
 mod msg_filter;
 mod two_param;
 pub(crate) mod accel_raw;
+pub(crate) mod dpi_context;
 pub(crate) mod unclaimed;
 mod geometry;
 mod hwnd_param;

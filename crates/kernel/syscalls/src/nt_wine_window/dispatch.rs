@@ -151,6 +151,7 @@ fn multiplexers(ordinal: u64, args: &[u64]) -> Option<u64> {
     if let Some(result) = hwnd_call::kernel::route(ordinal, args) { return Some(result); }
     if let Some(result) = msg_filter::route(ordinal, || false) { return Some(result); }
     if let Some(result) = two_param::kernel::route(ordinal, args) { return Some(result); }
+    if let Some(result) = dpi_context::kernel::route(ordinal, args) { return Some(result); }
     accel_raw::kernel::route(ordinal, args)
 }
 

@@ -69,6 +69,7 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x1418, 4), // NtUserGetMenuBarInfo
     (0x141a, 4), // NtUserGetMenuItemRect
     (0x141b, 4), // NtUserGetMessage
+    (0x1435, 1), // NtUserGetProcessDpiAwarenessContext
     (0x1438, 2), // NtUserGetProp
     (0x144b, 1), // NtUserGetSystemDpiForProcess
     (0x1463, 2), // NtUserGetWindowPlacement
@@ -92,6 +93,7 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x1557, 1), // NtUserSetFocus
     (0x1565, 1), // NtUserSetKeyboardState
     (0x1569, 2), // NtUserSetMenu
+    (0x1577, 2), // NtUserSetProcessDpiAwarenessContext
     (0x157f, 3), // NtUserSetProp
     (0x1581, 4), // NtUserSetScrollInfo
     (0x15a3, 4), // NtUserSetWindowLong

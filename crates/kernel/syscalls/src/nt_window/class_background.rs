@@ -1,4 +1,5 @@
-//! Class background brush: recorded at registration, read by the default erase.
+//! Per-process class and DPI state: class background brush recorded at
+//! registration and read by the default erase; the process DPI context.
 use super::*;
 
 /// # C: O(processes + classes); the raw hbrBackground enters the canonical class owner.
@@ -21,4 +22,23 @@ pub(crate) fn class_background_for_current(hwnd: u64) -> Option<(u64, u32, Optio
     let entries = GUI.lock();
     let entry = entries.iter().find(|entry| entry.group.ptr_eq(&Arc::downgrade(&cur.thread_group)))?;
     Some((entry.state.class_background(id)?, entry.state.position_class_style(id).unwrap_or(0), entry.state.client_rect(id)))
+}
+
+fn with_entry<T>(f: impl FnOnce(&mut GuiEntry) -> T) -> Option<T> {
+    let cur = sched::live::current().filter(|task| task.is_nt_personality())?;
+    let group = Arc::clone(&cur.thread_group);
+    let mut entries = GUI.lock();
+    entries.retain(|entry| entry.group.upgrade().is_some());
+    let index = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group)))
+        .unwrap_or_else(|| { entries.push(new_entry(&group)); entries.len() - 1 });
+    Some(f(&mut entries[index]))
+}
+
+/// Stored process DPI context; zero when never set. # C: O(processes)
+pub(crate) fn dpi_context_for_current() -> Option<u32> { with_entry(|entry| entry.dpi_context) }
+
+/// # C: O(processes)
+pub(crate) fn set_dpi_context_for_current(ctx: u32, system_dpi: u32) -> Result<(), u32> {
+    with_entry(|entry| crate::nt_wine_window::dpi_context::set(&mut entry.dpi_context, ctx, system_dpi))
+        .unwrap_or(Err(crate::nt_wine_window::dpi_context::ERROR_INVALID_PARAMETER))
 }

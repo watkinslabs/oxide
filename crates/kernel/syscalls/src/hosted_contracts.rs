@@ -29,6 +29,8 @@ pub(crate) mod nt_wine_msg_filter_contract;
 pub(crate) mod nt_wine_two_param_contract;
 #[path = "nt_wine_window/accel_raw.rs"]
 pub(crate) mod nt_wine_accel_contract;
+#[path = "nt_wine_window/dpi_context.rs"]
+pub(crate) mod nt_wine_dpi_context_contract;
 #[path = "nt_wine_window/unclaimed.rs"]
 pub(crate) mod nt_wine_unclaimed_contract;
 #[path = "nt_wine_window/long_raw.rs"]
