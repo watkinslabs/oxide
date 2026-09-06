@@ -19,6 +19,19 @@ pub(super) fn spawn(binding: &Arc<Binding>) -> Result<(), TransportError> {
     } Ok(())
 }
 
+/// Name why a transport worker gave up. Every exit below tears the bridge down
+/// and the peer only observes a closed socket, so a connection that dies for
+/// one of these reasons is otherwise indistinguishable from any other.
+fn teardown(reason: &'static [u8], sequence: u64, hwnd: u64) {
+    klog::write_raw(b"[WINDOWS-BRIDGE-DOWN] reason=");
+    klog::write_raw(reason);
+    klog::write_raw(b" seq=");
+    klog::write_hex_u64(sequence);
+    klog::write_raw(b" hwnd=");
+    klog::write_hex_u64(hwnd);
+    klog::write_raw(b"\n");
+}
+
 extern "C" fn reader(arg: usize) -> ! {
     // SAFETY: spawn passed exactly one Arc strong reference to this worker.
     let binding = unsafe { Arc::from_raw(arg as *const Binding) };
@@ -28,26 +41,34 @@ extern "C" fn reader(arg: usize) -> ! {
             // An interrupted partial record cannot be exposed or restarted
             // from its header; terminate the connection on receive errors.
             binding.socket.read_kernel(buf).map_err(|_| TransportError::Disconnected)
-        }) { Ok(record) => record, Err(_) => break };
+        }) { Ok(record) => record, Err(_) => { teardown(b"rx-read", 0, 0); break } };
         let opcode = record.header.opcode;
+        let (sequence, hwnd) = (record.header.sequence, record.header.hwnd);
         if opcode == Opcode::Ack {
             let status = wire::u32_at(&record.payload, 0).unwrap_or(u32::MAX);
-            if binding.state.lock().queue.acknowledge(record.header.sequence, record.header.hwnd, status).is_err() { break; }
+            if binding.state.lock().queue.acknowledge(sequence, hwnd, status).is_err() {
+                teardown(b"rx-ack-unmatched", sequence, hwnd); break;
+            }
         } else {
             {
                 let mut state = binding.state.lock();
-                if record.header.sequence <= state.incoming { break; }
+                if record.header.sequence <= state.incoming {
+                    let seen = state.incoming; drop(state);
+                    teardown(b"rx-sequence-not-increasing", sequence, seen); break;
+                }
                 state.incoming = record.header.sequence;
             }
             if opcode == Opcode::Monitors {
-                match record.monitors() { Ok(monitors) => binding.state.lock().monitors = monitors, Err(_) => break }
+                match record.monitors() { Ok(monitors) => binding.state.lock().monitors = monitors,
+                    Err(_) => { teardown(b"rx-monitors-decode", sequence, hwnd); break } }
             } else if let Some(group) = binding.group.upgrade() {
                 // GUI owner alone decides whether an event names a live HWND.
                 binding::deliver(&group, &record);
-            } else { break; }
+            } else { teardown(b"rx-owner-gone", sequence, hwnd); break; }
         }
         binding.wait.wake_all();
     }
+    if !binding.live() { teardown(b"rx-owner-not-live", 0, 0); }
     binding::retire(&binding); drop(binding);
     // SAFETY: reader owns no borrowed task context, spinlocks or pending I/O.
     unsafe { sched::live::kthread_exit(0) }
@@ -60,8 +81,10 @@ extern "C" fn writer(arg: usize) -> ! {
         let bytes = binding.state.lock().queue.take_send();
         if let Some(bytes) = bytes {
             let deadline = net::sock_clock::monotonic_ns_safe().saturating_add(TRANSFER_TIMEOUT_NS);
-            if stream::write_record(&bytes, |slice| write_chunk(&binding, slice, deadline)).is_err() { break; }
-            if binding.state.lock().queue.sent().is_err() { break; }
+            if stream::write_record(&bytes, |slice| write_chunk(&binding, slice, deadline)).is_err() {
+                teardown(b"tx-write", 0, 0); break;
+            }
+            if binding.state.lock().queue.sent().is_err() { teardown(b"tx-sent-unmatched", 0, 0); break; }
             binding.wait.wake_all();
         } else {
             let deadline = net::sock_clock::monotonic_ns_safe().saturating_add(LIFETIME_CHECK_NS);
