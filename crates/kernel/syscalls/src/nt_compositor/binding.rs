@@ -74,6 +74,9 @@ pub(super) fn retire(binding: &Arc<Binding>) {
 
 /// Pre-PE binding pins the open file description; CLOEXEC cannot remove the pin.
 /// Does not close the numeric fd (a concurrent reuse must never close another file).
+/// The bounded wait is a liveness backstop, not a service-startup race: the
+/// launcher waits for its own bridge child to report readiness before binding,
+/// so the monitor snapshot is already queued on the socket when this runs.
 /// # C: O(bindings) + bounded handshake wait
 /// # Ctx: current process, no GUI/GDI lock; # Sleeps: yes
 fn bind_current(fd: u64) -> Result<(), TransportError> {

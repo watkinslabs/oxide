@@ -6,8 +6,11 @@ fn elapsed_ms(start: std::time::Instant) -> u128 { start.elapsed().as_millis() }
 
 fn main() {
     let start = std::time::Instant::now();
-    let args: Vec<String> = env::args().collect();
-    if args.len() != 3 || args[1] != "--fd" || args[2] != "0" { eprintln!("usage: windows-compositor --fd 0"); std::process::exit(2); }
+    let args: Vec<String> = env::args().skip(1).collect();
+    let Ok(options) = windows_compositor::parse_args(&args) else {
+        eprintln!("usage: windows-compositor --fd 0 [--ready-fd <n>]");
+        std::process::exit(2);
+    };
     let display = env::var("DISPLAY").ok();
     // The bridge handshake is bounded, and this startup does a series of
     // synchronous X round trips. Whether it is slow or stuck is the difference
@@ -24,7 +27,9 @@ fn main() {
         eprintln!("windows-compositor: display reports no usable screen geometry");
         std::process::exit(1);
     };
-    if let Err(error) = windows_compositor::NativeTransport::send(&mut transport, windows_compositor::BridgeEvent::WorkArea(snapshot)) {
+    // Readiness is signalled only after the snapshot is queued on the bridge, so
+    // the launcher's bind observes data already written instead of racing X.
+    if let Err(error) = windows_compositor::publish_then_notify(&mut transport, snapshot, options.ready_fd) {
         eprintln!("windows-compositor: cannot publish monitor geometry after {}ms: {error:?}", elapsed_ms(start));
         std::process::exit(1);
     }
