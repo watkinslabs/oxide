@@ -240,7 +240,20 @@ pub(super) fn dispatch_mode(call: NtCall, raw: bool) -> Option<u64> {
                     klog::write_raw(b"\n");
                     let Some(window) = valid_window(hwnd) else { return Some(STATUS_INVALID_HANDLE); };
                     let Some(visible) = crate::nt_window_policy::show_command_visibility(command as u64) else { return Some(state.get(window).map(|record| record.visible as u64).unwrap_or(STATUS_INVALID_HANDLE)); };
-                    (Some(match state.show(cur.tid as u64, window, visible) {
+                    let shown = state.show(cur.tid as u64, window, visible);
+                    // Showing a window with real geometry must leave it needing
+                    // paint; the hosted model does exactly that. Report what the
+                    // live state actually holds, so a window that shows and
+                    // never paints says whether it had geometry to damage.
+                    klog::write_raw(b"[WINDOWS-WINDOW-SHOW] result-rect=");
+                    match state.client_rect(window) {
+                        Some(rect) => { klog::write_hex_u64(rect.right as u64); klog::write_raw(b"x"); klog::write_hex_u64(rect.bottom as u64); }
+                        None => klog::write_raw(b"none"),
+                    }
+                    klog::write_raw(b" pending-paint=");
+                    klog::write_hex_u64(matches!(state.next_pending_paint(window, None, ipc::win32_window::PaintChildren::All), Ok(Some(_))) as u64);
+                    klog::write_raw(b"\n");
+                    (Some(match shown {
                         Ok(previous) => {
                             if let Some(wparam) = crate::nt_window_policy::visibility_transition_message(previous, visible) {
                                 match state.post_to_window(window, ipc::win32_window::WinMessage { hwnd: Some(window), message: crate::nt_window_policy::WM_SHOWWINDOW, wparam, lparam: 0 }) {

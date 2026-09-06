@@ -76,3 +76,27 @@ fn erase_allchildren_bypasses_in_tree_dirty_parent_but_not_external_ancestor() {
     state.set_window_styles(root,WS_CLIPCHILDREN,0).unwrap();
     assert_eq!(state.next_pending_erase(child,None,PaintChildren::All),Ok(Some(child)));
 }
+
+#[test]
+fn showing_a_window_with_geometry_leaves_it_pending_paint() {
+    // Measured in the guest: Notepad creates its window, ShowWindow is reached
+    // for it, it enters its message loop, and no paint ever happens, so the
+    // desktop stays empty. Showing a window that has real geometry must leave
+    // it needing paint, or nothing downstream can ever draw it.
+    let mut state = WindowManager::new();
+    let id = state.create(7, None, 0x1000).unwrap();
+    state.set_rect(id, WindowRect { left: 0, top: 0, right: 729, bottom: 546 }).unwrap();
+    assert_eq!(state.show(7, id, true), Ok(false));
+    assert_eq!(state.next_pending_paint(id, None, PaintChildren::All), Ok(Some(id)));
+}
+
+#[test]
+fn showing_a_window_with_no_geometry_yet_leaves_nothing_to_paint() {
+    // The complement: a window with no extent has nothing to damage, and must
+    // not be reported as paintable. This is what keeps the assertion above
+    // from being satisfied by simply always invalidating.
+    let mut state = WindowManager::new();
+    let id = state.create(7, None, 0x1000).unwrap();
+    assert_eq!(state.show(7, id, true), Ok(false));
+    assert_eq!(state.next_pending_paint(id, None, PaintChildren::All), Ok(None));
+}
