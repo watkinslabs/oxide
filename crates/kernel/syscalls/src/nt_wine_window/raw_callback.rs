@@ -17,8 +17,28 @@ pub(super) fn dispatch_message(pointer: u64) -> u64 {
         let tick_ms = timekeeper::monotonic_ns().saturating_div(1_000_000);
         return crate::nt_rtl::begin_wndproc_callback(hwnd, message as u64, wparam, tick_ms, lparam);
     }
-    let Some(wndproc) = crate::nt_window::window_wndproc_for_current(hwnd) else { return STATUS_INVALID_PARAMETER; };
-    crate::nt_rtl::begin_wndproc_callback(hwnd, message as u64, wparam, lparam, wndproc)
+    let Some(wndproc) = crate::nt_window::window_wndproc_for_current(hwnd) else {
+        // Without a window procedure the message is dropped and, if it was
+        // WM_PAINT, its damage is never validated and it repeats forever.
+        klog::write_raw(b"[WINDOWS-DISPATCH-DROP] reason=no-wndproc hwnd=");
+        klog::write_hex_u64(hwnd);
+        klog::write_raw(b" msg=");
+        klog::write_hex_u64(message as u64);
+        klog::write_raw(b"\n");
+        return STATUS_INVALID_PARAMETER;
+    };
+    let status = crate::nt_rtl::begin_wndproc_callback(hwnd, message as u64, wparam, lparam, wndproc);
+    // STATUS_PENDING means the callback was armed; anything else dropped it.
+    if status != 0x0000_0103 {
+        klog::write_raw(b"[WINDOWS-DISPATCH-DROP] reason=callback-refused hwnd=");
+        klog::write_hex_u64(hwnd);
+        klog::write_raw(b" msg=");
+        klog::write_hex_u64(message as u64);
+        klog::write_raw(b" status=");
+        klog::write_hex_u64(status);
+        klog::write_raw(b"\n");
+    }
+    status
 }
 
 /// Execute a raw NtUserMessageCall using its Wine callback selector.
