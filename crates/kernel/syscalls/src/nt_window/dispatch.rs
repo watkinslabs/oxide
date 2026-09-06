@@ -229,6 +229,15 @@ pub(super) fn dispatch_mode(call: NtCall, raw: bool) -> Option<u64> {
                     (Some(record.parent.map(|parent| parent.raw() as u64).unwrap_or(0)), None, None)
                 }
                 NtWindowCall::Show { hwnd, command } => {
+                    // An application that has created its windows and entered
+                    // its message loop shows nothing until this runs, so
+                    // whether it is reached at all is the first question when
+                    // no window appears.
+                    klog::write_raw(b"[WINDOWS-WINDOW-SHOW] hwnd=");
+                    klog::write_hex_u64(hwnd);
+                    klog::write_raw(b" command=");
+                    klog::write_hex_u64(command as u64);
+                    klog::write_raw(b"\n");
                     let Some(window) = valid_window(hwnd) else { return Some(STATUS_INVALID_HANDLE); };
                     let Some(visible) = crate::nt_window_policy::show_command_visibility(command as u64) else { return Some(state.get(window).map(|record| record.visible as u64).unwrap_or(STATUS_INVALID_HANDLE)); };
                     (Some(match state.show(cur.tid as u64, window, visible) {

@@ -58,7 +58,10 @@ fn dispatch_routed_syscall(entry: (Option<u64>, u64), nr: u64, args: &SyscallArg
     // handler-side diagnostic would be misleading.  This is intentionally
     // limited to the window calls under active bring-up, not a per-syscall
     // trace.
-    if matches!(nr, 0x13d8 | 0x13d9 | 0x136b | 0x14eb) {
+    // 0x15a6 is NtUserSetWindowPlacement, the other route an application takes
+    // to show its main window; without it a window that never appears cannot be
+    // told apart from one that was never asked to.
+    if matches!(nr, 0x13d8 | 0x13d9 | 0x136b | 0x14eb | 0x15a6) {
         klog::write_raw(b"[WINDOWS-PE-WINE-RAW-ENTRY] ordinal=");
         klog::write_hex_u64(nr);
         klog::write_raw(b" nt=");
