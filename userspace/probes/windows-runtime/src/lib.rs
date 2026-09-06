@@ -373,12 +373,26 @@ impl RuntimeRequest {
         let mut catalog = ModuleCatalog::new();
         let mut modules = Vec::new();
         let available = stage_module_paths_from_admitted_dirs(&[dll_dir], component_paths)?;
-        let mut pending: Vec<Vec<u8>> = root.imports().map_err(BuildError::InvalidRoot)?
-            .into_iter().map(|import| dependency_name(import.name).to_ascii_lowercase()).collect();
+        // A delayed dependency is bound on first use, so a PE that names one
+        // must still ship it: the launch catalog is the admitted byte source.
+        // Unlike a static import it is not required to exist -- Windows fails
+        // a delay import at first call, not at load -- so it is queued as
+        // optional and skipped when the admitted directory does not hold it.
+        let mut pending: Vec<(Vec<u8>, bool)> = root.imports().map_err(BuildError::InvalidRoot)?
+            .into_iter().map(|import| (dependency_name(import.name).to_ascii_lowercase(), true)).collect();
+        pending.extend(root.delay_dependencies().map_err(BuildError::InvalidRoot)?
+            .into_iter().map(|name| (dependency_name(name).to_ascii_lowercase(), false)));
         let mut seen = HashSet::new();
-        while let Some(name) = pending.pop() {
-            if name.eq_ignore_ascii_case(b"ntdll.dll") || !seen.insert(name.clone()) { continue; }
-            let path = available.get(&name).ok_or_else(|| BuildError::MissingModule { name: name.clone() })?;
+        while let Some((name, required)) = pending.pop() {
+            if name.eq_ignore_ascii_case(b"ntdll.dll") || seen.contains(&name) { continue; }
+            let path = match available.get(&name) {
+                Some(path) => path,
+                // Not admitted: leave it unseen so a later static import of
+                // the same name still reports a missing module.
+                None if !required => continue,
+                None => return Err(BuildError::MissingModule { name: name.clone() }),
+            };
+            seen.insert(name.clone());
             let blob = if let Some((_, image)) = component_paths.iter().zip(component_images).find(|(admitted, _)| *admitted == path) {
                 image.to_vec()
             } else {
@@ -389,7 +403,9 @@ impl RuntimeRequest {
             validate_size(blob.len() as u64)?;
             let dependency = pe::parse(&blob).map_err(|error| BuildError::InvalidModule { path: path.clone(), error })?;
             pending.extend(dependency.imports().map_err(|error| BuildError::InvalidModule { path: path.clone(), error })?
-                .into_iter().map(|import| dependency_name(import.name).to_ascii_lowercase()));
+                .into_iter().map(|import| (dependency_name(import.name).to_ascii_lowercase(), required)));
+            pending.extend(dependency.delay_dependencies().map_err(|error| BuildError::InvalidModule { path: path.clone(), error })?
+                .into_iter().map(|name| (dependency_name(name).to_ascii_lowercase(), false)));
             let module_name = path.file_name().ok_or(BuildError::InvalidUtf8Path)?.as_bytes();
             catalog.add(module_name, &blob).map_err(|error| BuildError::InvalidModule { path: path.clone(), error })?;
             modules.push(ModuleBuffer { name: module_name.to_vec().into_boxed_slice(), image: blob.into_boxed_slice() });

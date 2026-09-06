@@ -91,6 +91,25 @@ fn executable_export_admission_rejects_data_section_targets() {
     assert_eq!(p.import_thunks(&imports[0]).unwrap(), vec![ImportThunk::Name { hint: 7, name: b"Message" }]);
 }
 
+#[test] fn discovers_delay_loaded_dll_names_from_the_delay_directory() {
+    let mut b = image();
+    let dir = OPT + 112 + IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT * 8;
+    b[dir..dir + 4].copy_from_slice(&0x1100u32.to_le_bytes()); b[dir + 4..dir + 8].copy_from_slice(&96u32.to_le_bytes());
+    b[0x504..0x508].copy_from_slice(&0x1160u32.to_le_bytes());
+    b[0x524..0x528].copy_from_slice(&0x1170u32.to_le_bytes());
+    b[0x544..0x548].copy_from_slice(&0x1160u32.to_le_bytes());
+    b[0x560..0x56a].copy_from_slice(b"imm32.dll\0");
+    b[0x570..0x57c].copy_from_slice(b"combase.dll\0");
+    let p = parse(&b).unwrap();
+    assert_eq!(p.delay_dependencies().unwrap(), vec![b"imm32.dll".as_slice(), b"combase.dll".as_slice()]);
+    assert!(p.dependencies().unwrap().is_empty());
+}
+
+#[test] fn an_image_with_no_delay_directory_names_no_delayed_dependency() {
+    assert!(parse(&image()).unwrap().delay_dependencies().unwrap().is_empty());
+    assert!(parse(&imports_image(b"USER32.dll")).unwrap().delay_dependencies().unwrap().is_empty());
+}
+
 #[test]
 fn discovers_transitive_modules_once_and_accepts_cycles() {
     let root = imports_image(b"dep.dll");
