@@ -714,13 +714,10 @@ pub(crate) fn begin_wndproc_callback_with_completion(hwnd: u64, message: u64, wp
     STATUS_PENDING
 }
 
-/// Begin a WndProc create callback with an ABI-shaped CREATESTRUCTW in the
-/// callback's user stack frame. That frame remains owned by the callback stack
-/// while WM_NCCREATE and WM_CREATE are chained synchronously.
-#[cfg(target_arch = "x86_64")]
 /// Report a create callback that could not be started. Each of these returns a
 /// status the caller turns into a NULL window, and an application whose main
 /// window is NULL exits at once, so an unnamed one looks like a crash.
+#[cfg(target_arch = "x86_64")]
 fn reject_create_callback(reason: &'static [u8], hwnd: u64, message: u64, wndproc: u64) {
     klog::write_raw(b"[WINDOWS-WNDPROC-REJECT] reason=");
     klog::write_raw(reason);
@@ -733,6 +730,10 @@ fn reject_create_callback(reason: &'static [u8], hwnd: u64, message: u64, wndpro
     klog::write_raw(b"\n");
 }
 
+/// Begin a WndProc create callback with an ABI-shaped CREATESTRUCTW in the
+/// callback's user stack frame. That frame remains owned by the callback stack
+/// while WM_NCCREATE and WM_CREATE are chained synchronously.
+#[cfg(target_arch = "x86_64")]
 pub(crate) fn begin_wndproc_create_callback(hwnd: u64, message: u64, wndproc: u64, params: crate::nt_window::CreateStructArgs, completion: sched::nt_callback::Completion) -> u64 {
     klog::write_raw(b"[WINDOWS-WNDPROC-ENTER] hwnd=");
     klog::write_hex_u64(hwnd);

@@ -308,7 +308,16 @@ fn same_name(left: &[u16], right: &[u16]) -> bool {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum DefaultWindowResult { Return(i64), RequestDestroy }
+pub enum DefaultWindowResult {
+    Return(i64),
+    RequestDestroy,
+    /// Default WM_PAINT handling validates the window's update region, as if
+    /// the application had begun and ended a paint that drew nothing. Without
+    /// it the damage survives, the message is offered again immediately, and
+    /// an application that defers WM_PAINT to the default handler spins
+    /// forever without making progress.
+    ValidatePaint,
+}
 
 /// Return whether DispatchMessage must enter a window procedure. WM_QUIT is
 /// consumed by the message loop and is never delivered to a window procedure.
@@ -319,6 +328,7 @@ pub fn default_window_proc(message: u32) -> DefaultWindowResult {
     match message {
         WM_CLOSE => DefaultWindowResult::RequestDestroy,
         WM_NCCREATE => DefaultWindowResult::Return(1),
+        WM_PAINT => DefaultWindowResult::ValidatePaint,
 
         WM_NCHITTEST => DefaultWindowResult::Return(HTCLIENT),
         WM_NCACTIVATE => DefaultWindowResult::Return(1),
