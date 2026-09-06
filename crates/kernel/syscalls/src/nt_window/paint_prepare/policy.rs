@@ -13,6 +13,8 @@ pub(crate) fn whole_window_covered(region:&PaintRegion,window:WindowRect)->bool{
 #[derive(Clone,Copy,Debug)]
 pub(crate) struct Prepared {
     pub hwnd:u32,pub dc:u32,pub destination:u64,pub nc_region:u32,pub tid:u64,
+    /// The kernel consumes the HDC itself (default WM_PAINT); no PAINTSTRUCT is published.
+    pub kernel:bool,
 }
 pub(crate) trait Owner {
     /// Validate original owner and exact active HDC, then finish admitted erase flags.
@@ -42,6 +44,7 @@ pub(crate) fn finish(owner:&mut impl Owner,p:Prepared,result:Result<bool,()>)->u
     let result=(||{
         if !p.valid(){return None;}
         let erase=result.ok()?;let rect=owner.commit(p,erase)?;
+        if p.kernel { return Some(p.dc as u64); }
         if p.destination==0 { let _=owner.retain(p); return None; }
         if p.destination.checked_add(PAINT_PREFIX_BYTES as u64-1).is_none(){return None;}
         let mut bytes=[0;PAINT_PREFIX_BYTES];bytes[..8].copy_from_slice(&(p.dc as u64).to_le_bytes());

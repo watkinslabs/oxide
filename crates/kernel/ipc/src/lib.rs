@@ -50,6 +50,8 @@ pub mod waitqueue;
 pub mod win32_window;
 /// Win32 menu handles and item state used by the native NT GUI layer.
 pub mod win32_menu;
+/// Win32 accelerator tables used by the native NT GUI layer.
+pub mod win32_accel;
 /// Win32 GDI device-context and font state used by the native NT GUI layer.
 pub mod win32_gdi;
 pub use signal::{

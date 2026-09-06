@@ -8,4 +8,4 @@ pub(crate) use policy::{Prepared,Owner,finish,whole_window_covered};
 #[cfg(target_os="oxide-kernel")]
 pub(crate) use live::{finish_for_current,discard_for_current};
 #[cfg(target_os="oxide-kernel")]
-pub(crate) use factory::prepare_for_current;
+pub(crate) use factory::{prepare_for_current,prepare_default_for_current};

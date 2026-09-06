@@ -5,6 +5,13 @@ use syscall::{nt::{NtCall, NtService}, SyscallArgs};
 // PFN ABI normalization and table bounds, shared with the RTL entry.
 pub(crate) mod pfn;
 mod metrics;
+pub(crate) mod hwnd_call;
+mod msg_filter;
+mod two_param;
+pub(crate) mod accel_raw;
+pub(crate) mod dpi_context;
+pub(crate) mod builtin_classes;
+pub(crate) mod unclaimed;
 mod geometry;
 mod hwnd_param;
 mod long_raw;
@@ -49,6 +56,7 @@ const WINE_GET_DC_EX: u64 = 0x13ec;
 const WINE_INVALIDATE_RECT: u64 = 0x148c;
 const WINE_RELEASE_DC: u64 = 0x1509;
 const WINE_SET_WINDOW_POS: u64 = 0x15a7;
+const WINE_MOVE_WINDOW: u64 = 0x14ba;
 #[cfg(test)]
 use gdi_raw::{GET_TEXT_METRICS_W as WINE_GET_TEXT_METRICS, GET_TEXT_EXTENT_EX_W as WINE_GET_TEXT_EXTENT_EX};
 const WINE_REGISTER_CLASS_EX: u64 = 0x14eb;
@@ -168,7 +176,7 @@ fn raw_ordinal_claimed(ordinal: u64) -> bool {
         WINE_GET_MESSAGE | WINE_DESTROY_WINDOW | WINE_PEEK_MESSAGE |
         WINE_POST_MESSAGE | WINE_SHOW_WINDOW | WINE_BEGIN_PAINT | WINE_END_PAINT |
         WINE_GET_DC | WINE_GET_DC_EX | WINE_INVALIDATE_RECT | WINE_RELEASE_DC |
-        WINE_SET_WINDOW_POS | WINE_SET_WINDOW_PLACEMENT | WINE_GET_ASYNC_KEY_STATE | WINE_GET_KEY_STATE |
+        WINE_SET_WINDOW_POS | WINE_MOVE_WINDOW | WINE_SET_WINDOW_PLACEMENT | WINE_GET_ASYNC_KEY_STATE | WINE_GET_KEY_STATE |
         WINE_GET_KEYBOARD_STATE | WINE_SET_KEYBOARD_STATE |
         WINE_GET_CLASS_INFO_EX | WINE_GET_CLASS_NAME |
         WINE_REGISTER_WINDOW_MESSAGE |
@@ -340,7 +348,7 @@ fn translated_key(key: u16) -> Option<u16> {
 fn win_bool(status: u64) -> u64 { (status == STATUS_SUCCESS) as u64 }
 
 #[cfg(target_os = "oxide-kernel")]
-mod paint;
+pub(crate) mod paint;
 #[cfg(target_os = "oxide-kernel")]
 use paint::{begin_paint, end_paint};
 #[cfg(test)]

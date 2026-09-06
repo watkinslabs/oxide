@@ -16,9 +16,13 @@ fn client_screen_origin(state:&WindowManager,id:WindowId)->Option<(i32,i32)>{
 enum Nonclient{None,Whole,Region(PaintRegion)}
 /// Raw BeginPaint calls after canonical reservation and fresh HDC binding; owns HDC on all paths.
 /// # C: O(processes + windows + region); # Sleeps: yes (allocation and Send outside GUI)
-pub(crate) fn prepare_for_current(hwnd:u32,dc:u32,destination:u64)->u64{
+pub(crate) fn prepare_for_current(hwnd:u32,dc:u32,destination:u64)->u64{ prepare_with(hwnd,dc,destination,false,run) }
+/// Default WM_PAINT: same preparation, PAINTSTRUCT kept in the kernel, EndPaint chained on completion.
+/// # C: as prepare_for_current
+pub(crate) fn prepare_default_for_current(hwnd:u32,dc:u32)->u64{ prepare_with(hwnd,dc,0,true,run_default) }
+fn prepare_with(hwnd:u32,dc:u32,destination:u64,kernel:bool,run:fn(paint_callbacks::Resources,Prepared)->u64)->u64{
     let tid=sched::live::current().map_or(0,|c|c.tid as u64);
-    let mut prepared=Prepared{hwnd,dc,destination,nc_region:0,tid};
+    let mut prepared=Prepared{hwnd,dc,destination,nc_region:0,tid,kernel};
     let snapshot=(||{
         if !prepared.valid(){return None;}
         let cur=sched::live::current().filter(|c|c.is_nt_personality())?;let id=WindowId::from_raw(hwnd)?;
@@ -38,8 +42,11 @@ pub(crate) fn prepare_for_current(hwnd:u32,dc:u32,destination:u64)->u64{
         Some(Nonclient::Region(region))=>match crate::nt_gdi::create_region_for_current(region){Ok(handle)=>handle,Err(_)=>{super::live::discard_for_current(prepared);return 0;}},
         None=>{super::live::discard_for_current(prepared);return 0;}
     };
-    super::live::begin_for_current(hwnd,dc,destination,prepared.nc_region,run)
+    super::live::begin_with(hwnd,dc,destination,kernel,prepared.nc_region,run)
 }
 fn run(resources:paint_callbacks::Resources,prepared:Prepared)->u64{
     paint_callbacks::for_current(resources,paint_callbacks::Completion::Paint(prepared))
+}
+fn run_default(resources:paint_callbacks::Resources,prepared:Prepared)->u64{
+    paint_callbacks::for_current(resources,paint_callbacks::Completion::DefaultPaint(prepared))
 }

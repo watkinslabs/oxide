@@ -11,6 +11,14 @@ use sync::{Spinlock, TaskList as GuiLockClass};
 use syscall::nt::{self, NtCall, NtWindowCall, NtWindowMessage};
 #[path = "nt_window/owner.rs"]
 mod owner;
+#[path = "nt_window/class_background.rs"]
+mod class_background;
+pub(crate) use class_background::{register_class_with_background_for_current, class_background_for_current, dpi_context_for_current, set_dpi_context_for_current};
+#[path = "nt_window/erase_background.rs"]
+mod erase_background;
+#[cfg(target_os = "oxide-kernel")]
+#[path = "nt_window/default_paint.rs"]
+mod default_paint;
 use owner::new_entry;
 #[path = "nt_window/control.rs"]
 mod control;
@@ -58,6 +66,12 @@ mod create;
 mod bridge;
 #[path = "nt_window/keyboard.rs"]
 mod keyboard;
+#[path = "nt_window/query.rs"]
+mod query;
+pub(crate) use query::hwnd_snapshot_for_current;
+#[path = "nt_window/accel.rs"]
+mod accel;
+pub(crate) use accel::{accel_create_for_current, accel_copy_for_current, accel_destroy_for_current, accel_target_for_current};
 pub(crate) use keyboard::{get_key_state_current, get_async_key_state_current,
     get_keyboard_state_current, set_keyboard_state_current};
 pub(crate) use bridge::handle_event as compositor_event;
@@ -97,7 +111,7 @@ fn callback_index(argument: u64) -> usize { argument as u32 as usize }
 
 #[derive(Clone, Copy)]
 struct PendingCreate { token: u64, hwnd: u64, wndproc: u64, params: CreateStructArgs, convention: CreateReturnConvention }
-struct GuiEntry { group: Weak<sched::thread_group::ThreadGroup>, state: ipc::win32_window::WindowManager, menus: ipc::win32_menu::MenuManager, wait: Arc<sched::live::WaitList>, foreground: bool, next_create: u64, pending_creates: Vec<PendingCreate>, pending_positions: Vec<position::PendingPosition>, remote_positions: Vec<position::RemotePosition>, retrievals: Vec<retrieval::Retrieval>, sent: send::Queue, redraw: redraw::Queue, scroll_pending: scroll::pending::Queue, paint_callbacks: paint_callbacks::Queue }
+struct GuiEntry { group: Weak<sched::thread_group::ThreadGroup>, state: ipc::win32_window::WindowManager, menus: ipc::win32_menu::MenuManager, accelerators: ipc::win32_accel::AcceleratorTables, dpi_context: u32, wait: Arc<sched::live::WaitList>, foreground: bool, next_create: u64, pending_creates: Vec<PendingCreate>, pending_positions: Vec<position::PendingPosition>, remote_positions: Vec<position::RemotePosition>, retrievals: Vec<retrieval::Retrieval>, sent: send::Queue, redraw: redraw::Queue, scroll_pending: scroll::pending::Queue, paint_callbacks: paint_callbacks::Queue }
 static GUI: Spinlock<Vec<GuiEntry>, GuiLockClass> = Spinlock::new(Vec::new());
 #[cfg(target_os = "oxide-kernel")]
 static USER_ATOMS: Spinlock<ipc::win32_window::UserAtomTable, GuiLockClass> = Spinlock::new(ipc::win32_window::UserAtomTable::new());
@@ -329,17 +343,7 @@ pub(crate) fn register_class_with_encoding_for_current(name: &[u16], wndproc: u6
 
 /// # C: O(processes + classes); raw class flags enter the canonical class owner.
 pub(crate) fn register_class_with_style_for_current(name: &[u16], wndproc: u64, extra: i32, unicode: bool, style: u32) -> Option<u64> {
-    let cur = sched::live::current()?;
-    if !cur.is_nt_personality() { return None; }
-    let group = Arc::clone(&cur.thread_group);
-    let mut entries = GUI.lock();
-    entries.retain(|entry| entry.group.upgrade().is_some());
-    let index = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group)))
-        .unwrap_or_else(|| {
-            entries.push(new_entry(&group));
-            entries.len() - 1
-        });
-    entries[index].state.register_class_with_style(name, wndproc, extra, unicode, style).ok().map(|atom| atom as u64)
+    register_class_with_background_for_current(name, wndproc, extra, unicode, style, 0)
 }
 
 /// Unregister one process-local Wine class through the canonical owner.

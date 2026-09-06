@@ -29,16 +29,22 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x126f, 2), // NtGdiSelectPen
     (0x1287, 5), // NtGdiSetRectRgn
     (0x1327, 2), // NtUserBeginPaint
+    (0x1332, 2), // NtUserCallHwnd
     (0x1336, 3), // NtUserCallHwndParam
+    (0x133a, 2), // NtUserCallMsgFilter
     (0x133c, 1), // NtUserCallNoParam
     (0x133d, 2), // NtUserCallOneParam
+    (0x133e, 3), // NtUserCallTwoParam
     (0x1347, 3), // NtUserCheckMenuItem
     (0x1351, 0), // NtUserCloseClipboard
+    (0x135a, 3), // NtUserCopyAcceleratorTable
+    (0x135c, 2), // NtUserCreateAcceleratorTable
     (0x1360, 4), // NtUserCreateCaret
     (0x1366, 0), // NtUserCreateMenu
     (0x1368, 0), // NtUserCreatePopupMenu
     (0x136b, 17), // NtUserCreateWindowEx
     (0x1378, 3), // NtUserDeleteMenu
+    (0x137b, 1), // NtUserDestroyAcceleratorTable
     (0x137e, 0), // NtUserDestroyCaret
     (0x1382, 1), // NtUserDestroyMenu
     (0x1384, 1), // NtUserDestroyWindow
@@ -63,6 +69,7 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x1418, 4), // NtUserGetMenuBarInfo
     (0x141a, 4), // NtUserGetMenuItemRect
     (0x141b, 4), // NtUserGetMessage
+    (0x1435, 1), // NtUserGetProcessDpiAwarenessContext
     (0x1438, 2), // NtUserGetProp
     (0x144b, 1), // NtUserGetSystemDpiForProcess
     (0x1463, 2), // NtUserGetWindowPlacement
@@ -70,6 +77,7 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x147a, 4), // NtUserInitializeClientPfnArrays
     (0x148c, 3), // NtUserInvalidateRect
     (0x14b5, 7), // NtUserMessageCall
+    (0x14ba, 6), // NtUserMoveWindow
     (0x14c2, 2), // NtUserOpenClipboard
     (0x14ca, 5), // NtUserPeekMessage
     (0x14d0, 4), // NtUserPostMessage
@@ -85,6 +93,7 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x1557, 1), // NtUserSetFocus
     (0x1565, 1), // NtUserSetKeyboardState
     (0x1569, 2), // NtUserSetMenu
+    (0x1577, 2), // NtUserSetProcessDpiAwarenessContext
     (0x157f, 3), // NtUserSetProp
     (0x1581, 4), // NtUserSetScrollInfo
     (0x15a3, 4), // NtUserSetWindowLong
@@ -96,6 +105,7 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x15bd, 2), // NtUserShowWindow
     (0x15cb, 4), // NtUserSystemParametersInfo
     (0x15d0, 6), // NtUserThunkedMenuItemInfo
+    (0x15d7, 3), // NtUserTranslateAccelerator
     (0x15d8, 2), // NtUserTranslateMessage
 ];
 

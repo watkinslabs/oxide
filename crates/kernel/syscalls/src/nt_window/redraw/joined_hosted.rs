@@ -94,6 +94,7 @@ use nt_window::{GUI,STATUS_PENDING,resume_position_message_current};
     pub(crate) fn finish_for_current(_:Prepared,_:Result<bool,()>)->u64 { unreachable!("BeginPaint preparation has a separate owner harness") }
     pub(crate) fn discard_for_current(_:Prepared) { unreachable!("BeginPaint preparation has a separate owner harness") }
 }
+mod default_paint{pub(crate) fn finish_for_current(_:crate::paint_prepare::Prepared,_:Result<bool,()>)->u64{unreachable!("default paint is a kernel-only path")}}
 #[path="../paint_callbacks"] mod paint_callbacks {
     use crate::paint_prepare;
     use crate::redraw;

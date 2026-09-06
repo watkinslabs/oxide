@@ -31,7 +31,7 @@ fn setup()->(State,Prepared,WindowId){
     windows.apply_position(7,WindowPosition{window:id,rect:WindowRect{left:0,top:0,right:10,bottom:10},client:None,order:None,visible:None,flags:0x10,notify_geometry:false}).unwrap();
     windows.invalidate(id,Some(rect(0))).unwrap();windows.begin_paint(id).unwrap();
     let mut gdi=GdiManager::new();let dc=gdi.create_dc(10,10).unwrap();windows.bind_paint_dc(id,dc).unwrap();
-    (State{windows,gdi,copy_fault:false,copies:Vec::new()},Prepared{hwnd:id.raw(),dc,destination:4096,nc_region:1,tid:7},id)
+    (State{windows,gdi,copy_fault:false,copies:Vec::new()},Prepared{hwnd:id.raw(),dc,destination:4096,nc_region:1,tid:7,kernel:false},id)
 }
 #[test]fn callback_reinvalidation_survives_failed_preparation_and_real_dc_is_deleted(){
     for copy_fault in [false,true]{

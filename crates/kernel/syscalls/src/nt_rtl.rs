@@ -976,7 +976,8 @@ fn set_thread_preferred_ui_languages(call: NtCall) -> u64 {
     if call.args.a2 != 0 && uaccess::put_user_u32(call.args.a2, languages).is_err() { return STATUS_INVALID_PARAMETER; }
     STATUS_SUCCESS
 }
-fn set_last_win32_error(error: u64) -> u64 {
+/// # C: O(1) plus one usercopy into the TEB
+pub(crate) fn set_last_win32_error(error: u64) -> u64 {
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     let Some(address) = cur.nt_teb().checked_add(TEB_LAST_ERROR_OFFSET) else { return STATUS_INVALID_PARAMETER; };
     if uaccess::put_user_u32(address, error as u32).is_err() { STATUS_INVALID_PARAMETER } else { 0 }

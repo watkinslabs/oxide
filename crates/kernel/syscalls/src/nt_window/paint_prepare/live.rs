@@ -31,8 +31,13 @@ impl Owner for Current {
 /// # C: O(processes + windows + region); # Sleeps: yes (callbacks after unlock)
 pub(crate) fn begin_for_current(hwnd:u32,dc:u32,destination:u64,nc_region:u32,
     run:fn(Resources,Prepared)->u64)->u64{
+    begin_with(hwnd,dc,destination,false,nc_region,run)
+}
+/// `kernel` keeps the PAINTSTRUCT in the kernel: the caller consumes the HDC. # C: as begin_for_current
+pub(crate) fn begin_with(hwnd:u32,dc:u32,destination:u64,kernel:bool,nc_region:u32,
+    run:fn(Resources,Prepared)->u64)->u64{
     let tid=sched::live::current().map_or(0,|c|c.tid as u64);
-    let prepared=Prepared{hwnd,dc,destination,nc_region,tid};
+    let prepared=Prepared{hwnd,dc,destination,nc_region,tid,kernel};
     let snapshot=(||{
         if !prepared.valid(){return None;}
         let cur=sched::live::current().filter(|c|c.is_nt_personality())?;let id=WindowId::from_raw(hwnd)?;

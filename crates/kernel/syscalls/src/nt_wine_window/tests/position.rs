@@ -115,3 +115,14 @@ fn notepad_statusbar_sequence_applies_to_canonical_window_manager() {
     assert_eq!(policy::set(&mut e,&a),1);
     assert_eq!(e.windows.rect(child).unwrap(),WindowRect {left:0,top:480,right:640,bottom:500});
 }
+
+#[test]
+fn move_window_is_set_window_pos_without_zorder_or_activation() {
+    use super::abi::{NOZORDER, NOACTIVATE, NOREDRAW};
+    let repaint = super::move_window_args(&[7, 10, 20, 300, 400, 1]);
+    assert_eq!(repaint, [7, 0, 10, 20, 300, 400, u64::from(NOZORDER | NOACTIVATE)]);
+    let silent = super::move_window_args(&[7, 10, 20, 300, 400, 0]);
+    assert_eq!(silent[6], u64::from(NOZORDER | NOACTIVATE | NOREDRAW));
+    // A BOOL is 32 bits: garbage in the upper half of the register is not "repaint".
+    assert_eq!(super::move_window_args(&[7, 0, 0, 1, 1, 1 << 32])[6], u64::from(NOZORDER | NOACTIVATE | NOREDRAW));
+}

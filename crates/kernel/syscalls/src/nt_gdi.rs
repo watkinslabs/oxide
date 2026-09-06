@@ -51,7 +51,7 @@ pub(crate) use nonclient_scroll::repaint_nonclient_scroll_for_current;
 pub(crate) use system_brush::system_color_brush_for_current;
 pub(crate) use lifecycle::delete_object_for_current as delete_paint_dc_current;
 pub(crate) use lifecycle::create_dc_for_current as create_paint_dc_for_current;
-pub(crate) use clip::{intersect_clip_rect_for_current, get_app_clip_box_for_current, set_paint_clip_for_current, set_paint_region_for_current};
+pub(crate) use clip::{intersect_clip_rect_for_current, get_app_clip_box_for_current, app_clip_box_snapshot_for_current, set_paint_clip_for_current, set_paint_region_for_current};
 pub(crate) use selected::selected_object_current;
 pub(crate) use object_query::{create_font_record_for_current, get_object_w_for_current};
 pub(crate) use brush::{create_solid_brush_for_current, select_brush_for_current, pat_blt_for_current, set_dc_brush_color_for_current};

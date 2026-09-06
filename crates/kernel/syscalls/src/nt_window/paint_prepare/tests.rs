@@ -7,7 +7,7 @@ impl Owner for State{
     fn abort(&mut self,_:Prepared){self.aborted+=1;}
     fn delete(&mut self,h:u32){self.deleted.push(h);}
 }
-fn prepared()->Prepared{Prepared{hwnd:1,dc:2,destination:4096,nc_region:3,tid:7}}
+fn prepared()->Prepared{Prepared{hwnd:1,dc:2,destination:4096,nc_region:3,tid:7,kernel:false}}
 #[test]fn final_success_encodes_f_erase_and_retains_dc_for_endpaint(){
     for erase in [false,true]{let mut s=State::default();assert_eq!(finish(&mut s,prepared(),Ok(erase)),2);
         assert_eq!(s.deleted,vec![3]);assert_eq!(s.aborted,0);let b=&s.copies[0].1;

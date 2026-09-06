@@ -53,13 +53,14 @@ pub(crate) fn resume(token: u64, mut result: Result<u64, ()>) -> u64 {
 fn finish(completion:Completion,result:Result<bool,()>)->u64{match completion{
     Completion::Callback{token,finish}=>finish(token,result),
     Completion::Paint(p)=>super::super::paint_prepare::finish_for_current(p,result),
+    Completion::DefaultPaint(p)=>super::super::default_paint::finish_for_current(p,result),
     Completion::Erase(p)=>super::super::redraw::erase::finish_for_current(p,result),
 }}
 /// After queue removal, release payload resources in the same process without invoking user continuations.
 /// # C: O(processes + windows + GDI objects)
 pub(crate) fn dispose_for_current(completion:Completion){
     match completion{
-        Completion::Paint(p)=>super::super::paint_prepare::discard_for_current(p),
+        Completion::Paint(p)|Completion::DefaultPaint(p)=>super::super::paint_prepare::discard_for_current(p),
         Completion::Erase(p)=>super::super::redraw::erase::discard_for_current(p),
         Completion::Callback{..}=>{},
     }

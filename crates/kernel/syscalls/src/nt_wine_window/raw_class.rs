@@ -4,6 +4,7 @@ use super::*;
 const WS_CHILD: u32 = 0x4000_0000;
 const WS_POPUP: u32 = 0x8000_0000;
 const CLASS_STYLE_OFFSET: u64 = 4;
+const CLASS_BACKGROUND_OFFSET: u64 = 48;
 
 #[path = "create_abi.rs"]
 mod create_abi;
@@ -40,7 +41,9 @@ pub(super) fn register_class(args: SyscallArgs) -> u64 {
     let Ok(extra) = uaccess::get_user_u32(extra_address) else { return 0; };
     let Some(style_address) = args.a0.checked_add(CLASS_STYLE_OFFSET) else { return 0; };
     let Ok(style) = uaccess::get_user_u32(style_address) else { return 0; };
-    let result = crate::nt_window::register_class_with_style_for_current(&name, wndproc, extra as i32, args.a5 as u32 == 0, style).unwrap_or(0);
+    let Some(background_address) = args.a0.checked_add(CLASS_BACKGROUND_OFFSET) else { return 0; };
+    let Ok(background) = uaccess::get_user_u64(background_address) else { return 0; };
+    let result = crate::nt_window::register_class_with_background_for_current(&name, wndproc, extra as i32, args.a5 as u32 == 0, style, background).unwrap_or(0);
     wine_window_diag! { klog::write_raw(b"[WINDOWS-PE-WINE-CLASS] result="); klog::write_hex_u64(result); klog::write_raw(b" wndproc="); klog::write_hex_u64(wndproc); klog::write_raw(b"\n"); }
     result
 }
