@@ -164,3 +164,19 @@ impl WindowManager {
 #[cfg(test)]
 #[path="tests/position.rs"]
 mod tests;
+
+impl WindowManager {
+    /// Deliver the geometry a window is created with, as creation itself does.
+    /// A window learns its size from WM_SIZE; one that is given its extent
+    /// silently never finds out, and a control it lays out from that size stays
+    /// at zero and draws nothing.
+    /// # C: O(N_windows)
+    pub fn notify_created_geometry(&mut self, id: WindowId) -> Result<(), WindowError> {
+        let Some(client) = self.client_rect(id) else { return Ok(()); };
+        let width = client.right.saturating_sub(client.left);
+        let height = client.bottom.saturating_sub(client.top);
+        if width <= 0 || height <= 0 { return Ok(()); }
+        self.post_to_window(id, WinMessage { hwnd: Some(id), message: WM_SIZE, wparam: 0,
+            lparam: mouse_lparam(width, height) })
+    }
+}

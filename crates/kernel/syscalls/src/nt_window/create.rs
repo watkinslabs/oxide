@@ -106,6 +106,18 @@ fn take_pending_create_for_current(token: u64) -> Option<PendingCreate> {
     Some(entries[index].pending_creates.swap_remove(pending))
 }
 
+/// Post the created window's geometry to its own queue. Failure to post is not
+/// a failed creation: the window exists and the message can still arrive from a
+/// later reposition.
+fn notify_created_geometry_for_current(hwnd: u64) {
+    let Some(cur) = sched::live::current() else { return; };
+    let Some(window) = ipc::win32_window::WindowId::from_raw(hwnd as u32) else { return; };
+    let group = Arc::clone(&cur.thread_group);
+    let mut entries = GUI.lock();
+    let Some(entry) = entries.iter_mut().find(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group))) else { return; };
+    let _ = entry.state.notify_created_geometry(window);
+}
+
 fn abort_create_for_current(token: u64) {
     if let Some(pending) = take_pending_create_for_current(token) { destroy_window_for_current(pending.hwnd); }
 }
@@ -192,6 +204,10 @@ pub(crate) fn complete_callback(completion: sched::nt_callback::Completion, call
                     return pending.convention.failure(STATUS_INVALID_PARAMETER);
                 }
             }
+            // Creation itself reports the geometry the window was made with.
+            // Without it the application never learns its size, and a control
+            // it lays out from that size stays at zero and draws nothing.
+            notify_created_geometry_for_current(pending.hwnd);
             // The first real top-level window of this desktop becomes the root
             // HWND zero resolves to. The publisher rejects anything that is not
             // one and keeps an existing root, so this offer is safe to make for
