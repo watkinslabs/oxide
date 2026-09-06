@@ -699,9 +699,9 @@ pub(crate) fn begin_wndproc_callback_with_completion(hwnd: u64, message: u64, wp
         reject_create_callback(b"callback-return-write", hwnd, message, callback_rsp);
         return STATUS_INVALID_PARAMETER;
     }
-    let post_rip = frame.rip;
     let post_rsp = frame.rsp;
-    if !task.nt_callback_stack.lock().push(sched::nt_callback::Frame { rip: post_rip, rsp: post_rsp, completion }) {
+    let continuation_frame = crate::nt_callback_frame::capture(frame, task, completion);
+    if !task.nt_callback_stack.lock().push(continuation_frame) {
         reject_create_callback(b"callback-depth", hwnd, message, post_rsp);
         return STATUS_INVALID_PARAMETER;
     }
@@ -765,9 +765,8 @@ pub(crate) fn begin_wndproc_create_callback(hwnd: u64, message: u64, wndproc: u6
         || uaccess::copy_to_user(create_struct, &create_bytes).is_err() {
         return STATUS_INVALID_PARAMETER;
     }
-    let post_rip = frame.rip;
-    let post_rsp = frame.rsp;
-    if !task.nt_callback_stack.lock().push(sched::nt_callback::Frame { rip: post_rip, rsp: post_rsp, completion }) { return STATUS_INVALID_PARAMETER; }
+    let continuation_frame = crate::nt_callback_frame::capture(frame, task, completion);
+    if !task.nt_callback_stack.lock().push(continuation_frame) { return STATUS_INVALID_PARAMETER; }
     frame.rip = wndproc;
     frame.rsp = callback_rsp;
     frame.rcx = hwnd;
@@ -811,8 +810,7 @@ pub(crate) fn callback_return(call: NtCall) -> u64 {
         klog::write_raw(b"\n");
         let Some(task) = sched::live::current() else { return STATUS_NO_CALLBACK_ACTIVE; };
         let Some(saved) = task.nt_callback_stack.lock().pop() else { return STATUS_NO_CALLBACK_ACTIVE; };
-        frame.rip = saved.rip;
-        frame.rsp = saved.rsp;
+        crate::nt_callback_frame::restore(frame, task, &saved);
         frame.rax = result;
         if saved.completion.kind != 0 { return crate::nt_window::complete_callback(saved.completion, result); }
         result

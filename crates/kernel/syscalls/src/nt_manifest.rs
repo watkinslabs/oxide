@@ -10,6 +10,8 @@ pub(crate) mod nt_native_thread;
 #[path = "nt_rtl/native_gdi/mod.rs"]
 pub(crate) mod nt_native_gdi;
 mod nt_directory_abi;
+pub(crate) mod nt_callback_fp_layout;
+pub(crate) mod nt_callback_frame;
 #[path = "nt_wine_window/dc_raw.rs"]
 mod nt_dc_raw;
 #[path = "nt_wine_window/pen_raw.rs"]

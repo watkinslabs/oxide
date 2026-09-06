@@ -1,5 +1,5 @@
 use alloc::vec::Vec;
-use sched::{Task, nt_callback::{Frame, Completion}, nt_native_thread::Phase};
+use sched::{Task, nt_callback::Completion, nt_native_thread::Phase};
 use syscall::nt_native_gdi as abi;
 
 /// Redirect this PE text syscall only after all bounded usercopies succeed. # C: O(text units)
@@ -41,9 +41,9 @@ pub(super) fn launch_or(copy: &mut [u8], failure: u64, patch: impl FnOnce(u64, &
     // SAFETY: active syscall frame belongs exclusively to this current Task.
     let frame = unsafe { &mut *regs };
     #[cfg(target_arch = "x86_64")]
-    let (pc, sp, link) = (frame.rip, frame.rsp, 0);
+    let (sp, link) = (frame.rsp, 0);
     #[cfg(target_arch = "aarch64")]
-    let (pc, sp, link) = (frame.elr_el1, frame.sp_el0, frame.x30);
+    let (sp, link) = (frame.sp_el0, frame.x30);
     #[cfg(target_arch = "x86_64")]
     let arch = abi::CallbackArch::X86_64;
     #[cfg(target_arch = "aarch64")]
@@ -53,8 +53,8 @@ pub(super) fn launch_or(copy: &mut [u8], failure: u64, patch: impl FnOnce(u64, &
     if uaccess::copy_to_user(payload, copy).is_err() { return failure; }
     #[cfg(target_arch = "x86_64")]
     if uaccess::put_user_u64(call_sp, ret).is_err() { return failure; }
-    if !task.nt_callback_stack.lock().push(Frame { rip: pc, rsp: sp,
-        completion: Completion { kind: abi::TOKEN, argument: link } }) { return failure; }
+    let saved = crate::nt_callback_frame::capture(frame, task, Completion { kind: abi::TOKEN, argument: link });
+    if !task.nt_callback_stack.lock().push(saved) { return failure; }
     #[cfg(target_arch = "x86_64")]
     { frame.rip = entry; frame.rsp = call_sp; frame.rcx = payload; }
     #[cfg(target_arch = "aarch64")]
@@ -73,11 +73,11 @@ pub(super) fn complete(task: &Task, result: u64) -> u64 {
     let result = result as u32 as u64;
     // SAFETY: completion owns this live syscall frame and its tagged LIFO continuation.
     unsafe {
+        crate::nt_callback_frame::restore(&mut *regs, task, &saved);
         #[cfg(target_arch = "x86_64")]
-        { (*regs).rip = saved.rip; (*regs).rsp = saved.rsp; (*regs).rax = result; }
+        { (*regs).rax = result; }
         #[cfg(target_arch = "aarch64")]
-        { (*regs).elr_el1 = saved.rip; (*regs).sp_el0 = saved.rsp; (*regs).x30 = saved.completion.argument;
-          (*regs).gp[0] = result; (*regs).retval = result; }
+        { (*regs).x30 = saved.completion.argument; (*regs).gp[0] = result; (*regs).retval = result; }
     }
     result
 }

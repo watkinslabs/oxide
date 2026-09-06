@@ -30,8 +30,24 @@ pub struct Completion { pub kind: u64, pub argument: u64 }
 
 impl Completion { pub const NONE: Self = Self { kind: 0, argument: 0 }; }
 
+/// Words of the architecture's user entry frame kept across a callback.
+pub const REGISTER_WORDS: usize = 40;
+/// Bytes of callee-saved SIMD/FP state kept across a callback: x86-64 keeps
+/// xmm6-xmm15, MXCSR and the x87 control word; AArch64 keeps v8-v15, FPCR
+/// and FPSR. The layout inside is the arch owner's contract.
+pub const FP_BYTES: usize = 176;
+
+/// Register state a user-mode callback must not be able to change in the
+/// frame it interrupts: the complete integer entry frame plus the
+/// callee-saved FP set. Native (Unix-ABI) callbacks clobber registers the
+/// Windows ABI treats as preserved, so the continuation carries them.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Frame { pub rip: u64, pub rsp: u64, pub completion: Completion }
+pub struct Preserved { pub regs: [u64; REGISTER_WORDS], pub fp: [u8; FP_BYTES] }
+
+impl Preserved { pub const EMPTY: Self = Self { regs: [0; REGISTER_WORDS], fp: [0; FP_BYTES] }; }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Frame { pub rip: u64, pub rsp: u64, pub completion: Completion, pub preserved: Preserved }
 
 pub struct Stack { frames: Vec<Frame> }
 
@@ -58,18 +74,18 @@ mod tests {
     #[test]
     fn nested_frames_unwind_lifo() {
         let mut stack = Stack::new();
-        assert!(stack.push(Frame { rip: 1, rsp: 2, completion: Completion::NONE }));
-        assert!(stack.push(Frame { rip: 3, rsp: 4, completion: Completion { kind: 7, argument: 8 } }));
+        assert!(stack.push(Frame { rip: 1, rsp: 2, completion: Completion::NONE, preserved: Preserved::EMPTY }));
+        assert!(stack.push(Frame { rip: 3, rsp: 4, completion: Completion { kind: 7, argument: 8 }, preserved: Preserved::EMPTY }));
         assert_eq!(stack.len(), 2);
-        assert_eq!(stack.pop(), Some(Frame { rip: 3, rsp: 4, completion: Completion { kind: 7, argument: 8 } }));
-        assert_eq!(stack.pop(), Some(Frame { rip: 1, rsp: 2, completion: Completion::NONE }));
+        assert_eq!(stack.pop(), Some(Frame { rip: 3, rsp: 4, completion: Completion { kind: 7, argument: 8 }, preserved: Preserved::EMPTY }));
+        assert_eq!(stack.pop(), Some(Frame { rip: 1, rsp: 2, completion: Completion::NONE, preserved: Preserved::EMPTY }));
         assert_eq!(stack.pop(), None);
     }
 
     #[test]
     fn depth_is_bounded() {
         let mut stack = Stack::new();
-        for value in 0..MAX_DEPTH { assert!(stack.push(Frame { rip: value as u64, rsp: value as u64, completion: Completion::NONE })); }
-        assert!(!stack.push(Frame { rip: MAX_DEPTH as u64, rsp: 0, completion: Completion::NONE }));
+        for value in 0..MAX_DEPTH { assert!(stack.push(Frame { rip: value as u64, rsp: value as u64, completion: Completion::NONE, preserved: Preserved::EMPTY })); }
+        assert!(!stack.push(Frame { rip: MAX_DEPTH as u64, rsp: 0, completion: Completion::NONE, preserved: Preserved::EMPTY }));
     }
 }
