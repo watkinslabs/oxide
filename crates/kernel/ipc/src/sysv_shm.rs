@@ -392,6 +392,22 @@ fn errno_from_vmm(e: vmm::Error) -> syscall::errno::Errno {
 
 /// `shmat(shmid, shmaddr, shmflg)` — slot 30.
 /// # C: O(N_segments) lookup
+/// Name a failed attach. The X server collapses every shmat errno into a
+/// protocol BadAccess, so the errno itself is only observable here.
+/// # C: O(1)
+fn shmat_failed(reason: &'static [u8], shmid: i32, flg: u64, eno: syscall::errno::Errno) -> i64 {
+    klog::write_raw(b"[SHMAT-FAIL] reason=");
+    klog::write_raw(reason);
+    klog::write_raw(b" shmid=");
+    klog::write_hex_u64(shmid as u32 as u64);
+    klog::write_raw(b" flg=");
+    klog::write_hex_u64(flg);
+    klog::write_raw(b" errno=");
+    klog::write_hex_u64(eno.as_i32() as u64);
+    klog::write_raw(b"\n");
+    -(eno.as_i32() as i64)
+}
+
 pub fn sys_shmat(args: &syscall::SyscallArgs) -> i64 {
     use syscall::errno::Errno;
     use vmm::{VmaFlags, VmaBacking};
@@ -399,24 +415,24 @@ pub fn sys_shmat(args: &syscall::SyscallArgs) -> i64 {
     let addr = args.a1;
     let flg  = args.a2;
     let seg = match lookup_by_id(shmid) {
-        Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
+        Some(s) => s, None => return shmat_failed(b"no-such-id", shmid, flg, Errno::Einval),
     };
     let cur = match sched::current() {
-        Some(c) => c, None => return -(Errno::Einval.as_i32() as i64),
+        Some(c) => c, None => return shmat_failed(b"no-task", shmid, flg, Errno::Einval),
     };
     // SAFETY: mm slot single-mutator per `13§5`.
     let mm = match unsafe { cur.mm_ref() } {
-        Some(m) => m.clone(), None => return -(Errno::Einval.as_i32() as i64),
+        Some(m) => m.clone(), None => return shmat_failed(b"no-mm", shmid, flg, Errno::Einval),
     };
     let cred = current_ipc_cred();
     let first = match shmat_plan(&seg, &cred, addr, flg, false) {
         Ok(p) => p,
-        Err(e) => return -(e.as_i32() as i64),
+        Err(e) => return shmat_failed(b"plan", shmid, flg, e),
     };
     let overlaps = first.addr.map(|a| (flg & SHM_REMAP) == 0 && shmat_range_overlaps(&mm, a, first.len)).unwrap_or(false);
     let plan = match if overlaps { shmat_plan(&seg, &cred, addr, flg, true) } else { Ok(first) } {
         Ok(p) => p,
-        Err(e) => return -(e.as_i32() as i64),
+        Err(e) => return shmat_failed(b"plan-overlap", shmid, flg, e),
     };
     let mut final_prot = plan.prot;
     // Linux shmat reaches do_mmap after ipcperms; READ_IMPLIES_EXEC therefore
@@ -428,7 +444,7 @@ pub fn sys_shmat(args: &syscall::SyscallArgs) -> i64 {
     }
     let hint = match plan.addr {
         Some(a) => match hal::UserVirtAddr::new(a) {
-            Some(u) => Some(u), None => return -(Errno::Einval.as_i32() as i64),
+            Some(u) => Some(u), None => return shmat_failed(b"bad-address", shmid, flg, Errno::Einval),
         },
         None => None,
     };
@@ -453,10 +469,7 @@ pub fn sys_shmat(args: &syscall::SyscallArgs) -> i64 {
     release_detached(&seg);
     match res {
         Ok(va)  => va.as_u64() as i64,
-        Err(e)  => {
-            let eno = errno_from_vmm(e);
-            -(eno.as_i32() as i64)
-        }
+        Err(e)  => shmat_failed(b"mmap", shmid, flg, errno_from_vmm(e)),
     }
 }
 

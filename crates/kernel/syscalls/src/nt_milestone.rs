@@ -34,8 +34,14 @@ pub(crate) fn reset() { if let Some(cur) = sched::live::current() { cur.thread_g
 pub(crate) fn unix_entry() { observe(UNIX_ENTRY, b"[WINDOWS-NT-UNIX] entry\n"); }
 pub(crate) fn server_entry() { observe(SERVER_ENTRY, b"[WINDOWS-NT-SERVER] entry\n"); }
 pub(crate) fn window_create() { observe(WINDOW_CREATE, b"[WINDOWS-USER32] create-window\n"); }
-pub(crate) fn message_get() { observe(MESSAGE_GET, b"[WINDOWS-USER32] get-message\n"); }
+pub(crate) fn message_get() {
+    LOOP_REACHED.store(true, core::sync::atomic::Ordering::Relaxed); observe(MESSAGE_GET, b"[WINDOWS-USER32] get-message\n"); }
 pub(crate) fn paint_begin() { observe(PAINT_BEGIN, b"[WINDOWS-GDI] begin-paint\n"); }
+
+/// Whether the application has retrieved its first message, which is when the
+/// message-loop trace should start counting. # C: O(1)
+pub(crate) fn message_loop_reached() -> bool { LOOP_REACHED.load(core::sync::atomic::Ordering::Relaxed) }
+static LOOP_REACHED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 pub(crate) fn paint_present() { observe(PAINT_PRESENT, b"[WINDOWS-GDI] present\n"); }
 pub(crate) fn desktop_ack() { observe(DESKTOP_ACK, b"[WINDOWS-DESKTOP] frame-ack\n"); }
 
