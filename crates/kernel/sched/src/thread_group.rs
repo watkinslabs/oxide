@@ -87,6 +87,15 @@ pub struct ThreadGroup {
     /// Immutable ELF bootstrap admitted with the NT launch request. Child NT
     /// processes reuse this exact image instead of reopening a host path.
     pub nt_bootstrap: Spinlock<Option<Arc<[u8]>>, TaskListClass>,
+    /// Registry endpoint admitted with the NT launch request: one connected
+    /// stream the launcher opened under its own credentials in its own
+    /// namespaces. Retaining the open file, rather than a pathname, is what
+    /// keeps the kernel from resolving a per-user socket as root.
+    pub nt_registry_endpoint: Spinlock<Option<Arc<vfs::File>>, TaskListClass>,
+    /// Serializes one registry request/response exchange at a time over the
+    /// single process-owned endpoint, so concurrent NT threads cannot
+    /// interleave frames on the shared connection.
+    pub nt_registry_lock: crate::nt_object::NtMutant,
     /// Modules whose `DLL_THREAD_ATTACH`/`DETACH` callbacks are disabled.
     pub nt_module_no_thread_calls: Spinlock<Vec<u64>, TaskListClass>,
     /// Process-owned Wine client procedure tables initialized by user32.
@@ -284,6 +293,8 @@ impl ThreadGroup {
             nt_module_catalog: Spinlock::new(None),
             nt_unixlib_catalog: Spinlock::new(None),
             nt_bootstrap: Spinlock::new(None),
+            nt_registry_endpoint: Spinlock::new(None),
+            nt_registry_lock: crate::nt_object::NtMutant::new(None),
             nt_module_no_thread_calls: Spinlock::new(Vec::new()),
             nt_user_pfn: Spinlock::new(None),
             nt_user_module: Spinlock::new(None),
@@ -358,6 +369,13 @@ impl ThreadGroup {
     /// Install or clear the immutable bootstrap used by later NT children. # C: O(bytes)
     pub fn set_nt_bootstrap(&self, image: Option<&[u8]>) {
         *self.nt_bootstrap.lock() = image.map(|bytes| Arc::<[u8]>::from(bytes));
+    }
+    /// Return the process-owned connected registry endpoint. # C: O(1)
+    pub fn nt_registry_endpoint(&self) -> Option<Arc<vfs::File>> { self.nt_registry_endpoint.lock().clone() }
+    /// Install or clear the endpoint admitted for this NT process. The pin on
+    /// the open file outlives the launcher's descriptor table. # C: O(1)
+    pub fn set_nt_registry_endpoint(&self, file: Option<Arc<vfs::File>>) {
+        *self.nt_registry_endpoint.lock() = file;
     }
     /// The process' `signalfd` readiness source, handed to every thread's
     /// `SignalPending` so both pending sets raise edges on one list. # C: O(1)

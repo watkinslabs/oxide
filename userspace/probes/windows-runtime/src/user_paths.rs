@@ -149,3 +149,37 @@ fn current_identity() -> Result<(u32, u32), UserPathError> {
     if real != effective { return Err(UserPathError::PrivilegeMismatch { real, effective }); }
     Ok((real, effective))
 }
+
+impl UserPathInput {
+    /// Read one launch's path selection from the process environment.
+    /// `HOME` is consulted only where a default is actually needed.
+    pub fn from_environment() -> Self {
+        let path = |name: &str| std::env::var_os(name).map(PathBuf::from);
+        Self {
+            prefix: path("OXIDE_WINDOWS_PREFIX"),
+            database: path("OXIDE_WINDOWS_REGISTRY_DATABASE"),
+            socket: path("OXIDE_WINDOWS_REGISTRY_SOCKET"),
+            home: path("HOME").unwrap_or_default(),
+            xdg_data_home: path("XDG_DATA_HOME"),
+            xdg_state_home: path("XDG_STATE_HOME"),
+            xdg_runtime_dir: path("XDG_RUNTIME_DIR"),
+        }
+    }
+}
+
+impl UserRuntimePaths {
+    /// Select this user's paths and create the private directories that hold
+    /// them. The runtime directory itself is validated, never created: it is
+    /// the session manager's to own, and creating it would mask a session
+    /// that never set one up.
+    pub fn prepare(input: &UserPathInput) -> Result<Self, UserPathError> {
+        let paths = Self::select(input)?;
+        if let Some(runtime) = input.xdg_runtime_dir.as_deref().filter(|path| path.is_absolute()) {
+            validate_runtime_dir(runtime)?;
+        }
+        for path in [&paths.prefix, &paths.database, &paths.socket] {
+            if let Some(parent) = path.parent() { ensure_private_dir(parent)?; }
+        }
+        Ok(paths)
+    }
+}

@@ -24,7 +24,6 @@ const KEY_FULL_INFORMATION: u64 = 2;
 const KEY_NAME_INFORMATION: u64 = 3;
 const MAX_REGISTRY_TEXT: usize = 1 << 20;
 const MAX_REGISTRY_VALUE: usize = 1 << 24;
-const REGISTRY_SOCKET: &str = "/run/oxide/registry.sock";
 const STATUS_PENDING: u64 = 0x0000_0103;
 const STATUS_ACCESS_DENIED: u64 = 0xc000_0022;
 const STATUS_CANCELLED: u64 = 0xc000_0120;
@@ -46,23 +45,34 @@ enum Reply { Success, Handle(u64), Value { kind: u32, data: Vec<u8> }, Keys(Vec<
 /// Create the native key handle for the userspace-owned current-user root.
 /// # C: O(1) plus one NT handle-table insertion
 pub fn dispatch(call: NtCall) -> Option<u64> {
-    if call.service == NtService::RtlOpenCurrentUser { return Some(open_current_user(call)); }
-    if matches!(call.service, NtService::OpenKey | NtService::NtOpenKeyEx) { return Some(open_key(call)); }
-    if call.service == NtService::CreateKey { return Some(create_key(call)); }
-    if call.service == NtService::QueryValueKey { return Some(query_value(call)); }
-    if call.service == NtService::NtQueryValueKey { return Some(query_value_native(call)); }
-    if call.service == NtService::NtEnumerateValueKey { return Some(enumerate_value_native(call)); }
-    if call.service == NtService::NtEnumerateKey { return Some(enumerate_key_native(call)); }
-    if call.service == NtService::SetValueKey { return Some(set_value(call)); }
-    if call.service == NtService::NtSetValueKey { return Some(set_value_native(call)); }
-    if call.service == NtService::NtDeleteValueKey { return Some(delete_value_native(call)); }
-    if call.service == NtService::NtDeleteKey { return Some(delete_key_native(call)); }
-    if call.service == NtService::NtQueryKey { return Some(query_key_native(call)); }
-    if call.service == NtService::NtFlushKey { return Some(flush_key_native(call)); }
-    if call.service == NtService::NtSaveKey { return Some(save_key_native(call)); }
-    if call.service == NtService::NtLoadKey { return Some(load_key_native(call)); }
-    if call.service == NtService::NtNotifyChangeKey { return Some(notify_change_key(call)); }
-    None
+    // One list names the registry-owned services, so the endpoint guard below
+    // can never claim a service this ladder would not have answered.
+    let handler: fn(NtCall) -> u64 = match call.service {
+        NtService::RtlOpenCurrentUser => open_current_user,
+        NtService::OpenKey | NtService::NtOpenKeyEx => open_key,
+        NtService::CreateKey => create_key,
+        NtService::QueryValueKey => query_value,
+        NtService::NtQueryValueKey => query_value_native,
+        NtService::NtEnumerateValueKey => enumerate_value_native,
+        NtService::NtEnumerateKey => enumerate_key_native,
+        NtService::SetValueKey => set_value,
+        NtService::NtSetValueKey => set_value_native,
+        NtService::NtDeleteValueKey => delete_value_native,
+        NtService::NtDeleteKey => delete_key_native,
+        NtService::NtQueryKey => query_key_native,
+        NtService::NtFlushKey => flush_key_native,
+        NtService::NtSaveKey => save_key_native,
+        NtService::NtLoadKey => load_key_native,
+        NtService::NtNotifyChangeKey => notify_change_key,
+        _ => return None,
+    };
+    // A process whose launch admitted no endpoint has no registry at all.
+    // Refusing here, before any frame is built, keeps that refusal distinct
+    // from a key that genuinely does not exist.
+    if sched::live::current().is_none_or(|current| current.thread_group.nt_registry_endpoint().is_none()) {
+        return Some(crate::nt_registry_endpoint::no_endpoint_status());
+    }
+    Some(handler(call))
 }
 
 fn notify_change_key(call: NtCall) -> u64 {
@@ -280,18 +290,44 @@ fn frame_load_hive(root: u8, parent: Option<u64>, name: &str, bytes: &[u8]) -> V
 fn put_text(frame: &mut Vec<u8>, text: &str) { put_bytes(frame, text.as_bytes()); }
 fn put_bytes(frame: &mut Vec<u8>, bytes: &[u8]) { frame.extend_from_slice(&(bytes.len() as u32).to_le_bytes()); frame.extend_from_slice(bytes); }
 
+/// Exchange one framed request over the process-owned registry endpoint that
+/// the launcher admitted at exec. The exchange holds the process registry
+/// mutant so concurrent NT threads cannot interleave frames on the one shared
+/// connection.
 fn transact(frame: &[u8]) -> Option<Reply> {
-    let root = vfs::mntns::initial().id(); let root = vfs::mount::root_path_for_ns(root)?;
-    let found = vfs::path_lookup_at_root_cred(root.dentry.clone(), root.mnt_id, root.dentry.clone(), root.mnt_id,
-        REGISTRY_SOCKET, vfs::LookupFlags::default(), vfs::Cred::root()).ok()?;
-    if found.inode.file_type() != vfs::FileType::Socket { return None; }
-    let address = net::UnixAddr::from_inode_bytes(REGISTRY_SOCKET.as_bytes().to_vec(), &found.inode);
-    let socket = net::sock::connect_kernel_unix(address).ok()?;
+    let current = sched::live::current()?;
+    let file = current.thread_group.nt_registry_endpoint()?;
+    let socket = crate::net_common::inode_as_inet_socket(file.inode())?;
+    let _exchange = RegistryExchange::acquire(&current)?;
     let frame_len = (frame.len() as u32).to_le_bytes(); write_all(&socket, &frame_len)?; write_all(&socket, frame)?;
     let mut length = [0u8; 4]; read_exact(&socket, &mut length)?; let length = u32::from_le_bytes(length) as usize;
     if length == 0 || length > registry_wire::MAX_FRAME { return None; }
     let mut response = Vec::new(); response.try_reserve_exact(length).ok()?; response.resize(length, 0); read_exact(&socket, &mut response)?;
     decode_reply(&response)
+}
+
+/// Held ownership of the process registry connection for one exchange.
+struct RegistryExchange { group: Arc<sched::thread_group::ThreadGroup>, tid: u64 }
+
+impl RegistryExchange {
+    /// Acquire the shared connection, waiting for a peer thread's exchange.
+    fn acquire(current: &sched::Task) -> Option<Self> {
+        let tid = current.tid as u64;
+        let group = Arc::clone(&current.thread_group);
+        loop {
+            if group.nt_registry_lock.try_acquire(tid) { return Some(Self { group, tid }); }
+            // SAFETY: process context, and the thread group holding this
+            // mutant is kept alive by the cloned reference above.
+            match unsafe { group.nt_registry_lock.wait(tid, u64::MAX, timekeeper::monotonic_ns) } {
+                sched::WaitOutcome::Interrupted => return None,
+                _ => continue,
+            }
+        }
+    }
+}
+
+impl Drop for RegistryExchange {
+    fn drop(&mut self) { let _ = self.group.nt_registry_lock.release(self.tid); }
 }
 
 fn write_all(socket: &Arc<net::sock::InetSocket>, mut bytes: &[u8]) -> Option<()> {

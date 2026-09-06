@@ -103,4 +103,6 @@ pub(super) fn take_u8(bytes: &[u8], at: &mut usize) -> Option<u8> { let value = 
 pub(super) fn take_u32(bytes: &[u8], at: &mut usize) -> Option<u32> { let end = at.checked_add(4)?; let value = u32::from_le_bytes(bytes.get(*at..end)?.try_into().ok()?); *at = end; Some(value) }
 pub(super) fn take_u64(bytes: &[u8], at: &mut usize) -> Option<u64> { let end = at.checked_add(8)?; let value = u64::from_le_bytes(bytes.get(*at..end)?.try_into().ok()?); *at = end; Some(value) }
 pub(super) fn put_u64(out: &mut Vec<u8>, value: u64) { out.extend_from_slice(&value.to_le_bytes()); }
-pub(super) fn error_code(error: &Error) -> u8 { match error { Error::InvalidPath => 1, Error::MissingKey => 2, Error::MissingValue => 3, Error::InvalidFile => 4, Error::Io(_) => 5, Error::Deleted => registry_wire::ERROR_DELETED } }
+pub(super) fn error_code(error: &Error) -> u8 { match error { Error::InvalidPath => 1, Error::MissingKey => 2, Error::MissingValue => 3, Error::InvalidFile => 4, Error::Io(_) => 5, Error::Deleted => registry_wire::ERROR_DELETED,
+    // Startup-only: a served request already holds the database lock.
+    Error::AlreadyServing => 5 } }

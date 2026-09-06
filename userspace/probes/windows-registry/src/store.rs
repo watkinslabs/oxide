@@ -1,13 +1,28 @@
 //! One durable runtime registry owner.
 use super::*;
 impl RegistryStore {
-    /// Load an existing per-user database or create a new one when absent. # C: O(file bytes)
-    pub fn open(path: &Path) -> Result<Self, Error> {
+    /// Load an existing per-user database or create a new one when absent,
+    /// waiting for a contending session to finish. # C: O(file bytes)
+    pub fn open(path: &Path) -> Result<Self, Error> { Self::open_with_wait(path, true) }
+
+    /// Open only if no other session owns this database. A held lock answers
+    /// `AlreadyServing` rather than parking, which is what lets a service
+    /// decide it is a duplicate before it touches any shared endpoint.
+    /// # C: O(file bytes)
+    pub fn open_exclusive(path: &Path) -> Result<Self, Error> { Self::open_with_wait(path, false) }
+
+    fn open_with_wait(path: &Path, wait: bool) -> Result<Self, Error> {
         let lock_path = path.with_extension("oxide-registry.lock");
         let lock = OpenOptions::new().read(true).write(true).create(true).open(lock_path)?;
         let fd = lock.as_raw_fd();
+        let operation = if wait { libc::LOCK_EX } else { libc::LOCK_EX | libc::LOCK_NB };
         // SAFETY: the descriptor belongs to the live sidecar File and remains open for the session.
-        if unsafe { libc::flock(fd, libc::LOCK_EX) } != 0 { return Err(io::Error::last_os_error().into()); }
+        if unsafe { libc::flock(fd, operation) } != 0 {
+            let error = io::Error::last_os_error();
+            let raw = error.raw_os_error();
+            if !wait && (raw == Some(libc::EWOULDBLOCK) || raw == Some(libc::EAGAIN)) { return Err(Error::AlreadyServing); }
+            return Err(error.into());
+        }
         let registry = match fs::symlink_metadata(path) {
             Ok(_) => Registry::load(path)?,
             Err(error) if error.kind() == ErrorKind::NotFound => {

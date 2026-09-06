@@ -32,6 +32,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     let Some(unixlib_count) = read_u32(base.checked_add(88).unwrap_or(0)) else { return Some(STATUS_INVALID_PARAMETER); };
     let Some(bootstrap_ptr) = read_u64(base.checked_add(96).unwrap_or(0)) else { return Some(STATUS_INVALID_PARAMETER); };
     let Some(bootstrap_len) = read_u64(base.checked_add(104).unwrap_or(0)) else { return Some(STATUS_INVALID_PARAMETER); };
+    let Some(registry_socket) = read_u32(base.checked_add(112).unwrap_or(0)) else { return Some(STATUS_INVALID_PARAMETER); };
     if image_len == 0 || image_len > MAX_IMAGE_BYTES || path_len == 0 || path_len > 32 * 1024
         || command_len == 0 || command_len > 32 * 1024 || command_ptr == 0
         || environment_len == 0 || environment_len > 1024 * 1024 || environment_ptr == 0
@@ -48,6 +49,20 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     let bootstrap = if bootstrap_len == 0 { None } else {
         match copy_bytes(bootstrap_ptr, bootstrap_len).ok().flatten() {
             Some(bytes) => Some(bytes), None => return Some(STATUS_INVALID_PARAMETER),
+        }
+    };
+    // The launcher connected the registry under its own credentials in its
+    // own namespaces; admit that exact open file rather than resolving a
+    // pathname here, which would run as root in the initial namespace.
+    let registry_endpoint = match crate::nt_registry_endpoint::classify(registry_socket as i32) {
+        crate::nt_registry_endpoint::Endpoint::Absent => None,
+        crate::nt_registry_endpoint::Endpoint::Rejected(status) => return Some(status),
+        crate::nt_registry_endpoint::Endpoint::Descriptor(fd) => {
+            let Some(file) = crate::net_common::fd_file(fd as u64) else { return Some(STATUS_INVALID_PARAMETER); };
+            if crate::net_common::inode_as_inet_socket(file.inode()).is_none() {
+                return Some(crate::nt_registry_endpoint::not_a_socket_status());
+            }
+            Some(file)
         }
     };
     let mut catalog = pe::catalog::ModuleCatalog::new();
@@ -82,6 +97,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
             cur.thread_group.set_nt_module_catalog(alloc::sync::Arc::new(catalog));
             cur.thread_group.set_nt_unixlib_catalog(alloc::sync::Arc::new(unixlibs));
             cur.thread_group.set_nt_bootstrap(bootstrap.as_deref());
+            cur.thread_group.set_nt_registry_endpoint(registry_endpoint);
             Some(STATUS_SUCCESS)
         },
         Err(error) if error == -(syscall::errno::Errno::Enomem.as_i32() as i64) => Some(STATUS_NO_MEMORY),

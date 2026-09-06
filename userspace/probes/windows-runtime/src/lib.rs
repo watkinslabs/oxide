@@ -6,6 +6,7 @@ use std::io;
 use std::collections::{HashMap, HashSet};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::FileTypeExt;
+use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
@@ -18,6 +19,7 @@ use pe::catalog::ModuleCatalog;
 use syscall::nt_exec::{NtExecModule, NtExecRequest, NtExecUnixlib};
 use syscall::UserPtr;
 
+pub mod user_paths;
 mod preflight;
 mod dxvk;
 mod steam;
@@ -270,6 +272,10 @@ pub struct RuntimeRequest {
     unixlibs: Vec<UnixlibBuffer>,
     #[allow(dead_code)]
     unixlib_records: Box<[NtExecUnixlib]>,
+    /// The registry connection this launch admitted. It is retained because
+    /// the request carries its descriptor: dropping the stream would close
+    /// the descriptor the kernel is asked to adopt.
+    registry: Option<UnixStream>,
     request: NtExecRequest,
 }
 
@@ -288,9 +294,15 @@ impl RuntimeRequest {
         if !nls.is_absolute() || !nls.is_file() || !registry_database.is_absolute() || !registry_database.is_file() {
             return Err(BuildError::InvalidLaunchConfiguration { field: "launch resources" });
         }
-        if !registry_socket.is_absolute() || !fs::metadata(registry_socket).map(|metadata| metadata.file_type().is_socket()).unwrap_or(false) || UnixStream::connect(registry_socket).is_err() {
+        // Connect here, under this launcher's own credentials and namespaces,
+        // and keep the connection: the kernel adopts this exact descriptor
+        // rather than reopening a per-user pathname it cannot authenticate.
+        if !registry_socket.is_absolute() || !fs::metadata(registry_socket).map(|metadata| metadata.file_type().is_socket()).unwrap_or(false) {
             return Err(BuildError::InvalidLaunchConfiguration { field: "registry_socket" });
         }
+        let Ok(registry) = UnixStream::connect(registry_socket) else {
+            return Err(BuildError::InvalidLaunchConfiguration { field: "registry_socket" });
+        };
         let environment = [
             ("WINEPREFIX".into(), prefix.to_string_lossy().into_owned()),
             ("WINEARCH".into(), "win64".into()),
@@ -301,6 +313,7 @@ impl RuntimeRequest {
         ];
         Self::from_paths_with_environment_and_unixlib(image_path, windows_path, command_line, dll_catalog, unixlib, environment)
             .and_then(RuntimeRequest::attach_bootstrap)
+            .map(|request| request.attach_registry(registry))
     }
 
     /// Admit one explicit Proton launch and produce the existing NT handoff.
@@ -417,8 +430,9 @@ impl RuntimeRequest {
             modules: user_ptr(records.as_ptr())?, module_count: modules.len() as u32, _modules_padding: 0,
             unixlibs: user_ptr(unixlib_records.as_ptr())?, unixlib_count: unixlibs.len() as u32, _unixlibs_padding: 0,
             bootstrap: user_ptr(bootstrap.as_ptr())?, bootstrap_len: 0,
+            registry_socket: syscall::nt_exec::NO_REGISTRY_ENDPOINT, _registry_padding: 0,
         };
-        Ok(Self { image, image_path, command_line, environment, bootstrap, modules, records, unixlibs, unixlib_records, request })
+        Ok(Self { image, image_path, command_line, environment, bootstrap, modules, records, unixlibs, unixlib_records, registry: None, request })
     }
 
     fn attach_bootstrap(mut self) -> Result<Self, BuildError> {
@@ -431,6 +445,20 @@ impl RuntimeRequest {
         self.bootstrap = bootstrap;
         Ok(self)
     }
+
+    /// Carry an already-connected registry endpoint into the handoff. The
+    /// stream stays owned by this request for exactly as long as its raw
+    /// descriptor appears in the ABI record.
+    /// # C: O(1)
+    fn attach_registry(mut self, registry: UnixStream) -> Self {
+        self.request.registry_socket = registry.as_raw_fd();
+        self.registry = Some(registry);
+        self
+    }
+
+    /// The registry descriptor this launch admits, or `NO_REGISTRY_ENDPOINT`.
+    /// # C: O(1)
+    pub fn registry_socket(&self) -> i32 { self.request.registry_socket }
 
     /// Return the fixed ABI record passed to the tagged NT selector. # C: O(1)
     pub fn abi(&self) -> &NtExecRequest { &self.request }
@@ -878,8 +906,53 @@ mod tests {
         assert!(request.module_count() < 64, "Notepad closure must fit the kernel catalog limit");
         assert_eq!(request.abi().module_count as usize, request.module_count());
         assert!(!request.modules.iter().any(|module| module.name.eq_ignore_ascii_case(b"ntdll.dll")));
-        assert_eq!(std::mem::size_of::<NtExecRequest>(), 112);
+        // A catalog-only launch declines a registry rather than inheriting one.
+        assert_eq!(request.registry_socket(), syscall::nt_exec::NO_REGISTRY_ENDPOINT);
+        assert_eq!(std::mem::size_of::<NtExecRequest>(), 120);
         assert_eq!(std::mem::size_of::<NtExecModule>(), 32);
+    }
+
+    #[test]
+    fn a_windows_launch_hands_the_kernel_its_own_connected_registry_descriptor() {
+        use std::os::unix::io::AsRawFd;
+        use std::os::unix::net::UnixListener;
+        let Some(root) = wine_root() else { return };
+        let Some(unixlib_root) = ["/usr/lib64/wine/x86_64-unix", "/usr/lib/wine/x86_64-unix"]
+            .iter().map(Path::new).find(|path| path.join("win32u.so").is_file()) else { return };
+        let base = std::env::temp_dir().join(format!("oxide-registry-handoff-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base); fs::create_dir_all(&base).unwrap();
+        let socket = base.join("registry.sock"); let database = base.join("registry.db");
+        fs::write(&database, [1]).unwrap();
+        let nls = base.join("locale.nls"); fs::write(&nls, [1]).unwrap();
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = std::thread::spawn(move || listener.accept().map(|(stream, _)| stream));
+        let request = RuntimeRequest::from_windows_launch(
+            &root.join("notepad.exe"), b"C:\\notepad.exe", b"C:\\notepad.exe",
+            &base, &base, root, unixlib_root, &nls, &socket, &database).unwrap();
+        let accepted = server.join().unwrap().unwrap();
+        // The descriptor in the ABI record must be this launch's live
+        // connection, not a sentinel and not a stale number: the kernel adopts
+        // exactly this open file instead of reopening the pathname as root.
+        let fd = request.registry_socket();
+        assert_ne!(fd, syscall::nt_exec::NO_REGISTRY_ENDPOINT);
+        assert_eq!(fd, request.abi().registry_socket);
+        assert!(fd >= 0);
+        let mut kind: libc::c_int = 0; let mut length = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+        // SAFETY: fd is the live stream owned by `request`; kind/length are valid out params.
+        let queried = unsafe { libc::getsockopt(fd, libc::SOL_SOCKET, libc::SO_TYPE, (&raw mut kind).cast(), &raw mut length) };
+        assert_eq!(queried, 0, "handoff descriptor must be an open socket");
+        assert_eq!(kind, libc::SOCK_STREAM);
+        // Writing through the record's descriptor must reach the server that
+        // accepted this launch's connection.
+        let mut through = unsafe { <UnixStream as std::os::unix::io::FromRawFd>::from_raw_fd(libc::dup(fd)) };
+        use std::io::{Read, Write};
+        through.write_all(b"oxide").unwrap();
+        let mut seen = [0u8; 5]; { let mut accepted = accepted; accepted.read_exact(&mut seen).unwrap(); }
+        assert_eq!(&seen, b"oxide");
+        drop(through);
+        assert_eq!(request.registry.as_ref().map(|stream| stream.as_raw_fd()), Some(fd),
+            "the request must still own the connection whose descriptor it published");
+        fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]
@@ -1062,7 +1135,8 @@ mod tests {
     fn catalog_record_lengths_are_bounded_by_the_fixed_abi_types() {
         assert_eq!(std::mem::align_of::<NtExecRequest>(), 8);
         assert_eq!(std::mem::align_of::<NtExecModule>(), 8);
-        assert_eq!(std::mem::size_of::<NtExecRequest>(), 112);
+        assert_eq!(syscall::nt_exec::NO_REGISTRY_ENDPOINT, -1);
+        assert_eq!(std::mem::size_of::<NtExecRequest>(), 120);
         assert_eq!(std::mem::size_of::<NtExecModule>(), 32);
     }
 

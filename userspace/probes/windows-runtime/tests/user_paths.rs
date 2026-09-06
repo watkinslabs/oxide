@@ -5,10 +5,7 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-#[path = "../src/user_paths.rs"]
-mod user_paths;
-
-use user_paths::{ensure_private_dir, validate_runtime_dir, UserPathError, UserPathInput, UserRuntimePaths};
+use windows_runtime::user_paths::{ensure_private_dir, validate_runtime_dir, UserPathError, UserPathInput, UserRuntimePaths};
 
 fn root(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!("oxide-user-paths-{name}-{}", std::process::id()))
