@@ -38,9 +38,8 @@ pub(crate) fn begin(index: u32, args: u64, length: u32, completion: sched::nt_ca
     if callback_rsp == 0 || callback_rsp & 0xf != 8 { return STATUS_INVALID_PARAMETER; }
     for slot in 0..SHADOW_SLOTS { if uaccess::put_user_u64(callback_rsp + 8 + slot * 8, 0).is_err() { return STATUS_INVALID_PARAMETER; } }
     if uaccess::put_user_u64(callback_rsp, continuation).is_err() { return STATUS_INVALID_PARAMETER; }
-    let post_rip = frame.rip;
-    let post_rsp = frame.rsp;
-    if !task.nt_callback_stack.lock().push(sched::nt_callback::Frame { rip: post_rip, rsp: post_rsp, completion }) { return STATUS_INVALID_PARAMETER; }
+    let saved = crate::nt_callback_frame::capture(frame, task, completion);
+    if !task.nt_callback_stack.lock().push(saved) { return STATUS_INVALID_PARAMETER; }
     frame.rip = routine;
     frame.rsp = callback_rsp;
     frame.rcx = args;
