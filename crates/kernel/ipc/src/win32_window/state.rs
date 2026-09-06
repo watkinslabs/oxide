@@ -1,7 +1,7 @@
 //! Canonical HWND lifetime, geometry, painting and message work.
 use super::*;
 impl WindowManager {
-    pub fn new() -> Self { Self { next: 1, next_atom: 1, classes: Vec::new(), windows: Vec::new(), rects: Vec::new(), texts: Vec::new(), dirty: Vec::new(), painting: Vec::new(), queues: Vec::new(), timers: Vec::new(), focus: None, capture: None, cursor: (0, 0), buttons: 0, destroying: Vec::new(), keyboard: KeyboardState::default(), active: None } }
+    pub fn new() -> Self { Self { next: 1, next_atom: 1, classes: Vec::new(), windows: Vec::new(), rects: Vec::new(), texts: Vec::new(), dirty: Vec::new(), painting: Vec::new(), queues: Vec::new(), timers: Vec::new(), focus: None, capture: None, cursor: (0, 0), buttons: 0, destroying: Vec::new(), keyboard: KeyboardState::default(), active: None, cursors: Vec::new(), current_cursor: 0 } }
     pub fn create(&mut self, owner_tid: u64, parent: Option<WindowId>, wndproc: u64) -> Result<WindowId, WindowError> {
         if parent.is_some_and(|parent| self.get(parent).is_none()) { return Err(WindowError::InvalidParent); }
         let id = WindowId(self.next);

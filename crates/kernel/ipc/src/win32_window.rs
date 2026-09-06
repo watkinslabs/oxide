@@ -55,6 +55,15 @@ pub use caret::{CaretState, CaretTransition, CaretCommit, CaretError};
 pub use scroll::{ScrollInfo, ScrollState, ScrollAction, ScrollOutcome, ScrollError, SB_HORZ, SB_VERT, SB_CTL, SIF_RANGE, SIF_PAGE, SIF_POS, SIF_DISABLENOSCROLL, SIF_TRACKPOS, SIF_ALL, SIF_RETURNPREV, SCROLLINFO_BYTES, valid_bar};
 pub use property::{WindowProperties, WindowProperty, PropertyName, PropertyOrigin, MAX_PROPERTY_NAME};
 pub use extra::{OwnedWindow, WindowExtra, LongPtrError};
+#[path = "win32_window/class_long.rs"]
+mod class_long;
+pub use class_long::{GCL_MENUNAME, GCLP_HBRBACKGROUND, GCLP_HCURSOR, GCLP_HICON, GCLP_HMODULE, GCL_CBWNDEXTRA, GCL_CBCLSEXTRA, GCLP_WNDPROC, GCL_STYLE, GCW_ATOM, GCLP_HICONSM};
+#[path = "win32_window/cursor.rs"]
+mod cursor;
+#[path = "win32_window/set_cursor.rs"]
+mod set_cursor;
+pub use set_cursor::{SetCursorAction, set_cursor_action, parent_gets_first_chance, split_lparam, WM_SETCURSOR};
+pub use cursor::{OEM_CURSOR_BASE, IDC_ARROW, IDC_IBEAM, IDC_SIZENWSE, IDC_SIZENESW, IDC_SIZEWE, IDC_SIZENS};
 
 pub const WM_CLOSE: u32 = 0x0010;
 pub const WM_DESTROY: u32 = 0x0002;
@@ -198,7 +207,26 @@ pub struct WindowRecord { pub owner_tid: u64, pub parent: Option<WindowId>, pub 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WindowClass { pub name: Vec<u16>, pub wndproc: u64, pub unicode: bool, pub atom: u16, pub cb_wnd_extra: u32, pub style: u32,
     /// Raw WNDCLASSEX hbrBackground: a brush handle, or a system colour index plus one.
-    pub background: u64 }
+    pub background: u64,
+    /// WNDCLASSEX hCursor. The default window procedure answers WM_SETCURSOR
+    /// over HTCLIENT with it, and a class registered without one declines.
+    pub cursor: u64,
+    pub icon: u64, pub icon_sm: u64, pub module: u64,
+    /// cbClsExtra bytes, shared by every window of the class.
+    pub extra: WindowExtra }
+
+/// One WNDCLASSEXW registration. The telescoping helpers below fill the
+/// fields a caller does not carry.
+pub struct ClassRegistration<'a> { pub name: &'a [u16], pub wndproc: u64, pub cb_cls_extra: i32, pub cb_wnd_extra: i32,
+    pub unicode: bool, pub style: u32, pub background: u64, pub cursor: u64, pub icon: u64, pub icon_sm: u64, pub module: u64 }
+
+impl<'a> ClassRegistration<'a> {
+    /// # C: O(1)
+    pub const fn new(name: &'a [u16], wndproc: u64) -> Self {
+        Self { name, wndproc, cb_cls_extra: 0, cb_wnd_extra: 0, unicode: true, style: 0, background: 0,
+            cursor: 0, icon: 0, icon_sm: 0, module: 0 }
+    }
+}
 
 const USER_ATOM_BASE: u16 = 0xc000;
 const USER_ATOM_CAPACITY: usize = 0x4000;
@@ -276,7 +304,9 @@ pub struct WindowPresentRecord { pub window: WindowId, pub bounds: WindowRect, p
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum WindowError { NoSuchWindow, NoMemory, InvalidParent, ClassInUse, WrongThread, NoFocus, QueueFull, PaintActive, PaintNotActive, NotVisible }
 
-pub struct WindowManager { next: u32, next_atom: u16, classes: Vec<WindowClass>, windows: Vec<(WindowId, OwnedWindow)>, rects: Vec<(WindowId, WindowRect)>, texts: Vec<(WindowId, Vec<u16>)>, dirty: Vec<(WindowId, PaintDamage)>, painting: Vec<(WindowId, PaintSession)>, queues: Vec<(u64, MessageQueue)>, timers: Vec<WindowTimer>, focus: Option<WindowId>, capture: Option<WindowId>, cursor: (i32, i32), buttons: u16, destroying: Vec<WindowId>, keyboard: KeyboardState, active: Option<WindowId> }
+pub struct WindowManager { next: u32, next_atom: u16, classes: Vec<WindowClass>, windows: Vec<(WindowId, OwnedWindow)>, rects: Vec<(WindowId, WindowRect)>, texts: Vec<(WindowId, Vec<u16>)>, dirty: Vec<(WindowId, PaintDamage)>, painting: Vec<(WindowId, PaintSession)>, queues: Vec<(u64, MessageQueue)>, timers: Vec<WindowTimer>, focus: Option<WindowId>, capture: Option<WindowId>, cursor: (i32, i32), buttons: u16, destroying: Vec<WindowId>, keyboard: KeyboardState, active: Option<WindowId>,
+    /// Shared OEM cursor cache and the cursor the pointer displays.
+    cursors: Vec<(u32, u64)>, current_cursor: u64 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 struct WindowTimer { owner_tid: u64, hwnd: Option<WindowId>, id: u64, period_ns: u64, due_ns: u64, proc: u64 }
