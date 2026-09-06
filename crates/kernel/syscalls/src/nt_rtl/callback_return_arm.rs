@@ -25,9 +25,7 @@ pub(crate) fn callback_return(call: NtCall) -> u64 {
     drop(callbacks);
     // SAFETY: this dispatch owns the live SVC frame and popped Task continuation.
     let frame = unsafe { &mut *regs };
-    frame.elr_el1 = saved.rip;
-    frame.sp_el0 = saved.rsp;
-    frame.x30 = saved.lr;
+    crate::nt_callback_frame::restore(frame, task, &saved);
     frame.gp[0] = result;
     frame.retval = result;
     if saved.completion.kind != 0 { return crate::nt_window::complete_callback(saved.completion, result); }

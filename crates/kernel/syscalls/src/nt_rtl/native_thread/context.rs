@@ -1,4 +1,4 @@
-use sched::{Task, nt_callback::{Frame, Completion}, nt_native_thread::Phase};
+use sched::{Task, nt_callback::Completion, nt_native_thread::Phase};
 use syscall::nt_native_thread as abi;
 
 #[cfg(target_arch = "x86_64")]
@@ -17,9 +17,9 @@ pub(super) fn factory(task: &Task, entry: u64, ret: u64, request: abi::FactoryRe
     // SAFETY: active syscall frame is exclusively owned by this dispatch.
     let frame = unsafe { &mut *frame };
     #[cfg(target_arch = "x86_64")]
-    let (pc, sp, link) = (frame.rip, frame.rsp, 0);
+    let (sp, link) = (frame.rsp, 0);
     #[cfg(target_arch = "aarch64")]
-    let (pc, sp, link) = (frame.elr_el1, frame.sp_el0, frame.x30);
+    let (sp, link) = (frame.sp_el0, frame.x30);
     let payload = sp.checked_sub(32).ok_or(abi::INVALID)? & !15;
     let call_sp = payload.checked_sub(40).ok_or(abi::INVALID)?;
     for (offset, value) in [(0, request.creator), (8, request.generation)] {
@@ -27,8 +27,8 @@ pub(super) fn factory(task: &Task, entry: u64, ret: u64, request: abi::FactoryRe
     }
     #[cfg(target_arch = "x86_64")]
     uaccess::put_user_u64(call_sp, ret).map_err(|_| abi::INVALID)?;
-    if !task.nt_callback_stack.lock().push(Frame { rip: pc, rsp: sp,
-        completion: Completion { kind: abi::CALLBACK_KIND, argument: link } }) { return Err(abi::NO_MEMORY); }
+    let saved = crate::nt_callback_frame::capture(frame, task, Completion { kind: abi::CALLBACK_KIND, argument: link });
+    if !task.nt_callback_stack.lock().push(saved) { return Err(abi::NO_MEMORY); }
     #[cfg(target_arch = "x86_64")]
     { frame.rip = entry; frame.rsp = call_sp; frame.rcx = payload; }
     #[cfg(target_arch = "aarch64")]
@@ -50,10 +50,11 @@ pub(super) fn complete(task: &Task, status: u64) -> u64 {
     task.nt_native_thread.lock().request = None;
     // SAFETY: active syscall frame remains private until return-to-user.
     unsafe {
+        crate::nt_callback_frame::restore(&mut *frame, task, &saved);
         #[cfg(target_arch = "x86_64")]
-        { (*frame).rip = saved.rip; (*frame).rsp = saved.rsp; (*frame).rax = status; }
+        { (*frame).rax = status; }
         #[cfg(target_arch = "aarch64")]
-        { (*frame).elr_el1 = saved.rip; (*frame).sp_el0 = saved.rsp; (*frame).x30 = saved.completion.argument; (*frame).retval = status; }
+        { (*frame).x30 = saved.completion.argument; (*frame).retval = status; }
     }
     status
 }
