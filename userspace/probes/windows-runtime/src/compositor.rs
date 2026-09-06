@@ -11,6 +11,24 @@ pub struct Session {
     endpoint: UnixStream,
 }
 
+impl Session {
+    /// Describe how the bridge child is doing, for a failure report. A signal
+    /// or a silent nonzero exit is the whole diagnosis when the child wrote
+    /// nothing, which is exactly the case this exists for.
+    fn describe_child(&mut self) -> String {
+        use std::os::unix::process::ExitStatusExt;
+        match self.child.try_wait() {
+            Ok(None) => String::from("bridge child still running"),
+            Ok(Some(status)) => match (status.code(), status.signal()) {
+                (Some(code), _) => format!("bridge child exited with status {code}"),
+                (None, Some(signal)) => format!("bridge child killed by signal {signal}"),
+                _ => format!("bridge child ended: {status}"),
+            },
+            Err(error) => format!("bridge child status unavailable: {error}"),
+        }
+    }
+}
+
 impl Drop for Session {
     fn drop(&mut self) {
         let _ = self.endpoint.shutdown(std::net::Shutdown::Both);
@@ -28,7 +46,7 @@ pub fn start() -> io::Result<Session> {
     }
     let mut command = Command::new("/usr/local/bin/windows-compositor");
     command.args(["--fd", "0"]);
-    let session = spawn_bridge(&mut command)?;
+    let mut session = spawn_bridge(&mut command)?;
     // SAFETY: the descriptor remains owned by session through binding. The
     // kernel validates and retains the connected socket capability, not this
     // userspace descriptor number. No pointers cross this service boundary.
@@ -38,7 +56,11 @@ pub fn start() -> io::Result<Session> {
     };
     if status == -1 { return Err(io::Error::last_os_error()); }
     if status != 0 {
-        return Err(io::Error::other(format!("desktop bridge rejected: NTSTATUS 0x{status:08x}")));
+        // The bridge only fails because the child failed, and the child has so
+        // far died without writing anything. Its wait status is then the only
+        // evidence of why, so it is reported instead of the NTSTATUS alone.
+        return Err(io::Error::other(format!("desktop bridge rejected: NTSTATUS 0x{status:08x}; {}",
+            session.describe_child())));
     }
     Ok(session)
 }
