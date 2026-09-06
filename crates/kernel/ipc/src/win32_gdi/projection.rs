@@ -24,6 +24,7 @@ impl GdiManager {
         self.stock_description(handle).is_some() || self.dcs.iter().any(|(id, _)| *id == handle)
             || self.fonts.iter().any(|(id, _)| *id == handle) || self.brushes.iter().any(|(id, _)| *id == handle)
             || self.regions.iter().any(|(id, _)| *id == handle) || self.pens.iter().any(|(id, _)| *id == handle)
+            || self.bitmaps.iter().any(|(id, _)| *id == handle)
     }
 
     /// Owned identity snapshot; no borrowed object escapes publication setup. # C: O(objects)
@@ -31,7 +32,7 @@ impl GdiManager {
         (0..20).filter_map(|index| self.stock_object(index).map(|object| object.handle))
             .chain(self.dcs.iter().map(|(id, _)| *id)).chain(self.fonts.iter().map(|(id, _)| *id))
             .chain(self.brushes.iter().map(|(id, _)| *id)).chain(self.regions.iter().map(|(id, _)| *id))
-            .chain(self.pens.iter().map(|(id, _)| *id)).collect()
+            .chain(self.pens.iter().map(|(id, _)| *id)).chain(self.bitmaps.iter().map(|(id, _)| *id)).collect()
     }
 }
 

@@ -21,6 +21,7 @@ pub(crate) mod placement;
 pub(crate) mod position;
 mod gdi_raw;
 mod gdi_route;
+mod bitmap_raw;
 mod brush_raw;
 mod clip_raw;
 #[cfg(target_os = "oxide-kernel")]

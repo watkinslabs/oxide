@@ -4,6 +4,11 @@ const PATCOPY: u32 = 0x00f0_0021;
 const DSTINVERT: u32 = 0x0055_0009;
 const SRCCOPY: u32 = 0x00cc_0020;
 
+/// Only the brush color varies in these cases; text and background are unread.
+fn shared(brush: u32) -> crate::win32_gdi::SharedDcColors {
+    crate::win32_gdi::SharedDcColors { brush, text: 0, background: 0 }
+}
+
 #[test]
 fn shared_brush_color_is_consumed_each_draw_without_mirroring_private_state() {
     let mut gdi = GdiManager::new();
@@ -11,13 +16,13 @@ fn shared_brush_color_is_consumed_each_draw_without_mirroring_private_state() {
     let stock = gdi.stock_object(18).unwrap().handle;
     gdi.select_brush(dc, stock).unwrap();
     for color in [0x123456, 0xabcdef] {
-        gdi.pat_blt_shared_color(dc, 0, 0, 1, 1, PATCOPY, color).unwrap();
+        gdi.pat_blt_shared_colors(dc, 0, 0, 1, 1, PATCOPY, shared(color)).unwrap();
         assert_eq!(gdi.pixels(dc).unwrap(), &[color]);
     }
     assert_eq!(gdi.set_dc_brush_color(dc, 0), Ok(0xffffff));
     let solid = gdi.create_solid_brush(0x112233).unwrap();
     gdi.select_brush(dc, solid).unwrap();
-    gdi.pat_blt_shared_color(dc, 0, 0, 1, 1, PATCOPY, 0xff0000).unwrap();
+    gdi.pat_blt_shared_colors(dc, 0, 0, 1, 1, PATCOPY, shared(0xff0000)).unwrap();
     assert_eq!(gdi.pixels(dc).unwrap(), &[0x112233]);
 }
 

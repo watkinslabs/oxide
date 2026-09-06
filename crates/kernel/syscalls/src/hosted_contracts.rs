@@ -17,6 +17,8 @@ pub(crate) mod nt_control_color_contract;
 pub(crate) mod nt_wine_raw_args_contract;
 #[path = "nt_window/send/work.rs"]
 pub(crate) mod nt_window_send_contract;
+#[path = "nt_wine_window/bitmap_raw.rs"]
+pub(crate) mod nt_wine_bitmap_contract;
 #[path = "nt_wine_window/brush_raw.rs"]
 pub(crate) mod nt_wine_brush_contract;
 #[path = "nt_wine_window/hwnd_param.rs"]

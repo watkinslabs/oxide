@@ -3,7 +3,9 @@
 // Logical parameter counts; stack parameters beyond index 5 remain handler-owned.
 const RAW_CALLS: &[(u64, usize)] = &[
     (0x10a2, 4), // NtGdiCombineRgn
+    (0x10a7, 5), // NtGdiCreateBitmap
     (0x10ae, 1), // NtGdiCreateCompatibleDC
+    (0x10b9, 3), // NtGdiCreatePatternBrushInternal
     (0x10ba, 4), // NtGdiCreatePen
     (0x10bb, 4), // NtGdiCreateRectRgn
     (0x10bf, 2), // NtGdiCreateSolidBrush
@@ -21,6 +23,10 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x1238, 5), // NtGdiIntersectClipRect
     (0x123a, 3), // NtGdiLineTo
     (0x1243, 4), // NtGdiMoveTo
+    // The Windows signature carries eight arguments; the spool handle and the
+    // two driver records past index 4 belong to the printer and metafile
+    // drivers this call refuses, so no stack word past `is_display` is read.
+    (0x1246, 5), // NtGdiOpenDCW
     (0x124c, 6), // NtGdiPatBlt
     (0x1258, 2), // NtGdiRectVisible
     (0x1259, 5), // NtGdiRectangle

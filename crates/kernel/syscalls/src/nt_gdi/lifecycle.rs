@@ -10,6 +10,9 @@ use ipc::win32_gdi::TextState;
 
 #[path = "lifecycle/transaction.rs"]
 mod transaction;
+#[path = "lifecycle/objects.rs"]
+mod objects;
+pub use objects::create_object_for_current;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LifecycleError<E> { Gate, Client(ClientError), Canonical(E), Rollback(E) }
