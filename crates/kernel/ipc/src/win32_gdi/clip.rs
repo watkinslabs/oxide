@@ -56,10 +56,6 @@ impl GdiManager {
 }
 
 impl DeviceContext {
-    pub(super) fn effective_clip(&self) -> Rect {
-        self.effective_clip_box().1
-    }
-
     fn application_bounds(&self) -> Rect {
         let surface = Rect { left: 0, top: 0, right: self.width, bottom: self.height };
         self.clip.map(|clip| intersection(surface, clip)).unwrap_or(surface)
