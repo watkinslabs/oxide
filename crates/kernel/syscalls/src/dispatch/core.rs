@@ -65,6 +65,17 @@ fn dispatch_routed_syscall(entry: (Option<u64>, u64), nr: u64, args: &SyscallArg
         klog::write_hex_u64(sched::live::current().is_some_and(|task| task.is_nt_personality()) as u64);
         klog::write_raw(b"\n");
     }
+    // The four ordinals above are the only ones traced, so an absence of
+    // markers says nothing about what an application called - a conclusion
+    // already drawn wrongly once from it. While a window-procedure callback is
+    // outstanding, trace every ordinal, so what the procedure did before
+    // returning is a fact rather than an inference. Bounded by the callback
+    // being active, so a running system emits nothing.
+    if sched::live::current().is_some_and(|task| task.nt_callback_stack.lock().len() != 0) {
+        klog::write_raw(b"[WINDOWS-CALLBACK-CALL] ordinal=");
+        klog::write_hex_u64(nr);
+        klog::write_raw(b"\n");
+    }
     // Real Wine win32u PE stubs use their generated raw ordinal namespace
     // rather than Oxide's tagged synthetic dispatcher entry. Only an NT task
     // may claim this otherwise-unreserved raw number.
