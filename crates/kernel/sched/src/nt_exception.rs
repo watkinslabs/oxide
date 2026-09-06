@@ -153,11 +153,18 @@ impl State {
         matches!(state.take(), Some(Slot::Delivering(_)))
     }
 
-    /// Return a reserved record when a user-frame write or validation fails.
-    pub fn abort_delivery(&self) -> bool {
+    /// Discard a reserved record whose delivery could not be completed.
+    ///
+    /// Terminal by construction: the slot is left EMPTY, never re-armed. A
+    /// re-armed slot is work the return-to-user loop can never retire — the
+    /// loop re-runs the delivery arm, the same input refuses again, and the
+    /// pass bound is reached on every kernel entry for the life of the
+    /// thread (KI-0459). The caller ends the thread group instead.
+    /// # C: O(1)
+    pub fn fail_delivery(&self) -> bool {
         let mut state = self.0.lock();
         match state.take() {
-            Some(Slot::Delivering(value)) => { *state = Some(Slot::Pending(value)); true }
+            Some(Slot::Delivering(_)) => true,
             Some(other) => { *state = Some(other); false }
             None => false,
         }
@@ -207,6 +214,30 @@ pub fn raise_disposition(record: &[u8; EXCEPTION_RECORD_BYTES], first_chance: bo
     Disposition::Terminate(code as i32)
 }
 
+/// Decide one attempt to enter the user exception dispatcher, from the memory
+/// the frame builder resolved.
+///
+/// `frame_writable` reports that the user frame window carved out of the
+/// interrupted stack lies inside a writable mapping; `dispatcher` is the
+/// resolved `KiUserExceptionDispatcher` entry.
+///
+/// The FAULTING PC is deliberately not a parameter. An instruction fetch from
+/// an unmapped or non-executable address is exactly the access violation being
+/// reported (`ExceptionInformation[0]` = execute, `ExceptionAddress` = that
+/// address), so validating it before reporting it would drop the one exception
+/// the thread must see — the reference validates only the stack it builds the
+/// frame on.
+///
+/// Anything the builder could NOT resolve is unrecoverable: the reference
+/// aborts the thread rather than returning to the faulting instruction, so the
+/// answer is `Terminate` and the pending record is retired, never re-armed.
+/// # C: O(1)
+pub fn delivery_outcome(record: &[u8; EXCEPTION_RECORD_BYTES], frame_writable: bool,
+                        dispatcher: Option<u64>) -> Disposition {
+    if frame_writable && dispatcher.is_some() { return Disposition::Dispatch; }
+    raise_disposition(record, false)
+}
+
 /// Apply the x86-64 dispatcher correction to one scheduler-owned exception
 /// context before it crosses into the user exception frame. # C: O(1)
 pub fn prepare_dispatch_context(record: &[u8; EXCEPTION_RECORD_BYTES], context: &mut [u8; CONTEXT_BYTES]) -> bool {
@@ -219,125 +250,5 @@ pub fn prepare_dispatch_context(record: &[u8; EXCEPTION_RECORD_BYTES], context: 
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn sample(first_chance: bool) -> Pending {
-        let mut record = [0; EXCEPTION_RECORD_BYTES];
-        record[EXCEPTION_CODE_OFFSET..EXCEPTION_CODE_OFFSET + 4].copy_from_slice(&0xc000_0005u32.to_le_bytes());
-        let mut context = [0; CONTEXT_BYTES];
-        context[CONTEXT_FLAGS_OFFSET..CONTEXT_FLAGS_OFFSET + 4].copy_from_slice(&CONTEXT_AMD64.to_le_bytes());
-        context[CONTEXT_RIP_OFFSET..CONTEXT_RIP_OFFSET + 8].copy_from_slice(&0x401000u64.to_le_bytes());
-        context[CONTEXT_RSP_OFFSET..CONTEXT_RSP_OFFSET + 8].copy_from_slice(&0x7fff_0000u64.to_le_bytes());
-        context[0x44..0x48].copy_from_slice(&2u32.to_le_bytes());
-        Pending { record, context: Some(context), first_chance }
-    }
-
-    #[test]
-    fn state_retains_one_owned_exception_until_dispatch_consumes_it() {
-        let state = State::new();
-        let pending = sample(true);
-        assert!(state.publish(pending).is_ok());
-        assert!(state.is_pending());
-        assert_eq!(state.publish(sample(false)), Err(sample(false)));
-        assert_eq!(state.take(), Some(pending));
-        assert!(!state.is_pending());
-    }
-
-    #[test]
-    fn a_hardware_trap_publishes_without_a_context_and_keeps_the_slot() {
-        let state = State::new();
-        let mut record = [0u8; EXCEPTION_RECORD_BYTES];
-        record[EXCEPTION_CODE_OFFSET..EXCEPTION_CODE_OFFSET + 4]
-            .copy_from_slice(&fault::STATUS_ACCESS_VIOLATION.to_le_bytes());
-        let pending = Pending::from_hardware(record);
-        assert!(pending.context.is_none());
-        assert!(pending.first_chance);
-        assert!(pending.is_valid());
-        assert!(state.publish(pending).is_ok());
-        // The delivery pass, not the fault, is what may capture the context.
-        assert_eq!(state.begin_delivery().map(|p| p.context), Some(None));
-    }
-
-    #[test]
-    fn a_record_with_no_exception_code_is_never_published() {
-        let state = State::new();
-        let pending = Pending::from_hardware([0u8; EXCEPTION_RECORD_BYTES]);
-        assert!(!pending.is_valid());
-        assert!(state.publish(pending).is_err());
-        assert!(!state.is_pending());
-    }
-
-    #[test]
-    fn malformed_context_is_rejected_before_publication() {
-        let state = State::new();
-        let mut pending = sample(true);
-        pending.context.as_mut().unwrap()[CONTEXT_FLAGS_OFFSET..CONTEXT_FLAGS_OFFSET + 4].fill(0);
-        assert_eq!(state.publish(pending), Err(pending));
-        assert!(!state.is_pending());
-    }
-
-    #[test]
-    fn exception_record_bounds_parameters_and_nested_user_links() {
-        let mut record = [0u8; EXCEPTION_RECORD_BYTES];
-        record[EXCEPTION_NUMBER_PARAMETERS_OFFSET..EXCEPTION_NUMBER_PARAMETERS_OFFSET + 4].copy_from_slice(&3u32.to_le_bytes());
-        record[EXCEPTION_RECORD_OFFSET..EXCEPTION_RECORD_OFFSET + 8].copy_from_slice(&0x7000u64.to_le_bytes());
-        record[EXCEPTION_ADDRESS_OFFSET..EXCEPTION_ADDRESS_OFFSET + 8].copy_from_slice(&0x401000u64.to_le_bytes());
-        assert!(exception_record_link_valid(&record, |address| address >= 0x4000));
-        record[EXCEPTION_NUMBER_PARAMETERS_OFFSET..EXCEPTION_NUMBER_PARAMETERS_OFFSET + 4].copy_from_slice(&16u32.to_le_bytes());
-        assert!(!exception_record_link_valid(&record, |address| address >= 0x4000));
-    }
-
-    #[test]
-    fn exception_record_rejects_unknown_flags_and_kernel_links() {
-        let mut record = [0u8; EXCEPTION_RECORD_BYTES];
-        record[EXCEPTION_FLAGS_OFFSET..EXCEPTION_FLAGS_OFFSET + 4].copy_from_slice(&0x80u32.to_le_bytes());
-        assert!(!exception_record_link_valid(&record, |_| true));
-        record[EXCEPTION_FLAGS_OFFSET..EXCEPTION_FLAGS_OFFSET + 4].fill(0);
-        record[EXCEPTION_RECORD_OFFSET..EXCEPTION_RECORD_OFFSET + 8].copy_from_slice(&0xffff_8000_0000_0000u64.to_le_bytes());
-        assert!(!exception_record_link_valid(&record, |address| address < 0x0000_8000_0000_0000));
-    }
-
-    #[test]
-    fn delivery_reservation_has_single_consumer_and_can_be_cleared() {
-        let state = State::new();
-        let pending = sample(true);
-        assert!(state.publish(pending).is_ok());
-        assert_eq!(state.begin_delivery(), Some(pending));
-        assert_eq!(state.begin_delivery(), None);
-        assert!(state.clear());
-        assert_eq!(state.take(), None);
-        assert!(!state.is_pending());
-    }
-
-    #[test]
-    fn a_first_chance_raise_dispatches_and_a_second_chance_ends_the_process() {
-        let mut record = [0u8; EXCEPTION_RECORD_BYTES];
-        record[EXCEPTION_CODE_OFFSET..EXCEPTION_CODE_OFFSET + 4]
-            .copy_from_slice(&fault::STATUS_ACCESS_VIOLATION.to_le_bytes());
-        assert_eq!(raise_disposition(&record, true), Disposition::Dispatch);
-        // Re-dispatching a second-chance raise would re-enter the dispatcher
-        // that has already refused it, forever.
-        assert_eq!(raise_disposition(&record, false),
-                   Disposition::Terminate(fault::STATUS_ACCESS_VIOLATION as i32));
-    }
-
-    #[test]
-    fn breakpoint_dispatch_resumes_at_the_instruction_before_trap() {
-        let mut record = [0u8; EXCEPTION_RECORD_BYTES];
-        record[EXCEPTION_CODE_OFFSET..EXCEPTION_CODE_OFFSET + 4].copy_from_slice(&EXCEPTION_BREAKPOINT.to_le_bytes());
-        let mut context = [0u8; CONTEXT_BYTES];
-        context[CONTEXT_RIP_OFFSET..CONTEXT_RIP_OFFSET + 8].copy_from_slice(&0x401001u64.to_le_bytes());
-        assert!(prepare_dispatch_context(&record, &mut context));
-        assert_eq!(u64::from_le_bytes(context[CONTEXT_RIP_OFFSET..CONTEXT_RIP_OFFSET + 8].try_into().unwrap()), 0x401000);
-    }
-
-    #[test]
-    fn breakpoint_at_zero_is_rejected_without_mutating_context() {
-        let mut record = [0u8; EXCEPTION_RECORD_BYTES];
-        record[EXCEPTION_CODE_OFFSET..EXCEPTION_CODE_OFFSET + 4].copy_from_slice(&EXCEPTION_BREAKPOINT.to_le_bytes());
-        let mut context = [0u8; CONTEXT_BYTES];
-        assert!(!prepare_dispatch_context(&record, &mut context));
-        assert_eq!(&context[CONTEXT_RIP_OFFSET..CONTEXT_RIP_OFFSET + 8], &[0; 8]);
-    }
-}
+#[path = "nt_exception/tests.rs"]
+mod tests;
