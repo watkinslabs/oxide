@@ -21,6 +21,11 @@ class RootfsPayloadContractTests(unittest.TestCase):
         self.assertIn("/usr/local/bin/windows-compositor",
                       MODULE.validate_manifest(paths))
 
+    def test_runtime_module_manifest_is_a_negative_control(self):
+        self.assertEqual(MODULE.missing_runtime_modules(MODULE.RUNTIME_LOADED_MODULES), ())
+        self.assertEqual(MODULE.missing_runtime_modules(["kernel32.dll"]),
+                         MODULE.RUNTIME_LOADED_MODULES)
+
     def test_normal_qemu_x86_selects_the_staging_route(self):
         makefile = (ROOT.parent / "Makefile").read_text()
         self.assertIn("WINDOWS_NOTEPAD ?= 1", makefile)
@@ -50,7 +55,8 @@ class Ext4ValidatorTests(unittest.TestCase):
                 "/usr/local/share/oxide/windows/nls", "/usr/share",
                 "/usr/share/applications", "/etc", "/etc/oxide", "/etc/xdg",
                 "/var", "/var/lib", "/var/lib/oxide", "/usr/lib",
-                "/usr/lib/wine", "/usr/lib64", "/usr/lib64/wine"):
+                "/usr/lib/wine", "/usr/lib64", "/usr/lib64/wine",
+                "/windows", "/windows/c", "/windows/c/windows"):
             self.debugfs(f"mkdir {directory}")
         self.write("/usr/local/bin/windows-runtime", b"runtime")
         self.write("/usr/local/bin/windows-compositor", b"compositor")
@@ -61,6 +67,7 @@ class Ext4ValidatorTests(unittest.TestCase):
         self.write_native("/usr/local/lib/oxide/windows/x86_64-unix/ntdll.so", self.NTDLL)
         self.write_native("/usr/local/lib/oxide/windows/x86_64-unix/win32u.so", self.WIN32U)
         self.write("/usr/local/lib/oxide/windows/x86_64-windows/kernel32.dll", b"dll")
+        self.write("/usr/local/lib/oxide/windows/x86_64-windows/imm32.dll", b"dll")
         self.write("/usr/local/lib/oxide/windows/x86_64-unix/kernel32.so", b"so")
         self.write("/usr/local/share/oxide/windows/nls/locale.nls", b"nls")
         self.write("/etc/oxide/windows-runtime.conf", b"OXIDE_WINDOWS_RUNTIME=/usr/local/lib/oxide/windows\n")
@@ -71,6 +78,8 @@ class Ext4ValidatorTests(unittest.TestCase):
         self.write("/var/lib/oxide/registry.db", b"OXREG\0\1")
         self.debugfs("symlink /usr/lib/wine/x86_64-windows /usr/local/lib/oxide/windows/x86_64-windows")
         self.debugfs("symlink /usr/lib64/wine/x86_64-windows /usr/local/lib/oxide/windows/x86_64-windows")
+        self.debugfs("symlink /windows/c/windows/system32 /usr/local/lib/oxide/windows/x86_64-windows")
+        self.debugfs("symlink /windows/z /")
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -115,6 +124,22 @@ class Ext4ValidatorTests(unittest.TestCase):
         self.debugfs("unlink /usr/lib64/wine/x86_64-windows")
         self.debugfs("symlink /usr/lib64/wine/x86_64-windows /tmp/not-the-catalog")
         with self.assertRaisesRegex(MODULE.Failure, "target"):
+            self.run_validator()
+
+    def test_real_ext4_fixture_rejects_a_missing_dos_system_directory(self):
+        self.debugfs("unlink /windows/c/windows/system32")
+        with self.assertRaisesRegex(MODULE.Failure, "/windows/c/windows/system32"):
+            self.run_validator()
+
+    def test_real_ext4_fixture_rejects_a_dos_drive_z_that_is_not_the_unix_root(self):
+        self.debugfs("unlink /windows/z")
+        self.debugfs("symlink /windows/z /usr")
+        with self.assertRaisesRegex(MODULE.Failure, "/windows/z"):
+            self.run_validator()
+
+    def test_real_ext4_fixture_rejects_a_system_directory_without_runtime_modules(self):
+        self.debugfs("unlink /usr/local/lib/oxide/windows/x86_64-windows/imm32.dll")
+        with self.assertRaisesRegex(MODULE.Failure, "imm32.dll"):
             self.run_validator()
 
     def test_real_ext4_fixture_rejects_non_elf_native_copy(self):

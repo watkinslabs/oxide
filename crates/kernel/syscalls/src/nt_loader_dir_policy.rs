@@ -10,6 +10,11 @@ pub const LOAD_LIBRARY_SEARCH_SYSTEM32: u32 = 0x0000_0800;
 pub const LOAD_LIBRARY_SEARCH_DEFAULT_DIRS: u32 = 0x0000_1000;
 pub const LOAD_WITH_ALTERED_SEARCH_PATH: u32 = 0x0000_0008;
 
+/// Canonical native system directory, in the reference spelling.
+pub const SYSTEM_DIRECTORY: &[u8] = b"C:\\windows\\system32";
+/// Canonical native Windows directory, used when no other directory applies.
+pub const WINDOWS_DIRECTORY: &[u8] = b"C:\\windows";
+
 pub const DEFAULT_DIRECTORY_FLAGS: u32 = LOAD_LIBRARY_SEARCH_APPLICATION_DIR
     | LOAD_LIBRARY_SEARCH_USER_DIRS | LOAD_LIBRARY_SEARCH_SYSTEM32
     | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS;
@@ -71,20 +76,6 @@ pub fn join_windows_path(directory: &[u8], name: &[u8]) -> Vec<u8> {
     path.extend_from_slice(base);
     if base.len() < 4 || !base[base.len() - 4..].eq_ignore_ascii_case(b".dll") { path.extend_from_slice(b".dll"); }
     path
-}
-
-/// Convert an absolute Z-drive Windows path into the mounted Linux VFS path.
-/// Other drive mappings remain explicit rather than silently selecting a host
-/// directory that could disagree with the process DOS-device namespace.
-/// # C: O(path length)
-#[cfg(target_arch = "x86_64")]
-pub fn windows_path_to_vfs(path: &[u8]) -> Option<Vec<u8>> {
-    let mut path = path.to_vec();
-    if path.starts_with(b"\\??\\") { path.drain(..4); }
-    for byte in &mut path { if *byte == b'\\' { *byte = b'/'; } }
-    if path.len() >= 2 && (path[0] == b'Z' || path[0] == b'z') && path[1] == b':' { path.drain(..2); }
-    if path.first().copied() != Some(b'/') { return None; }
-    Some(path)
 }
 
 /// Select the first readable candidate while preserving the caller's order.
@@ -159,6 +150,25 @@ mod tests {
         assert!(!dll_load_directory_path_valid(&u16_bytes(b"x.dll")));
     }
 
+    /// The search order a delay-loaded `imm32.dll` reaches from a Notepad
+    /// image staged in the system directory must name paths the boot image
+    /// actually publishes, through the one DOS drive mapping the native file
+    /// opens use.
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn system_and_application_candidates_map_through_the_one_drive_owner() {
+        let image = b"C:\\windows\\system32\\notepad.exe";
+        let application = &image[..image.len() - b"\\notepad.exe".len()];
+        let candidates = vec![join_windows_path(application, b"imm32.dll"),
+            join_windows_path(SYSTEM_DIRECTORY, b"imm32.dll")];
+        assert_eq!(candidates[0], b"C:\\windows\\system32\\imm32.dll".to_vec());
+        assert_eq!(candidates[1], candidates[0]);
+        assert_eq!(crate::nt_path::normalize_narrow_path(&candidates[1]).as_deref(),
+            Some(&b"/windows/c/windows/system32/imm32.dll"[..]));
+        assert_eq!(crate::nt_path::normalize_narrow_path(WINDOWS_DIRECTORY).as_deref(),
+            Some(&b"/windows/c/windows"[..]));
+    }
+
     #[test]
     fn filesystem_probe_preserves_search_order_and_skips_missing_candidates() {
         let candidates = vec![b"Z:\\first\\foo.dll".to_vec(), b"Z:\\second\\foo.dll".to_vec()];
@@ -176,10 +186,4 @@ mod tests {
         assert_eq!(found.0, candidates[0]);
     }
 
-    #[test]
-    fn filesystem_probe_maps_only_absolute_z_drive_paths_into_vfs() {
-        assert_eq!(windows_path_to_vfs(b"Z:\\usr\\lib\\foo.dll"), Some(b"/usr/lib/foo.dll".to_vec()));
-        assert_eq!(windows_path_to_vfs(b"C:\\Windows\\System32\\foo.dll"), None);
-        assert_eq!(windows_path_to_vfs(b"foo.dll"), None);
-    }
 }

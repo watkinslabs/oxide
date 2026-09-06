@@ -12,8 +12,16 @@ use super::{components, dotdot_step, follow_mount_down, path_lookup_path, Lookup
 /// Resolve absolute `path` to its inode by the per-component walk from root.
 /// # C: O(path components)
 pub fn resolve_abs(path: &str) -> KResult<InodeRef> {
+    resolve_abs_flags(path, LookupFlags::default())
+}
+
+/// Resolve absolute `path` under a caller-selected lookup policy. The native
+/// Windows namespace walks the same tree with its own name-equivalence rule,
+/// so the policy is a parameter of the walk rather than a second walker.
+/// # C: O(path components)
+pub fn resolve_abs_flags(path: &str, flags: LookupFlags) -> KResult<InodeRef> {
     let root = root_dentry().ok_or(VfsError::Enoent)?;
-    let p = path_lookup_path(root.clone(), root, path, LookupFlags::default())?;
+    let p = path_lookup_path(root.clone(), root, path, flags)?;
     Ok(p.inode)
 }
 
@@ -26,7 +34,13 @@ pub fn resolve_abs(path: &str) -> KResult<InodeRef> {
 /// is mounted rather than one particular filesystem's own reader.
 /// # C: O(file bytes)
 pub fn read_abs(path: &str) -> KResult<alloc::vec::Vec<u8>> {
-    let inode = resolve_abs(path)?;
+    read_abs_flags(path, LookupFlags::default())
+}
+
+/// Read the whole of the regular file at absolute `path` under a
+/// caller-selected lookup policy. # C: O(file bytes)
+pub fn read_abs_flags(path: &str, flags: LookupFlags) -> KResult<alloc::vec::Vec<u8>> {
+    let inode = resolve_abs_flags(path, flags)?;
     if inode.file_type() != crate::types::FileType::Regular { return Err(VfsError::Einval); }
     let size = usize::try_from(inode.size()).map_err(|_| VfsError::Einval)?;
     let mut bytes = alloc::vec![0u8; size];

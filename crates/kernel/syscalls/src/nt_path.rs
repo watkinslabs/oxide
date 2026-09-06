@@ -118,6 +118,17 @@ pub fn render_windows_path(path: &str) -> Option<String> {
     Some(path.replace('/', "\\"))
 }
 
+/// Translate one narrow NT loader path into the same canonical VFS name every
+/// native file open uses. Loader candidate names come from `UNICODE_STRING`
+/// units whose high byte is zero, so one byte is one code point; the DOS drive
+/// mapping itself stays owned by `normalize_path`.
+/// # C: O(path length)
+pub fn normalize_narrow_path(raw: &[u8]) -> Option<alloc::vec::Vec<u8>> {
+    let mut text = String::with_capacity(raw.len());
+    for byte in raw { text.push(*byte as char); }
+    Some(normalize_absolute_path(&text)?.into_bytes())
+}
+
 /// Join a normalized relative NT name to a VFS directory path. Absolute names
 /// remain rooted and therefore do not inherit the supplied directory. # C: O(path)
 pub fn join_root_path(root: &str, relative: &str) -> Option<String> {
@@ -280,6 +291,23 @@ mod tests {
     #[test]
     fn renders_non_drive_paths_without_changing_root() {
         assert_eq!(render_windows_path("/Device/Null"), Some(String::from(r"\Device\Null")));
+    }
+
+    #[test]
+    fn narrow_loader_paths_use_the_one_drive_mapping() {
+        assert_eq!(super::normalize_narrow_path(b"C:\\windows\\system32\\imm32.dll").as_deref(),
+            Some(&b"/windows/c/windows/system32/imm32.dll"[..]));
+        assert_eq!(super::normalize_narrow_path(b"Z:\\usr\\lib\\foo.dll").as_deref(),
+            Some(&b"/windows/z/usr/lib/foo.dll"[..]));
+        assert_eq!(super::normalize_narrow_path(b"\\??\\C:\\imm32.dll").as_deref(),
+            Some(&b"/windows/c/imm32.dll"[..]));
+    }
+
+    #[test]
+    fn narrow_loader_paths_reject_names_with_no_absolute_root() {
+        assert_eq!(super::normalize_narrow_path(b"imm32.dll"), None);
+        assert_eq!(super::normalize_narrow_path(b"C:imm32.dll"), None);
+        assert_eq!(super::normalize_narrow_path(b"1:\\imm32.dll"), None);
     }
 
     #[test]

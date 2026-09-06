@@ -17,6 +17,17 @@ const CONFIG_PATH: &str = "/etc/oxide/windows-runtime.conf";
 const DESKTOP_PATH: &str = "/usr/share/applications/oxide-notepad.desktop";
 const MIMEAPPS_PATH: &str = "/etc/xdg/mimeapps.list";
 const PREFIX_DIR: &str = "/var/lib/oxide/windows-prefix";
+// The native DOS drive namespace. A drive letter directory under the DOS root
+// is the drive, exactly as a prefix `dosdevices` entry is: `c` is the system
+// drive whose `windows/system32` holds every loadable module, and `z` is the
+// link to the Unix root. Nothing maps a drive letter in code.
+const DOS_ROOT: &str = "/windows";
+const DOS_DRIVE_C: &str = "/windows/c";
+const DOS_C_WINDOWS: &str = "/windows/c/windows";
+const DOS_SYSTEM32: &str = "/windows/c/windows/system32";
+const DOS_DRIVE_Z: &str = "/windows/z";
+const UNIX_ROOT: &str = "/";
+const IMAGE_WINDOWS_PATH: &str = r"C:\windows\system32\notepad.exe";
 const REGISTRY_DB: &str = "/var/lib/oxide/registry.db";
 const REGISTRY_SOCKET: &str = "/run/oxide/registry.sock";
 const EMPTY_REGISTRY: &[u8] = b"OXREG\0\x01\0\0\0\0\0";
@@ -45,7 +56,7 @@ pub(super) fn inject(root_img: &Path, arch: &str) -> Result<(), u8> {
     let desktop = write_desktop_entry()?;
     let mimeapps = write_mimeapps()?;
     let registry_db = write_registry_seed()?;
-    for dir in ["/usr/local/lib", "/usr/local/lib/oxide", IMAGE_ROOT, WINDOWS_DIR, UNIXLIB_DIR, "/usr/local/share", "/usr/local/share/oxide", "/usr/local/share/oxide/windows", "/usr/local/share/oxide/windows/nls", "/usr/share/applications", "/etc/xdg", "/etc/oxide", "/var/lib/oxide", PREFIX_DIR, "/usr/lib/wine", "/usr/lib64/wine", format!("{IMAGE_ROOT}/dxvk").as_str(), format!("{IMAGE_ROOT}/vkd3d-proton").as_str(), format!("{IMAGE_ROOT}/faudio").as_str()] { mkdir(root_img, dir)?; }
+    for dir in ["/usr/local/lib", "/usr/local/lib/oxide", IMAGE_ROOT, WINDOWS_DIR, UNIXLIB_DIR, "/usr/local/share", "/usr/local/share/oxide", "/usr/local/share/oxide/windows", "/usr/local/share/oxide/windows/nls", "/usr/share/applications", "/etc/xdg", "/etc/oxide", "/var/lib/oxide", PREFIX_DIR, DOS_ROOT, DOS_DRIVE_C, DOS_C_WINDOWS, "/usr/lib/wine", "/usr/lib64/wine", format!("{IMAGE_ROOT}/dxvk").as_str(), format!("{IMAGE_ROOT}/vkd3d-proton").as_str(), format!("{IMAGE_ROOT}/faudio").as_str()] { mkdir(root_img, dir)?; }
     stage_file(root_img, &launcher, "/usr/local/bin/windows-runtime", "launcher", "0100755")?;
     stage_file(root_img, &compositor, "/usr/local/bin/windows-compositor", "GNOME Windows bridge", "0100755")?;
     stage_file(root_img, &registryd, "/usr/local/bin/registryd", "registryd", "0100755")?;
@@ -71,6 +82,14 @@ pub(super) fn inject(root_img: &Path, arch: &str) -> Result<(), u8> {
     dbg(root_img, &format!("symlink {WINE_COMPAT_WINDOWS_DIR} {WINDOWS_DIR}"))?;
     let _ = dbg(root_img, &format!("rm {WINE64_COMPAT_WINDOWS_DIR}"));
     dbg(root_img, &format!("symlink {WINE64_COMPAT_WINDOWS_DIR} {WINDOWS_DIR}"))?;
+    // The system drive resolves to the one staged catalog rather than a second
+    // copy of it: a duplicate set could disagree with the modules the launch
+    // admits, and the loader and every native file open reach the same bytes
+    // through the same drive letter.
+    let _ = dbg(root_img, &format!("rm {DOS_SYSTEM32}"));
+    dbg(root_img, &format!("symlink {DOS_SYSTEM32} {WINDOWS_DIR}"))?;
+    let _ = dbg(root_img, &format!("rm {DOS_DRIVE_Z}"));
+    dbg(root_img, &format!("symlink {DOS_DRIVE_Z} {UNIX_ROOT}"))?;
     let nls_dir = nls_source.parent().unwrap_or_else(|| Path::new("/usr/share/wine/nls"));
     let nls_files = catalog_files(nls_dir, |path| is_suffix(path, "nls"))?;
     for path in &nls_files {
@@ -203,7 +222,7 @@ done
 oxide_log="$OXIDE_WINDOWS_PREFIX/windows-launch.log"
 : > "$oxide_log" 2>/dev/null || oxide_log=/dev/null
 status=0
-/usr/local/bin/windows-runtime --launch "$OXIDE_WINDOWS_DLL_CATALOG/notepad.exe" 'C:\\notepad.exe' 'C:\\notepad.exe' x86_64 "$OXIDE_WINDOWS_PREFIX" "$OXIDE_WINDOWS_RUNTIME" "$OXIDE_WINDOWS_DLL_CATALOG" "$OXIDE_WINDOWS_UNIXLIB" "$OXIDE_WINDOWS_NLS" "$OXIDE_WINDOWS_REGISTRY_SOCKET" "$OXIDE_WINDOWS_REGISTRY_DATABASE" 2>"$oxide_log" || status=$?
+/usr/local/bin/windows-runtime --launch "$OXIDE_WINDOWS_DLL_CATALOG/notepad.exe" 'C:\windows\system32\notepad.exe' 'C:\windows\system32\notepad.exe' x86_64 "$OXIDE_WINDOWS_PREFIX" "$OXIDE_WINDOWS_RUNTIME" "$OXIDE_WINDOWS_DLL_CATALOG" "$OXIDE_WINDOWS_UNIXLIB" "$OXIDE_WINDOWS_NLS" "$OXIDE_WINDOWS_REGISTRY_SOCKET" "$OXIDE_WINDOWS_REGISTRY_DATABASE" 2>"$oxide_log" || status=$?
 # Replay to the real stderr so a console run is unchanged by the capture.
 cat "$oxide_log" >&2 2>/dev/null || true
 printf '[WINDOWS-NOTEPAD] runtime-exit status=%s\n' "$status"
@@ -246,6 +265,10 @@ mod tests {
         assert!(script.contains("windows-launch.log"), "a desktop launch must leave its diagnostics on disk");
         assert!(!script.contains("mkfifo"), "the fifo capture lost the bridge child's output");
         assert!(!script.contains("eval \"$(/usr/local/bin/windows-runtime"), "path selection status must not be discarded");
+        // The application directory the loader searches comes from this image
+        // path. Naming the drive root left every runtime module lookup outside
+        // the launch-time catalog with nowhere on the image to resolve.
+        assert!(script.contains(&format!("'{IMAGE_WINDOWS_PATH}' '{IMAGE_WINDOWS_PATH}'")), "launch must name the system-directory image path");
     }
     #[test]
     fn registry_seed_is_versioned_and_not_executable() { assert_eq!(EMPTY_REGISTRY, b"OXREG\0\x01\0\0\0\0\0"); }

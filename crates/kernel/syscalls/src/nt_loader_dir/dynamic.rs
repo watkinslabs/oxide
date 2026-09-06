@@ -85,9 +85,9 @@ impl FilesystemCatalog {
         if let Some(parent) = parent { push_candidate(&mut candidates, &crate::nt_loader_dir_policy::join_windows_path(parent, name)); }
         for directory in &self.directories { push_candidate(&mut candidates, &crate::nt_loader_dir_policy::join_windows_path(directory, name)); }
         let Some((candidate, blob)) = crate::nt_loader_dir_policy::first_readable_candidate(&candidates, |candidate| {
-            let unix_path = crate::nt_loader_dir_policy::windows_path_to_vfs(candidate)?;
+            let unix_path = crate::nt_path::normalize_narrow_path(candidate)?;
             let path = core::str::from_utf8(&unix_path).ok()?;
-            vfs::read_abs(path).ok()
+            vfs::read_abs_flags(path, crate::nt_path::windows_lookup_flags()).ok()
         }) else { return Err(STATUS_DLL_NOT_FOUND); };
         pe::parse(&blob).map_err(|_| STATUS_INVALID_IMAGE_FORMAT)?;
         if self.catalog.add(name, &blob).is_err() { return Err(STATUS_INVALID_IMAGE_FORMAT); }
@@ -98,13 +98,13 @@ impl FilesystemCatalog {
     fn location_for(&self, name: &[u8]) -> Vec<u8> {
         self.locations.iter().find(|(known, _)| pe::loader_name::matches_ascii(known, name))
             .map(|(_, path)| directory_of_narrow(path).to_vec())
-            .unwrap_or_else(|| b"C:\\Windows\\System32".to_vec())
+            .unwrap_or_else(|| crate::nt_loader_dir_policy::SYSTEM_DIRECTORY.to_vec())
     }
 
     fn full_name_for(&self, name: &[u8]) -> Vec<u8> {
         self.locations.iter().find(|(known, _)| pe::loader_name::matches_ascii(known, name))
             .map(|(_, path)| path.clone())
-            .unwrap_or_else(|| { let mut path = b"C:\\Windows\\System32\\".to_vec(); path.extend_from_slice(name); path })
+            .unwrap_or_else(|| crate::nt_loader_dir_policy::join_windows_path(crate::nt_loader_dir_policy::SYSTEM_DIRECTORY, name))
     }
 }
 
