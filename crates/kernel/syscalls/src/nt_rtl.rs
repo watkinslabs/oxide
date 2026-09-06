@@ -771,8 +771,21 @@ pub(crate) fn callback_return(call: NtCall) -> u64 {
         let regs = hal_x86_64::current_pt_regs();
         if regs.is_null() { return STATUS_NO_CALLBACK_ACTIVE; }
         let frame = unsafe { &mut *regs };
+        // The window procedure's return value arrives through this pointer, and
+        // a create that is refused is refused on the strength of it. Report
+        // what was actually passed: a length whose upper half carries anything
+        // but zero is the same 64-bit-register defect already found in the
+        // string conversions, and is not the same thing as a genuine FALSE.
+        klog::write_raw(b"[WINDOWS-CALLBACK-RETURN] ptr=");
+        klog::write_hex_u64(call.args.a0);
+        klog::write_raw(b" len=");
+        klog::write_hex_u64(call.args.a1);
+        klog::write_raw(b"\n");
         if call.args.a1 != 8 { return STATUS_NO_CALLBACK_ACTIVE; }
         let Ok(result) = uaccess::get_user_u64(call.args.a0) else { return STATUS_ACCESS_VIOLATION; };
+        klog::write_raw(b"[WINDOWS-CALLBACK-RETURN] lresult=");
+        klog::write_hex_u64(result);
+        klog::write_raw(b"\n");
         let Some(task) = sched::live::current() else { return STATUS_NO_CALLBACK_ACTIVE; };
         let Some(saved) = task.nt_callback_stack.lock().pop() else { return STATUS_NO_CALLBACK_ACTIVE; };
         frame.rip = saved.rip;
