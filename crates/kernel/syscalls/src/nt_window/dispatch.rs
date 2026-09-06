@@ -110,6 +110,16 @@ pub(super) fn dispatch_mode(call: NtCall, raw: bool) -> Option<u64> {
                     let Some(filter) = message_filter(state, hwnd, first, last) else { return Some(STATUS_INVALID_HANDLE); };
                     match state.take_for_thread(cur.tid as u64, filter) {
                         ipc::win32_window::QueueResult::Message(found) => {
+                            // Which message a pump is handed decides everything
+                            // downstream: an application that never receives
+                            // WM_PAINT never calls BeginPaint and never draws,
+                            // which is indistinguishable from one that received
+                            // it and ignored it.
+                            klog::write_raw(b"[WINDOWS-GETMESSAGE] hwnd=");
+                            klog::write_hex_u64(found.hwnd.map(|w| w.raw() as u64).unwrap_or(0));
+                            klog::write_raw(b" msg=");
+                            klog::write_hex_u64(found.message as u64);
+                            klog::write_raw(b"\n");
                             if copy_message(message, found).is_err() { return Some(STATUS_INVALID_PARAMETER); }
                             (Some(STATUS_SUCCESS), None, None)
                         }
