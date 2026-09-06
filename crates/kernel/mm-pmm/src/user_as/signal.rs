@@ -46,8 +46,8 @@ pub fn force_user_fault_x86(vec: u64, err: u64, pc: u64, cr2: u64,
     // exception arriving before any disposition is reset. Nothing else about
     // the fault changes — the same trap, the same classification decision.
     use sched::nt_exception::fault::x86_64 as nt;
-    if super::nt_fault::publish(if vec == fc::TRAP_PF { Some(nt::page_fault(err, cr2, pc)) }
-                                else { nt::trap(vec, pc) }) { return true; }
+    if sched::nt_exception::fault::publish_for_current(
+        if vec == fc::TRAP_PF { Some(nt::page_fault(err, cr2, pc)) } else { nt::trap(vec, pc) }) { return true; }
     // The entry publisher snapshots RSP with the live frame. Never
     // dereference the CPU-global frame pointer here: a fault resolver may
     // switch tasks before signal reporting, and a stale pointer can name a

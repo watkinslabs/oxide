@@ -190,6 +190,27 @@ pub mod aarch64 {
     }
 }
 
+/// Report one classified hardware exception through the Windows personality
+/// instead of the POSIX signal, and answer whether that happened.
+///
+/// A Windows thread that faults must reach its own exception dispatcher, and
+/// must reach it FIRST: its `__try`/`__except` probes depend on the exception
+/// arriving before any signal disposition is touched. This is the only
+/// decision about WHERE an unresolved user fault is reported; the fault
+/// funnel asks once and reports the signal when the answer is no.
+///
+/// `false` for a thread with no NT personality, for a condition no Windows
+/// exception describes, and for a thread ALREADY holding an exception — a
+/// fault taken while one is being dispatched is not queued behind it, because
+/// the dispatcher would then see neither.
+/// # C: O(1)
+pub fn publish_for_current(raised: Option<Raised>) -> bool {
+    let Some(raised) = raised else { return false; };
+    let Some(current) = crate::current() else { return false; };
+    if !current.is_nt_personality() { return false; }
+    current.nt_exception.publish(super::Pending::from_hardware(raised.record())).is_ok()
+}
+
 #[cfg(test)]
 #[path = "fault/tests.rs"]
 mod tests;

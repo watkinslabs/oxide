@@ -22,7 +22,6 @@ use vmm::{AddressSpace, FaultAccess, FaultKind, VmaBacking, VmaFlags, VmaProt};
 use hal::{UserVirtAddr, USER_VA_END};
 
 mod signal;
-mod nt_fault;
 mod accounting;
 mod swap_in;
 mod swapoff;
