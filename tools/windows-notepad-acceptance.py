@@ -162,7 +162,11 @@ def wait_for_rendered_desktop(conn, deadline):
 def uart_pump(conn, buffer, log, seconds):
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
-        ready, _, _ = select.select([conn], [], [], min(0.25, deadline - time.monotonic()))
+        # A passed deadline makes this difference negative, and select rejects a
+        # negative timeout outright: the run then dies mid-flight with a
+        # ValueError and leaves no evidence of what the guest was doing. Line 86
+        # already clamps the same computation; these two did not.
+        ready, _, _ = select.select([conn], [], [], max(0.0, min(0.25, deadline - time.monotonic())))
         if not ready:
             continue
         data = conn.recv(65536)
@@ -180,7 +184,7 @@ def wait_marker(conn, buffer, log, marker, deadline):
             die(f"guest fault before {marker}")
         if marker in text:
             return
-        uart_pump(conn, buffer, log, min(1, deadline - time.monotonic()))
+        uart_pump(conn, buffer, log, max(0.0, min(1, deadline - time.monotonic())))
     die(f"missing guest marker {marker}")
 
 
