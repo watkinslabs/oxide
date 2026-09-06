@@ -139,9 +139,6 @@ impl GdiManager {
         self.bitmaps.retain(|(_, bitmap)| !bitmap.deleted);
         Ok(())
     }
-
-    /// # C: O(bitmaps)
-    pub fn contains_bitmap(&self, handle: u32) -> bool { self.bitmaps.iter().any(|(id, _)| *id == handle) }
 }
 
 /// Caller rows are 16-bit aligned and stored rows 32-bit aligned; a short
