@@ -195,21 +195,18 @@ done
 # copy beside the runtime state, and still write to stderr so a scripted run is
 # unchanged. The fifo is used rather than a pipeline so the launch's own exit
 # status is preserved.
-oxide_log="$(dirname "$OXIDE_WINDOWS_REGISTRY_SOCKET")/windows-runtime.log"
-oxide_fifo="$(dirname "$OXIDE_WINDOWS_REGISTRY_SOCKET")/windows-runtime.fifo"
-rm -f "$oxide_fifo"
-if mkfifo "$oxide_fifo" 2>/dev/null; then
-    tee -a "$oxide_log" < "$oxide_fifo" >&2 &
-    oxide_tee=$!
-    exec 2>"$oxide_fifo"
-else
-    oxide_tee=
-fi
+# The runtime state directory is a tmpfs that does not survive the guest, so
+# the log goes beside the prefix, which does. The launch writes its stderr
+# there and the file is replayed to the real stderr once it returns, so a
+# console run still sees everything and a desktop run leaves it on disk.
+# A fifo and tee were tried first and lost the compositor's output entirely.
+oxide_log="$OXIDE_WINDOWS_PREFIX/windows-launch.log"
+: > "$oxide_log" 2>/dev/null || oxide_log=/dev/null
 status=0
-/usr/local/bin/windows-runtime --launch "$OXIDE_WINDOWS_DLL_CATALOG/notepad.exe" 'C:\\notepad.exe' 'C:\\notepad.exe' x86_64 "$OXIDE_WINDOWS_PREFIX" "$OXIDE_WINDOWS_RUNTIME" "$OXIDE_WINDOWS_DLL_CATALOG" "$OXIDE_WINDOWS_UNIXLIB" "$OXIDE_WINDOWS_NLS" "$OXIDE_WINDOWS_REGISTRY_SOCKET" "$OXIDE_WINDOWS_REGISTRY_DATABASE" || status=$?
+/usr/local/bin/windows-runtime --launch "$OXIDE_WINDOWS_DLL_CATALOG/notepad.exe" 'C:\\notepad.exe' 'C:\\notepad.exe' x86_64 "$OXIDE_WINDOWS_PREFIX" "$OXIDE_WINDOWS_RUNTIME" "$OXIDE_WINDOWS_DLL_CATALOG" "$OXIDE_WINDOWS_UNIXLIB" "$OXIDE_WINDOWS_NLS" "$OXIDE_WINDOWS_REGISTRY_SOCKET" "$OXIDE_WINDOWS_REGISTRY_DATABASE" 2>"$oxide_log" || status=$?
+# Replay to the real stderr so a console run is unchanged by the capture.
+cat "$oxide_log" >&2 2>/dev/null || true
 printf '[WINDOWS-NOTEPAD] runtime-exit status=%s\n' "$status"
-# Release the copy before exiting so no diagnostic is lost to a closed fifo.
-if [ -n "$oxide_tee" ]; then exec 2>&1; wait "$oxide_tee" 2>/dev/null || true; rm -f "$oxide_fifo"; fi
 exit "$status"
 "#
 }
@@ -246,7 +243,8 @@ mod tests {
         assert!(script.contains("no-session-display"), "a session with no display must say so, not fail obscurely");
         // A desktop launch sends diagnostics to the session where nobody can
         // read them; the failures so far were narrowed only from a console run.
-        assert!(script.contains("windows-runtime.log"), "a desktop launch must leave its diagnostics on disk");
+        assert!(script.contains("windows-launch.log"), "a desktop launch must leave its diagnostics on disk");
+        assert!(!script.contains("mkfifo"), "the fifo capture lost the bridge child's output");
         assert!(!script.contains("eval \"$(/usr/local/bin/windows-runtime"), "path selection status must not be discarded");
     }
     #[test]
