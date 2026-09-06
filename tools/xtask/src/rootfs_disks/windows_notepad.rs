@@ -189,9 +189,27 @@ for attempt in $(seq 1 100); do
     sleep 0.1
 done
 [ -S "$OXIDE_WINDOWS_REGISTRY_SOCKET" ] || exit 10
+# A launch from the desktop sends its diagnostics to the session, where they
+# are invisible to anyone debugging the guest: two failures were narrowed only
+# because a scripted run happened to put the same output on the console. Keep a
+# copy beside the runtime state, and still write to stderr so a scripted run is
+# unchanged. The fifo is used rather than a pipeline so the launch's own exit
+# status is preserved.
+oxide_log="$(dirname "$OXIDE_WINDOWS_REGISTRY_SOCKET")/windows-runtime.log"
+oxide_fifo="$(dirname "$OXIDE_WINDOWS_REGISTRY_SOCKET")/windows-runtime.fifo"
+rm -f "$oxide_fifo"
+if mkfifo "$oxide_fifo" 2>/dev/null; then
+    tee -a "$oxide_log" < "$oxide_fifo" >&2 &
+    oxide_tee=$!
+    exec 2>"$oxide_fifo"
+else
+    oxide_tee=
+fi
 status=0
 /usr/local/bin/windows-runtime --launch "$OXIDE_WINDOWS_DLL_CATALOG/notepad.exe" 'C:\\notepad.exe' 'C:\\notepad.exe' x86_64 "$OXIDE_WINDOWS_PREFIX" "$OXIDE_WINDOWS_RUNTIME" "$OXIDE_WINDOWS_DLL_CATALOG" "$OXIDE_WINDOWS_UNIXLIB" "$OXIDE_WINDOWS_NLS" "$OXIDE_WINDOWS_REGISTRY_SOCKET" "$OXIDE_WINDOWS_REGISTRY_DATABASE" || status=$?
 printf '[WINDOWS-NOTEPAD] runtime-exit status=%s\n' "$status"
+# Release the copy before exiting so no diagnostic is lost to a closed fifo.
+if [ -n "$oxide_tee" ]; then exec 2>&1; wait "$oxide_tee" 2>/dev/null || true; rm -f "$oxide_fifo"; fi
 exit "$status"
 "#
 }
@@ -226,6 +244,9 @@ mod tests {
         // user manager, and that is where it must come from.
         assert!(script.contains("systemctl --user show-environment"), "wrapper must import the session display");
         assert!(script.contains("no-session-display"), "a session with no display must say so, not fail obscurely");
+        // A desktop launch sends diagnostics to the session where nobody can
+        // read them; the failures so far were narrowed only from a console run.
+        assert!(script.contains("windows-runtime.log"), "a desktop launch must leave its diagnostics on disk");
         assert!(!script.contains("eval \"$(/usr/local/bin/windows-runtime"), "path selection status must not be discarded");
     }
     #[test]

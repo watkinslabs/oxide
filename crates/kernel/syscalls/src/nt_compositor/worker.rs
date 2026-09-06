@@ -41,7 +41,15 @@ extern "C" fn reader(arg: usize) -> ! {
             // An interrupted partial record cannot be exposed or restarted
             // from its header; terminate the connection on receive errors.
             binding.socket.read_kernel(buf).map_err(|_| TransportError::Disconnected)
-        }) { Ok(record) => record, Err(_) => { teardown(b"rx-read", 0, 0); break } };
+        }) {
+            Ok(record) => record,
+            // Disconnected here is a clean end of stream: the peer process
+            // closed or exited. Anything else is a malformed or unreadable
+            // record. The two need different investigations, so they are not
+            // reported as one reason.
+            Err(TransportError::Disconnected) => { teardown(b"rx-peer-closed", 0, 0); break }
+            Err(_) => { teardown(b"rx-record-invalid", 0, 0); break }
+        };
         let opcode = record.header.opcode;
         let (sequence, hwnd) = (record.header.sequence, record.header.hwnd);
         if opcode == Opcode::Ack {
