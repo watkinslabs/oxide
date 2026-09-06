@@ -36,6 +36,8 @@ mod teardown;
 pub(crate) use teardown::cleanup_thread_at_exit;
 #[path = "nt_window/creation_metadata.rs"]
 mod creation_metadata;
+#[path = "nt_window/desktop.rs"]
+pub(crate) mod desktop;
 #[path = "nt_window/rect_query.rs"]
 pub(crate) mod rect_query;
 pub(crate) use creation_metadata::{set_creation_metadata_current, window_call_context_current};

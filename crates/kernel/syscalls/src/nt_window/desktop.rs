@@ -43,6 +43,22 @@ pub(crate) fn publish_root(desktop: &NtObject, group: &Arc<ThreadGroup>, hwnd: u
     }).is_ok()
 }
 
+/// Offer a freshly created window as this desktop's root. The publisher itself
+/// rejects a window that is not a real top-level with geometry, and keeps an
+/// already-published root, so a child window or a second top-level cannot
+/// displace the one HWND-zero resolves to.
+/// # C: O(processes + windows); # Sleeps: no
+pub(crate) fn offer_root_for_current(hwnd: u64) -> bool {
+    let Ok(hwnd) = u32::try_from(hwnd) else { return false; };
+    let Some(current) = sched::live::current().filter(|task| task.is_nt_personality()) else { return false; };
+    let station = { let station = current.thread_group.nt_window_station.lock().clone(); station };
+    let Some(station) = station else { return false; };
+    let membership = { let membership = current.nt_desktop.lock().clone(); membership };
+    let Ok(desktop) = membership.identity(&station) else { return false; };
+    let group = Arc::clone(&current.thread_group);
+    publish_root(&desktop, &group, hwnd)
+}
+
 /// GDI must use the returned root process for its object/backing lookup and lease lifetime.
 /// # C: O(processes + windows² + regions²); # Sleeps: no
 pub(crate) fn dc_context_for_current(flags: u32) -> Option<(Arc<ThreadGroup>, DcLeaseContext)> {
