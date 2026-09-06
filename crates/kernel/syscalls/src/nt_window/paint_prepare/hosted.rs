@@ -36,4 +36,23 @@ pub(crate) fn create_region_for_current(region:PaintRegion)->Result<u32,u64>{
 fn run(resources:paint_callbacks::Resources,p:paint_prepare::Prepared)->u64{
     assert!(GUI.0.try_lock().is_ok());ENV.with(|e|e.borrow_mut().pending=Some((resources,p)));0x103
 }
+/// Hosted seam for the canonical layout+damage snapshot `live.rs` reads via
+/// `crate::nt_window::paint::presentation_for_current`; mirrors the production
+/// bounds/client-rect-relative-to-bounds `PaintBacking` derivation.
+pub(crate) mod paint{
+    use super::{GUI,Arc};
+    use ipc::{win32_window::{WindowId,PaintRegion},win32_gdi::{PaintBacking,Rect}};
+    pub(crate) fn presentation_for_current(hwnd:u32)->Option<(PaintBacking,PaintRegion)>{
+        let cur=super::live::current()?;
+        let id=WindowId::from_raw(hwnd)?;
+        let entries=GUI.lock();
+        let entry=entries.iter().find(|e|e.group.ptr_eq(&Arc::downgrade(&cur.thread_group)))?;
+        let bounds=entry.state.rect(id)?;
+        let client=entry.state.get(id)?.client_rect.unwrap_or(bounds);
+        let backing=PaintBacking{width:bounds.right.checked_sub(bounds.left)?,height:bounds.bottom.checked_sub(bounds.top)?,
+            client:Rect{left:client.left.checked_sub(bounds.left)?,top:client.top.checked_sub(bounds.top)?,
+                right:client.right.checked_sub(bounds.left)?,bottom:client.bottom.checked_sub(bounds.top)?}};
+        Some((backing,entry.state.paint_region(id).ok()?))
+    }
+}
 #[path="live_tests.rs"]mod tests;
