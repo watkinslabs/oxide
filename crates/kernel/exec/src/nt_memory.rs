@@ -170,7 +170,7 @@ pub fn free(as_: &AddressSpace, allocation: NtAllocation) -> NtStatus {
     let Some(end) = allocation.base.as_u64().checked_add(allocation.size as u64) else { return NtStatus::InvalidParameter; };
     if allocation.base.as_u64() < vma.start.as_u64() || end > vma.end.as_u64() { return NtStatus::InvalidParameter; }
     let watched = vma.flags.contains(VmaFlags::NT_WRITE_WATCH);
-    if as_.munmap(allocation.base, allocation.size).is_ok() {
+    if crate::nt_unmap::unmap_range(as_, allocation.base, allocation.size).is_ok() {
         if watched { as_.unregister_write_watch(allocation.base.as_u64(), allocation.size); }
         NtStatus::Success
     } else { NtStatus::NotMapped }
