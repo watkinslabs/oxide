@@ -45,7 +45,32 @@ fn utf8_to_unicode_n(call: NtCall) -> u64 {
     let written_units = utf8_write(destination, capacity, source, source_bytes);
     let Some(written_bytes) = written_units.checked_mul(2) else { return STATUS_INVALID_PARAMETER; };
     if uaccess::put_user_u32(result_length, written_bytes as u32).is_err() { return STATUS_INVALID_PARAMETER; }
-    if written_units < required_units { STATUS_BUFFER_TOO_SMALL } else { conversion_status }
+    if written_units < required_units {
+        // A short conversion is what an application sees as a failed
+        // MultiByteToWideChar, and it exits rather than continue with no
+        // strings. The call shape is the whole diagnosis, so it is reported.
+        trace_short(b"utf8-to-unicode", destination, destination_bytes, source_bytes, required_units, written_units);
+        STATUS_BUFFER_TOO_SMALL
+    } else { conversion_status }
+}
+
+/// Report a conversion that could not fill its caller's buffer. Only a failing
+/// conversion reaches this, so a working guest emits nothing.
+fn trace_short(what: &'static [u8], destination: u64, destination_bytes: usize,
+               source_bytes: usize, required: usize, written: usize) {
+    klog::write_raw(b"[WINDOWS-NLS-SHORT] op=");
+    klog::write_raw(what);
+    klog::write_raw(b" dst=");
+    klog::write_hex_u64(destination);
+    klog::write_raw(b" dstbytes=");
+    klog::write_hex_u64(destination_bytes as u64);
+    klog::write_raw(b" srcbytes=");
+    klog::write_hex_u64(source_bytes as u64);
+    klog::write_raw(b" need=");
+    klog::write_hex_u64(required as u64);
+    klog::write_raw(b" wrote=");
+    klog::write_hex_u64(written as u64);
+    klog::write_raw(b"\n");
 }
 
 fn utf8_measure(source: u64, length: usize) -> (usize, u64) {
@@ -134,7 +159,10 @@ fn unicode_to_utf8_n(call: NtCall) -> u64 {
         Ok(value) => value, Err(()) => return STATUS_INVALID_PARAMETER,
     };
     if uaccess::put_user_u32(result_length, written as u32).is_err() { return STATUS_INVALID_PARAMETER; }
-    if written < required { STATUS_BUFFER_TOO_SMALL } else { write_status }
+    if written < required {
+        trace_short(b"unicode-to-utf8", destination, destination_bytes, source_bytes, required, written);
+        STATUS_BUFFER_TOO_SMALL
+    } else { write_status }
 }
 
 fn utf16_scalar(source: u64, units: usize, index: usize) -> Option<(u32, usize, bool)> {
