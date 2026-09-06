@@ -54,3 +54,26 @@ fn system_brush_handle_exhaustion_never_publishes_fake_cache_entry() {
     assert!(!state.is_system_brush(0));
     assert!(state.system_brushes.handles.iter().all(Option::is_none));
 }
+
+#[test]
+fn every_color_index_has_a_role_with_the_reference_default_and_its_own_brush() {
+    let mut state = GdiManager::new();
+    let expected: [u32; SYSTEM_COLOR_COUNT] = [
+        0xd4d0c8, 0x3a6ea5, 0x0a246a, 0x808080, 0xd4d0c8, 0xffffff, 0x000000, 0x000000, 0x000000, 0xffffff,
+        0xd4d0c8, 0xd4d0c8, 0x808080, 0x0a246a, 0xffffff, 0xd4d0c8, 0x808080, 0x808080, 0x000000, 0xd4d0c8,
+        0xffffff, 0x404040, 0xd4d0c8, 0x000000, 0xffffe1, 0xb5b5b5, 0x0000c8, 0xa6caf0, 0xc0c0c0, 0x0a246a, 0xd4d0c8];
+    let mut handles = alloc::vec::Vec::new();
+    for (index, color) in expected.iter().enumerate() {
+        let role = SystemColor::from_index(index as u32).unwrap();
+        assert_eq!(role as usize, index);
+        assert_eq!(role.color(), *color, "index {index}");
+        let brush = state.system_brush(role).unwrap();
+        assert!(!handles.contains(&brush), "index {index} aliases another role's brush");
+        handles.push(brush);
+        assert_eq!(state.brush_style(brush, 0), Ok(BrushStyle::Solid(*color)));
+    }
+    assert_eq!(SystemColor::from_index(SYSTEM_COLOR_COUNT as u32), None);
+    assert_eq!(SystemColor::from_index(6), Some(SystemColor::WindowFrame));
+    assert_eq!(SystemColor::from_index(13), Some(SystemColor::Highlight));
+    assert_eq!(SystemColor::from_index(14), Some(SystemColor::HighlightText));
+}
