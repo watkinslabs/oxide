@@ -13,7 +13,6 @@ pub(crate) const VK_CONTROL: u32 = 0x11;
 pub(crate) const VK_MENU: u32 = 0x12;
 const KEY_DOWN: u64 = 0x8000;
 pub(crate) const WM_COMMAND: u32 = 0x0111;
-pub(crate) const WM_SYSCOMMAND: u32 = 0x0112;
 pub(crate) const WM_INITMENU: u32 = 0x0116;
 pub(crate) const WM_INITMENUPOPUP: u32 = 0x0117;
 const COMMAND_FROM_ACCELERATOR: u64 = 0x10000;
