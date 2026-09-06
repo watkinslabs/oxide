@@ -61,7 +61,12 @@ fn dispatch_routed_syscall(entry: (Option<u64>, u64), nr: u64, args: &SyscallArg
     // 0x15a6 is NtUserSetWindowPlacement, the other route an application takes
     // to show its main window; without it a window that never appears cannot be
     // told apart from one that was never asked to.
-    if matches!(nr, 0x13d8 | 0x13d9 | 0x136b | 0x14eb | 0x15a6) {
+    // 0x1327/0x13bc are NtUserBeginPaint/NtUserEndPaint. They were read as
+    // "never called" from a log that never traced them, which is the third
+    // conclusion drawn here from an instrument that could not have shown it.
+    // A window procedure reached through DispatchMessage runs outside any
+    // kernel callback, so the callback-window trace does not cover it either.
+    if matches!(nr, 0x13d8 | 0x13d9 | 0x136b | 0x14eb | 0x15a6 | 0x1327 | 0x13bc) {
         klog::write_raw(b"[WINDOWS-PE-WINE-RAW-ENTRY] ordinal=");
         klog::write_hex_u64(nr);
         klog::write_raw(b" nt=");
