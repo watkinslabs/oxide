@@ -30,6 +30,12 @@ pub(crate) fn resolve_for_current() -> Option<DesktopWindow> {
     Some(DesktopWindow { group, window })
 }
 
+/// Desktop HWND for NtUserGetDesktopWindow; zero before a root is published.
+/// # C: O(processes + windows); # Sleeps: no
+pub(crate) fn window_for_current() -> u64 {
+    resolve_for_current().map(|desktop| desktop.window.raw() as u64).unwrap_or(0)
+}
+
 /// Bootstrap publishes only after the real GUI root exists; no synthetic geometry or window record.
 /// # C: O(processes + windows); # Sleeps: no
 pub(crate) fn publish_root(desktop: &NtObject, group: &Arc<ThreadGroup>, hwnd: u32) -> bool {

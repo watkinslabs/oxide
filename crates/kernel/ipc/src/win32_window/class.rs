@@ -19,15 +19,25 @@ impl WindowManager {
     }
     /// Retain the raw hbrBackground with the class; the default procedure erases with it. # C: O(N_classes + name)
     pub fn register_class_with_background(&mut self, name: &[u16], wndproc: u64, cb_wnd_extra: i32, unicode: bool, style: u32, background: u64) -> Result<u16, WindowError> {
-        let cb_wnd_extra = u32::try_from(cb_wnd_extra).ok().filter(|size| *size <= extra::MAX_WINDOW_EXTRA as u32).ok_or(WindowError::InvalidParent)?;
-        if name.is_empty() || self.classes.iter().any(|class| same_name(&class.name, name)) { return Err(WindowError::InvalidParent); }
+        self.register_class_desc(ClassRegistration { cb_wnd_extra, unicode, style, background, ..ClassRegistration::new(name, wndproc) })
+    }
+    /// Admit one whole WNDCLASSEXW into the canonical class owner. # C: O(N_classes + name + cbClsExtra)
+    pub fn register_class_desc(&mut self, desc: ClassRegistration<'_>) -> Result<u16, WindowError> {
+        let cb_wnd_extra = u32::try_from(desc.cb_wnd_extra).ok().filter(|size| *size <= extra::MAX_WINDOW_EXTRA as u32).ok_or(WindowError::InvalidParent)?;
+        let class_extra = WindowExtra::new(desc.cb_cls_extra, desc.module).map_err(|error| match error {
+            LongPtrError::NoMemory => WindowError::NoMemory,
+            _ => WindowError::InvalidParent,
+        })?;
+        if desc.name.is_empty() || self.classes.iter().any(|class| same_name(&class.name, desc.name)) { return Err(WindowError::InvalidParent); }
         let atom = self.next_atom;
         let next = self.next_atom.checked_add(1).ok_or(WindowError::NoSuchWindow)?;
         let mut owned_name = Vec::new();
-        owned_name.try_reserve_exact(name.len()).map_err(|_| WindowError::NoMemory)?;
-        owned_name.extend_from_slice(name);
+        owned_name.try_reserve_exact(desc.name.len()).map_err(|_| WindowError::NoMemory)?;
+        owned_name.extend_from_slice(desc.name);
         self.classes.try_reserve(1).map_err(|_| WindowError::NoMemory)?;
-        self.classes.push(WindowClass { name: owned_name, wndproc, atom, cb_wnd_extra, unicode, style, background });
+        self.classes.push(WindowClass { name: owned_name, wndproc: desc.wndproc, atom, cb_wnd_extra, unicode: desc.unicode,
+            style: desc.style, background: desc.background, cursor: desc.cursor, icon: desc.icon, icon_sm: desc.icon_sm,
+            module: desc.module, extra: class_extra });
         self.next_atom = next;
         Ok(atom)
     }

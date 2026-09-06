@@ -15,6 +15,8 @@ pub(crate) mod unclaimed;
 mod geometry;
 mod hwnd_param;
 mod long_raw;
+mod class_raw;
+mod cursor_raw;
 #[cfg(target_os = "oxide-kernel")]
 mod message_send;
 pub(crate) mod placement;
@@ -103,6 +105,7 @@ const WINE_SET_MENU: u64 = 0x1569;
 const WINE_THUNKED_MENU_ITEM_INFO: u64 = 0x15d0;
 const WINE_CALL_ONE_PARAM: u64 = 0x133d;
 const CALL_ONE_PARAM_GET_MENU_ITEM_COUNT: u64 = 4;
+const CALL_NO_PARAM_GET_DESKTOP_WINDOW: u64 = 0;
 const CALL_NO_PARAM_GET_DIALOG_BASE_UNITS: u64 = 1;
 const WM_TIMER: u32 = 0x0113;
 const WM_SETTEXT: u64 = 0x000c;
@@ -112,6 +115,7 @@ const WM_NCCREATE: u64 = 0x0081;
 const WM_NCDESTROY: u64 = 0x0082;
 const WM_NCHITTEST: u64 = 0x0084;
 const WM_NCACTIVATE: u64 = 0x0086;
+const WM_SETCURSOR: u64 = 0x0020;
 // `struct win_proc_params` from Wine's ntuser.h.  The layout is stable for
 // the x86-64 client ABI used by the image: pointers are eight bytes, followed
 // by the 32-bit message/flag fields.

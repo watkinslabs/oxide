@@ -68,6 +68,7 @@ const RAW_CALLS: &[(u64, usize)] = &[
     // word that is outside the backend contract.
     (0x13d8, 4), // NtUserGetClassInfoEx
     (0x13d9, 3), // NtUserGetClassName
+    (0x13e7, 0), // NtUserGetCursor
     (0x13eb, 1), // NtUserGetDC
     (0x13ec, 3), // NtUserGetDCEx
     (0x1410, 1), // NtUserGetKeyState
@@ -96,6 +97,10 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x1532, 1), // NtUserSetActiveWindow
     (0x153b, 1), // NtUserSetCaretBlinkTime
     (0x153c, 2), // NtUserSetCaretPos
+    (0x153e, 4), // NtUserSetClassLong
+    (0x153f, 4), // NtUserSetClassLongPtr
+    (0x1540, 3), // NtUserSetClassWord
+    (0x1546, 1), // NtUserSetCursor
     (0x1557, 1), // NtUserSetFocus
     (0x1565, 1), // NtUserSetKeyboardState
     (0x1569, 2), // NtUserSetMenu

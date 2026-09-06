@@ -23,7 +23,7 @@ fn the_table_matches_the_reference() {
 fn registration_uses_the_array_entry_and_skips_missing_procedures() {
     let mut seen = Vec::new();
     let count = register_all(|index| if index == PROC_EDIT { Some(0) } else { Some(0x1000 + index as u64) },
-        |builtin, wndproc| { seen.push((builtin.name, wndproc)); true });
+        |id| Some(0x1_0000 + id as u64), |builtin, wndproc, _| { seen.push((builtin.name, wndproc)); true });
     assert_eq!(count, 11);
     assert!(seen.iter().all(|(name, _)| *name != "Edit"));
     assert!(seen.contains(&("Button", 0x1000 + PROC_BUTTON as u64)));
@@ -31,8 +31,19 @@ fn registration_uses_the_array_entry_and_skips_missing_procedures() {
 }
 
 #[test]
+fn every_builtin_carries_the_reference_cursor_and_a_failed_load_still_registers() {
+    assert!(BUILTINS.iter().all(|b| b.cursor == if b.name == "Edit" { IDC_IBEAM } else { IDC_ARROW }));
+    let mut seen = Vec::new();
+    let count = register_all(|index| Some(0x3000 + index as u64), |id| (id == IDC_ARROW).then_some(0x1_0000),
+        |builtin, _, cursor| { seen.push((builtin.name, cursor)); true });
+    assert_eq!(count, 12);
+    assert!(seen.contains(&("Edit", 0)));
+    assert!(seen.contains(&("Button", 0x1_0000)));
+}
+
+#[test]
 fn a_refused_registration_is_not_counted() {
-    let count = register_all(|index| Some(0x2000 + index as u64), |builtin, _| builtin.name != "IME");
+    let count = register_all(|index| Some(0x2000 + index as u64), |id| Some(0x1_0000 + id as u64), |builtin, _, _| builtin.name != "IME");
     assert_eq!(count, 11);
-    assert_eq!(register_all(|_| None, |_, _| panic!("no procedure, no registration")), 0);
+    assert_eq!(register_all(|_| None, |_| None, |_, _, _| panic!("no procedure, no registration")), 0);
 }

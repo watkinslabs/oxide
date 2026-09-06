@@ -14,7 +14,7 @@ pub const GWLP_USERDATA: i32 = -21;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LongPtrError { InvalidWindow, InvalidIndex, InvalidSize, NoMemory, OwnerTransaction }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WindowExtra { bytes: Vec<u8>, pub userdata: u64, pub instance: u64 }
 
 impl WindowExtra {

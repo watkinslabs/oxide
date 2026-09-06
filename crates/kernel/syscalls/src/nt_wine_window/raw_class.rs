@@ -62,6 +62,10 @@ pub(super) fn create_window_descriptor(values: &[u64; 17]) -> u64 {
 }
 
 fn create_window_with(args: SyscallArgs, read_arg: impl Fn(usize) -> Option<u64>) -> u64 {
+    // Creating a window resolves the desktop window first, and that is where
+    // the reference registers the builtin classes; a control class named by
+    // this very creation must already exist.
+    super::builtin_classes::kernel::ensure_registered();
     // HWND failures are NULL; backend statuses never share the handle channel.
     klog::write_raw(b"[WINDOWS-PE-WINE-CREATE] a0="); klog::write_hex_u64(args.a0);
     klog::write_raw(b" a1="); klog::write_hex_u64(args.a1);
