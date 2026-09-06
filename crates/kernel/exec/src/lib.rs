@@ -53,6 +53,7 @@ pub mod pe_init;
 pub mod pe_startup;
 pub mod process_env;
 pub mod nt_memory;
+pub mod nt_unmap;
 pub mod uapi;
 
 #[cfg(test)]

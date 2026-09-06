@@ -179,6 +179,21 @@ pub fn evict_pages_in_range(addr: u64, len: u64) -> i64 {
     0
 }
 
+/// Release `[base, base+len)` of `as_` with page tables, frames and TLB
+/// entries, when `as_` is the running task's mm; any other address space has
+/// no page-table owner here and gets VMA removal only. NT frees route through
+/// this so a released extent never keeps its old frames mapped.
+/// # C: O(pages) page-table walk + O(K log N_vmas)
+pub fn munmap_in(as_: &vmm::AddressSpace, base: hal::UserVirtAddr, len: usize) -> Result<(), ()> {
+    // SAFETY: mm_ref reads the current task's own address-space slot from
+    // inside its own syscall, never concurrently with an execve of itself.
+    let current = sched::live::current().and_then(|cur| unsafe { cur.mm_ref() });
+    match current {
+        Some(mm) if core::ptr::eq(as_, &**mm) => if glue_munmap(base.as_u64(), len as u64) == 0 { Ok(()) } else { Err(()) },
+        _ => as_.munmap(base, len).map_err(|_| ()),
+    }
+}
+
 /// Wrap `AddressSpace::munmap` + per-page PT unmap + frame free.
 /// Walks `[addr, addr+len)`, for each present PTE: translate → unmap
 /// → free PA back to PMM → flush_va. Then removes the VMA(s).

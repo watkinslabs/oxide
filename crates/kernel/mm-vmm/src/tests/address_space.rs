@@ -394,6 +394,22 @@ fn windows_section_view_unmap_removes_all_protection_fragments() {
 }
 
 #[test]
+fn windows_section_view_extent_spans_every_fragment_and_refuses_gaps() {
+    let a = AddressSpace::new(0).unwrap();
+    let origin = UserVirtAddr::new(0x4000_0000).unwrap();
+    a.mmap(Some(origin), 3 * PAGE, r_w(), VmaFlags::PRIVATE | VmaFlags::NT_SECTION_VIEW,
+        VmaBacking::KernelBytes { data: alloc::sync::Arc::from(&ELF_BLOB[..]), off: 0 }, false).unwrap();
+    assert!(a.set_mapping_origin(origin));
+    let middle = UserVirtAddr::new(origin.as_u64() + PAGE as u64).unwrap();
+    a.mprotect(middle, PAGE, VmaProt::READ).unwrap();
+    assert_eq!(a.mapping_origin_extent(origin).unwrap(), (origin, 3 * PAGE));
+    // The extent is the page-table owner's input; the VMAs stay until it acts.
+    assert_eq!(a.vma_count(), 3);
+    a.munmap(middle, PAGE).unwrap();
+    assert!(a.mapping_origin_extent(origin).is_err());
+}
+
+#[test]
 fn windows_section_view_unmap_does_not_release_anonymous_mapping() {
     let a = AddressSpace::new(0).unwrap();
     let origin = UserVirtAddr::new(0x4000_0000).unwrap();

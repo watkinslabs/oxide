@@ -1323,7 +1323,8 @@ pub fn dispatch(call: NtCall) -> u64 {
                 let Some(base) = hal::UserVirtAddr::new(base) else { return STATUS_INVALID_PARAMETER; };
                 let Some(vma) = mm.find_vma(base) else { return STATUS_MEMORY_NOT_ALLOCATED; };
                 if !vma.flags.contains(vmm::VmaFlags::NT_SECTION_VIEW) || vma.mapping_origin.is_none() { return STATUS_MEMORY_NOT_ALLOCATED; }
-                if mm.unmap_mapping_origin(vma.mapping_origin.unwrap()).is_ok() { STATUS_SUCCESS } else { STATUS_MEMORY_NOT_ALLOCATED }
+                let Ok((start, len)) = mm.mapping_origin_extent(vma.mapping_origin.unwrap()) else { return STATUS_MEMORY_NOT_ALLOCATED; };
+                if elf_load::nt_unmap::unmap_range(&mm, start, len).is_ok() { STATUS_SUCCESS } else { STATUS_MEMORY_NOT_ALLOCATED }
             }
             NtObjectCall::UnmapViewOfSectionEx { process, base, flags } => {
                 if !crate::nt_process_handles::permits_current_process(process, &cur, crate::nt_process_handles::PROCESS_VM_OPERATION)
@@ -1332,7 +1333,8 @@ pub fn dispatch(call: NtCall) -> u64 {
                 let Some(base) = hal::UserVirtAddr::new(base) else { return STATUS_INVALID_PARAMETER; };
                 let Some(vma) = mm.find_vma(base) else { return STATUS_MEMORY_NOT_ALLOCATED; };
                 if !vma.flags.contains(vmm::VmaFlags::NT_SECTION_VIEW) || vma.mapping_origin.is_none() { return STATUS_MEMORY_NOT_ALLOCATED; }
-                if mm.unmap_mapping_origin(vma.mapping_origin.unwrap()).is_ok() { STATUS_SUCCESS } else { STATUS_MEMORY_NOT_ALLOCATED }
+                let Ok((start, len)) = mm.mapping_origin_extent(vma.mapping_origin.unwrap()) else { return STATUS_MEMORY_NOT_ALLOCATED; };
+                if elf_load::nt_unmap::unmap_range(&mm, start, len).is_ok() { STATUS_SUCCESS } else { STATUS_MEMORY_NOT_ALLOCATED }
             }
             NtObjectCall::QuerySection { section, class, info, length, return_length } => {
                 const SECTION_BASIC_INFORMATION_BYTES: u32 = 24;

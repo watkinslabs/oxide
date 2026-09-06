@@ -556,7 +556,8 @@ fn server_unmap_view(args: u64) -> u64 {
     let Some(base) = hal::UserVirtAddr::new(base_raw) else { return STATUS_INVALID_PARAMETER; };
     let Some(vma) = mm.find_vma(base) else { return STATUS_MEMORY_NOT_ALLOCATED; };
     if vma.start != base || !vma.flags.contains(vmm::VmaFlags::NT_SECTION_VIEW) || vma.mapping_origin.is_none() { return STATUS_MEMORY_NOT_ALLOCATED; }
-    if mm.unmap_mapping_origin(vma.mapping_origin.unwrap()).is_ok() { STATUS_SUCCESS } else { STATUS_MEMORY_NOT_ALLOCATED }
+    let Ok((start, len)) = mm.mapping_origin_extent(vma.mapping_origin.unwrap()) else { return STATUS_MEMORY_NOT_ALLOCATED; };
+    if elf_load::nt_unmap::unmap_range(&mm, start, len).is_ok() { STATUS_SUCCESS } else { STATUS_MEMORY_NOT_ALLOCATED }
 }
 
 #[cfg(target_os = "oxide-kernel")]

@@ -144,7 +144,7 @@ pub fn unmap_thread_teb(teb: UserVirtAddr, as_: &AddressSpace) -> bool {
     if vma.start != teb || vma.end.as_u64().checked_sub(teb.as_u64()) != Some(THREAD_TEB_BYTES as u64) {
         return false;
     }
-    as_.munmap(teb, THREAD_TEB_BYTES).is_ok()
+    crate::nt_unmap::unmap_range(as_, teb, THREAD_TEB_BYTES).is_ok()
 }
 
 /// Build the initial process environment and publish the supplied loader list.

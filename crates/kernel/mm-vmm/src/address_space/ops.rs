@@ -103,6 +103,14 @@ impl AddressSpace {
     /// Remove every VMA fragment belonging to one Windows section view.
     /// # C: O(K + log N)
     pub fn unmap_mapping_origin(&self, origin: UserVirtAddr) -> KResult<()> {
+        let (start, len) = self.mapping_origin_extent(origin)?;
+        self.munmap(start, len)
+    }
+
+    /// The contiguous extent every VMA sharing `origin` covers, refused when
+    /// the members do not tile it exactly. Callers that also own page tables
+    /// unmap the extent through their owner. # C: O(N)
+    pub fn mapping_origin_extent(&self, origin: UserVirtAddr) -> KResult<(UserVirtAddr, usize)> {
         let vmas = self.snapshot_vmas();
         let members: Vec<&Vma> = vmas.iter().filter(|vma| vma.mapping_origin == Some(origin)).collect();
         if members.is_empty() { return Err(Error::Inval); }
@@ -114,7 +122,7 @@ impl AddressSpace {
             cursor = vma.end.as_u64();
         }
         if cursor != end { return Err(Error::Inval); }
-        self.munmap(UserVirtAddr::new(start).ok_or(Error::Inval)?, (end - start) as usize)
+        Ok((UserVirtAddr::new(start).ok_or(Error::Inval)?, (end - start) as usize))
     }
 
     /// Flush dirty file-backed pages overlapping one fully mapped range and
