@@ -22,7 +22,7 @@ pub use ids::{
 pub use registry::{
     advertised_cap, alloc_handle, card, card_count, cards, default_cap, format_depth,
     is_master_only,
-    primary_card, primary_system_dpi, register, register_with_parent, unregister,
+    primary_card, primary_refresh_hz, primary_system_dpi, register, register_with_parent, unregister,
 };
 
 #[cfg(test)]

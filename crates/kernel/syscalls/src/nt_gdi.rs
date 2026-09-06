@@ -48,6 +48,9 @@ pub(crate) use dc_lease::{get_dc_ex_for_current, release_dc_lease_for_current};
 mod pen;
 pub(crate) use pen::{create_pen_for_current, select_pen_for_current, pen_line_for_current, pen_rectangle_for_current};
 pub(crate) use dc_query::dc_query_value;
+#[path = "nt_gdi/dc_caps.rs"]
+mod dc_caps;
+pub(crate) use dc_caps::contains_dc_for_current;
 pub(crate) use visibility::visibility_clip_for_current;
 pub(crate) mod nonclient_scroll;
 pub(crate) use nonclient_scroll::repaint_nonclient_scroll_for_current;

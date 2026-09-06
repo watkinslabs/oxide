@@ -69,6 +69,10 @@ pub const MENU_CHAR_WIDTH: i32 = DEFAULT_WIDTH;
 pub const MENU_CHAR_HEIGHT: i32 = DEFAULT_HEIGHT;
 pub const MENU_BAR_HEIGHT: i32 = 19;
 const MAX_SURFACE_PIXELS: usize = 16 * 1024 * 1024;
+/// Every device-context surface word is one 32-bit XRGB pixel, so that is the
+/// colour depth a Win32 client reads back from any device context here.
+pub const SURFACE_BITS_PER_PIXEL: u32 = 32;
+
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct Font { pub height: i32, pub width: i32, pub weight: i32, pub italic: bool }

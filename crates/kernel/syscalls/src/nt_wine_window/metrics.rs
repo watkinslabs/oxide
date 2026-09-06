@@ -36,6 +36,16 @@ pub(super) fn primary(monitors: &[Monitor]) -> Option<Monitor> {
     match monitors { [monitor] => Some(*monitor), _ => None }
 }
 
+/// Primary-monitor resolution, the screen a device context reports as its own
+/// resolution. # C: O(monitors)
+pub(super) fn screen_size(snapshot: impl FnOnce() -> Option<alloc::vec::Vec<Monitor>>) -> Option<(i32, i32)> {
+    let monitors = snapshot()?;
+    let primary = primary(&monitors);
+    let width = from_snapshot(SM_CXSCREEN as i64 as u64, primary, &monitors) as i32;
+    let height = from_snapshot(SM_CYSCREEN as i64 as u64, primary, &monitors) as i32;
+    (width > 0 && height > 0).then_some((width, height))
+}
+
 /// A display device context spans the whole virtual screen, which is the
 /// desktop resolution the reference reports for one. # C: O(monitors)
 pub(super) fn virtual_screen_size(snapshot: impl FnOnce() -> Option<alloc::vec::Vec<Monitor>>) -> Option<(i32, i32)> {

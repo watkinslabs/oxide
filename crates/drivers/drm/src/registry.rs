@@ -59,6 +59,13 @@ pub fn primary_system_dpi() -> u32 {
     crate::dpi_from_geometry(mode.hdisplay as u32, mode.vdisplay as u32, info.mm_width, info.mm_height)
 }
 
+/// Return the primary display's vertical refresh in whole hertz, or zero when
+/// no card names one. The DRM driver owns the mode; callers must not keep a
+/// second frequency table. # C: O(1)
+pub fn primary_refresh_hz() -> u32 {
+    primary_card().map(|card| card.mode_for(0).vrefresh).unwrap_or(0)
+}
+
 pub fn cards() -> Vec<Arc<dyn DrmDriver>> {
     CARDS.lock().iter().filter_map(|slot| slot.as_ref().cloned()).collect()
 }
