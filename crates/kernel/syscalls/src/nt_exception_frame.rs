@@ -42,9 +42,16 @@ unsafe fn capture(task: &sched::Task, regs: *const UserRegs) -> [u8; CONTEXT_BYT
 /// Build and arm the x86-64 exception frame.
 ///
 /// The pending record is consumed only after every user write and the live
-/// return-frame rewrite succeed; any refusal returns the reservation, and the
-/// bounded work loop then resumes the faulting instruction, whose re-fault
-/// finds the slot occupied and reports the POSIX signal instead.
+/// return-frame rewrite succeed. A refusal is TERMINAL — the record is retired
+/// and the thread group ends with the exception code, the way the reference
+/// aborts a thread whose exception frame cannot be built. Re-arming the slot
+/// instead is the livelock: the work loop re-runs this arm on every kernel
+/// entry, refuses on the same input, and never converges (KI-0459).
+///
+/// The FAULTING PC is not validated. An instruction fetch from an unmapped or
+/// non-executable address is exactly the access violation being reported, and
+/// the only memory this pass must validate is the stack it writes and the
+/// dispatcher entry it jumps to.
 /// # SAFETY: `regs` is the live return-to-user frame; the task's address space is active.
 /// # C: O(log N_vmas)
 /// # Ctx: return-to-user
@@ -55,21 +62,21 @@ pub unsafe fn deliver(regs: *mut UserRegs) -> bool {
     let Some(pending) = task.nt_exception.begin_delivery() else { return false; };
     // SAFETY: caller's contract — `regs` is this pass's live entry frame and no other consumer owns it.
     let mut context = match pending.context { Some(context) => context, None => unsafe { capture(&task, regs) } };
-    let refuse = || { let _ = task.nt_exception.abort_delivery(); false };
+    let refuse = || refuse_delivery(&task, &pending.record);
     if !sched::nt_exception::prepare_dispatch_context(&pending.record, &mut context) { return refuse(); }
     let Ok(image) = crate::nt_context_image::decode(&context) else { return refuse(); };
     if image.validate_user_return(hal_x86_64::USER_CS_SELECTOR, hal_x86_64::USER_SS_SELECTOR).is_err() { return refuse(); }
     let Some(mm) = task.clone_mm() else { return refuse(); };
     let rip = image.registers[crate::nt_context_image::RestoreImage::RIP];
     let context_rsp = image.registers[crate::nt_context_image::RestoreImage::RSP];
-    let Some(code) = hal::UserVirtAddr::new(rip).and_then(|address| mm.find_vma(address)) else { return refuse(); };
-    if !code.prot.contains(vmm::VmaProt::EXEC) { return refuse(); }
     let Some(frame) = pe::nt_stub::x64_exception_frame(context_rsp, 0) else { return refuse(); };
-    let Some(stack) = hal::UserVirtAddr::new(frame.stack).and_then(|address| mm.find_vma(address)) else { return refuse(); };
-    if !pe::nt_stub::valid_x64_exception_frame_range(frame.stack, stack.start.as_u64(), stack.end.as_u64(),
-                                                     stack.prot.contains(vmm::VmaProt::WRITE)) { return refuse(); }
-    let Some(ntdll) = crate::nt_loader_proc::module_base_by_name(&task, b"ntdll.dll") else { return refuse(); };
-    let Some(dispatcher) = crate::nt_loader_proc::resolve_exported_routine_by_name(&task, ntdll, b"KiUserExceptionDispatcher") else { return refuse(); };
+    let writable = hal::UserVirtAddr::new(frame.stack).and_then(|address| mm.find_vma(address))
+        .is_some_and(|stack| pe::nt_stub::valid_x64_exception_frame_range(frame.stack, stack.start.as_u64(),
+                                                                         stack.end.as_u64(),
+                                                                         stack.prot.contains(vmm::VmaProt::WRITE)));
+    let dispatcher = crate::nt_loader_proc::module_base_by_name(&task, b"ntdll.dll")
+        .and_then(|ntdll| crate::nt_loader_proc::resolve_exported_routine_by_name(&task, ntdll, b"KiUserExceptionDispatcher"));
+    let Some(dispatcher) = decide(&task, &pending.record, writable, dispatcher) else { return false; };
     let mut user_frame = [0u8; pe::nt_stub::X64_EXCEPTION_FRAME_BYTES as usize];
     user_frame[..context.len()].copy_from_slice(&context);
     if !x64_write_context_ex(&mut user_frame) { return refuse(); }
@@ -89,6 +96,35 @@ pub unsafe fn deliver(regs: *mut UserRegs) -> bool {
     regs.rflags = x64_dispatch_rflags(regs.rflags);
     let _ = task.nt_exception.complete_delivery();
     true
+}
+
+/// Ask the one delivery decision whether this pass may enter the dispatcher,
+/// and end the thread group when it may not.
+///
+/// `Some(entry)` is the resolved dispatcher; `None` means the group is exiting
+/// and this pass has nothing left to do. Retiring the record before the exit
+/// keeps the invariant the work loop depends on: no return from `deliver`
+/// leaves a reservation armed.
+/// # C: O(N_threads) on the terminal answer, O(1) otherwise
+fn decide(task: &sched::Task, record: &[u8; sched::nt_exception::EXCEPTION_RECORD_BYTES],
+          writable: bool, dispatcher: Option<u64>) -> Option<u64> {
+    match sched::nt_exception::delivery_outcome(record, writable, dispatcher) {
+        sched::nt_exception::Disposition::Dispatch => dispatcher,
+        sched::nt_exception::Disposition::Terminate(status) => {
+            let _ = task.nt_exception.fail_delivery();
+            let _ = crate::s060_exit::do_group_exit(status);
+            None
+        }
+    }
+}
+
+/// Terminal answer for a refusal that never reached the resolved-memory
+/// decision: a malformed context, no address space, or a user-frame write
+/// that faulted. The reference has no recoverable arm here either.
+/// # C: O(N_threads)
+fn refuse_delivery(task: &sched::Task, record: &[u8; sched::nt_exception::EXCEPTION_RECORD_BYTES]) -> bool {
+    let _ = decide(task, record, false, None);
+    false
 }
 
 /// `CONTEXT.EFlags`, whose value the machine frame reports unchanged: the
