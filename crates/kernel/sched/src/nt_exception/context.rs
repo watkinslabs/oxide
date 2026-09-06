@@ -26,10 +26,16 @@ const CTX_EFLAGS: usize = 0x44;
 const CTX_RAX: usize = 0x78;
 const CTX_RIP: usize = 0xf8;
 
-/// `CONTEXT_AMD64` plus the components this frame actually carries: control,
-/// integer and segment registers. Floating-point and debug registers are not
-/// advertised, so a consumer reads neither from an uninitialised frame.
-pub const X64_CONTEXT_FLAGS: u32 = 0x0010_0000 | 0x1 | 0x2 | 0x4;
+/// `CONTEXT_AMD64` plus the components this frame carries: control, integer,
+/// segment and floating-point registers. Debug registers are not advertised,
+/// so a consumer never reads them out of an uninitialised frame.
+pub const X64_CONTEXT_FLAGS: u32 = 0x0010_0000 | 0x1 | 0x2 | 0x4 | 0x8;
+/// The legacy `FXSAVE` image occupies `CONTEXT.FltSave`.
+const CTX_MXCSR: usize = 0x34;
+const CTX_FLT_SAVE: usize = 0x100;
+pub const X64_FLT_SAVE_BYTES: usize = 512;
+/// `MXCSR` within the `FXSAVE` image.
+const FXSAVE_MXCSR: usize = 0x18;
 
 /// `CONTEXT_EX` sits immediately after the `CONTEXT` in the dispatcher frame.
 pub const X64_CONTEXT_EX_OFFSET: usize = CONTEXT_BYTES;
@@ -119,6 +125,17 @@ pub fn x64_write_context_ex(frame: &mut [u8]) -> bool {
         frame[base + at + 4..base + at + 8].copy_from_slice(&length.to_le_bytes());
     }
     true
+}
+
+/// Place one legacy `FXSAVE` image in the context's floating-point fields.
+///
+/// `CONTEXT.MxCsr` is a second copy of the word inside that image and the two
+/// must agree: a continuation reads one of them, and a frame that disagreed
+/// with itself would restore a control word the thread never had.
+/// # C: O(1)
+pub fn x64_write_floating(context: &mut [u8; CONTEXT_BYTES], image: &[u8; X64_FLT_SAVE_BYTES]) {
+    context[CTX_FLT_SAVE..CTX_FLT_SAVE + X64_FLT_SAVE_BYTES].copy_from_slice(image);
+    context[CTX_MXCSR..CTX_MXCSR + 4].copy_from_slice(&image[FXSAVE_MXCSR..FXSAVE_MXCSR + 4]);
 }
 
 /// The `RFLAGS` the dispatcher is entered with. # C: O(1)

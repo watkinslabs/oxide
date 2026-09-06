@@ -3,7 +3,7 @@
 #![cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 
 use crate::arch_frame::UserRegs;
-use sched::nt_exception::context::{x64_context, x64_dispatch_rflags, x64_write_context_ex, X64Registers};
+use sched::nt_exception::context::{x64_context, x64_dispatch_rflags, x64_write_context_ex, x64_write_floating, X64Registers, X64_FLT_SAVE_BYTES};
 use sched::nt_exception::CONTEXT_BYTES;
 
 /// The interrupted register set the dispatcher frame reports.
@@ -15,7 +15,7 @@ use sched::nt_exception::CONTEXT_BYTES;
 /// it raises an exception out of a system call.
 /// # SAFETY: `regs` is the live return-to-user frame owned by this pass.
 /// # C: O(1)
-unsafe fn capture(regs: *const UserRegs) -> [u8; CONTEXT_BYTES] {
+unsafe fn capture(task: &sched::Task, regs: *const UserRegs) -> [u8; CONTEXT_BYTES] {
     // SAFETY: the return-to-user loop owns this task's live entry frame for the duration of the delivery pass.
     let frame = unsafe { &*regs };
     let registers = X64Registers {
@@ -26,7 +26,17 @@ unsafe fn capture(regs: *const UserRegs) -> [u8; CONTEXT_BYTES] {
         rip: frame.rip, rflags: frame.rflags,
         cs: frame.cs as u16, ss: frame.ss as u16,
     };
-    x64_context(&registers, hal_x86_64::USER_SS_SELECTOR as u16)
+    let mut context = x64_context(&registers, hal_x86_64::USER_SS_SELECTOR as u16);
+    task.debug_check_fpu_state("nt-exception-capture");
+    let mut floating = [0u8; X64_FLT_SAVE_BYTES];
+    // SAFETY: the running task owns its aligned FPU buffer on this CPU, and the save establishes the legacy image before it is copied out.
+    unsafe {
+        let state = (*task.security.fpu_state.get()).as_mut_ptr();
+        hal_x86_64::fpu_save(state.cast::<hal_x86_64::FpuStateX86_64>());
+        core::ptr::copy_nonoverlapping(state, floating.as_mut_ptr(), X64_FLT_SAVE_BYTES);
+    }
+    x64_write_floating(&mut context, &floating);
+    context
 }
 
 /// Build and arm the x86-64 exception frame.
@@ -44,7 +54,7 @@ pub unsafe fn deliver(regs: *mut UserRegs) -> bool {
     if !task.is_nt_personality() { return false; }
     let Some(pending) = task.nt_exception.begin_delivery() else { return false; };
     // SAFETY: caller's contract — `regs` is this pass's live entry frame and no other consumer owns it.
-    let mut context = match pending.context { Some(context) => context, None => unsafe { capture(regs) } };
+    let mut context = match pending.context { Some(context) => context, None => unsafe { capture(&task, regs) } };
     let refuse = || { let _ = task.nt_exception.abort_delivery(); false };
     if !sched::nt_exception::prepare_dispatch_context(&pending.record, &mut context) { return refuse(); }
     let Ok(image) = crate::nt_context_image::decode(&context) else { return refuse(); };

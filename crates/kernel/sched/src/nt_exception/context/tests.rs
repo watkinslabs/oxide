@@ -32,12 +32,11 @@ fn every_general_register_lands_at_its_context_offset() {
 }
 
 #[test]
-fn the_frame_advertises_control_integer_and_segment_components_only() {
+fn the_frame_advertises_every_component_it_carries_and_no_other() {
     let context = x64_context(&sample(), USER_DS);
     assert_eq!(d(&context, 0x30), X64_CONTEXT_FLAGS);
-    // Floating-point (0x8) and debug registers (0x10) are not carried, so a
-    // consumer must not be told to read them out of an untouched frame.
-    assert_eq!(X64_CONTEXT_FLAGS & 0x8, 0);
+    // Debug registers (0x10) are not carried, so a consumer must not be told
+    // to read them out of an untouched frame.
     assert_eq!(X64_CONTEXT_FLAGS & 0x10, 0);
 }
 
@@ -60,6 +59,21 @@ fn a_published_context_passes_the_pending_validation_it_will_face() {
     #[cfg(target_arch = "x86_64")]
     assert!(pending.is_valid());
     let _ = pending;
+}
+
+#[test]
+fn the_floating_point_image_lands_in_fltsave_and_mxcsr_agrees_with_it() {
+    let mut context = x64_context(&sample(), USER_DS);
+    let mut image = [0u8; X64_FLT_SAVE_BYTES];
+    image[0x18..0x1c].copy_from_slice(&0x1f80u32.to_le_bytes());
+    image[0x1f] = 0xa5;
+    x64_write_floating(&mut context, &image);
+    assert_eq!(&context[0x100..0x300], &image[..]);
+    // A continuation may read either copy of the control word.
+    assert_eq!(d(&context, 0x34), 0x1f80);
+    assert_eq!(context[0x11f], 0xa5);
+    // The component must be advertised or the image is never read.
+    assert_eq!(X64_CONTEXT_FLAGS & 0x8, 0x8);
 }
 
 #[test]
