@@ -154,3 +154,37 @@ fn deferring_a_paint_to_the_default_handler_still_clears_the_damage() {
     assert!(matches!(state.take_for_thread(7, filter), QueueResult::Empty),
         "default paint handling must leave nothing to repaint");
 }
+
+#[test]
+fn a_created_window_is_told_the_size_it_was_created_with() {
+    // Measured in the guest: Notepad received WM_CREATE, WM_MOVE, WM_PAINT,
+    // WM_SHOWWINDOW and WM_NCCREATE, but never WM_SIZE, so the EDIT control it
+    // lays out from that size stayed 0x0 and the window drew nothing.
+    let mut state = WindowManager::new();
+    let id = state.create(7, None, 0x1000).unwrap();
+    state.set_rect(id, WindowRect { left: 0, top: 0, right: 729, bottom: 546 }).unwrap();
+    state.notify_created_geometry(id).unwrap();
+    let filter = MessageFilter { hwnd: None, first: 0, last: 0 };
+    let msg = state.take_for_thread(7, filter);
+    match msg {
+        QueueResult::Message(m) => {
+            assert_eq!(m.message, crate::win32_window::WM_SIZE);
+            assert_eq!(m.hwnd, Some(id));
+            // The low and high halves carry the client width and height.
+            assert_eq!(m.lparam & 0xffff, 729);
+            assert_eq!((m.lparam >> 16) & 0xffff, 546);
+        }
+        other => panic!("a created window must be told its size, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_window_with_no_extent_is_told_nothing() {
+    // A zero-sized window has no size to report, and inventing one would make
+    // a control lay itself out against a size the window does not have.
+    let mut state = WindowManager::new();
+    let id = state.create(7, None, 0x1000).unwrap();
+    state.notify_created_geometry(id).unwrap();
+    let filter = MessageFilter { hwnd: None, first: 0, last: 0 };
+    assert!(matches!(state.take_for_thread(7, filter), QueueResult::Empty));
+}
