@@ -25,13 +25,30 @@ pub(crate) fn begin_create_lifecycle_for_current(hwnd: u64, params: CreateStruct
     };
     // The compositor/backend HWND must exist before WM_NCCREATE: application
     // painting can occur synchronously during either create callback.
-    if bridge::publish_create_current(hwnd, params.style as u32, params.ex_style).is_err() {
+    if let Err(error) = bridge::publish_create_current(hwnd, params.style as u32, params.ex_style) {
+        // A window that cannot be published is a NULL CreateWindowEx, and an
+        // application whose main window is NULL exits immediately. Naming the
+        // transport reason here is the difference between that exit and a
+        // silent one: the failure is otherwise visible only as the process
+        // dying and every downstream owner reporting a closed peer.
+        klog::write_raw(b"[WINDOWS-WINDOW-CREATE-FAIL] stage=publish hwnd=");
+        klog::write_hex_u64(hwnd);
+        klog::write_raw(b" transport=");
+        klog::write_hex_u64(error as u64);
+        klog::write_raw(b"\n");
         abort_create_for_current(token);
         return convention.failure(STATUS_INVALID_PARAMETER);
     }
     let completion = sched::nt_callback::Completion { kind: CALLBACK_CREATE_NCCREATE, argument: token };
     let status = crate::nt_rtl::begin_wndproc_create_callback(hwnd, WM_NCCREATE, wndproc, params, completion);
-    if status == STATUS_PENDING { status } else { abort_create_for_current(token); convention.failure(STATUS_INVALID_PARAMETER) }
+    if status == STATUS_PENDING { status } else {
+        klog::write_raw(b"[WINDOWS-WINDOW-CREATE-FAIL] stage=nccreate-callback hwnd=");
+        klog::write_hex_u64(hwnd);
+        klog::write_raw(b" status=");
+        klog::write_hex_u64(status);
+        klog::write_raw(b"\n");
+        abort_create_for_current(token); convention.failure(STATUS_INVALID_PARAMETER)
+    }
 }
 
 fn pending_create_for_current(token: u64) -> Option<PendingCreate> {
