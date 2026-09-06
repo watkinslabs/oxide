@@ -665,7 +665,11 @@ pub(crate) fn begin_wndproc_callback_with_completion(hwnd: u64, message: u64, wp
     let Some(task) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !task.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
     let ntdll = crate::nt_loader_proc::module_base_by_name(task, b"ntdll.dll").unwrap_or(0);
-    let Some(continuation) = elf_load::pe_loader::resolve_nt_runtime_wndproc_continuation(ntdll) else { return STATUS_INVALID_PARAMETER; };
+    let Some(continuation) = elf_load::pe_loader::resolve_nt_runtime_wndproc_continuation(ntdll) else {
+        // Without ntdll's callback continuation there is nothing to return to.
+        reject_create_callback(b"no-continuation", hwnd, message, ntdll);
+        return STATUS_INVALID_PARAMETER;
+    };
     let regs = hal_x86_64::current_pt_regs();
     if regs.is_null() { return STATUS_INVALID_PARAMETER; }
     let frame = unsafe { &mut *regs };
@@ -675,7 +679,10 @@ pub(crate) fn begin_wndproc_callback_with_completion(hwnd: u64, message: u64, wp
     if uaccess::put_user_u64(callback_rsp, continuation).is_err() { return STATUS_INVALID_PARAMETER; }
     let post_rip = frame.rip;
     let post_rsp = frame.rsp;
-    if !task.nt_callback_stack.lock().push(sched::nt_callback::Frame { rip: post_rip, rsp: post_rsp, completion }) { return STATUS_INVALID_PARAMETER; }
+    if !task.nt_callback_stack.lock().push(sched::nt_callback::Frame { rip: post_rip, rsp: post_rsp, completion }) {
+        reject_create_callback(b"callback-depth", hwnd, message, post_rsp);
+        return STATUS_INVALID_PARAMETER;
+    }
     frame.rip = wndproc;
     frame.rsp = callback_rsp;
     frame.rcx = hwnd;
@@ -689,8 +696,33 @@ pub(crate) fn begin_wndproc_callback_with_completion(hwnd: u64, message: u64, wp
 /// callback's user stack frame. That frame remains owned by the callback stack
 /// while WM_NCCREATE and WM_CREATE are chained synchronously.
 #[cfg(target_arch = "x86_64")]
+/// Report a create callback that could not be started. Each of these returns a
+/// status the caller turns into a NULL window, and an application whose main
+/// window is NULL exits at once, so an unnamed one looks like a crash.
+fn reject_create_callback(reason: &'static [u8], hwnd: u64, message: u64, wndproc: u64) {
+    klog::write_raw(b"[WINDOWS-WNDPROC-REJECT] reason=");
+    klog::write_raw(reason);
+    klog::write_raw(b" hwnd=");
+    klog::write_hex_u64(hwnd);
+    klog::write_raw(b" msg=");
+    klog::write_hex_u64(message);
+    klog::write_raw(b" wndproc=");
+    klog::write_hex_u64(wndproc);
+    klog::write_raw(b"\n");
+}
+
 pub(crate) fn begin_wndproc_create_callback(hwnd: u64, message: u64, wndproc: u64, params: crate::nt_window::CreateStructArgs, completion: sched::nt_callback::Completion) -> u64 {
-    if hwnd == 0 || wndproc == 0 || !uaccess::access_ok(wndproc, 1) { return STATUS_INVALID_PARAMETER; }
+    klog::write_raw(b"[WINDOWS-WNDPROC-ENTER] hwnd=");
+    klog::write_hex_u64(hwnd);
+    klog::write_raw(b" msg=");
+    klog::write_hex_u64(message);
+    klog::write_raw(b" wndproc=");
+    klog::write_hex_u64(wndproc);
+    klog::write_raw(b"\n");
+    if hwnd == 0 || wndproc == 0 || !uaccess::access_ok(wndproc, 1) {
+        reject_create_callback(b"bad-wndproc", hwnd, message, wndproc);
+        return STATUS_INVALID_PARAMETER;
+    }
     let Some(task) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !task.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
     let ntdll = crate::nt_loader_proc::module_base_by_name(task, b"ntdll.dll").unwrap_or(0);
@@ -699,7 +731,10 @@ pub(crate) fn begin_wndproc_create_callback(hwnd: u64, message: u64, wndproc: u6
     if regs.is_null() { return STATUS_INVALID_PARAMETER; }
     let frame = unsafe { &mut *regs };
     let callback_rsp = frame.rsp.checked_sub(crate::nt_window::CALLBACK_FRAME_BYTES).unwrap_or(0);
-    let Some(layout) = crate::nt_window::callback_layout(callback_rsp) else { return STATUS_INVALID_PARAMETER; };
+    let Some(layout) = crate::nt_window::callback_layout(callback_rsp) else {
+        reject_create_callback(b"callback-stack", hwnd, message, callback_rsp);
+        return STATUS_INVALID_PARAMETER;
+    };
     let create_struct = layout.create_struct;
     let create_bytes = crate::nt_window::serialize_create_struct(params);
     for slot in 0..4u64 { if uaccess::put_user_u64(callback_rsp + 8 + slot * 8, 0).is_err() { return STATUS_INVALID_PARAMETER; } }
