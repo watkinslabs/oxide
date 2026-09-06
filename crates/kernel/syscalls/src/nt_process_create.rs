@@ -111,7 +111,11 @@ pub fn dispatch(call: NtCall, stack: [u64; 5]) -> u64 {
     sched::initialize_new_thread(&child);
     child.set_nt_peb(prepared.process.environment.peb.as_u64());
     child.set_nt_teb(prepared.process.environment.teb.as_u64());
-    identity::publish(&child, &image_path);
+    // A resolved VfsPath is the proof that this request's image name is also a
+    // real host pathname; without one the bytes came from the rootfs blob and
+    // name no file a reader could open.
+    let host_path = vp.as_ref().map(|_| image_path.as_str());
+    identity::publish(&child, &image_path, host_path, command.as_str());
     if let Some(catalog) = catalog { child.thread_group.set_nt_module_catalog(catalog); }
     child.thread_group.set_nt_bootstrap(bootstrap.as_deref());
     if let Some(unixlib_catalog) = unixlib_catalog { child.thread_group.set_nt_unixlib_catalog(unixlib_catalog); }
