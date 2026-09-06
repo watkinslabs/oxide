@@ -8,6 +8,7 @@ pub fn dispatch(call: NtCall) -> u64 {
     let ordinal = call.args.a0;
     let Some(args) = read_args(call.args.a1) else { return STATUS_INVALID_PARAMETER; };
     if let Some(result) = caret_raw::dispatch(ordinal, [args[0], args[1], args[2], args[3]]) { return result; }
+    if let Some(result) = multiplexers(ordinal, &args) { return result; }
     if let Some(result) = crate::nt_window::scroll::dispatch(ordinal, [args[0], args[1], args[2], args[3]]) { return result; }
     if let Some(result) = crate::nt_visibility_raw::kernel::route(ordinal, &args) { return result; }
     if let Some(result) = crate::nt_region_raw::kernel::route(ordinal, &args) { return result; }
@@ -143,6 +144,16 @@ pub fn dispatch(call: NtCall) -> u64 {
 }
 
 
+/// Code-selected multiplexers and accelerator objects; every arm answers in
+/// Windows parameter order. # C: O(1) dispatch plus the arm's own cost
+#[cfg(target_os = "oxide-kernel")]
+fn multiplexers(ordinal: u64, args: &[u64]) -> Option<u64> {
+    if let Some(result) = hwnd_call::kernel::route(ordinal, args) { return Some(result); }
+    if let Some(result) = msg_filter::route(ordinal, || false) { return Some(result); }
+    if let Some(result) = two_param::kernel::route(ordinal, args) { return Some(result); }
+    accel_raw::kernel::route(ordinal, args)
+}
+
 /// Dispatch a raw win32u ordinal with arguments already in Windows parameter
 /// order. The entry router owns register conversion; this path has no
 /// descriptor/argument-array envelope and must not convert arguments again.
@@ -150,6 +161,7 @@ pub fn dispatch(call: NtCall) -> u64 {
 #[cfg(target_os = "oxide-kernel")]
 pub fn dispatch_raw(ordinal: u64, args: SyscallArgs) -> Option<u64> {
     if let Some(result) = caret_raw::dispatch(ordinal, [args.a0, args.a1, args.a2, args.a3]) { return Some(result); }
+    if let Some(result) = multiplexers(ordinal, &[args.a0, args.a1, args.a2, args.a3]) { return Some(result); }
     if let Some(result) = crate::nt_window::scroll::dispatch(ordinal, [args.a0, args.a1, args.a2, args.a3]) { return Some(result); }
     if let Some(result) = crate::nt_visibility_raw::kernel::route(ordinal, &[args.a0, args.a1]) { return Some(result); }
     if let Some(result) = crate::nt_region_raw::kernel::route(ordinal, &[args.a0, args.a1, args.a2, args.a3]) { return Some(result); }
@@ -280,6 +292,7 @@ pub fn dispatch_raw(ordinal: u64, args: SyscallArgs) -> Option<u64> {
         if code == crate::nt_window_policy::CALL_ONE_PARAM_GET_SYSTEM_METRICS {
             return Some(metrics::get(args.a0));
         }
+        klog::write_raw(b"[WINDOWS-RAW-UNHANDLED] ordinal=133d code="); klog::write_hex_u64(code); klog::write_raw(b"\n");
         return Some(STATUS_NOT_IMPLEMENTED);
     }
     if ordinal == WINE_THUNKED_MENU_ITEM_INFO {
@@ -288,7 +301,10 @@ pub fn dispatch_raw(ordinal: u64, args: SyscallArgs) -> Option<u64> {
     if ordinal == WINE_CALL_NO_PARAM {
         let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
         if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
-        if args.a0 != CALL_NO_PARAM_GET_DIALOG_BASE_UNITS { return Some(STATUS_NOT_IMPLEMENTED); }
+        if args.a0 != CALL_NO_PARAM_GET_DIALOG_BASE_UNITS {
+            klog::write_raw(b"[WINDOWS-RAW-UNHANDLED] ordinal=133c code="); klog::write_hex_u64(args.a0); klog::write_raw(b"\n");
+            return Some(STATUS_NOT_IMPLEMENTED);
+        }
         let Some((width, height)) = crate::nt_gdi::dialog_base_units() else { return Some(STATUS_INVALID_PARAMETER); };
         let dpi = drm::primary_system_dpi() as i32;
         let scale = |value: i32| value.saturating_mul(dpi).checked_div(96).unwrap_or(value).max(1) as u32;

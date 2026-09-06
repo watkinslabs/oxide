@@ -5,6 +5,11 @@ use syscall::{nt::{NtCall, NtService}, SyscallArgs};
 // PFN ABI normalization and table bounds, shared with the RTL entry.
 pub(crate) mod pfn;
 mod metrics;
+pub(crate) mod hwnd_call;
+mod msg_filter;
+mod two_param;
+pub(crate) mod accel_raw;
+pub(crate) mod unclaimed;
 mod geometry;
 mod hwnd_param;
 mod long_raw;

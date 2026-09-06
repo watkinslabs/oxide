@@ -21,6 +21,16 @@ pub(crate) mod nt_window_send_contract;
 pub(crate) mod nt_wine_brush_contract;
 #[path = "nt_wine_window/hwnd_param.rs"]
 pub(crate) mod nt_wine_hwnd_param_contract;
+#[path = "nt_wine_window/hwnd_call.rs"]
+pub(crate) mod nt_wine_hwnd_call_contract;
+#[path = "nt_wine_window/msg_filter.rs"]
+pub(crate) mod nt_wine_msg_filter_contract;
+#[path = "nt_wine_window/two_param.rs"]
+pub(crate) mod nt_wine_two_param_contract;
+#[path = "nt_wine_window/accel_raw.rs"]
+pub(crate) mod nt_wine_accel_contract;
+#[path = "nt_wine_window/unclaimed.rs"]
+pub(crate) mod nt_wine_unclaimed_contract;
 #[path = "nt_wine_window/long_raw.rs"]
 pub(crate) mod nt_wine_long_contract;
 #[path = "nt_wine_window/clip_raw.rs"]

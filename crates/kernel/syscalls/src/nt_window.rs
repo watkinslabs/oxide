@@ -58,6 +58,12 @@ mod create;
 mod bridge;
 #[path = "nt_window/keyboard.rs"]
 mod keyboard;
+#[path = "nt_window/query.rs"]
+mod query;
+pub(crate) use query::hwnd_snapshot_for_current;
+#[path = "nt_window/accel.rs"]
+mod accel;
+pub(crate) use accel::{accel_create_for_current, accel_copy_for_current, accel_destroy_for_current, accel_target_for_current};
 pub(crate) use keyboard::{get_key_state_current, get_async_key_state_current,
     get_keyboard_state_current, set_keyboard_state_current};
 pub(crate) use bridge::handle_event as compositor_event;
@@ -97,7 +103,7 @@ fn callback_index(argument: u64) -> usize { argument as u32 as usize }
 
 #[derive(Clone, Copy)]
 struct PendingCreate { token: u64, hwnd: u64, wndproc: u64, params: CreateStructArgs, convention: CreateReturnConvention }
-struct GuiEntry { group: Weak<sched::thread_group::ThreadGroup>, state: ipc::win32_window::WindowManager, menus: ipc::win32_menu::MenuManager, wait: Arc<sched::live::WaitList>, foreground: bool, next_create: u64, pending_creates: Vec<PendingCreate>, pending_positions: Vec<position::PendingPosition>, remote_positions: Vec<position::RemotePosition>, retrievals: Vec<retrieval::Retrieval>, sent: send::Queue, redraw: redraw::Queue, scroll_pending: scroll::pending::Queue, paint_callbacks: paint_callbacks::Queue }
+struct GuiEntry { group: Weak<sched::thread_group::ThreadGroup>, state: ipc::win32_window::WindowManager, menus: ipc::win32_menu::MenuManager, accelerators: ipc::win32_accel::AcceleratorTables, wait: Arc<sched::live::WaitList>, foreground: bool, next_create: u64, pending_creates: Vec<PendingCreate>, pending_positions: Vec<position::PendingPosition>, remote_positions: Vec<position::RemotePosition>, retrievals: Vec<retrieval::Retrieval>, sent: send::Queue, redraw: redraw::Queue, scroll_pending: scroll::pending::Queue, paint_callbacks: paint_callbacks::Queue }
 static GUI: Spinlock<Vec<GuiEntry>, GuiLockClass> = Spinlock::new(Vec::new());
 #[cfg(target_os = "oxide-kernel")]
 static USER_ATOMS: Spinlock<ipc::win32_window::UserAtomTable, GuiLockClass> = Spinlock::new(ipc::win32_window::UserAtomTable::new());

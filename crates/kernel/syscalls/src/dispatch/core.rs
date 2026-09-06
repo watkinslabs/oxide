@@ -110,6 +110,13 @@ fn dispatch_routed_syscall(entry: (Option<u64>, u64), nr: u64, args: &SyscallArg
     // may claim this otherwise-unreserved raw number.
     if sched::live::current().is_some_and(|task| task.is_nt_personality()) {
         if let Some(rv) = crate::nt_wine_window::dispatch_raw_linux(nr, *args) { return rv as i64; }
+        if crate::nt_wine_window::unclaimed::is_win32u_ordinal(nr) {
+            static SEEN: crate::nt_wine_window::unclaimed::Seen = crate::nt_wine_window::unclaimed::Seen::new();
+            if SEEN.first(nr) {
+                klog::write_raw(b"[WINDOWS-RAW-UNCLAIMED] ordinal="); klog::write_hex_u64(nr); klog::write_raw(b"\n");
+            }
+            return crate::nt_wine_window::unclaimed::STATUS_INVALID_SYSTEM_SERVICE as i64;
+        }
     }
     // A tagged NT word is consumed before the Linux number tables. The common
     // syscall entry/return frame is retained, but no Linux handler can claim
