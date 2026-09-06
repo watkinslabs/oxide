@@ -31,6 +31,7 @@ struct State {
     registered_unicode: Option<bool>, instance: Option<u64>,
     class_style: u32, registered_style: Option<u32>, registered_background: Option<u64>,
     user_reads: Vec<u64>,
+    ensured_builtins: usize,
 }
 thread_local! { static STATE: RefCell<State> = RefCell::new(State::default()); }
 mod create_context {
@@ -60,6 +61,12 @@ fn read_unicode_string(pointer: u64) -> Option<Vec<u16>> {
 }
 fn read_optional_unicode_string(pointer: u64) -> Option<Vec<u16>> {
     (pointer == 0x7ffe4ba0a3f0 || pointer == 0).then_some(vec![78])
+}
+mod builtin_classes {
+    pub mod kernel {
+        /// The registration the creation path triggers; counted, not performed.
+        pub fn ensure_registered() { super::super::STATE.with(|s| s.borrow_mut().ensured_builtins += 1); }
+    }
 }
 mod nt_window {
     use super::*;
@@ -301,6 +308,20 @@ fn canonical_u32_handle_is_not_reinterpreted_as_ntstatus() {
     let args = input(); STATE.with(|s| s.borrow_mut().hwnd = STATUS_INVALID_PARAMETER);
     assert_eq!(raw_class::create_window(args), STATUS_INVALID_PARAMETER);
     STATE.with(|s| assert_eq!(s.borrow().rect, Some([10, 20, 650, 500])));
+}
+
+#[test]
+fn creating_a_window_registers_the_builtin_classes_first() {
+    STATE.with(|s| s.borrow_mut().ensured_builtins = 0);
+    let args = input();
+    assert_ne!(raw_class::create_window(args), 0);
+    STATE.with(|s| assert_eq!(s.borrow().ensured_builtins, 1));
+    // A creation that answers NULL still resolved the desktop window, so the
+    // classes are registered before anything can fail.
+    let args = input();
+    STATE.with(|s| s.borrow_mut().fail_class = true);
+    assert_eq!(raw_class::create_window(args), 0);
+    STATE.with(|s| assert_eq!(s.borrow().ensured_builtins, 1));
 }
 
 #[path = "create_geometry.rs"] mod create_geometry;

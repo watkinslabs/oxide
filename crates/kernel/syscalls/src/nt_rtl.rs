@@ -3,6 +3,9 @@
 #[path = "nt_rtl/wndproc_payload.rs"]
 mod wndproc_payload;
 pub(crate) use wndproc_payload::begin as begin_wndproc_payload_callback;
+#[path = "nt_rtl/kernel_callback.rs"]
+mod kernel_callback;
+pub(crate) use kernel_callback::begin as begin_user_callback;
 use syscall::{nt::{NtCall, NtService}, SyscallArgs}; use alloc::{string::String, vec, vec::Vec}; use sync::{Modules as ModulesLockClass, Spinlock};
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d; const STATUS_BUFFER_OVERFLOW: u64 = 0x8000_0005; const STATUS_INVALID_PARAMETER_2: u64 = 0xc000_00f0; const STATUS_ACCESS_VIOLATION: u64 = 0xc000_0005;
 const STATUS_PENDING: u64 = 0x0000_0103; const STATUS_UNSUCCESSFUL: u64 = 0xc000_0001;

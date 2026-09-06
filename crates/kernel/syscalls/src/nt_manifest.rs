@@ -97,6 +97,7 @@ mod nt_gdi_text_policy;
 #[path = "nt_window/retrieval_policy.rs"]
 mod nt_retrieval_policy;
 mod nt_win32_long_error;
+mod nt_user_callback;
 #[path = "nt_wine_window/message_call_abi.rs"]
 mod nt_message_call_abi;
 #[path = "nt_wine_window/font_query_raw.rs"]

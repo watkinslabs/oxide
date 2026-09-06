@@ -316,6 +316,7 @@ pub fn dispatch_raw(ordinal: u64, args: SyscallArgs) -> Option<u64> {
     if ordinal == WINE_CALL_NO_PARAM {
         let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
         if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
+        if args.a0 == CALL_NO_PARAM_GET_DESKTOP_WINDOW { return Some(builtin_classes::kernel::get_desktop_window()); }
         if args.a0 != CALL_NO_PARAM_GET_DIALOG_BASE_UNITS {
             klog::write_raw(b"[WINDOWS-RAW-UNHANDLED] ordinal=133c code="); klog::write_hex_u64(args.a0); klog::write_raw(b"\n");
             return Some(STATUS_NOT_IMPLEMENTED);
@@ -358,13 +359,13 @@ pub fn dispatch_raw(ordinal: u64, args: SyscallArgs) -> Option<u64> {
     if module.is_some() { klog::write_raw(b"[WINDOWS-USER32-INIT] rejected=duplicate\n"); return Some(STATUS_INVALID_PARAMETER); }
     *module = Some(args.a3);
     drop(module);
-    // The reference registers the builtin classes from win32u when the
-    // thread's desktop window comes up; the W procedure array is the only
-    // input, so they are registered as soon as it is published.
-    let registered = builtin_classes::kernel::register_for_current(args.a1);
-    klog::write_raw(b"[WINDOWS-USER32-INIT] published builtin-classes=");
-    klog::write_hex_u64(registered as u64);
-    klog::write_raw(b"\n");
+    // The reference registers the builtin classes when the thread's desktop
+    // window comes up, not when the procedure arrays are published; retain
+    // the W array here and register from it at that trigger.
+    if !crate::nt_window::publish_client_procs_for_current(args.a1) {
+        klog::write_raw(b"[WINDOWS-USER32-INIT] rejected=client-procs\n");
+        return Some(STATUS_INVALID_PARAMETER);
+    }
     Some(STATUS_SUCCESS)
 }
 
