@@ -7,11 +7,13 @@ mod ffi;
 mod geometry;
 mod keyboard;
 mod protocol;
+mod readiness;
 mod x11;
 mod caret;
 
 pub use geometry::{decode_cardinals, decode_work_area, MonitorSnapshot, Rect};
 pub use keyboard::{evdev_x11_scan, key_flags, key_lparam, keysym_to_vk, state_utf8, ModifierMasks, Modifiers, Scan};
+pub use readiness::{parse_args, publish_then_notify, Options, UsageError, READY_TOKEN};
 pub use protocol::{BridgeCommand, BridgeEvent, Frame, Inbound, InputEvent, NativeTransport, StreamTransport, TransportError};
 pub use x11::{Backend, BackendError, Xid};
 
