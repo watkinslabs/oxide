@@ -1,6 +1,10 @@
 //! Canonical selected brushes and source-independent raster operations; 31fk§4.
 use super::{GdiError, GdiManager};
+use super::bitmap::BitmapPattern;
 use super::stock::{StockDescription, StockStyle};
+#[path = "brush/pattern.rs"]
+mod pattern;
+pub use pattern::SharedDcColors;
 
 pub const TYPE_BRUSH: u32 = 0x10_0000;
 const WHITE_BRUSH: u32 = 0;
@@ -9,10 +13,10 @@ const SOURCE_MASK: u8 = 0x33;
 const PATTERN_MASK: u8 = 0x0f;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum BrushStyle { Solid(u32), Hollow }
+pub enum BrushStyle { Solid(u32), Hollow, Pattern }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Brush { pub style: BrushStyle, deleted: bool }
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Brush { pub style: BrushStyle, pattern: Option<BitmapPattern>, deleted: bool }
 
 impl GdiManager {
     /// Store an XRGB solid brush in the process object owner. # C: O(1)
@@ -22,9 +26,27 @@ impl GdiManager {
 
     /// Allocate a typed brush identity, never reusing a deleted slot. # C: O(1)
     pub fn create_brush(&mut self, style: BrushStyle) -> Result<u32, GdiError> {
+        self.push_brush(Brush { style, pattern: None, deleted: false })
+    }
+
+    /// A pattern brush copies the bitmap bits at creation; the source bitmap
+    /// may be deleted immediately afterwards and the pattern still paints.
+    /// # C: O(bitmaps + pattern pixels)
+    pub fn create_pattern_brush(&mut self, bitmap: u32) -> Result<u32, GdiError> {
+        let pattern = self.bitmap_pattern(bitmap)?;
+        self.push_brush(Brush { style: BrushStyle::Pattern, pattern: Some(pattern), deleted: false })
+    }
+
+    fn push_brush(&mut self, brush: Brush) -> Result<u32, GdiError> {
+        self.brushes.try_reserve(1).map_err(|_| GdiError::HandleLimit)?;
         let handle = self.allocate(TYPE_BRUSH)?;
-        self.brushes.push((handle, Brush { style, deleted: false }));
+        self.brushes.push((handle, brush));
         Ok(handle)
+    }
+
+    /// Immutable pattern bits of a dynamic pattern brush. # C: O(brushes)
+    pub fn brush_pattern(&self, handle: u32) -> Option<&BitmapPattern> {
+        self.brushes.iter().find(|(id, _)| *id == handle).and_then(|(_, brush)| brush.pattern.as_ref())
     }
 
     /// Return immutable brush attributes; DC_BRUSH color resolves in its DC. # C: O(brushes)
@@ -85,26 +107,28 @@ impl GdiManager {
 
     /// Bound DC_BRUSH reads use a fresh shared XRGB snapshot, never a private color mirror.
     /// # C: O(DCs + brushes + clipped pixels)
-    pub fn pat_blt_shared_color(&mut self, dc: u32, x: i32, y: i32, width: i32, height: i32, rop: u32, color: u32) -> Result<(), GdiError> {
-        self.pat_blt_color(dc, x, y, width, height, rop, Some(color & RGB_MASK))
+    pub fn pat_blt_shared_colors(&mut self, dc: u32, x: i32, y: i32, width: i32, height: i32, rop: u32, colors: SharedDcColors) -> Result<(), GdiError> {
+        self.pat_blt_color(dc, x, y, width, height, rop, Some(colors))
     }
 
-    fn pat_blt_color(&mut self, dc: u32, x: i32, y: i32, width: i32, height: i32, rop: u32, shared_color: Option<u32>) -> Result<(), GdiError> {
+    fn pat_blt_color(&mut self, dc: u32, x: i32, y: i32, width: i32, height: i32, rop: u32, shared: Option<SharedDcColors>) -> Result<(), GdiError> {
         let table = (rop >> 16) as u8;
         if (table >> 2) & SOURCE_MASK != table & SOURCE_MASK { return Err(GdiError::InvalidDimensions); }
         let state = &self.dcs.iter().find(|(id, _)| *id == dc).ok_or(GdiError::NoSuchObject)?.1;
         state.ensure_active()?;
+        let colors = shared.unwrap_or(SharedDcColors { brush: state.dc_brush_color, text: state.text.foreground, background: state.text.background });
         let handle = state.brush.unwrap_or(self.stock_object(WHITE_BRUSH).ok_or(GdiError::NoSuchObject)?.handle);
-        let brush = self.brush_style(handle, shared_color.unwrap_or(state.dc_brush_color))?;
+        let style = self.brush_style(handle, colors.brush)?;
         let uses_brush = table & PATTERN_MASK != (table >> 4) & PATTERN_MASK;
-        if brush == BrushStyle::Hollow && uses_brush { return Ok(()); }
-        let pattern = match brush { BrushStyle::Solid(color) => color, BrushStyle::Hollow => 0 };
+        if style == BrushStyle::Hollow && uses_brush { return Ok(()); }
+        let fill = pattern::fill(style, self.brush_pattern(handle), colors)?;
         let mut target = self.raster_dc(dc)?;
         let clip = target.bounds();
         let (left, right) = signed_extent(x, width, clip.left, clip.right);
         let (top, bottom) = signed_extent(y, height, clip.top, clip.bottom);
         for row in top..bottom { for col in left..right {
-            target.update(col, row, |old| raster(table, pattern, old));
+            let cell = fill.color(col, row);
+            target.update(col, row, |old| raster(table, cell, old));
         } }
         Ok(())
     }
