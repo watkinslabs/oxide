@@ -184,6 +184,29 @@ impl Default for State {
     fn default() -> Self { Self::new() }
 }
 
+/// What a raised exception does next.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum Disposition {
+    /// Enter the user exception dispatcher so handlers get their chance.
+    Dispatch,
+    /// No handler took it: end the process, reporting the exception code.
+    Terminate(i32),
+}
+
+/// Decide what one raise does, from the chance it is being given.
+///
+/// A first chance enters the dispatcher. A SECOND chance means the dispatcher
+/// already ran every vectored and frame handler and none accepted, so raising
+/// it again would re-enter the same dispatcher forever; the process ends
+/// instead, reporting the exception code as its status — which is what a
+/// Windows process does with an unhandled exception.
+/// # C: O(1)
+pub fn raise_disposition(record: &[u8; EXCEPTION_RECORD_BYTES], first_chance: bool) -> Disposition {
+    if first_chance { return Disposition::Dispatch; }
+    let code = u32::from_le_bytes(record[EXCEPTION_CODE_OFFSET..EXCEPTION_CODE_OFFSET + 4].try_into().unwrap());
+    Disposition::Terminate(code as i32)
+}
+
 /// Apply the x86-64 dispatcher correction to one scheduler-owned exception
 /// context before it crosses into the user exception frame. # C: O(1)
 pub fn prepare_dispatch_context(record: &[u8; EXCEPTION_RECORD_BYTES], context: &mut [u8; CONTEXT_BYTES]) -> bool {
@@ -285,6 +308,18 @@ mod tests {
         assert!(state.clear());
         assert_eq!(state.take(), None);
         assert!(!state.is_pending());
+    }
+
+    #[test]
+    fn a_first_chance_raise_dispatches_and_a_second_chance_ends_the_process() {
+        let mut record = [0u8; EXCEPTION_RECORD_BYTES];
+        record[EXCEPTION_CODE_OFFSET..EXCEPTION_CODE_OFFSET + 4]
+            .copy_from_slice(&fault::STATUS_ACCESS_VIOLATION.to_le_bytes());
+        assert_eq!(raise_disposition(&record, true), Disposition::Dispatch);
+        // Re-dispatching a second-chance raise would re-enter the dispatcher
+        // that has already refused it, forever.
+        assert_eq!(raise_disposition(&record, false),
+                   Disposition::Terminate(fault::STATUS_ACCESS_VIOLATION as i32));
     }
 
     #[test]

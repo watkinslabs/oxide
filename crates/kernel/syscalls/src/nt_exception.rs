@@ -74,7 +74,14 @@ fn raise_from_user(current: &sched::Task, record: u64, context: u64, first_chanc
         || image.rflags & 0x2 == 0 || image.rflags & 0x3000 != 0 {
         return STATUS_INVALID_PARAMETER;
     }
-    publish(current, record_bytes, context_bytes, first_chance != 0)
+    if !sched::nt_exception::exception_record_header_valid(&record_bytes) { return STATUS_INVALID_PARAMETER; }
+    match sched::nt_exception::raise_disposition(&record_bytes, first_chance != 0) {
+        sched::nt_exception::Disposition::Dispatch =>
+            publish(current, record_bytes, context_bytes, true),
+        // The dispatcher has already refused this exception; publishing it
+        // again would re-enter the same dispatcher forever.
+        sched::nt_exception::Disposition::Terminate(status) => { let _ = crate::s060_exit::do_group_exit(status); STATUS_SUCCESS }
+    }
 }
 
 pub fn dispatch(call: NtCall) -> Option<u64> {
