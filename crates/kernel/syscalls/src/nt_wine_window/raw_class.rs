@@ -126,6 +126,16 @@ fn create_window_with(args: SyscallArgs, read_arg: impl Fn(usize) -> Option<u64>
         return hwnd;
     }
     if crate::nt_window::set_creation_metadata_current(hwnd, style as u32, args.a0 as u32, if child { 0 } else { parent }, if instance != 0 { instance } else { class_instance }).is_err() {
+        // The only step on this path that destroyed the window and answered
+        // NULL without saying so. An application whose main window is NULL
+        // exits at once, so this was indistinguishable from a crash.
+        klog::write_raw(b"[WINDOWS-PE-WINE-WINDOW] reject-metadata hwnd=");
+        klog::write_hex_u64(hwnd);
+        klog::write_raw(b" style=");
+        klog::write_hex_u64(style);
+        klog::write_raw(b" parent=");
+        klog::write_hex_u64(parent);
+        klog::write_raw(b"\n");
         let _ = destroy_window(hwnd); return 0;
     }
     let menu_failed = if child {
