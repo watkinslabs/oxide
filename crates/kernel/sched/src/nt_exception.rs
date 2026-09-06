@@ -4,9 +4,18 @@
 //! across the user dispatcher.  The scheduler owns the equivalent lifetime
 //! here so a later return-to-user pass cannot observe pointers into a syscall
 //! stack or a caller-owned temporary buffer.
+//!
+//! Module manifest:
+//!   `fault`   — hardware trap -> EXCEPTION_RECORD decode, both arches.
+//!   `context` — register image -> the dispatcher frame's CONTEXT.
 
 use alloc::boxed::Box;
 use sync::{Spinlock, TaskList as TaskListClass};
+
+#[path = "nt_exception/fault.rs"]
+pub mod fault;
+#[path = "nt_exception/context.rs"]
+pub mod context;
 
 pub const EXCEPTION_RECORD_BYTES: usize = 0x98;
 pub const CONTEXT_BYTES: usize = 0x4d0;
@@ -30,31 +39,46 @@ const EFLAGS_RESERVED_BIT: u64 = 0x2;
 #[cfg(target_arch = "x86_64")]
 const EFLAGS_IOPL_MASK: u64 = 0x3000;
 
+/// One exception awaiting the user dispatcher.
+///
+/// `context` is absent for a HARDWARE trap: the interrupted registers live in
+/// the trap frame, and that frame's per-CPU pointer is not safe to dereference
+/// once the fault resolver may have switched tasks. The return-to-user pass
+/// that performs the delivery owns the live frame, so it — and only it —
+/// builds the record. A software raise supplies its own context, because the
+/// caller passed one in and the syscall frame is not the state to report.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Pending {
     pub record: [u8; EXCEPTION_RECORD_BYTES],
-    pub context: [u8; CONTEXT_BYTES],
+    pub context: Option<[u8; CONTEXT_BYTES]>,
     pub first_chance: bool,
 }
 
 impl Pending {
+    /// A hardware trap whose context the delivery pass will capture. # C: O(1)
+    pub fn from_hardware(record: [u8; EXCEPTION_RECORD_BYTES]) -> Self {
+        Self { record, context: None, first_chance: true }
+    }
+
     /// Validate the complete x86-64 exception handoff before ownership enters
     /// scheduler state. # C: O(1)
     pub fn is_valid(&self) -> bool {
         if !exception_record_header_valid(&self.record) { return false; }
+        let code = u32::from_le_bytes(self.record[EXCEPTION_CODE_OFFSET..EXCEPTION_CODE_OFFSET + 4].try_into().unwrap());
+        if code == 0 { return false; }
+        let Some(context) = self.context.as_ref() else { return true; };
         #[cfg(target_arch = "x86_64")]
         {
-            let code = u32::from_le_bytes(self.record[EXCEPTION_CODE_OFFSET..EXCEPTION_CODE_OFFSET + 4].try_into().unwrap());
-            let flags = u32::from_le_bytes(self.context[CONTEXT_FLAGS_OFFSET..CONTEXT_FLAGS_OFFSET + 4].try_into().unwrap());
-            let rip = u64::from_le_bytes(self.context[CONTEXT_RIP_OFFSET..CONTEXT_RIP_OFFSET + 8].try_into().unwrap());
-            let rsp = u64::from_le_bytes(self.context[CONTEXT_RSP_OFFSET..CONTEXT_RSP_OFFSET + 8].try_into().unwrap());
-            let rflags = u64::from(u32::from_le_bytes(self.context[0x44..0x48].try_into().unwrap()));
-            return code != 0 && flags & CONTEXT_AMD64 == CONTEXT_AMD64
+            let flags = u32::from_le_bytes(context[CONTEXT_FLAGS_OFFSET..CONTEXT_FLAGS_OFFSET + 4].try_into().unwrap());
+            let rip = u64::from_le_bytes(context[CONTEXT_RIP_OFFSET..CONTEXT_RIP_OFFSET + 8].try_into().unwrap());
+            let rsp = u64::from_le_bytes(context[CONTEXT_RSP_OFFSET..CONTEXT_RSP_OFFSET + 8].try_into().unwrap());
+            let rflags = u64::from(u32::from_le_bytes(context[0x44..0x48].try_into().unwrap()));
+            return flags & CONTEXT_AMD64 == CONTEXT_AMD64
                 && hal::UserVirtAddr::new(rip).is_some() && hal::UserVirtAddr::new(rsp).is_some()
                 && rflags & EFLAGS_RESERVED_BIT != 0 && rflags & EFLAGS_IOPL_MASK == 0;
         }
         #[cfg(not(target_arch = "x86_64"))]
-        { false }
+        { let _ = context; false }
     }
 }
 
@@ -183,7 +207,7 @@ mod tests {
         context[CONTEXT_RIP_OFFSET..CONTEXT_RIP_OFFSET + 8].copy_from_slice(&0x401000u64.to_le_bytes());
         context[CONTEXT_RSP_OFFSET..CONTEXT_RSP_OFFSET + 8].copy_from_slice(&0x7fff_0000u64.to_le_bytes());
         context[0x44..0x48].copy_from_slice(&2u32.to_le_bytes());
-        Pending { record, context, first_chance }
+        Pending { record, context: Some(context), first_chance }
     }
 
     #[test]
@@ -198,10 +222,34 @@ mod tests {
     }
 
     #[test]
+    fn a_hardware_trap_publishes_without_a_context_and_keeps_the_slot() {
+        let state = State::new();
+        let mut record = [0u8; EXCEPTION_RECORD_BYTES];
+        record[EXCEPTION_CODE_OFFSET..EXCEPTION_CODE_OFFSET + 4]
+            .copy_from_slice(&fault::STATUS_ACCESS_VIOLATION.to_le_bytes());
+        let pending = Pending::from_hardware(record);
+        assert!(pending.context.is_none());
+        assert!(pending.first_chance);
+        assert!(pending.is_valid());
+        assert!(state.publish(pending).is_ok());
+        // The delivery pass, not the fault, is what may capture the context.
+        assert_eq!(state.begin_delivery().map(|p| p.context), Some(None));
+    }
+
+    #[test]
+    fn a_record_with_no_exception_code_is_never_published() {
+        let state = State::new();
+        let pending = Pending::from_hardware([0u8; EXCEPTION_RECORD_BYTES]);
+        assert!(!pending.is_valid());
+        assert!(state.publish(pending).is_err());
+        assert!(!state.is_pending());
+    }
+
+    #[test]
     fn malformed_context_is_rejected_before_publication() {
         let state = State::new();
         let mut pending = sample(true);
-        pending.context[CONTEXT_FLAGS_OFFSET..CONTEXT_FLAGS_OFFSET + 4].fill(0);
+        pending.context.as_mut().unwrap()[CONTEXT_FLAGS_OFFSET..CONTEXT_FLAGS_OFFSET + 4].fill(0);
         assert_eq!(state.publish(pending), Err(pending));
         assert!(!state.is_pending());
     }
