@@ -199,7 +199,20 @@ fn commit_x86(cur: &sched::Task, path: &[u8], blob: &[u8], exec_vp: Option<&vfs:
     crate::exec_transition::selinux_commit(cur, &selinux);
     super::execve_common::reset_caught_signals(cur);
     super::execve_common::reset_per_execve_state(cur);
-    cur.set_comm_exec(path.rsplit('/').next().unwrap_or(path));
+    cur.set_comm_exec(crate::nt_process_naming::comm_of(path));
+    // This task was the Linux launcher a moment ago; without these its procfs
+    // identity still describes that launcher, not the image now running in it.
+    // `exec_vp` is the pinned host file this exec actually resolved, so `exe`
+    // is published only when one exists rather than from the request's name.
+    if let Some(command_line) = command_line.filter(|line| !line.is_empty()) {
+        cur.set_cmdline(Some(alloc::string::String::from(command_line)));
+    }
+    if exec_vp.is_some() {
+        cur.set_exe_path(Some(alloc::string::String::from(path)));
+        // SAFETY: the replacement mm was installed above by this exec commit and
+        // no concurrent exec can replace it while identity is being published.
+        if let Some(mm) = unsafe { cur.mm_ref() } { mm.set_exe_path(alloc::string::String::from(path)); }
+    }
     // SAFETY: current_pt_regs is the live syscall frame of this running task;
     // the exec path owns it until the common return-to-user epilogue.
     let frame = unsafe { &mut *regs };
