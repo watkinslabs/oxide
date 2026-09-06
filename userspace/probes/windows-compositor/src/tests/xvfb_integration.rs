@@ -128,7 +128,14 @@ fn xvfb_xkb_layout_modifiers_reach_vk_text_wire() {
 #[test]
 fn xvfb_workarea_uses_generic_properties_without_window_manager_identity() {
     let server = xvfb();let backend = Backend::connect(Some(&server.display)).unwrap();
-    assert_eq!(backend.monitor_snapshot(),None,"bare X11 screen is not an invented workarea");
+    // Measured on the target desktop: GNOME's XWayland publishes neither
+    // property, and requiring them made the bridge time out with no diagnostic.
+    // X's own answer with no window manager work area is the whole screen, and
+    // a later property change replaces it with a real one.
+    let bare=backend.monitor_snapshot().expect("a bare X11 screen still has geometry");
+    assert_eq!(bare.work_area,Rect{left:0,top:0,right:320,bottom:240});
+    assert_eq!(bare.monitor,bare.work_area);
+    assert_eq!(bare.desktop,0);
     let (conn,root) = unsafe { connect(&server.display) };
     let atom = |name:&str| unsafe {
         let name=CString::new(name).unwrap();let cookie=ffi::xcb_intern_atom(conn,0,name.as_bytes().len() as u16,name.as_ptr());
@@ -142,7 +149,7 @@ fn xvfb_workarea_uses_generic_properties_without_window_manager_identity() {
         let cookie=ffi::xcb_get_property(conn,0,root,property,ffi::ATOM_CARDINAL,0,values.len() as u32);
         let mut error=ptr::null_mut();let reply=ffi::xcb_get_property_reply(conn,cookie,&mut error);assert!(error.is_null()&&!reply.is_null());libc::free(reply as *mut _);
     };
-    set(current,&[0]);assert_eq!(backend.monitor_snapshot(),None);
+    set(current,&[0]);assert_eq!(backend.monitor_snapshot().unwrap().work_area,Rect{left:0,top:0,right:320,bottom:240});
     set(workarea,&[7,11,300,200]);
     let snapshot=backend.monitor_snapshot().unwrap();assert_eq!(snapshot.desktop,0);
     assert_eq!(snapshot.monitor,Rect{left:0,top:0,right:320,bottom:240});

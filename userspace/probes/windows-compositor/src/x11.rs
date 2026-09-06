@@ -70,10 +70,23 @@ impl Backend {
         Ok(Self { conn, keymap, state, context, max_request_bytes, root, visual: screen.root_visual, depth: screen.root_depth, screen: screen_rect, atoms, windows: BTreeMap::new(), xid_to_hwnd: BTreeMap::new(), down_keys: BTreeMap::new(), pending: VecDeque::new() })
     }
 
+    /// `_NET_CURRENT_DESKTOP` and `_NET_WORKAREA` are published by a window
+    /// manager and are optional. GNOME's XWayland server exposes neither, so
+    /// requiring them made the bridge unusable on the very desktop it targets.
+    /// With no published work area the whole screen is the work area, which is
+    /// the answer X itself always has. Only a screen with no geometry at all
+    /// is a real absence.
     pub fn monitor_snapshot(&self) -> Option<MonitorSnapshot> {
-        let desktop = self.property_u32(self.root, self.atoms.net_current_desktop)?;
-        let values = self.property_u32s(self.root, self.atoms.net_workarea)?;
-        let work_area = crate::geometry::decode_work_area(&values, desktop)?;
+        if self.screen.right <= self.screen.left || self.screen.bottom <= self.screen.top { return None; }
+        let desktop = self.property_u32(self.root, self.atoms.net_current_desktop).unwrap_or(0);
+        let work_area = match self.property_u32s(self.root, self.atoms.net_workarea) {
+            // A published work area must decode. A window manager emitting a
+            // malformed one is a real fault and is not papered over.
+            Some(values) => crate::geometry::decode_work_area(&values, desktop)?,
+            // Publishing none is normal, and a later property change replaces
+            // this with the real one the moment a window manager sets it.
+            None => self.screen,
+        };
         Some(MonitorSnapshot { desktop, monitor: self.screen, work_area })
     }
     #[cfg(test)]
