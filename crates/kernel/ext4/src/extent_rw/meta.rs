@@ -182,7 +182,11 @@ impl Mount {
                     return Err(e);
                 }
             };
+            let previous = b.clone();
             m.stamp_inode_meta_fields(&mut b, InodeMetaUpdate { mode, uid, gid, atime, mtime, ctime });
+            // A durability request does not itself dirty metadata. Compare
+            // encoded fields before allocating a new transaction generation.
+            if b == previous { return Ok(()); }
             let result = m.write_inode_bytes(ino, &b);
             #[cfg(feature = "debug-fsync-latency")]
             if result.is_err() {

@@ -29,6 +29,10 @@ mod state;
 mod types;
 mod walk;
 
+#[cfg(test)]
+#[path = "namei/tests.rs"]
+mod tests;
+
 pub use lookup::{mount_target_from_resolved_path, mountpoint_lookup_at_root_cred, path_lookup, path_lookup_at_cred, path_lookup_at_root_cred, path_lookup_cred, path_lookup_path};
 pub use create::vfs_create_at;
 pub use device_permission::{device_permission, may_open_dev, set_device_permission_hook, DevicePermissionHook};
@@ -47,5 +51,6 @@ pub use types::{Cred, LastType, LinkTarget, LookupFlags, MountTarget, VfsPath, M
 pub use state::Nameidata;
 
 pub(super) use permission::may_lookup;
-pub(super) use traverse::{components, dotdot_step, follow_mount_down, neg_cache_ok, WalkFrame};
+pub(super) use traverse::{components, dotdot_step, follow_mount_down, neg_cache_ok,
+                           neg_cache_recheck, WalkFrame};
 pub(super) use state::WalkOutcome;

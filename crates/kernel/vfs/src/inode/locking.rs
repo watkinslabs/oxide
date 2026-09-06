@@ -19,10 +19,6 @@ impl core::ops::DerefMut for InodeWriteGuard<'_> {
     fn deref_mut(&mut self) -> &mut Self::Target { &mut self.inner }
 }
 
-impl Drop for InodeWriteGuard<'_> {
-    fn drop(&mut self) {}
-}
-
 impl Inode {
     /// `inode_lock`. # C: O(contention)
     pub fn inode_lock(&self) -> InodeWriteGuard<'_> {

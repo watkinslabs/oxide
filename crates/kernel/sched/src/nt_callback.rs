@@ -15,6 +15,7 @@ pub enum RegistrationKind {
     CleanupGroup,
     Work { pool: u64, environment: u64, queued: bool },
     Callback,
+    NativeThreadFactory { return_entry: u64, pe_return: u64 },
 }
 
 pub struct Registration {

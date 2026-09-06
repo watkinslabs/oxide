@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Screenshot command-completion evidence v1 (one object per JSONL line)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "event", "run_id", "label", "path", "sha256", "command_completed_monotonic_ns", "command_completed_unix_ns"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "event": {"const": "screenshot"},
+    "run_id": {"type": "string"},
+    "label": {"type": "string"},
+    "path": {"type": "string"},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "command_completed_monotonic_ns": {"type": "integer"},
+    "command_completed_unix_ns": {"type": "integer"}
+  }
+}

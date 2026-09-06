@@ -68,6 +68,17 @@ fn pinterp(file_off: u64, file_sz: u64) -> [u8; PHENT] {
     p
 }
 
+fn ptls(file_off: u64, file_sz: u64, mem_sz: u64, vaddr: u64, align: u64) -> [u8; PHENT] {
+    let mut p = [0u8; PHENT];
+    p[0..4].copy_from_slice(&(PType::Tls as u32).to_le_bytes());
+    p[8..16].copy_from_slice(&file_off.to_le_bytes());
+    p[16..24].copy_from_slice(&vaddr.to_le_bytes());
+    p[32..40].copy_from_slice(&file_sz.to_le_bytes());
+    p[40..48].copy_from_slice(&mem_sz.to_le_bytes());
+    p[48..56].copy_from_slice(&align.to_le_bytes());
+    p
+}
+
 fn pgnustack(flags: u32) -> [u8; PHENT] {
     let mut p = [0u8; PHENT];
     p[0..4].copy_from_slice(&(PType::GnuStack as u32).to_le_bytes());
@@ -157,6 +168,30 @@ fn walks_pt_load_segments() {
     assert_eq!(p.loads[1].flags, PFlags::R | PFlags::W);
     assert_eq!(p.loads[0].vaddr, 0x1000);
     assert_eq!(p.loads[1].vaddr, 0x2000);
+}
+
+#[test]
+fn retains_one_valid_pt_tls_template() {
+    let phdrs = [ptls(0x100, 0x20, 0x40, 0x3000, 0x10)];
+    let mut buf = build_elf(ElfType::Dyn, EM_X86_64, 0x1000, &phdrs);
+    buf.resize(0x120, 0);
+    let parsed = parse(&buf, EM_X86_64).unwrap();
+    assert_eq!(parsed.tls, Some(TlsSegment {
+        file_off: 0x100, file_sz: 0x20, vaddr: 0x3000, mem_sz: 0x40, align: 0x10,
+    }));
+}
+
+#[test]
+fn rejects_duplicate_or_oversized_pt_tls_templates() {
+    let duplicate = [ptls(0x100, 0x10, 0x20, 0x3000, 0x10), ptls(0x120, 0x10, 0x20, 0x4000, 0x10)];
+    let mut buf = build_elf(ElfType::Dyn, EM_X86_64, 0x1000, &duplicate);
+    buf.resize(0x140, 0);
+    assert_eq!(parse(&buf, EM_X86_64).err(), Some(ElfError::Einval));
+
+    let oversized = [ptls(0x100, 0x30, 0x20, 0x3000, 0x10)];
+    let mut buf = build_elf(ElfType::Dyn, EM_X86_64, 0x1000, &oversized);
+    buf.resize(0x140, 0);
+    assert_eq!(parse(&buf, EM_X86_64).err(), Some(ElfError::Einval));
 }
 
 #[test]

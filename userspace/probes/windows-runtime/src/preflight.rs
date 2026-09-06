@@ -39,7 +39,7 @@ impl NotepadRuntimeHandoff {
     pub fn preflight(image_path: &Path, windows_path: &[u8], dll_dir: &Path, unixlib_dir: &Path, nls_path: &Path, registry_socket: &Path, registry_database: &Path) -> Result<Self, PreflightError> {
         let mut failures = Vec::new(); validate_artifacts(image_path, dll_dir, unixlib_dir, nls_path, registry_socket, registry_database, &mut failures);
         if !failures.is_empty() { return Err(PreflightError { failures: failures.into_boxed_slice() }); }
-        let request = RuntimeRequest::from_paths_with_environment(image_path, windows_path, windows_path, dll_dir, std::iter::empty::<(String, String)>()).map_err(build_error)?;
+        let request = RuntimeRequest::from_paths_with_environment_and_unixlib(image_path, windows_path, windows_path, dll_dir, unixlib_dir, std::iter::empty::<(String, String)>()).map_err(build_error)?;
         let readiness = validate_request(&request, dll_dir, unixlib_dir, &mut failures);
         if !failures.is_empty() { return Err(PreflightError { failures: failures.into_boxed_slice() }); }
         let Some(readiness) = readiness else { failures.push("Notepad GUI resources could not be bound to the PE launch record".into()); return Err(PreflightError { failures: failures.into_boxed_slice() }); };
@@ -70,10 +70,13 @@ pub(super) fn inspect(image_path: &Path, windows_path: &[u8], dll_dir: &Path, un
     if abi.image_len == 0 || abi.image_len > MAX_IMAGE_BYTES { failures.push(format!("launcher ABI image length {} is outside 1..={MAX_IMAGE_BYTES}", abi.image_len)); }
     if abi.image_path_len == 0 || abi.command_line_len == 0 || abi.environment_len == 0 { failures.push("launcher ABI contains an empty path, command line, or environment record".into()); }
     if abi.module_count as usize != request.module_count() { failures.push(format!("launcher ABI module count {} differs from owned catalog {}", abi.module_count, request.module_count())); }
+    if abi.unixlib_count as usize != request.unixlib_count() { failures.push(format!("launcher ABI Unixlib count {} differs from owned catalog {}", abi.unixlib_count, request.unixlib_count())); }
     if request.modules.iter().any(|module| module.name.eq_ignore_ascii_case(b"ntdll.dll")) { failures.push("native ntdll ownership violated: ntdll.dll was placed in the PE catalog".into()); }
     else { checks.push("native ntdll ownership: excluded from launcher catalog".into()); }
     if request.records.iter().any(|record| record.name.as_u64() == 0 || record.image.as_u64() == 0 || record.image_len == 0) { failures.push("launcher ABI contains a null or empty module record".into()); }
     else { checks.push(format!("launcher ABI records: {} validated", request.records.len())); }
+    if request.unixlib_records.iter().any(|record| record.name.as_u64() == 0 || record.path.as_u64() == 0 || record.image.as_u64() == 0 || record.image_len == 0) { failures.push("launcher ABI contains a null or empty Unixlib record".into()); }
+    else { checks.push(format!("launcher ABI Unixlib records: {} validated", request.unixlib_records.len())); }
     if !failures.is_empty() { return Err(PreflightError { failures: failures.into_boxed_slice() }); }
     checks.push(format!("PE32+ Notepad dependency closure: {} modules", request.module_count()));
     checks.push("registry endpoint: connected; database: readable and writable".into());

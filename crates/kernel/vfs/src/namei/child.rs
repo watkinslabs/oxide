@@ -141,18 +141,12 @@ impl Nameidata {
                 // create syscalls flush this leaf negative by resolved parent
                 // dentry/name, so a subsequently-created file is not masked.
                 //
-                // The flush alone is not enough: it and this insert are not
-                // ordered. A create landing between the backend miss above and
-                // the insert below runs its flush FIRST, and the insert then
-                // re-caches the stale negative, masking a file that exists --
-                // measured as a bus-socket lookup answering ENOENT 25ms after
-                // bind(2) created it, which left the resolver's bus reconnect
-                // waiting forever. The reference cannot hit this because a
-                // backend lookup and the negative's insertion happen under the
-                // parent's lock that creation also takes; here the insert is
-                // published first and the backend is asked AGAIN. Any create
-                // that beat the insert is seen by the recheck; any create that
-                // follows it must flush after it, which removes it.
+                // The parent shared i_rwsem orders this insertion against
+                // create/unlink/rename, whose exclusive operation takes the
+                // same lock. Stable filesystems therefore need only this one
+                // backend lookup. Explicit dynamic-filesystem opt-ins retain
+                // one bounded recheck for namespace changes that can occur
+                // outside that ordinary VFS create path.
                 if super::neg_cache_ok(&self.cur_inode, comp) {
                     #[cfg(feature = "debug-neg-trace")]
                     if comp.contains("system_bus") {
@@ -162,13 +156,17 @@ impl Nameidata {
                         klog::write_hex_u64(self.cur_inode.ino());
                         klog::write_raw(b"]\n");
                     }
-                    let negative = crate::dcache::d_add_negative_with_hash(&self.cur_dentry, comp, hash);
-                    if let Ok(ci) = self.cur_inode.lookup(comp) {
-                        crate::dcache::d_drop(&negative);
-                        let child_inode = ci.clone();
-                        let child = crate::dcache::d_add_with_hash(&self.cur_dentry, comp, ci.clone(), hash);
-                        crate::file::iput(ci);
-                        return Ok(ChildLookup::Found(child, child_inode));
+                    let negative = crate::dcache::d_add_negative_with_hash(
+                        &self.cur_dentry, comp, hash);
+                    if super::neg_cache_recheck(&self.cur_inode, comp) {
+                        if let Ok(ci) = self.cur_inode.lookup(comp) {
+                            crate::dcache::d_drop(&negative);
+                            let child_inode = ci.clone();
+                            let child = crate::dcache::d_add_with_hash(
+                                &self.cur_dentry, comp, ci.clone(), hash);
+                            crate::file::iput(ci);
+                            return Ok(ChildLookup::Found(child, child_inode));
+                        }
                     }
                 }
                 Ok(ChildLookup::Missing)

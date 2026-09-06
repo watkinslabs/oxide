@@ -2,18 +2,39 @@
 
 use syscall::{nt::{NtCall, NtService}, SyscallArgs};
 
+// PFN ABI normalization and table bounds, shared with the RTL entry.
+pub(crate) mod pfn;
+mod metrics;
+mod geometry;
+mod hwnd_param;
+mod long_raw;
+#[cfg(target_os = "oxide-kernel")]
+mod message_send;
+pub(crate) mod placement;
+pub(crate) mod position;
+mod gdi_raw;
+mod gdi_route;
+mod brush_raw;
+mod clip_raw;
+#[cfg(target_os = "oxide-kernel")]
+mod property_raw;
+#[cfg(target_os = "oxide-kernel")]
+mod caret_raw;
+#[path = "nt_wine_window/object_raw.rs"]
+mod object_raw;
+#[cfg(target_os = "oxide-kernel")]
+mod create_context;
+
 #[cfg(target_os = "oxide-kernel")]
 mod raw_class;
 #[cfg(target_os = "oxide-kernel")]
 mod raw_callback;
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+mod raw_args;
 
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 const STATUS_NOT_IMPLEMENTED: u64 = 0xc000_0002;
 const STATUS_SUCCESS: u64 = 0;
-const PAINTSTRUCT_RECT_OFFSET: u64 = 12;
-const PAINTSTRUCT_HDC_OFFSET: u64 = 0;
-const DEFAULT_WINDOW_SURFACE_WIDTH: u64 = 800;
-const DEFAULT_WINDOW_SURFACE_HEIGHT: u64 = 600;
 
 const WINE_CREATE_WINDOW_EX: u64 = 0x136b;
 const WINE_GET_MESSAGE: u64 = 0x141b;
@@ -28,10 +49,8 @@ const WINE_GET_DC_EX: u64 = 0x13ec;
 const WINE_INVALIDATE_RECT: u64 = 0x148c;
 const WINE_RELEASE_DC: u64 = 0x1509;
 const WINE_SET_WINDOW_POS: u64 = 0x15a7;
-const WINE_CREATE_COMPATIBLE_DC: u64 = 0x10ae;
-const WINE_DELETE_OBJECT: u64 = 0x118f;
-const WINE_GET_TEXT_METRICS: u64 = 0x1229;
-const WINE_GET_TEXT_EXTENT_EX: u64 = 0x1227;
+#[cfg(test)]
+use gdi_raw::{GET_TEXT_METRICS_W as WINE_GET_TEXT_METRICS, GET_TEXT_EXTENT_EX_W as WINE_GET_TEXT_EXTENT_EX};
 const WINE_REGISTER_CLASS_EX: u64 = 0x14eb;
 const WINE_DISPATCH_MESSAGE: u64 = 0x138b;
 const WINE_MESSAGE_CALL: u64 = 0x14b5;
@@ -45,11 +64,17 @@ const WINE_OPEN_CLIPBOARD: u64 = 0x14c2;
 const WINE_CALL_WINDOW_PROC: u64 = 0x02ab;
 // Wine's builtin DefWindowProc selector, passed through the same syscall.
 const WINE_DEF_WINDOW_PROC: u64 = 0x029e;
+
 // Wine's generated win32u syscall table assigns this ordinal to the raw
 // four-argument client-table publication entry.
 const WINE_NTUSER_INITIALIZE_CLIENT_PFN_ARRAYS: u64 = 0x147a;
 const WINE_NTUSER_GET_SYSTEM_DPI_FOR_PROCESS: u64 = 0x144b;
 const WINE_GET_WINDOW_PLACEMENT: u64 = 0x1463;
+const WINE_SET_WINDOW_PLACEMENT: u64 = 0x15a6;
+const WINE_GET_ASYNC_KEY_STATE: u64 = 0x13d0;
+const WINE_GET_KEY_STATE: u64 = 0x1410;
+const WINE_GET_KEYBOARD_STATE: u64 = 0x1414;
+const WINE_SET_KEYBOARD_STATE: u64 = 0x1565;
 const WINE_CALL_NO_PARAM: u64 = 0x133c;
 const WINE_CHECK_MENU_ITEM: u64 = 0x1347;
 const WINE_CREATE_MENU: u64 = 0x1366;
@@ -69,8 +94,6 @@ const WINE_SET_MENU: u64 = 0x1569;
 const WINE_THUNKED_MENU_ITEM_INFO: u64 = 0x15d0;
 const WINE_CALL_ONE_PARAM: u64 = 0x133d;
 const CALL_ONE_PARAM_GET_MENU_ITEM_COUNT: u64 = 4;
-const DCX_WINDOW: u64 = 0x0000_0001;
-const WINDOWPLACEMENT_BYTES: u64 = 44;
 const CALL_NO_PARAM_GET_DIALOG_BASE_UNITS: u64 = 1;
 const WM_TIMER: u32 = 0x0113;
 const WM_SETTEXT: u64 = 0x000c;
@@ -80,9 +103,61 @@ const WM_NCCREATE: u64 = 0x0081;
 const WM_NCDESTROY: u64 = 0x0082;
 const WM_NCHITTEST: u64 = 0x0084;
 const WM_NCACTIVATE: u64 = 0x0086;
+// `struct win_proc_params` from Wine's ntuser.h.  The layout is stable for
+// the x86-64 client ABI used by the image: pointers are eight bytes, followed
+// by the 32-bit message/flag fields.
+const WIN_PROC_HWND: u64 = 8;
+const WIN_PROC_MSG: u64 = 16;
+const WIN_PROC_WPARAM: u64 = 24;
+const WIN_PROC_LPARAM: u64 = 32;
+const WIN_PROC_ANSI: u64 = 40;
+const WIN_PROC_ANSI_DST: u64 = 44;
+const WIN_PROC_MAPPING: u64 = 48;
+const WIN_PROC_DPI_CONTEXT: u64 = 52;
+const WIN_PROC_PROCA: u64 = 56;
+const WIN_PROC_PROCW: u64 = 64;
+const WIN_PROC_CALLWINDOWPROC_MAPPING: u32 = 5;
 
-fn paintstruct_field(base: u64, offset: u64) -> Option<u64> { base.checked_add(offset) }
 fn message_field(base: u64, offset: u64) -> Option<u64> { base.checked_add(offset) }
+
+/// Fill Wine's `win_proc_params` record for `NtUserCallWindowProc`.
+///
+/// Wine deliberately separates this operation from the later client-side
+/// callback: `NtUserMessageCall` initializes the record and returns TRUE;
+/// user32 then dispatches the procedure using the populated record. Keeping
+/// that boundary intact prevents the kernel from invoking a WndProc once here
+/// and once again in the client.
+#[cfg(target_os = "oxide-kernel")]
+pub(super) fn initialize_window_proc_params(pointer: u64, hwnd: u64, message: u64,
+                                             wparam: u64, lparam: u64, ansi: u64) -> u64 {
+    if pointer == 0 || !uaccess::access_ok(pointer, (WIN_PROC_PROCW + 8) as usize) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let Some(func) = uaccess::get_user_u64(pointer).ok().filter(|value| *value != 0) else {
+        return STATUS_INVALID_PARAMETER;
+    };
+    let writes = [
+        (WIN_PROC_HWND, hwnd), (WIN_PROC_WPARAM, wparam),
+        (WIN_PROC_LPARAM, lparam), (WIN_PROC_PROCA, func),
+        (WIN_PROC_PROCW, func),
+    ];
+    for (offset, value) in writes {
+        if uaccess::put_user_u64(pointer.saturating_add(offset), value).is_err() {
+            return STATUS_INVALID_PARAMETER;
+        }
+    }
+    for (offset, value) in [
+        (WIN_PROC_MSG, message as u32), (WIN_PROC_ANSI, (ansi != 0) as u32),
+        (WIN_PROC_ANSI_DST, (ansi != 0) as u32),
+        (WIN_PROC_MAPPING, WIN_PROC_CALLWINDOWPROC_MAPPING),
+        (WIN_PROC_DPI_CONTEXT, 0),
+    ] {
+        if uaccess::put_user_u32(pointer.saturating_add(offset), value).is_err() {
+            return STATUS_INVALID_PARAMETER;
+        }
+    }
+    1
+}
 
 /// Keep the raw ordinal admission decision independent of the kernel entry
 /// body so hosted tests exercise the same claim boundary.
@@ -93,7 +168,9 @@ fn raw_ordinal_claimed(ordinal: u64) -> bool {
         WINE_GET_MESSAGE | WINE_DESTROY_WINDOW | WINE_PEEK_MESSAGE |
         WINE_POST_MESSAGE | WINE_SHOW_WINDOW | WINE_BEGIN_PAINT | WINE_END_PAINT |
         WINE_GET_DC | WINE_GET_DC_EX | WINE_INVALIDATE_RECT | WINE_RELEASE_DC |
-        WINE_SET_WINDOW_POS |
+        WINE_SET_WINDOW_POS | WINE_SET_WINDOW_PLACEMENT | WINE_GET_ASYNC_KEY_STATE | WINE_GET_KEY_STATE |
+        WINE_GET_KEYBOARD_STATE | WINE_SET_KEYBOARD_STATE |
+        WINE_GET_CLASS_INFO_EX | WINE_GET_CLASS_NAME |
         WINE_REGISTER_WINDOW_MESSAGE |
         WINE_CLOSE_CLIPBOARD | WINE_OPEN_CLIPBOARD |
         WINE_NTUSER_INITIALIZE_CLIENT_PFN_ARRAYS |
@@ -151,162 +228,10 @@ fn read_user_u16(address: u64) -> Option<u16> {
 }
 
 #[cfg(target_os = "oxide-kernel")]
-fn read_paint_rect(base: u64) -> Option<[i32; 4]> {
-    let address = paintstruct_field(base, PAINTSTRUCT_RECT_OFFSET)?;
-    let mut rect = [0i32; 4];
-    for (index, value) in rect.iter_mut().enumerate() {
-        let field = address.checked_add((index * 4) as u64)?;
-        *value = uaccess::get_user_u32(field).ok()? as i32;
-    }
-    Some(rect)
-}
-
-/// Translate one Wine ordinal into the existing native window-state owner.
-/// # C: O(1) dispatch plus bounded usercopy
+#[path = "nt_wine_window/dispatch.rs"]
+mod dispatch;
 #[cfg(target_os = "oxide-kernel")]
-pub fn dispatch(call: NtCall) -> u64 {
-    if call.service != NtService::WineSyscall { return STATUS_INVALID_PARAMETER; }
-    let ordinal = call.args.a0;
-    let Some(args) = read_args(call.args.a1) else { return STATUS_INVALID_PARAMETER; };
-    let native = |service: NtService, args: SyscallArgs| crate::nt_window::dispatch(NtCall { service, args }).unwrap_or(STATUS_INVALID_PARAMETER);
-    let gdi = |service: NtService, args: SyscallArgs| crate::nt_gdi::dispatch(NtCall { service, args }).unwrap_or(STATUS_INVALID_PARAMETER);
-    match ordinal {
-        WINE_DISPATCH_MESSAGE => {
-            let msg = args[0];
-            let Ok(hwnd) = uaccess::get_user_u64(msg) else { return STATUS_INVALID_PARAMETER; };
-            let Some(message_address) = message_field(msg, 8) else { return STATUS_INVALID_PARAMETER; };
-            let Some(wparam_address) = message_field(msg, 16) else { return STATUS_INVALID_PARAMETER; };
-            let Some(lparam_address) = message_field(msg, 24) else { return STATUS_INVALID_PARAMETER; };
-            let Ok(message) = uaccess::get_user_u32(message_address) else { return STATUS_INVALID_PARAMETER; };
-            let Ok(wparam) = uaccess::get_user_u64(wparam_address) else { return STATUS_INVALID_PARAMETER; };
-            let Ok(lparam) = uaccess::get_user_u64(lparam_address) else { return STATUS_INVALID_PARAMETER; };
-            if message == WM_TIMER && lparam != 0 {
-                let tick_ms = timekeeper::monotonic_ns().saturating_div(1_000_000);
-                return crate::nt_rtl::begin_wndproc_callback(hwnd, message as u64, wparam, tick_ms, lparam);
-            }
-            let Some(wndproc) = crate::nt_window::window_wndproc_for_current(hwnd) else { return STATUS_INVALID_PARAMETER; };
-            crate::nt_rtl::begin_wndproc_callback(hwnd, message as u64, wparam, lparam, wndproc)
-        }
-        // The descriptor-backed path is used by the synthetic Wine probe;
-        // keep keyboard translation on the same canonical MSG decoder as
-        // the raw win32u entry above.
-        WINE_TRANSLATE_MESSAGE => translate_raw_message(args[0]),
-        WINE_MESSAGE_CALL => {
-            let hwnd = args[0];
-            let message = args[1];
-            let wparam = args[2];
-            let lparam = args[3];
-            // Wine uses NtUserMessageCall for CallWindowProcW/A.  The
-            // result-info record begins with the requested WNDPROC; when it
-            // is absent, the canonical window record supplies the procedure.
-            if args[5] == WINE_DEF_WINDOW_PROC {
-                if message == WM_NCCREATE { return (lparam != 0) as u64; }
-                if message == WM_NCDESTROY { return STATUS_SUCCESS; }
-                if message == WM_NCHITTEST {
-                    if hwnd > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
-                    let Some((rect, _)) = crate::nt_window::window_rect_for_current(hwnd as u32) else { return STATUS_INVALID_PARAMETER; };
-                    return match ipc::win32_window::default_window_proc_for_rect(WM_NCHITTEST as u32, rect, lparam as i64) {
-                        ipc::win32_window::DefaultWindowResult::Return(value) => value as u64,
-                        ipc::win32_window::DefaultWindowResult::RequestDestroy => STATUS_SUCCESS,
-                    };
-                }
-                if message == WM_NCACTIVATE { return 1; }
-                if message == WM_SETTEXT {
-                    return win_bool(native(NtService::SetWindowText, SyscallArgs { a0: hwnd, a1: lparam, a2: 0, a3: 0, a4: 0, a5: 0 }));
-                }
-                if message == WM_GETTEXT {
-                    return native(NtService::GetWindowText, SyscallArgs { a0: hwnd, a1: lparam, a2: wparam, a3: 0, a4: 0, a5: 0 });
-                }
-                if message == WM_GETTEXTLENGTH {
-                    return crate::nt_window::window_text_length_for_current(hwnd).unwrap_or(STATUS_INVALID_PARAMETER);
-                }
-                return native(NtService::DefaultWindowProc, SyscallArgs { a0: hwnd, a1: message, a2: wparam, a3: lparam, a4: 0, a5: 0 });
-            }
-            if args[5] != WINE_CALL_WINDOW_PROC { return STATUS_NOT_IMPLEMENTED; }
-            let wndproc = if args[4] != 0 {
-                uaccess::get_user_u64(args[4]).ok().filter(|value| *value != 0)
-            } else { None };
-            let wndproc = wndproc.or_else(|| crate::nt_window::window_wndproc_for_current(hwnd));
-            let Some(wndproc) = wndproc else { return STATUS_INVALID_PARAMETER; };
-            crate::nt_rtl::begin_wndproc_callback(hwnd, message, wparam, lparam, wndproc)
-        }
-        WINE_GET_CLASS_NAME => get_class_name(&args),
-        WINE_GET_CLASS_INFO_EX => get_class_info_ex(&args),
-        WINE_CREATE_MENU => crate::nt_window::create_menu_for_current(false),
-        WINE_CREATE_POPUP_MENU => crate::nt_window::create_menu_for_current(true),
-        WINE_DRAW_MENU_BAR => crate::nt_window::draw_menu_bar_for_current(args[0]),
-        WINE_DRAW_MENU_BAR_TEMP => draw_menu_bar_temp(&args),
-        WINE_DELETE_MENU => win_bool(crate::nt_window::delete_menu_item_for_current(args[0], args[1], args[2])),
-        WINE_REMOVE_MENU => win_bool(crate::nt_window::remove_menu_item_for_current(args[0], args[1], args[2])),
-        WINE_DESTROY_MENU => win_bool(crate::nt_window::destroy_menu_for_current(args[0])),
-        WINE_CHECK_MENU_ITEM => crate::nt_window::check_menu_item_for_current(args[0], args[1], args[2]),
-        WINE_ENABLE_MENU_ITEM => crate::nt_window::enable_menu_item_for_current(args[0], args[1], args[2]),
-        WINE_SET_MENU => win_bool(crate::nt_window::set_window_menu_for_current(args[0], (args[1] != 0).then_some(args[1] as u32)).map(|_| STATUS_SUCCESS).unwrap_or(STATUS_INVALID_PARAMETER)),
-        WINE_THUNKED_MENU_ITEM_INFO => crate::nt_window::thunked_menu_item_info(args[0], args[1], args[2], args[3], args[4]),
-        WINE_UNREGISTER_CLASS => {
-            let Some(name) = read_unicode_string(args[0]) else { return 0; };
-            win_bool(crate::nt_window::unregister_class_for_current(&name).then_some(STATUS_SUCCESS).unwrap_or(STATUS_INVALID_PARAMETER))
-        }
-        WINE_REGISTER_CLASS_EX => {
-            if args[0] == 0 || uaccess::get_user_u32(args[0]).ok() != Some(80) { return 0; }
-            let Some(name) = read_unicode_string(args[1]) else { return 0; };
-            let Some(wndproc_address) = message_field(args[0], 8) else { return 0; };
-            let Some(wndproc) = uaccess::get_user_u64(wndproc_address).ok() else { return 0; };
-            crate::nt_window::register_class_for_current(&name, wndproc).unwrap_or(0)
-        }
-        WINE_CREATE_WINDOW_EX => {
-            let Some(title) = read_optional_unicode_string(args[3]) else { return STATUS_INVALID_PARAMETER; };
-            let hwnd = if args[1] <= u16::MAX as u64 {
-                crate::nt_window::create_class_window_by_atom_for_current(args[1] as u16, args[9])
-            } else {
-                let Some(class) = read_unicode_string(args[1]) else { return STATUS_INVALID_PARAMETER; };
-                crate::nt_window::create_class_window_for_current(&class, args[9])
-            }.unwrap_or(STATUS_INVALID_PARAMETER);
-            if hwnd == STATUS_INVALID_PARAMETER || hwnd == 0 { return hwnd; }
-            if args[10] > u32::MAX as u64 || (args[10] != 0 && crate::nt_window::set_window_menu_for_current(hwnd, Some(args[10] as u32)).is_err()) {
-                let _ = native(NtService::DestroyWindow, SyscallArgs { a0: hwnd, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 });
-                return STATUS_INVALID_PARAMETER;
-            }
-            if crate::nt_window::set_window_text_for_current(hwnd, &title).is_err() {
-                let _ = native(NtService::DestroyWindow, SyscallArgs { a0: hwnd, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 });
-                return STATUS_INVALID_PARAMETER;
-            }
-            let right = (args[5] as i32).checked_add(args[7] as i32);
-            let bottom = (args[6] as i32).checked_add(args[8] as i32);
-            match (right, bottom) {
-                (Some(right), Some(bottom)) => {
-                    let result = native(NtService::SetWindowRectValues, SyscallArgs { a0: hwnd, a1: args[5], a2: args[6], a3: right as u64, a4: bottom as u64, a5: 0 });
-                    if result == STATUS_SUCCESS { crate::nt_milestone::window_create(); hwnd } else { let _ = native(NtService::DestroyWindow, SyscallArgs { a0: hwnd, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 }); STATUS_INVALID_PARAMETER }
-                }
-                _ => { let _ = native(NtService::DestroyWindow, SyscallArgs { a0: hwnd, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 }); STATUS_INVALID_PARAMETER }
-            }
-        }
-        WINE_POST_MESSAGE => win_bool(native(NtService::PostMessage, SyscallArgs { a0: args[0], a1: args[1], a2: args[2], a3: args[3], a4: 0, a5: 0 })),
-        WINE_DESTROY_WINDOW => win_bool(native(NtService::DestroyWindow, SyscallArgs { a0: args[0], a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 })),
-        WINE_PEEK_MESSAGE => win_bool(native(NtService::PeekMessage, SyscallArgs { a0: args[0], a1: args[1], a2: args[2], a3: args[3], a4: args[4], a5: 0 })),
-        WINE_GET_MESSAGE => { let result = win_bool(native(NtService::GetMessage, SyscallArgs { a0: args[0], a1: args[1], a2: args[2], a3: args[3], a4: 0, a5: 0 })); if result != 0 { crate::nt_milestone::message_get(); } result },
-        WINE_SHOW_WINDOW => native(NtService::ShowWindow, SyscallArgs { a0: args[0], a1: args[1], a2: 0, a3: 0, a4: 0, a5: 0 }),
-        WINE_INVALIDATE_RECT => win_bool(native(NtService::InvalidateWindow, SyscallArgs { a0: args[0], a1: args[1], a2: args[2], a3: 0, a4: 0, a5: 0 })),
-        WINE_SET_WINDOW_POS => {
-            let right = (args[2] as i32).checked_add(args[4] as i32);
-            let bottom = (args[3] as i32).checked_add(args[5] as i32);
-            match (right, bottom) {
-                (Some(right), Some(bottom)) => win_bool(native(NtService::SetWindowRectValues, SyscallArgs { a0: args[0], a1: args[2], a2: args[3], a3: right as u64, a4: bottom as u64, a5: 0 })),
-                _ => STATUS_INVALID_PARAMETER,
-            }
-        }
-        WINE_BEGIN_PAINT => begin_paint(&args, native, gdi),
-        WINE_END_PAINT => end_paint(&args, native, gdi),
-        WINE_GET_DC => create_window_dc(args[0], 0),
-        WINE_GET_DC_EX => create_window_dc(args[0], args[2]),
-        WINE_CREATE_COMPATIBLE_DC => gdi(NtService::CreateCompatibleDc, SyscallArgs { a0: DEFAULT_WINDOW_SURFACE_WIDTH, a1: DEFAULT_WINDOW_SURFACE_HEIGHT, a2: 0, a3: 0, a4: 0, a5: 0 }),
-        WINE_RELEASE_DC => release_window_dc(args[0], args[1]),
-        WINE_DELETE_OBJECT => gdi(NtService::DeleteGdiObject, SyscallArgs { a0: args[0], a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 }),
-        WINE_GET_TEXT_METRICS => win_bool(gdi(NtService::GetGdiTextMetrics, SyscallArgs { a0: args[0], a1: args[1], a2: 0, a3: 0, a4: 0, a5: 0 })),
-        WINE_GET_TEXT_EXTENT_EX => win_bool(gdi(NtService::GetGdiTextExtent, SyscallArgs { a0: args[0], a1: args[1], a2: args[2], a3: args[6], a4: 0, a5: 0 })),
-        _ => STATUS_NOT_IMPLEMENTED,
-    }
-}
+pub use dispatch::{dispatch, dispatch_raw, dispatch_raw_linux};
 
 #[cfg(target_os = "oxide-kernel")]
 fn draw_menu_bar_temp(args: &[u64; 17]) -> u64 {
@@ -318,30 +243,6 @@ fn draw_menu_bar_temp(args: &[u64; 17]) -> u64 {
         raw[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
     }
     if uaccess::copy_to_user(args[2], &raw).is_err() { 0 } else { rect.bottom.saturating_sub(rect.top) as u64 }
-}
-
-#[cfg(target_os = "oxide-kernel")]
-fn create_window_dc(hwnd: u64, flags: u64) -> u64 {
-    // Wine's GetDCEx accepts a null clip region; region ownership is not
-    // represented by the native GDI surface yet, so reject that shape rather
-    // than silently drawing with the wrong clipping contract.
-    if flags & !DCX_WINDOW != 0 { return STATUS_NOT_IMPLEMENTED; }
-    let (width, height) = if hwnd == 0 { (DEFAULT_WINDOW_SURFACE_WIDTH, DEFAULT_WINDOW_SURFACE_HEIGHT) }
-    else {
-        let Some(hwnd) = u32::try_from(hwnd).ok() else { return STATUS_INVALID_PARAMETER; };
-        let Some((rect, _)) = crate::nt_window::window_rect_for_current(hwnd) else { return STATUS_INVALID_PARAMETER; };
-        let width = rect.right.checked_sub(rect.left).filter(|value| *value > 0).map(|value| value as u64);
-        let height = rect.bottom.checked_sub(rect.top).filter(|value| *value > 0).map(|value| value as u64);
-        let (Some(width), Some(height)) = (width, height) else { return STATUS_INVALID_PARAMETER; };
-        (width, height)
-    };
-    crate::nt_gdi::acquire_window_dc_for_current(hwnd as u32, width as i32, height as i32)
-}
-
-#[cfg(target_os = "oxide-kernel")]
-fn release_window_dc(hwnd: u64, dc: u64) -> u64 {
-    let (Some(hwnd), Some(dc)) = (u32::try_from(hwnd).ok(), u32::try_from(dc).ok()) else { return STATUS_INVALID_PARAMETER; };
-    crate::nt_gdi::release_window_dc_for_current(hwnd, dc)
 }
 
 #[cfg(target_os = "oxide-kernel")]
@@ -375,164 +276,17 @@ fn get_class_info_ex(args: &[u64; 17]) -> u64 {
         let Some(name) = read_unicode_string(args[1]) else { return 0; };
         crate::nt_window::class_info_for_current(&name)
     };
-    let Some((_, wndproc, _)) = info else { return 0; };
+    let Some((_, wndproc, _, extra)) = info else { return 0; };
     if args[2] == 0 { return 0; }
     let mut bytes = [0u8; 80];
     bytes[0..4].copy_from_slice(&80u32.to_le_bytes());
     bytes[8..16].copy_from_slice(&wndproc.to_le_bytes());
+    bytes[20..24].copy_from_slice(&extra.to_le_bytes());
     bytes[32..40].copy_from_slice(&args[0].to_le_bytes());
     if uaccess::copy_to_user(args[2], &bytes).is_err() { return 0; }
     1
 }
 
-/// Dispatch the raw win32u syscall used by the real Wine PE module. Unlike
-/// the synthetic `WineSyscall` adapter above, this path receives the Windows
-/// register ABI directly and has no descriptor/argument-array envelope.
-/// # C: O(NTUSER_NB_PROCS + NTUSER_NB_WORKERS)
-#[cfg(target_os = "oxide-kernel")]
-pub fn dispatch_raw(ordinal: u64, args: SyscallArgs) -> Option<u64> {
-    if !raw_ordinal_claimed(ordinal) { return None; }
-    if ordinal == WINE_REGISTER_CLASS_EX { return Some(raw_class::register_class(args)); }
-    if ordinal == WINE_REGISTER_WINDOW_MESSAGE {
-        let Some(name) = read_unicode_string(args.a0) else { return Some(0); };
-        return Some(crate::nt_window::register_window_message_for_current(&name).map(u64::from).unwrap_or(0));
-    }
-    if ordinal == WINE_OPEN_CLIPBOARD { return Some(crate::nt_window::open_clipboard_for_current(args.a0) as u64); }
-    if ordinal == WINE_CLOSE_CLIPBOARD { return Some(crate::nt_window::close_clipboard_for_current() as u64); }
-    if ordinal == WINE_CREATE_WINDOW_EX { let result = raw_class::create_window(args); if result != 0 && result != STATUS_INVALID_PARAMETER { crate::nt_milestone::window_create(); } return Some(result); }
-    if ordinal == WINE_DISPATCH_MESSAGE { return Some(raw_callback::dispatch_message(args.a0)); }
-    if ordinal == WINE_MESSAGE_CALL { return Some(raw_callback::message_call(args)); }
-    let native = |service: NtService, call_args: SyscallArgs| crate::nt_window::dispatch(NtCall { service, args: call_args }).unwrap_or(STATUS_INVALID_PARAMETER);
-    let gdi = |service: NtService, call_args: SyscallArgs| crate::nt_gdi::dispatch(NtCall { service, args: call_args }).unwrap_or(STATUS_INVALID_PARAMETER);
-    if ordinal == WINE_DESTROY_WINDOW { return Some(win_bool(native(NtService::DestroyWindow, SyscallArgs { a0: args.a0, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 }))); }
-    if ordinal == WINE_POST_MESSAGE { return Some(win_bool(native(NtService::PostMessage, SyscallArgs { a0: args.a0, a1: args.a1, a2: args.a2, a3: args.a3, a4: 0, a5: 0 }))); }
-    if ordinal == WINE_PEEK_MESSAGE { return Some(win_bool(native(NtService::PeekMessage, SyscallArgs { a0: args.a0, a1: args.a1, a2: args.a2, a3: args.a3, a4: args.a4, a5: 0 }))); }
-    if ordinal == WINE_GET_MESSAGE { let result = win_bool(native(NtService::GetMessage, SyscallArgs { a0: args.a0, a1: args.a1, a2: args.a2, a3: args.a3, a4: 0, a5: 0 })); if result != 0 { crate::nt_milestone::message_get(); } return Some(result); }
-    if ordinal == WINE_SHOW_WINDOW { return Some(native(NtService::ShowWindow, SyscallArgs { a0: args.a0, a1: args.a1, a2: 0, a3: 0, a4: 0, a5: 0 })); }
-    if ordinal == WINE_INVALIDATE_RECT { return Some(win_bool(native(NtService::InvalidateWindow, SyscallArgs { a0: args.a0, a1: args.a1, a2: args.a2, a3: 0, a4: 0, a5: 0 }))); }
-    if ordinal == WINE_BEGIN_PAINT {
-        let packed = [args.a0, args.a1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-        return Some(begin_paint(&packed, native, gdi));
-    }
-    if ordinal == WINE_END_PAINT {
-        let packed = [args.a0, args.a1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-        return Some(end_paint(&packed, native, gdi));
-    }
-    if ordinal == WINE_GET_DC { return Some(create_window_dc(args.a0, 0)); }
-    if ordinal == WINE_GET_DC_EX { return Some(create_window_dc(args.a0, args.a2)); }
-    if ordinal == WINE_RELEASE_DC { return Some(win_bool(gdi(NtService::DeleteGdiObject, SyscallArgs { a0: args.a1, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 }))); }
-    if ordinal == WINE_SET_WINDOW_POS {
-        let right = (args.a2 as i32).checked_add(args.a4 as i32);
-        let bottom = (args.a3 as i32).checked_add(args.a5 as i32);
-        return Some(match (right, bottom) {
-            (Some(right), Some(bottom)) => win_bool(native(NtService::SetWindowRectValues, SyscallArgs { a0: args.a0, a1: args.a2, a2: args.a3, a3: right as u64, a4: bottom as u64, a5: 0 })),
-            _ => STATUS_INVALID_PARAMETER,
-        });
-    }
-    if ordinal == WINE_GET_MENU_ITEM_RECT {
-        let Some(rect) = crate::nt_window::menu_item_rect_for_current(args.a0, args.a1, args.a2) else { return Some(0); };
-        let bytes = [rect.left.to_le_bytes(), rect.top.to_le_bytes(), rect.right.to_le_bytes(), rect.bottom.to_le_bytes()];
-        let mut raw = [0u8; 16];
-        for (index, field) in bytes.iter().enumerate() { raw[index * 4..index * 4 + 4].copy_from_slice(field); }
-        return Some(if uaccess::copy_to_user(args.a3, &raw).is_ok() { 1 } else { 0 });
-    }
-    if ordinal == WINE_GET_MENU_BAR_INFO {
-        const OBJID_MENU: u64 = 0xffff_ffff_ffff_fffd;
-        const MENUBARINFO_BYTES: u32 = 48;
-        if args.a1 != OBJID_MENU || args.a3 == 0 || uaccess::get_user_u32(args.a3).ok() != Some(MENUBARINFO_BYTES) { return Some(0); }
-        let Some(menu) = crate::nt_window::window_menu_for_current(args.a0) else { return Some(0); };
-        let Some(rect) = (if args.a2 == 0 { crate::nt_window::menu_bar_rect_for_current(args.a0) } else { crate::nt_window::menu_item_rect_for_current(args.a0, menu, args.a2 - 1) }) else { return Some(0); };
-        let mut raw = [0u8; MENUBARINFO_BYTES as usize];
-        raw[0..4].copy_from_slice(&MENUBARINFO_BYTES.to_le_bytes());
-        raw[8..12].copy_from_slice(&rect.left.to_le_bytes()); raw[12..16].copy_from_slice(&rect.top.to_le_bytes()); raw[16..20].copy_from_slice(&rect.right.to_le_bytes()); raw[20..24].copy_from_slice(&rect.bottom.to_le_bytes());
-        raw[24..32].copy_from_slice(&menu.to_le_bytes());
-        return Some(if uaccess::copy_to_user(args.a3, &raw).is_ok() { 1 } else { 0 });
-    }
-    if ordinal == WINE_DRAW_MENU_BAR {
-        return Some(crate::nt_window::draw_menu_bar_for_current(args.a0));
-    }
-    if ordinal == WINE_DRAW_MENU_BAR_TEMP {
-        if args.a2 == 0 { return Some(0); }
-        let menu = if args.a3 != 0 { args.a3 } else { crate::nt_window::window_menu_for_current(args.a0).unwrap_or(0) };
-        let Some(rect) = crate::nt_window::menu_bar_rect_for_current_menu(args.a0, menu) else { return Some(0); };
-        let mut raw = [0u8; 16];
-        for (index, value) in [rect.left, rect.top, rect.right, rect.bottom].iter().enumerate() {
-            raw[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
-        }
-        return Some(if uaccess::copy_to_user(args.a2, &raw).is_ok() {
-            rect.bottom.saturating_sub(rect.top) as u64
-        } else { 0 });
-    }
-    if ordinal == WINE_SET_ACTIVE_WINDOW || ordinal == WINE_SET_FOCUS {
-        return Some(crate::nt_window::dispatch(NtCall { service: NtService::SetFocusWindow, args: SyscallArgs { a0: args.a0, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 } }).unwrap_or(STATUS_INVALID_PARAMETER));
-    }
-    if ordinal == WINE_TRANSLATE_MESSAGE { return Some(translate_raw_message(args.a0)); }
-    if ordinal == WINE_CREATE_MENU { return Some(crate::nt_window::create_menu_for_current(false)); }
-    if ordinal == WINE_CREATE_POPUP_MENU { return Some(crate::nt_window::create_menu_for_current(true)); }
-    if ordinal == WINE_DESTROY_MENU { return Some(win_bool(crate::nt_window::destroy_menu_for_current(args.a0))); }
-    if ordinal == WINE_CHECK_MENU_ITEM { return Some(crate::nt_window::check_menu_item_for_current(args.a0, args.a1, args.a2)); }
-    if ordinal == WINE_ENABLE_MENU_ITEM { return Some(crate::nt_window::enable_menu_item_for_current(args.a0, args.a1, args.a2)); }
-    if ordinal == WINE_DELETE_MENU { return Some(win_bool(crate::nt_window::delete_menu_item_for_current(args.a0, args.a1, args.a2))); }
-    if ordinal == WINE_REMOVE_MENU { return Some(win_bool(crate::nt_window::remove_menu_item_for_current(args.a0, args.a1, args.a2))); }
-    if ordinal == WINE_SET_MENU { return Some(win_bool(crate::nt_window::set_window_menu_for_current(args.a0, (args.a1 != 0).then_some(args.a1 as u32)).map(|_| STATUS_SUCCESS).unwrap_or(STATUS_INVALID_PARAMETER))); }
-    if ordinal == WINE_CALL_ONE_PARAM {
-        let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
-        if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
-        if args.a1 == CALL_ONE_PARAM_GET_MENU_ITEM_COUNT { return Some(crate::nt_window::menu_item_count_for_current(args.a0)); }
-        if args.a1 == crate::nt_window_policy::CALL_ONE_PARAM_GET_SYSTEM_METRICS {
-            let (width, height) = drm::primary_card().map(|card| {
-                let mode = card.mode_for(0);
-                (mode.hdisplay as u32, mode.vdisplay as u32)
-            }).filter(|(width, height)| *width != 0 && *height != 0).unwrap_or((DEFAULT_WINDOW_SURFACE_WIDTH as u32, DEFAULT_WINDOW_SURFACE_HEIGHT as u32));
-            return Some(crate::nt_window_policy::display_metric(args.a0, width, height).unwrap_or(STATUS_NOT_IMPLEMENTED));
-        }
-        return Some(STATUS_NOT_IMPLEMENTED);
-    }
-    if ordinal == WINE_THUNKED_MENU_ITEM_INFO {
-        return Some(crate::nt_window::thunked_menu_item_info(args.a0, args.a1, args.a2, args.a3, args.a4));
-    }
-    if ordinal == WINE_CALL_NO_PARAM {
-        let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
-        if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
-        if args.a0 != CALL_NO_PARAM_GET_DIALOG_BASE_UNITS { return Some(STATUS_NOT_IMPLEMENTED); }
-        let Some((width, height)) = crate::nt_gdi::dialog_base_units() else { return Some(STATUS_INVALID_PARAMETER); };
-        let dpi = drm::primary_system_dpi() as i32;
-        let scale = |value: i32| value.saturating_mul(dpi).checked_div(96).unwrap_or(value).max(1) as u32;
-        return Some((scale(width) as u64) | ((scale(height) as u64) << 16));
-    }
-    if ordinal == WINE_NTUSER_GET_SYSTEM_DPI_FOR_PROCESS {
-        let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
-        if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
-        let _ = args;
-        return Some(drm::primary_system_dpi() as u64);
-    }
-    if ordinal == WINE_GET_WINDOW_PLACEMENT {
-        let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
-        if !cur.is_nt_personality() || args.a0 > u32::MAX as u64 || args.a1 == 0 { return Some(STATUS_INVALID_PARAMETER); }
-        if uaccess::get_user_u32(args.a1).ok() != Some(WINDOWPLACEMENT_BYTES as u32) { return Some(STATUS_INVALID_PARAMETER); }
-        let Some((rect, visible)) = crate::nt_window::window_rect_for_current(args.a0 as u32) else { return Some(STATUS_INVALID_PARAMETER); };
-        let mut bytes = [0u8; WINDOWPLACEMENT_BYTES as usize];
-        bytes[0..4].copy_from_slice(&(WINDOWPLACEMENT_BYTES as u32).to_le_bytes());
-        bytes[12..16].copy_from_slice(&(visible as u32).to_le_bytes());
-        bytes[28..32].copy_from_slice(&rect.left.to_le_bytes());
-        bytes[32..36].copy_from_slice(&rect.top.to_le_bytes());
-        bytes[36..40].copy_from_slice(&rect.right.to_le_bytes());
-        bytes[40..44].copy_from_slice(&rect.bottom.to_le_bytes());
-        return Some(if uaccess::copy_to_user(args.a1, &bytes).is_ok() { STATUS_SUCCESS } else { STATUS_INVALID_PARAMETER });
-    }
-    if ordinal != WINE_NTUSER_INITIALIZE_CLIENT_PFN_ARRAYS { return None; }
-    let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
-    if !cur.is_nt_personality() || args.a0 == 0 || args.a1 == 0 || args.a2 == 0 || args.a3 == 0 {
-        return Some(STATUS_INVALID_PARAMETER);
-    }
-    if !crate::nt_rtl::validate_nt_user_pfn_tables(args.a0, args.a1, args.a2) {
-        return Some(STATUS_INVALID_PARAMETER);
-    }
-    let mut module = cur.thread_group.nt_user_module.lock();
-    if module.is_some() { return Some(STATUS_INVALID_PARAMETER); }
-    *module = Some(args.a3);
-    Some(STATUS_SUCCESS)
-}
 
 #[cfg(target_os = "oxide-kernel")]
 fn translate_raw_message(pointer: u64) -> u64 {
@@ -547,6 +301,13 @@ fn translate_raw_message(pointer: u64) -> u64 {
     let message = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
     let wparam = u64::from_le_bytes(bytes[16..24].try_into().unwrap());
     let lparam = i64::from_le_bytes(bytes[24..32].try_into().unwrap());
+    if crate::nt_compositor::monitors_current().is_some() {
+        // Desktop text already carries the active XKB layout's translation.
+        // Reapplying the legacy US-key conversion would duplicate every WM_CHAR
+        // and turn shortcuts into literal letters. Wine accepts the keyboard
+        // message range even when no character is produced (message.c).
+        return (0x0100..=0x0109).contains(&message) as u64;
+    }
     if message != WM_KEYDOWN { return 0; }
     let Some(character) = translated_key(wparam as u16) else { return 0; };
     let status = crate::nt_window::dispatch(NtCall {
@@ -554,6 +315,17 @@ fn translate_raw_message(pointer: u64) -> u64 {
         args: SyscallArgs { a0: hwnd, a1: 0x0102, a2: character as u64, a3: lparam as u64, a4: 0, a5: 0 },
     }).unwrap_or(STATUS_INVALID_PARAMETER);
     (status == STATUS_SUCCESS) as u64
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn keyboard_query(ordinal: u64, value: u64) -> Option<u64> {
+    Some(match ordinal {
+        WINE_GET_ASYNC_KEY_STATE => crate::nt_window::get_async_key_state_current(value),
+        WINE_GET_KEY_STATE => crate::nt_window::get_key_state_current(value),
+        WINE_GET_KEYBOARD_STATE => crate::nt_window::get_keyboard_state_current(value),
+        WINE_SET_KEYBOARD_STATE => crate::nt_window::set_keyboard_state_current(value),
+        _ => return None,
+    })
 }
 
 fn translated_key(key: u16) -> Option<u16> {
@@ -568,50 +340,9 @@ fn translated_key(key: u16) -> Option<u16> {
 fn win_bool(status: u64) -> u64 { (status == STATUS_SUCCESS) as u64 }
 
 #[cfg(target_os = "oxide-kernel")]
-fn begin_paint<F, G>(args: &[u64; 17], native: F, gdi: G) -> u64
-where F: Fn(NtService, SyscallArgs) -> u64, G: Fn(NtService, SyscallArgs) -> u64 {
-    let Some(rect) = paintstruct_field(args[1], PAINTSTRUCT_RECT_OFFSET) else { return STATUS_INVALID_PARAMETER; };
-    let (width, height) = if args[0] == 0 {
-        (DEFAULT_WINDOW_SURFACE_WIDTH, DEFAULT_WINDOW_SURFACE_HEIGHT)
-    } else {
-        let Some(hwnd) = u32::try_from(args[0]).ok() else { return STATUS_INVALID_PARAMETER; };
-        let Some((window, _)) = crate::nt_window::window_rect_for_current(hwnd) else { return STATUS_INVALID_PARAMETER; };
-        let Some(width) = window.right.checked_sub(window.left).filter(|value| *value > 0) else { return STATUS_INVALID_PARAMETER; };
-        let Some(height) = window.bottom.checked_sub(window.top).filter(|value| *value > 0) else { return STATUS_INVALID_PARAMETER; };
-        (width as u64, height as u64)
-    };
-    let hdc = gdi(NtService::CreateCompatibleDc, SyscallArgs { a0: width, a1: height, a2: 0, a3: 0, a4: 0, a5: 0 });
-    if hdc == STATUS_INVALID_PARAMETER || hdc == 0 { return hdc; }
-    if native(NtService::BeginWindowPaint, SyscallArgs { a0: args[0], a1: rect, a2: 0, a3: 0, a4: 0, a5: 0 }) != STATUS_SUCCESS { let _ = gdi(NtService::DeleteGdiObject, SyscallArgs { a0: hdc, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 }); return STATUS_INVALID_PARAMETER; }
-    let Some(hdc_field) = paintstruct_field(args[1], PAINTSTRUCT_HDC_OFFSET) else {
-        let _ = native(NtService::EndWindowPaint, SyscallArgs { a0: args[0], a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 });
-        let _ = gdi(NtService::DeleteGdiObject, SyscallArgs { a0: hdc, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 });
-        return STATUS_INVALID_PARAMETER;
-    };
-    if uaccess::copy_to_user(hdc_field, &hdc.to_le_bytes()).is_err() {
-        let _ = native(NtService::EndWindowPaint, SyscallArgs { a0: args[0], a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 });
-        let _ = gdi(NtService::DeleteGdiObject, SyscallArgs { a0: hdc, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 });
-        return STATUS_INVALID_PARAMETER;
-    }
-    crate::nt_milestone::paint_begin();
-    hdc
-}
-
+mod paint;
 #[cfg(target_os = "oxide-kernel")]
-fn end_paint<F, G>(args: &[u64; 17], native: F, gdi: G) -> u64
-where F: Fn(NtService, SyscallArgs) -> u64, G: Fn(NtService, SyscallArgs) -> u64 {
-    let Ok(hdc) = uaccess::get_user_u64(args[1]) else { return STATUS_INVALID_PARAMETER; };
-    let present = if hdc != 0 {
-        let Some([left, top, right, bottom]) = read_paint_rect(args[1]) else { return STATUS_INVALID_PARAMETER; };
-        gdi(NtService::PresentGdiWindowRegion, SyscallArgs { a0: args[0], a1: hdc, a2: left as u64, a3: top as u64, a4: right as u64, a5: bottom as u64 })
-    } else { STATUS_INVALID_PARAMETER };
-    let result = native(NtService::EndWindowPaint, SyscallArgs { a0: args[0], a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 });
-    if hdc != 0 { let _ = gdi(NtService::DeleteGdiObject, SyscallArgs { a0: hdc, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 }); }
-    let status = win_bool(if result == STATUS_SUCCESS { present } else { result });
-    if status != 0 && present == STATUS_SUCCESS { crate::nt_milestone::paint_present(); }
-    status
-}
-
+use paint::{begin_paint, end_paint};
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -630,14 +361,10 @@ mod tests {
         assert!(raw_ordinal_claimed(WINE_REGISTER_WINDOW_MESSAGE));
         assert!(raw_ordinal_claimed(WINE_OPEN_CLIPBOARD));
         assert!(raw_ordinal_claimed(WINE_CLOSE_CLIPBOARD));
+        assert!(raw_ordinal_claimed(WINE_GET_CLASS_INFO_EX));
+        assert!(raw_ordinal_claimed(WINE_GET_CLASS_NAME));
         assert!(!raw_ordinal_claimed(0x131b));
         assert!(!raw_ordinal_claimed(u64::MAX));
-    }
-
-    #[test]
-    fn paintstruct_offsets_fail_closed_on_pointer_wrap() {
-        assert_eq!(paintstruct_field(u64::MAX, 0), Some(u64::MAX));
-        assert_eq!(paintstruct_field(u64::MAX, PAINTSTRUCT_RECT_OFFSET), None);
     }
 
     #[test]
@@ -645,6 +372,22 @@ mod tests {
         assert_eq!(message_field(u64::MAX, 0), Some(u64::MAX));
         assert_eq!(message_field(u64::MAX, 8), None);
         assert_eq!(message_field(u64::MAX - 24, 24), Some(u64::MAX));
+    }
+
+    #[test]
+    fn win_proc_params_layout_matches_wine_ntuser_header() {
+        assert_eq!(WIN_PROC_HWND, 8);
+        assert_eq!(WIN_PROC_MSG, 16);
+        assert_eq!(WIN_PROC_WPARAM, 24);
+        assert_eq!(WIN_PROC_LPARAM, 32);
+        assert_eq!(WIN_PROC_ANSI, 40);
+        assert_eq!(WIN_PROC_ANSI_DST, 44);
+        assert_eq!(WIN_PROC_MAPPING, 48);
+        assert_eq!(WIN_PROC_DPI_CONTEXT, 52);
+        assert_eq!(WIN_PROC_PROCA, 56);
+        assert_eq!(WIN_PROC_PROCW, 64);
+        assert_eq!(WIN_PROC_PROCW + 8, 72);
+        assert_eq!(WIN_PROC_CALLWINDOWPROC_MAPPING, 5);
     }
 
     #[test]

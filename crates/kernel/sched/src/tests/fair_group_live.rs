@@ -60,7 +60,9 @@ fn sibling_groups_compete_as_entities_not_as_flat_member_tasks() {
     assert!(rq.enqueue(second));
     assert!(rq.enqueue(Arc::clone(&peer)));
 
-    assert_eq!(rq.pick_leftmost().unwrap().tid, 93_291);
+    let selected = rq.pick_leftmost().unwrap();
+    assert_eq!(selected.tid, 93_291);
+    rq.account_runtime(&selected, 4_000_000);
     assert_eq!(rq.pick_leftmost().unwrap().tid, peer.tid,
         "a group's second member bypassed an equal sibling group entity");
 

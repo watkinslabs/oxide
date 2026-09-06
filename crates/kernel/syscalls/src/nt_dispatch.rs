@@ -305,6 +305,12 @@ fn compare_objects(cur: &sched::Task, first: u64, second: u64) -> u64 {
 /// # C: O(log N_vmas) plus usercopy
 #[cfg(target_os = "oxide-kernel")]
 pub fn dispatch(call: NtCall) -> u64 {
+    if call.service == nt::NtService::BindCompositor {
+        crate::nt_compositor::set_event_handler(crate::nt_window::compositor_event);
+        return crate::nt_compositor::bind_service(call.args.a0);
+    }
+    if let Some(result) = crate::nt_native_thread::dispatch(call) { return result; }
+    if let Some(result) = crate::nt_native_gdi::dispatch(call) { return result; }
     if call.service == syscall::nt::NtService::NtTestAlert {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
         if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
@@ -326,9 +332,12 @@ pub fn dispatch(call: NtCall) -> u64 {
     if let Some(result) = crate::nt_file::dispatch_native(call) { return result; }
     if let Some(result) = crate::nt_rtl::dispatch(call) { return result; }
     if call.service == syscall::nt::NtService::RelayCall {
-        klog::write_raw(b"[WINDOWS-PE-NT-DISPATCH] relay descriptor="); klog::write_hex_u64(call.args.a0);
-        klog::write_raw(b" index="); klog::write_hex_u64(call.args.a1);
-        klog::write_raw(b" stack="); klog::write_hex_u64(call.args.a2); klog::write_raw(b"\n");
+        #[cfg(feature = "debug-faultdiag")]
+        {
+            klog::write_raw(b"[WINDOWS-PE-NT-DISPATCH] relay descriptor="); klog::write_hex_u64(call.args.a0);
+            klog::write_raw(b" index="); klog::write_hex_u64(call.args.a1);
+            klog::write_raw(b" stack="); klog::write_hex_u64(call.args.a2); klog::write_raw(b"\n");
+        }
     }
     if call.service == syscall::nt::NtService::RtlGetNativeSystemInformation {
         let mut query = call;
@@ -950,8 +959,10 @@ pub fn dispatch(call: NtCall) -> u64 {
             return STATUS_INVALID_HANDLE;
         }
         if thread == CURRENT_THREAD {
+            if crate::nt_native_thread::request_termination(&target, status as u32) { return STATUS_SUCCESS; }
             return crate::s060_exit::sys_exit(&SyscallArgs { a0: status, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 }) as u64;
         }
+        if crate::nt_native_thread::request_termination(&target, status as u32) { return STATUS_SUCCESS; }
         // Cross-thread termination uses Linux's canonical forced-fatal signal
         // path; it wakes a sleeping target and preserves scheduler teardown ownership.
         let info = sched::sigsend::fault_info(sched::signum::Signum::Sigkill as u32, 0, 0, 0);
@@ -993,6 +1004,9 @@ pub fn dispatch(call: NtCall) -> u64 {
     if call.service == nt::NtService::RtlExitUserThread {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
         if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+        if let Some(target) = sched::registry::lookup(cur.tid) {
+            if crate::nt_native_thread::request_termination(&target, call.args.a0 as u32) { return STATUS_SUCCESS; }
+        }
         return crate::s060_exit::sys_exit(&SyscallArgs { a0: call.args.a0, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 }) as u64;
     }
     let object_call = if matches!(call.service, nt::NtService::CreateSection | nt::NtService::NtCreateSectionEx | nt::NtService::MapViewOfSection | nt::NtService::NtMapViewOfSectionEx) {
@@ -1435,6 +1449,7 @@ pub fn dispatch(call: NtCall) -> u64 {
                 };
                 if !target.is_nt_personality() { return STATUS_INVALID_HANDLE; }
                 let mut out = [0u8; THREAD_BASIC_INFORMATION_BYTES];
+                if let Some(status) = target.nt_native_thread.lock().result { out[..4].copy_from_slice(&status.to_ne_bytes()); }
                 out[8..16].copy_from_slice(&target.nt_teb().to_ne_bytes());
                 out[16..24].copy_from_slice(&(target.tgid.load(core::sync::atomic::Ordering::Acquire) as u64).to_ne_bytes());
                 out[24..32].copy_from_slice(&(target.tid as u64).to_ne_bytes());
@@ -1463,6 +1478,10 @@ pub fn dispatch(call: NtCall) -> u64 {
                     klog::write_raw(b"\n");
                 }
                 let Some(stack_size) = crate::nt_process_policy::thread_stack_size(stack_size) else { return STATUS_INVALID_PARAMETER; };
+                if crate::nt_native_thread::factory(cur).is_some() {
+                    return crate::nt_native_thread::begin(cur, handle.as_u64(), start, parameter, stack_size,
+                        flags & THREAD_CREATE_FLAGS_CREATE_SUSPENDED != 0);
+                }
                 // SAFETY: the running NT task owns this address-space slot;
                 // the clone pins it while the unpublished child is prepared.
                 let Some(mm) = (unsafe { cur.mm_ref() }).map(|mm| mm.clone()) else { return STATUS_INVALID_PARAMETER; };
@@ -1491,24 +1510,23 @@ pub fn dispatch(call: NtCall) -> u64 {
                         return STATUS_NO_MEMORY;
                     }
                 };
-                let native = match table.insert(table.new_thread(child.clone()), THREAD_ALL_ACCESS | SYNCHRONIZE_ACCESS) {
-                    Some(handle) => handle,
-                    None => {
+                let result = crate::nt_thread_lifecycle::publish(
+                    &child, &table, THREAD_ALL_ACCESS | SYNCHRONIZE_ACCESS,
+                    flags & THREAD_CREATE_FLAGS_CREATE_SUSPENDED != 0,
+                    |native| uaccess::put_user_u32(handle.as_u64(), native.raw()).map_err(|_| ()),
+                    sched::live::publish_new_task,
+                    || {
                         if let Some(teb) = hal::UserVirtAddr::new(teb) { let _ = elf_load::process_env::unmap_thread_teb(teb, &mm); }
                         let _ = mm.munmap(stack, stack_size as usize);
-                        return STATUS_NO_MEMORY;
-                    }
-                };
-                if uaccess::put_user_u32(handle.as_u64(), native.raw()).is_err() {
-                    let _ = table.close(native);
-                    if let Some(teb) = hal::UserVirtAddr::new(teb) { let _ = elf_load::process_env::unmap_thread_teb(teb, &mm); }
-                    let _ = mm.munmap(stack, stack_size as usize);
-                    return STATUS_INVALID_PARAMETER;
+                    },
+                );
+                if let Err(error) = result {
+                    return match error {
+                        crate::nt_thread_lifecycle::PublishError::NoMemory => STATUS_NO_MEMORY,
+                        crate::nt_thread_lifecycle::PublishError::Writeback => STATUS_INVALID_PARAMETER,
+                    };
                 }
-                sched::live::publish_new_task(&child);
-                if flags & THREAD_CREATE_FLAGS_CREATE_SUSPENDED != 0 {
-                    let _ = child.nt_suspend();
-                } else { sched::live::wake_new_task(&child); }
+                sched::live::nt_suspend::resume_task(&child);
                 STATUS_SUCCESS
             }
             // Timer state and publication are owned by nt_timer; this arm
@@ -1619,7 +1637,11 @@ pub fn dispatch(call: NtCall) -> u64 {
                 || uaccess::put_user_u32(old_protect.as_u64(), windows_protection_word(old)).is_err() { return STATUS_INVALID_PARAMETER; }
             STATUS_SUCCESS
         }
-        NtMemoryCall::Query { address, info_class, info, info_size, return_length, .. } => {
+        NtMemoryCall::Query { process, address, info_class, info, info_size, return_length } => {
+            if let Some(status) = crate::nt_wine_memory::dispatch(
+                process, address, info_class, info.as_u64(), info_size,
+                return_length.map(|pointer| pointer.as_u64()),
+            ) { return status; }
             if info_class != MEMORY_BASIC_INFORMATION_CLASS || info_size < MEMORY_BASIC_INFORMATION_BYTES as u64 { return STATUS_INVALID_PARAMETER; }
             let address = match hal::UserVirtAddr::new(address) { Some(address) => address, None => return STATUS_INVALID_PARAMETER };
             let memory = match elf_load::nt_memory::query(&mm, address) {
@@ -1641,7 +1663,10 @@ pub fn dispatch(call: NtCall) -> u64 {
             bytes[36..40].copy_from_slice(&windows_protection_word(memory.protection).to_ne_bytes());
             let kind: u32 = if memory.allocation_base.as_u64() == 0 { 0 } else if memory.mapped_view { 0x40000 } else { 0x20000 };
             bytes[40..44].copy_from_slice(&kind.to_ne_bytes());
-            if uaccess::copy_to_user(info.as_u64(), &bytes).is_err() || uaccess::put_user_u64(return_length.as_u64(), MEMORY_BASIC_INFORMATION_BYTES as u64).is_err() { return STATUS_INVALID_PARAMETER; }
+            if uaccess::copy_to_user(info.as_u64(), &bytes).is_err() { return STATUS_INVALID_PARAMETER; }
+            if let Some(return_length) = return_length {
+                if uaccess::put_user_u64(return_length.as_u64(), MEMORY_BASIC_INFORMATION_BYTES as u64).is_err() { return STATUS_INVALID_PARAMETER; }
+            }
             STATUS_SUCCESS
         }
         NtMemoryCall::Flush { address, size, io, .. } => {

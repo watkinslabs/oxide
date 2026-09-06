@@ -1,6 +1,6 @@
 # 24 IPC: pipes, signals, futex, eventfd, signalfd, timerfd, AF_UNIX
 
-FROZEN 2026-05-02. Dep:`01`,`02`,`06`,`12`,`13`,`16`,`23`. Provides:`15` syscalls (signal, futex, pipe2, eventfd2, signalfd4, timerfd_create, AF_UNIX in `25`).
+FROZEN 2026-09-06. Dep:`01`,`02`,`06`,`12`,`13`,`16`,`23`. Provides:`15` syscalls (signal, futex, pipe2, eventfd2, signalfd4, timerfd_create, AF_UNIX in `25`).
 
 ## 1 Purpose
 
@@ -83,6 +83,14 @@ Returns an fd that, when read, yields a `signalfd_siginfo` for the next pending 
 Three flavors: SOCK_STREAM, SOCK_DGRAM, SOCK_SEQPACKET. Per `15` and `25§13`. Path-bound (filesystem) or abstract (`\0`-prefixed). SCM_RIGHTS (fd passing) and SCM_CREDENTIALS (peer cred). Connection state machine like TCP but in-memory.
 
 Backing: per-socket pair of intrusive ring buffers; SCM messages out-of-band ring.
+
+Pathname connection resolves through the caller's filesystem root/cwd and
+mount namespace, following the final symlink. Canonical VFS MAY_WRITE admission
+with the caller's filesystem credentials precedes socket-type validation and
+endpoint lookup; a non-writable non-socket returns EACCES before ECONNREFUSED.
+Abstract addresses have no filesystem write-permission check. Existing generic
+socket and endpoint security admission remain in force. Kernel-assisted user
+runtime clients must not substitute root credentials or the initial namespace.
 
 ## 10 Concurrency
 

@@ -1,0 +1,12 @@
+[package]
+name = "paint-pending-control"
+version = "0.1.0"
+edition = "2021"
+publish = false
+build = "build.rs"
+[workspace]
+[lib]
+path = "fixture.rs"
+[dependencies]
+ipc = { path = "../../../ipc" }
+syscall = { path = "../../../syscall" }

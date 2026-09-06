@@ -23,6 +23,7 @@ pub mod bw;
 pub mod cbs;
 pub mod clock;
 pub mod entity;
+mod publication;
 pub mod inactive;
 pub mod params;
 

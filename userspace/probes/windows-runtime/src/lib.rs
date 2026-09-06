@@ -9,8 +9,13 @@ use std::os::unix::fs::FileTypeExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
+mod native_loader;
+pub mod native_thread;
+pub mod native_gdi;
+pub use native_loader::{attach_native_thread, load_and_register_unixlib, register_unixlib, NativeLoaderError};
+
 use pe::catalog::ModuleCatalog;
-use syscall::nt_exec::{NtExecModule, NtExecRequest};
+use syscall::nt_exec::{NtExecModule, NtExecRequest, NtExecUnixlib};
 use syscall::UserPtr;
 
 mod preflight;
@@ -36,6 +41,7 @@ pub enum BuildError {
     InvalidAddress,
     InvalidEnvironment,
     AmbiguousModule { name: Vec<u8>, first: PathBuf, second: PathBuf },
+    MissingUnixlib { name: Vec<u8> },
     UnsupportedArchitecture,
     InvalidLaunchConfiguration { field: &'static str },
 }
@@ -54,6 +60,7 @@ impl From<io::Error> for BuildError {
 }
 
 struct ModuleBuffer { name: Box<[u8]>, image: Box<[u8]> }
+struct UnixlibBuffer { name: Box<[u8]>, path: Box<[u8]>, image: Box<[u8]> }
 
 /// Windows architecture admitted by the native NT personality.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -255,9 +262,14 @@ pub struct RuntimeRequest {
     command_line: Box<[u8]>,
     #[allow(dead_code)]
     environment: Box<[u8]>,
+    #[allow(dead_code)]
+    bootstrap: Box<[u8]>,
     modules: Vec<ModuleBuffer>,
     #[allow(dead_code)]
     records: Box<[NtExecModule]>,
+    unixlibs: Vec<UnixlibBuffer>,
+    #[allow(dead_code)]
+    unixlib_records: Box<[NtExecUnixlib]>,
     request: NtExecRequest,
 }
 
@@ -283,16 +295,19 @@ impl RuntimeRequest {
             ("WINEPREFIX".into(), prefix.to_string_lossy().into_owned()),
             ("WINEARCH".into(), "win64".into()),
             ("STEAM_COMPAT_TOOL_PATHS".into(), runtime.to_string_lossy().into_owned()),
+            ("OXIDE_WINE_UNIXLIB_PATH".into(), unixlib.join("win32u.so").to_string_lossy().into_owned()),
+            ("LD_LIBRARY_PATH".into(), unixlib.to_string_lossy().into_owned()),
             ("OXIDE_NT_PERSONALITY".into(), "native".into()),
         ];
-        Self::from_paths_with_environment(image_path, windows_path, command_line, dll_catalog, environment)
+        Self::from_paths_with_environment_and_unixlib(image_path, windows_path, command_line, dll_catalog, unixlib, environment)
+            .and_then(RuntimeRequest::attach_bootstrap)
     }
 
     /// Admit one explicit Proton launch and produce the existing NT handoff.
     /// # C: O(PE + DLL catalog bytes)
     pub fn from_launch_config(image_path: &Path, windows_path: &[u8], command_line: &[u8], config: &ProtonLaunchConfig) -> Result<Self, BuildError> {
         let dxvk = config.validate_and_admit_dxvk()?;
-        Self::from_paths_with_environment_and_paths_and_snapshots(image_path, windows_path, command_line, &config.dll_catalog, dxvk.modules(), dxvk.module_images(), config.profile().environment())
+        Self::from_paths_with_environment_and_unixlib_and_paths_and_snapshots(image_path, windows_path, command_line, &config.dll_catalog, Some(&config.unixlib), dxvk.modules(), dxvk.module_images(), config.profile().environment())
     }
 
     /// Read a PE32+ root and every non-native DLL in `dll_dir` using the Linux personality.
@@ -313,15 +328,14 @@ impl RuntimeRequest {
     /// # C: O(root + DLL directory bytes + environment bytes)
     pub fn from_paths_with_environment<I>(image_path: &Path, windows_path: &[u8], command_line: &[u8], dll_dir: &Path, environment: I) -> Result<Self, BuildError>
     where I: IntoIterator<Item = (String, String)> {
-        Self::from_paths_with_environment_and_paths(image_path, windows_path, command_line, dll_dir, &[], environment)
+        Self::from_paths_with_environment_and_paths_and_snapshots(image_path, windows_path, command_line, dll_dir, &[], &[], environment)
     }
 
-    /// Build one owned catalog from the primary Wine directory and admitted
-    /// component paths, rejecting duplicate identities across sources.
-    /// # C: O(root + component paths + DLL bytes + environment bytes)
-    fn from_paths_with_environment_and_paths<I>(image_path: &Path, windows_path: &[u8], command_line: &[u8], dll_dir: &Path, component_paths: &[PathBuf], environment: I) -> Result<Self, BuildError>
+    /// Build a handoff with a runtime-owned Unixlib source directory.
+    /// # C: O(root + PE/ELF catalog bytes + environment bytes)
+    pub fn from_paths_with_environment_and_unixlib<I>(image_path: &Path, windows_path: &[u8], command_line: &[u8], dll_dir: &Path, unixlib_dir: &Path, environment: I) -> Result<Self, BuildError>
     where I: IntoIterator<Item = (String, String)> {
-        Self::from_paths_with_environment_and_paths_and_snapshots(image_path, windows_path, command_line, dll_dir, component_paths, &[], environment)
+        Self::from_paths_with_environment_and_unixlib_and_paths_and_snapshots(image_path, windows_path, command_line, dll_dir, Some(unixlib_dir), &[], &[], environment)
     }
 
     /// Build the catalog from explicitly admitted component bytes. The
@@ -329,6 +343,11 @@ impl RuntimeRequest {
     /// at an admitted path cannot change the bytes sent to the kernel.
     /// # C: O(root + component paths + component bytes + DLL catalog bytes)
     fn from_paths_with_environment_and_paths_and_snapshots<I>(image_path: &Path, windows_path: &[u8], command_line: &[u8], dll_dir: &Path, component_paths: &[PathBuf], component_images: &[Box<[u8]>], environment: I) -> Result<Self, BuildError>
+    where I: IntoIterator<Item = (String, String)> {
+        Self::from_paths_with_environment_and_unixlib_and_paths_and_snapshots(image_path, windows_path, command_line, dll_dir, None, component_paths, component_images, environment)
+    }
+
+    fn from_paths_with_environment_and_unixlib_and_paths_and_snapshots<I>(image_path: &Path, windows_path: &[u8], command_line: &[u8], dll_dir: &Path, unixlib_dir: Option<&Path>, component_paths: &[PathBuf], component_images: &[Box<[u8]>], environment: I) -> Result<Self, BuildError>
     where I: IntoIterator<Item = (String, String)> {
         if component_paths.len() != component_images.len() && !component_images.is_empty() { return Err(BuildError::InvalidLaunchConfiguration { field: "dxvk" }); }
         if windows_path.is_empty() || windows_path.len() > u32::MAX as usize || windows_path.contains(&0) { return Err(BuildError::InvalidUtf8Path); }
@@ -365,9 +384,11 @@ impl RuntimeRequest {
         }
         let image = image.into_boxed_slice();
         validate_import_closure(&image, &modules)?;
+        let unixlibs = unixlib_dir.map(stage_unixlibs).transpose()?.unwrap_or_default();
         let image_path = windows_path.to_vec().into_boxed_slice();
         let command_line = command_line.to_vec().into_boxed_slice();
         let environment = environment_block(environment)?;
+        let bootstrap = Box::<[u8]>::default();
         let mut records = Vec::with_capacity(modules.len().max(1));
         for module in &modules {
             records.push(NtExecModule {
@@ -379,14 +400,36 @@ impl RuntimeRequest {
             records.push(NtExecModule { name: user_ptr(image_path.as_ptr())?, name_len: 0, _padding: 0, image: user_ptr(image.as_ptr())?, image_len: 0 });
         }
         let records = records.into_boxed_slice();
+        let mut unixlib_records = Vec::with_capacity(unixlibs.len());
+        for unixlib in &unixlibs {
+            unixlib_records.push(NtExecUnixlib {
+                name: user_ptr(unixlib.name.as_ptr())?, name_len: unixlib.name.len() as u32,
+                path: user_ptr(unixlib.path.as_ptr())?, path_len: unixlib.path.len() as u32,
+                image: user_ptr(unixlib.image.as_ptr())?, image_len: unixlib.image.len() as u64,
+            });
+        }
+        let unixlib_records = unixlib_records.into_boxed_slice();
         let request = NtExecRequest {
             image: user_ptr(image.as_ptr())?, image_len: image.len() as u64,
             image_path: user_ptr(image_path.as_ptr())?, image_path_len: image_path.len() as u32, _path_padding: 0,
             command_line: user_ptr(command_line.as_ptr())?, command_line_len: command_line.len() as u32, _command_padding: 0,
             environment: user_ptr(environment.as_ptr())?, environment_len: environment.len() as u32, _environment_padding: 0,
             modules: user_ptr(records.as_ptr())?, module_count: modules.len() as u32, _modules_padding: 0,
+            unixlibs: user_ptr(unixlib_records.as_ptr())?, unixlib_count: unixlibs.len() as u32, _unixlibs_padding: 0,
+            bootstrap: user_ptr(bootstrap.as_ptr())?, bootstrap_len: 0,
         };
-        Ok(Self { image, image_path, command_line, environment, modules, records, request })
+        Ok(Self { image, image_path, command_line, environment, bootstrap, modules, records, unixlibs, unixlib_records, request })
+    }
+
+    fn attach_bootstrap(mut self) -> Result<Self, BuildError> {
+        let path = std::env::current_exe().map_err(BuildError::Io)?;
+        let bytes = fs::read(&path).map_err(BuildError::Io)?;
+        validate_size(bytes.len() as u64)?;
+        let bootstrap = bytes.into_boxed_slice();
+        self.request.bootstrap = user_ptr(bootstrap.as_ptr())?;
+        self.request.bootstrap_len = bootstrap.len() as u64;
+        self.bootstrap = bootstrap;
+        Ok(self)
     }
 
     /// Return the fixed ABI record passed to the tagged NT selector. # C: O(1)
@@ -394,6 +437,9 @@ impl RuntimeRequest {
 
     /// Number of runtime-supplied DLL records. # C: O(1)
     pub fn module_count(&self) -> usize { self.modules.len() }
+
+    /// Number of runtime-supplied native Unixlib records. # C: O(1)
+    pub fn unixlib_count(&self) -> usize { self.unixlibs.len() }
 
     /// Submit the request. On a normal Linux kernel this returns `-1` with
     /// `ENOSYS`; only an Oxide NT-capable kernel consumes the selector.
@@ -442,7 +488,7 @@ fn validate_size(size: u64) -> Result<(), BuildError> {
 }
 
 const PROTON_ENVIRONMENT_KEYS: &[&str] = &[
-    "WINEPREFIX", "WINEARCH", "WINEDLLOVERRIDES", "WINEDEBUG", "WINEESYNC", "WINEFSYNC", "FAUDIO_PATH", "OXIDE_NT_PERSONALITY",
+    "WINEPREFIX", "WINEARCH", "WINEDLLOVERRIDES", "WINEDEBUG", "WINEESYNC", "WINEFSYNC", "FAUDIO_PATH", "OXIDE_NT_PERSONALITY", "OXIDE_WINE_UNIXLIB_PATH", "LD_LIBRARY_PATH",
     "STEAM_COMPAT_CLIENT_INSTALL_PATH", "STEAM_COMPAT_DATA_PATH", "STEAM_COMPAT_INSTALL_PATH",
     "STEAM_COMPAT_TOOL_PATHS", "STEAM_COMPAT_MOUNTS", "STEAM_COMPAT_LIBRARY_PATHS",
     "PROTON_LOG", "PROTON_DUMP_DEBUG_COMMANDS", "PROTON_USE_WINED3D",
@@ -535,6 +581,71 @@ fn stage_module_paths_from_admitted_dirs(dll_dirs: &[&Path], component_paths: &[
         }
     }
     Ok(available)
+}
+
+fn stage_unixlibs(unixlib_dir: &Path) -> Result<Vec<UnixlibBuffer>, BuildError> {
+    let mut paths = fs::read_dir(unixlib_dir).map_err(BuildError::Io)?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.is_file() && path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("so")))
+        .collect::<Vec<_>>();
+    paths.sort_by(|left, right| left.file_name().map(OsStr::as_bytes).cmp(&right.file_name().map(OsStr::as_bytes)));
+    let roots = paths.iter().filter(|path| path.file_name().is_some_and(|name| name.eq_ignore_ascii_case("win32u.so"))).cloned().collect::<Vec<_>>();
+    if !roots.is_empty() { paths = roots; }
+    let mut result = Vec::with_capacity(paths.len());
+    let mut seen = HashSet::new();
+    for path in paths {
+        admit_unixlib_path(&path, &mut seen, &mut result)?;
+    }
+    let mut search_dirs = vec![unixlib_dir.to_path_buf(), PathBuf::from("/lib64"), PathBuf::from("/usr/lib64"),
+        PathBuf::from("/lib"), PathBuf::from("/usr/lib"), PathBuf::from("/lib/x86_64-linux-gnu"),
+        PathBuf::from("/usr/lib/x86_64-linux-gnu")];
+    search_dirs.retain(|path| path.is_dir());
+    let mut index = 0;
+    while index < result.len() {
+        let (interp, needed) = {
+            let image = &result[index].image;
+            let Ok(object) = elf::parse_shared_object(image, elf::EM_X86_64) else { index += 1; continue };
+            let needed = elf::needed_names(image, &object).map_err(|_| BuildError::InvalidLaunchConfiguration { field: "unixlib metadata" })?;
+            (object.parsed.interp.map(|value| value.to_vec()), needed)
+        };
+        if let Some(interp) = interp.as_deref() {
+            let interp_path = PathBuf::from(std::ffi::OsStr::from_bytes(interp));
+            let path = if interp_path.is_absolute() && interp_path.is_file() {
+                Some(interp_path)
+            } else {
+                search_dirs.iter().map(|dir| dir.join(std::ffi::OsStr::from_bytes(interp))).find(|path| path.is_file())
+            };
+            let Some(path) = path else {
+                return Err(BuildError::MissingUnixlib { name: interp.to_vec() });
+            };
+            admit_unixlib_path(&path, &mut seen, &mut result)?;
+        }
+        for name in needed {
+            if result.iter().any(|known| known.name.as_ref() == name.as_slice()) { continue; }
+            let Some(path) = search_dirs.iter().map(|dir| dir.join(std::ffi::OsStr::from_bytes(&name))).find(|path| path.is_file()) else {
+                return Err(BuildError::MissingUnixlib { name });
+            };
+            admit_unixlib_path(&path, &mut seen, &mut result)?;
+        }
+        index += 1;
+    }
+    if result.is_empty() { return Err(BuildError::InvalidLaunchConfiguration { field: "unixlib catalog" }); }
+    Ok(result)
+}
+
+fn admit_unixlib_path(path: &Path, seen: &mut HashSet<Vec<u8>>, result: &mut Vec<UnixlibBuffer>) -> Result<(), BuildError> {
+    let name = path.file_name().ok_or(BuildError::InvalidUtf8Path)?.as_bytes();
+    let key = name.to_ascii_lowercase();
+    if seen.contains(&key) { return Ok(()); }
+    if path.as_os_str().as_bytes().is_empty() || path.as_os_str().as_bytes().contains(&0) || !path.is_absolute() {
+        return Err(BuildError::InvalidLaunchConfiguration { field: "unixlib path" });
+    }
+    let image = fs::read(path).map_err(BuildError::Io)?;
+    validate_size(image.len() as u64)?;
+    seen.insert(key);
+    result.push(UnixlibBuffer { name: name.to_vec().into_boxed_slice(), path: path.as_os_str().as_bytes().to_vec().into_boxed_slice(), image: image.into_boxed_slice() });
+    if result.len() > syscall::nt_exec::MAX_EXEC_MODULES { return Err(BuildError::CatalogTooLarge); }
+    Ok(())
 }
 
 /// Use the shared PE API-set schema for graph identity, matching the kernel
@@ -725,6 +836,7 @@ mod tests {
         fs::create_dir_all(base.join("prefix")).unwrap();
         fs::create_dir_all(base.join("runtime")).unwrap();
         fs::create_dir_all(base.join("unix")).unwrap();
+        fs::write(base.join("unix/win32u.so"), [1]).unwrap();
         fs::write(base.join("locale.nls"), [1]).unwrap();
         fs::write(base.join("registry.db"), [1]).unwrap();
         let socket = base.join("registry.sock");
@@ -766,8 +878,22 @@ mod tests {
         assert!(request.module_count() < 64, "Notepad closure must fit the kernel catalog limit");
         assert_eq!(request.abi().module_count as usize, request.module_count());
         assert!(!request.modules.iter().any(|module| module.name.eq_ignore_ascii_case(b"ntdll.dll")));
-        assert_eq!(std::mem::size_of::<NtExecRequest>(), 80);
+        assert_eq!(std::mem::size_of::<NtExecRequest>(), 112);
         assert_eq!(std::mem::size_of::<NtExecModule>(), 32);
+    }
+
+    #[test]
+    fn installed_64_bit_notepad_can_admit_the_native_unixlib_catalog() {
+        let Some(root) = wine_root() else { return };
+        let Some(unixlib_root) = ["/usr/lib64/wine/x86_64-unix", "/usr/lib/wine/x86_64-unix"]
+            .iter().map(Path::new).find(|path| path.join("win32u.so").is_file()) else { return };
+        let request = RuntimeRequest::from_paths_with_environment_and_unixlib(
+            &root.join("notepad.exe"), b"C:\\notepad.exe", b"C:\\notepad.exe", root,
+            unixlib_root, std::iter::empty::<(String, String)>()).unwrap();
+        assert!(request.unixlib_count() > 0);
+        assert_eq!(request.abi().unixlib_count as usize, request.unixlib_count());
+        assert!(request.unixlibs.iter().any(|unixlib| unixlib.name.eq_ignore_ascii_case(b"win32u.so")));
+        assert!(request.unixlibs.iter().any(|unixlib| unixlib.name.starts_with(b"ld-linux")), "native closure must carry its PT_INTERP owner");
     }
 
     #[test]
@@ -936,7 +1062,7 @@ mod tests {
     fn catalog_record_lengths_are_bounded_by_the_fixed_abi_types() {
         assert_eq!(std::mem::align_of::<NtExecRequest>(), 8);
         assert_eq!(std::mem::align_of::<NtExecModule>(), 8);
-        assert_eq!(std::mem::size_of::<NtExecRequest>(), 80);
+        assert_eq!(std::mem::size_of::<NtExecRequest>(), 112);
         assert_eq!(std::mem::size_of::<NtExecModule>(), 32);
     }
 

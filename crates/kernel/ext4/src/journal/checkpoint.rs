@@ -75,15 +75,6 @@ impl Mount {
         result
     }
 
-    /// Checkpoint an outstanding transaction for an explicit sync owner.
-    /// # C: O(N staged) target I/O + one barrier
-    pub(crate) fn checkpoint_pending_sync(&self) -> Result<(), MountError> {
-        self.txn_acquire();
-        let result = self.checkpoint_pending();
-        self.txn_release();
-        result
-    }
-
     fn checkpoint_staged(&self, pending: &[PendingCheckpoint]) -> Result<(), MountError> {
         let jinode = self.read_inode(self.sb.journal_inum)?;
         let log = super::ExtentLogReader::build(self, &jinode)?;

@@ -21,8 +21,36 @@ drift between `kernel/src`, ad-hoc `crates/*`, and one-off folders.
    subsystem implementation.
 2. Subsystem behavior lives in domain crates under `crates/`.
 3. Arch-specific behavior lives in arch crates only.
-4. Tooling code lives under `tools/` only.
-5. Kernel smoke probes and the separately-targeted Windows launcher live under `userspace/`; the boot userspace image is composed by the sibling `../images` repo,
+4. Native GUI state remains in `ipc::win32_window`: `class` owns registration
+   and class-bound creation, `extra` owns per-HWND extra/scalar storage inside
+   the canonical window vector, `state` owns window/message work, and
+   `thread_exit` revokes the canonical ownership closure. GDI `font` owns
+   complete logical records and selected-object lifetime. Syscalls children
+   adapt raw ABI/usercopy and process lifetime gates; no parallel object table.
+   `nt_window/paint` releases GUI ownership before usercopy; raw window `paint`
+   owns HDC admission/presentation sequencing, consuming canonical paint bounds.
+   Syscalls `nt_manifest` includes personality declarations in the root namespace;
+   `hosted_contracts` groups ordinary hosted adapter policy modules.
+   GDI `backing` owns paint seeding/retention; `nt_gdi/paint_frame` serializes
+   that retained surface. Queue-owned caret deadlines feed message waits;
+   scroll continuations consume the existing position and Send owners.
+   Window `dc_lease` snapshots canonical visibility; GDI `dc_lease` retains
+   HDC attributes and maps raster operations to existing backing storage.
+   GDI `pen` owns selected pen lifetime. Paint preparation resources remain
+   in the existing callback queue through cancellation and active Send return.
+   User settings own caret interval; queue deadlines are derived snapshots.
+   GDI `output` owns backing dirtiness and in-flight frame generations;
+   syscall `nt_gdi/output` captures owned frames and acknowledges outside locks.
+   Scheduler NT objects own Desktop/WindowStation identity and global handle
+   lifetime; thread membership references those objects, not another namespace.
+   `nt_process_create/identity` publishes child executable metadata through
+   canonical Task/MM setters; scheduler comm remains the process-name owner.
+5. Tooling code lives under `tools/` only.
+   Windows registry userspace children separate typed records (`model`),
+   canonical database operations (`registry`), durable session ownership (`store`),
+   framed request transport (`wire`) and concurrent listener admission (`service`).
+   All clients share the same RegistryStore; transport owns no registry copy.
+6. Kernel smoke probes, the separately-targeted Windows launcher and its desktop-independent compositor bridge (`31gd`) live under `userspace/`; `tools/xtask/src/rootfs_disks/probe_artifact.rs` resolves Cargo-owned target directories through `tools/probe-target-directory.py`. `rootfs_disks/windows_notepad/payload.rs` invokes read-only `tools/windows-rootfs-payload-check.py` after runtime staging. The boot userspace image is composed by the sibling `../images` repo,
    never in kernel subsystem crates. This repo contains no general userspace runtime code — no libc, loader, NSS, PAM,
    package manager, or service manager (`29a§2`).
 
@@ -318,7 +346,7 @@ Constraints:
 2. Driver crates may depend on domain/shared/arch abstractions, not on
    unrelated high-level subsystems.
 3. `tools/*` cannot be required by runtime kernel crates.
-4. No general userspace-runtime crate group exists (`crates/user/*` deleted 2026-08-01); the Windows launcher is the explicit exception documented in `31ab`;
+4. No general userspace-runtime crate group exists (`crates/user/*` deleted 2026-08-01); the Windows launcher and desktop presentation bridge are explicit exceptions documented in `31ab` and `31gd`;
    userland comes from Fedora RPMs via `../images`.
 5. `crates/kernel/network-namespace` is a leaf over shared synchronization;
    tasks, networking, nsfs, and syscall layers depend on it, never vice versa.

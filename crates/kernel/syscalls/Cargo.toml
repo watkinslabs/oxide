@@ -169,3 +169,19 @@ hal-aarch64 = { path = "../../arch/hal-aarch64" }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "nt-wine-create-window"
+path = "src/nt_wine_window/tests/create_window_hosted.rs"
+
+[[test]]
+name = "nt-wine-paint-boundary"
+path = "src/nt_gdi/clip/tests/paint_boundary.rs"
+
+[[test]]
+name = "nt-window-redraw-boundary"
+path = "src/nt_window/redraw/joined_hosted.rs"
+
+[[test]]
+name = "nt-window-scroll-boundary"
+path = "src/nt_window/scroll/joined_hosted.rs"

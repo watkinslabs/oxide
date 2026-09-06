@@ -18,7 +18,7 @@ use crate::{ARCH_MACHINE, LoadError, PAGE};
 mod context;
 mod loader;
 pub use context::{build_load_context, UnixlibLoadContext, UnixlibSourceObject};
-pub use loader::{map_load_context, MappedUnixlibObject};
+pub use loader::{map_load_context, MappedUnixlibObject, MappedUnixlibTable};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct MappedUnixlib {
@@ -32,6 +32,18 @@ pub struct MappedUnixlib {
 pub fn load_named(catalog: &elf::UnixlibCatalog, name: &[u8], as_: &AddressSpace)
     -> Result<MappedUnixlibObject, LoadError> {
     let source = catalog.load(name).ok_or(LoadError::Enoexec)?;
+    if let Some(descriptor) = crate::elf_modules::unixlib_descriptor_for_name(as_.root_pa(), name) {
+        let table = MappedUnixlibTable {
+            table_address: descriptor.table_address,
+            entries: descriptor.entries,
+            executable_ranges: descriptor.executable_ranges,
+        };
+        return Ok(MappedUnixlibObject {
+            name: name.to_vec(), path: source.path.clone(),
+            image: MappedUnixlib { base: descriptor.module_base, end: descriptor.module_end },
+            callable_table: Some(table), relocation_kinds: Vec::new(), mapped_start: descriptor.module_base,
+        });
+    }
     let context = build_load_context(&source.name, &source.path, &source.image, |dependency| {
         catalog.load(dependency).map(|object| (object.path.clone(), object.image.clone()))
     })?;
@@ -79,10 +91,20 @@ pub fn decode_callable_table(image: &[u8], image_base: u64, image_end: u64,
 pub fn register_callable_table(as_: &AddressSpace, image: MappedUnixlib, table_offset: u64,
     entries: &[u64], executable_ranges: &[(u64, u64)]) -> Result<crate::elf_modules::ElfUnixlibDescriptor,
     crate::elf_modules::UnixlibRegistrationError>
+{ register_callable_table_named(as_, image, &[], table_offset, entries, executable_ranges) }
+
+/// Publish one named native Unixlib table in the address-space registry.
+/// Names make repeated Wine load queries resolve the existing mapping instead
+/// of creating a second table identity for the same module.
+/// # C: O(entry_count)
+pub fn register_callable_table_named(as_: &AddressSpace, image: MappedUnixlib, name: &[u8], table_offset: u64,
+    entries: &[u64], executable_ranges: &[(u64, u64)]) -> Result<crate::elf_modules::ElfUnixlibDescriptor,
+    crate::elf_modules::UnixlibRegistrationError>
 {
     let table_address = image.base.checked_add(table_offset)
         .ok_or(crate::elf_modules::UnixlibRegistrationError::ArithmeticOverflow)?;
     let descriptor = crate::elf_modules::ElfUnixlibDescriptor {
+        name: name.to_vec(),
         table_address, entry_count: entries.len() as u64, module_base: image.base, module_end: image.end,
         entries: entries.to_vec(),
         executable_ranges: executable_ranges.to_vec(),
@@ -98,6 +120,9 @@ pub struct UnixlibDependency {
     pub name: Vec<u8>,
     pub soname: Option<Vec<u8>>,
     pub needed: Vec<Vec<u8>>,
+    /// Basename of the PT_INTERP image, when this object needs the Linux
+    /// runtime owner to initialize its dependencies and TLS.
+    pub interpreter: Option<Vec<u8>>,
     pub exports: Vec<UnixlibExport>,
 }
 
@@ -131,10 +156,20 @@ where F: FnMut(&[u8]) -> Option<Vec<u8>> {
         else { elf::parse_dependency_object(file, ARCH_MACHINE) }
         .map_err(LoadError::from)?;
     let needed = elf::needed_names(file, &object).map_err(LoadError::from)?;
+    let interpreter = match object.parsed.interp {
+        Some(path) => Some(interpreter_basename(path).ok_or(LoadError::Einval)?),
+        None => None,
+    };
     active.push(name.to_vec());
     for dependency in &needed {
         let bytes = open(dependency).ok_or(LoadError::Enoexec)?;
         admit_one(dependency, &bytes, false, open, active, done, result)?;
+    }
+    if let Some(interpreter) = &interpreter {
+        if !needed.iter().any(|dependency| dependency == interpreter) {
+            let bytes = open(interpreter).ok_or(LoadError::Enoexec)?;
+            admit_one(interpreter, &bytes, false, open, active, done, result)?;
+        }
     }
     active.pop();
     let exports = match elf::collect_dynamic_symbols(file, &object) {
@@ -148,8 +183,13 @@ where F: FnMut(&[u8]) -> Option<Vec<u8>> {
     };
     let soname = elf::soname(file, &object).map_err(LoadError::from)?;
     done.push(name.to_vec());
-    result.push(UnixlibDependency { name: name.to_vec(), soname, needed, exports });
+    result.push(UnixlibDependency { name: name.to_vec(), soname, needed, interpreter, exports });
     Ok(())
+}
+
+fn interpreter_basename(path: &[u8]) -> Option<Vec<u8>> {
+    let name = path.rsplit(|byte| *byte == b'/').next()?;
+    if name.is_empty() || name.iter().any(|byte| *byte == 0) { None } else { Some(name.to_vec()) }
 }
 
 /// Resolve an export in an already admitted, dependency-first scope. The
@@ -321,6 +361,7 @@ mod tests {
     fn admitted_symbol_scope_resolves_exact_export_and_has_lifecycle_boundary() {
         let scope = vec![UnixlibDependency {
             name: b"ntdll.so".to_vec(), soname: None, needed: Vec::new(),
+            interpreter: None,
             exports: vec![UnixlibExport { name: b"__wine_unix_call_funcs".to_vec(), value: 0x2400 }],
         }];
         assert_eq!(resolve_admitted_symbol(&scope, b"__wine_unix_call_funcs"), Some(0x2400));
@@ -334,6 +375,7 @@ mod tests {
     fn admitted_symbol_scope_rejects_a_null_callable_export() {
         let scope = vec![UnixlibDependency {
             name: b"winevulkan.so".to_vec(), soname: None, needed: Vec::new(),
+            interpreter: None,
             exports: vec![UnixlibExport { name: b"__wine_unix_call_funcs".to_vec(), value: 0 }],
         }];
         assert_eq!(resolve_admitted_symbol(&scope, b"__wine_unix_call_funcs"), None);
@@ -387,13 +429,14 @@ mod tests {
     }
 
     #[test]
-    fn callable_table_registration_rejects_a_second_identity() {
+    fn callable_table_registration_rejects_conflicting_reuse_of_one_identity() {
         let as_ = AddressSpace::new(0x7_2700).unwrap();
         let image = MappedUnixlib { base: 0x60_000, end: 0x61_000 };
         let entries = (0..8).map(|index| image.base + 0x100 + index * 8).collect::<Vec<_>>();
         let executable = [(image.base + 0x100, image.end)];
         let _ = register_callable_table(&as_, image, 0x200, &entries, &executable).unwrap();
-        assert_eq!(register_callable_table(&as_, image, 0x300, &entries, &executable),
+        let conflicting = vec![image.base + 0x200; 8];
+        assert_eq!(register_callable_table(&as_, image, 0x200, &conflicting, &executable),
             Err(crate::elf_modules::UnixlibRegistrationError::AlreadyRegistered));
         crate::elf_modules::clear(as_.root_pa());
     }
@@ -476,6 +519,8 @@ mod tests {
         assert!(!scope.is_empty());
         assert_eq!(scope.last().unwrap().name, b"winevulkan.so");
         assert!(scope.iter().all(|object| object.name != b""));
+        assert!(scope.iter().any(|object| object.name.starts_with(b"ld-linux")));
+        assert!(scope.iter().any(|object| object.interpreter.is_some()));
     }
 
     #[test]

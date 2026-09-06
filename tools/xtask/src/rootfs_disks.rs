@@ -39,8 +39,11 @@ mod mutter_debug;
 mod sockopt_diff;
 // - hardware_audit: manual physical-machine inventory injected on demand.
 mod hardware_audit;
-// - windows_notepad: opt-in x86_64 PE handoff smoke using a host 9p fixture.
+// - windows_notepad: x86_64 PE handoff runtime using the host Wine fixture;
+//   the standard x86 Make targets enable it by default.
 mod windows_notepad;
+// - probe_artifact: Cargo-owned build/output directory resolution.
+mod probe_artifact;
 // - windows_ui: opt-in native window/message/GDI service smoke.
 mod windows_ui;
 // - windows_vulkan: opt-in native Vulkan loader/physical-device smoke.
@@ -85,11 +88,13 @@ pub(super) fn probe_cargo_bin(arch: &str, package: &str, binary: &str) -> Result
         eprintln!("xtask rootfs: missing {ARM_SYSROOT} for {package}");
         return Err(2);
     }
+    let target_dir = probe_artifact::target_dir(PROBE_WORKSPACE)?;
     let mut c = Command::new("cargo");
     c.current_dir(PROBE_WORKSPACE);
     c.args(["build", "--release", "--target", triple, "-p", package, "--bin", binary]);
+    c.arg("--target-dir").arg(&target_dir);
     run(c)?;
-    let out = PathBuf::from(PROBE_WORKSPACE).join("target").join(triple).join("release").join(binary);
+    let out = target_dir.join(triple).join("release").join(binary);
     if !out.is_file() {
         eprintln!("xtask rootfs: {package}/{binary} did not produce {}", out.display());
         return Err(1);

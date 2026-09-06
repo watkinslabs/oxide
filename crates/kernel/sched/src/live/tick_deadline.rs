@@ -26,6 +26,8 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use super::sigpend::Signum;
 use crate::sigsend::{SigSource, SigTarget};
 
+mod overrun;
+
 /// Last `now_ns` the scan walked the registry. Throttles the O(N)
 /// allocation-free registry walk to a ~100 ms
 /// cadence so calling this from every timer tick stays cheap.
@@ -66,7 +68,7 @@ pub fn service_task_timers(t: &crate::Task, now_ns: u64) -> u64 {
     // (`SCHED_FLAG_DL_OVERRUN`) has one latch per overrun; taking it here posts
     // the SIGXCPU through the same process-directed enqueue as the CPU-time
     // limits, and coalesces repeated overruns into one signal.
-    if t.sched.dl.take_overrun() { due |= Signum::Sigxcpu.bit(); }
+    if overrun::take(t) { due |= Signum::Sigxcpu.bit(); }
     due
 }
 

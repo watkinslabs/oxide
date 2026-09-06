@@ -8,7 +8,8 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 makefile="$root/Makefile"
 exec_source="$root/crates/kernel/syscalls/src/pe_exec.rs"
-wine_window_source="$root/crates/kernel/syscalls/src/nt_wine_window.rs"
+wine_window_source="$root/crates/kernel/syscalls/src/nt_wine_window/dispatch.rs"
+wine_window_owner="$root/crates/kernel/syscalls/src/nt_wine_window.rs"
 raw_class_source="$root/crates/kernel/syscalls/src/nt_wine_window/raw_class.rs"
 wine_unix_source="$root/crates/kernel/syscalls/src/nt_wine_unix.rs"
 runtime_source="$root/userspace/probes/windows-runtime/src/lib.rs"
@@ -16,6 +17,7 @@ user32_source="$root/userspace/probes/windows-user32/src/lib.rs"
 loader_tests="$root/crates/kernel/exec/src/tests/pe_loader.rs"
 wrapper_source="$root/tools/xtask/src/rootfs_disks/windows_notepad.rs"
 smoke_source="$root/tools/boot-smoke.sh"
+acceptance_source="$root/tools/windows-notepad-acceptance.py"
 fixture="${OXIDE_WINE_NOTEPAD_FIXTURE:-}"
 
 require_text() {
@@ -67,6 +69,22 @@ if [[ "$fixture_mz" != 4d5a || "$fixture_pe" != 50450000 || "$fixture_machine" !
 fi
 
 require_text "smoke admission" "$makefile" "SMOKE_MARKER='[WINDOWS-PE-START] entry='"
+require_text "desktop bridge staging" "$wrapper_source" 'probe_cargo("x86_64", "windows-compositor")'
+require_text "image-owned ELF dependency closure" "$wrapper_source" 'verify_elf_dependencies(root_img, &[&launcher, &compositor, &registryd])?;'
+require_text "raw DC lease release routing" "$wine_window_source" 'if ordinal == WINE_RELEASE_DC { return Some(release_window_dc(args.a0, args.a1)); }'
+require_text "descriptor DC lease release routing" "$wine_window_source" 'WINE_RELEASE_DC => release_window_dc(args[0], args[1]),'
+require_text "DC release BOOL conversion" "$wine_window_owner" 'win_bool(crate::nt_gdi::release_window_dc_for_current(hwnd, dc))'
+require_text "raw GDI execution routing" "$wine_window_source" 'if let Some(result) = gdi_route::raw(ordinal, args) { return Some(result); }'
+require_text "descriptor GDI execution routing" "$wine_window_source" 'if let Some(result) = gdi_route::descriptor(ordinal, &args) { return result; }'
+require_text "descriptor brush execution routing" "$wine_window_source" 'if let Some(operation) = brush_raw::decode(ordinal, &args) { return brush_raw::kernel::dispatch(operation); }'
+require_text "raw brush execution routing" "$wine_window_source" 'return Some(brush_raw::kernel::dispatch(operation));'
+require_text "raw message retrieval continuation" "$wine_window_source" 'if ordinal == WINE_GET_MESSAGE { return Some(crate::nt_window::retrieve_raw(NtCall { service: NtService::GetMessage, args })); }'
+require_text "PFN shared GDI publication" "$wine_window_source" 'if crate::nt_gdi::initialize_client_for_current().is_err() {'
+require_text "descriptor logical object query" "$wine_window_source" 'if let Some(query) = object_raw::decode(ordinal, &args) { return object_raw::kernel::dispatch(query); }'
+require_text "raw logical object query" "$wine_window_source" 'return Some(object_raw::kernel::dispatch(query));'
+require_text "thread HWND revocation" "$root/crates/kernel/syscalls/src/060_exit.rs" 'crate::nt_window::cleanup_thread_at_exit(task);'
+require_text "raw client rectangle routing" "$wine_window_source" 'return Some(hwnd_param::dispatch_get_window_rects(args.a0, args.a1));'
+require_text "descriptor client rectangle routing" "$wine_window_source" 'return hwnd_param::dispatch_get_window_rects(args[0], args[1]);'
 require_text "smoke liveness" "$makefile" "SMOKE_ALIVE_MARKER='[WINDOWS-PE-START] entry='"
 require_text "smoke workload" "$makefile" "SMOKE_ALIVE_CMD=/usr/local/bin/windows-notepad-smoke"
 for marker in \
@@ -79,6 +97,15 @@ for marker in \
     require_text "ordered runtime milestone $marker" "$makefile" "$marker"
 done
 require_text "ordered marker gate" "$smoke_source" "required_markers_present"
+require_text "visible acceptance runner" "$acceptance_source" "OXIDE_QEMU_QMP_SOCK"
+require_text "visible acceptance no retry" "$acceptance_source" "attempts=1"
+require_text "visible acceptance screenshot" "$acceptance_source" "screendump"
+require_text "visible acceptance rendered desktop" "$acceptance_source" "wait_for_rendered_desktop"
+require_text "visible acceptance input" "$acceptance_source" "send-key"
+require_text "visible acceptance OCR" "$acceptance_source" "tesseract"
+require_text "visible acceptance clean exit" "$acceptance_source" "runtime-exit status=0"
+require_text "fresh Oxide image composition" "$acceptance_source" "gnome-x86_64"
+require_text "Oxide image identity gate" "$acceptance_source" "ID=oxide"
 require_text "marker gate admission" "$smoke_source" 'if required_markers_present && grep -qF "$MARKER"'
 if grep -Fq "SMOKE_MARKER='[WINDOWS-PE-COMMIT] success'" "$makefile"; then
     echo "windows-notepad-harness: commit marker must not admit readiness" >&2
@@ -95,7 +122,7 @@ require_text "64-bit fixture validation" "$wrapper_source" 'require_pe64(&notepa
 require_text "Unixlib sidecar directory" "$wrapper_source" 'const UNIXLIB_DIR: &str = "/usr/local/lib/oxide/windows/x86_64-unix";'
 require_text "Unixlib sidecar inventory" "$wrapper_source" 'let unixlibs = catalog_files(&unix_source, |path| is_suffix(path, "so"))?;'
 require_text "Unixlib staging" "$wrapper_source" 'stage_file(root_img, path, &format!("{UNIXLIB_DIR}/{name}"), "Wine Unixlib", "0100644")?;'
-require_text "real PE handoff" "$wrapper_source" "exec /usr/local/bin/windows-runtime"
+require_text "real PE handoff" "$wrapper_source" "/usr/local/bin/windows-runtime --launch"
 
 # W1/W2: parse and load a real PE, resolve the complete graph, and reject
 # malformed or architecture-incompatible input before publishing a handoff.
@@ -121,9 +148,9 @@ require_test "environment rollback" "$loader_tests" "failed_environment_setup_ro
 # W4/W5: require the user32 class-to-window path and its deterministic
 # malformed/unknown-class coverage; a symbol-only check is not sufficient.
 require_text "user32 class registration" "$wine_window_source" "if ordinal == WINE_REGISTER_CLASS_EX { return Some(raw_class::register_class(args)); }"
-require_text "user32 registered-message ordinal" "$wine_window_source" "const WINE_REGISTER_WINDOW_MESSAGE: u64 = 0x1507;"
-require_text "user32 registered-message admission" "$wine_window_source" "WINE_REGISTER_WINDOW_MESSAGE |"
-require_text "user32 creation dispatch" "$wine_window_source" "if ordinal == WINE_CREATE_WINDOW_EX { let result = raw_class::create_window(args);"
+require_text "user32 registered-message ordinal" "$wine_window_owner" "const WINE_REGISTER_WINDOW_MESSAGE: u64 = 0x1507;"
+require_text "user32 registered-message admission" "$wine_window_owner" "WINE_REGISTER_WINDOW_MESSAGE |"
+require_text "user32 creation dispatch" "$wine_window_source" "if ordinal == WINE_CREATE_WINDOW_EX { return Some(raw_class::create_window(args)); }"
 require_text "user32 class implementation" "$raw_class_source" "pub(super) fn register_class(args: SyscallArgs)"
 require_text "user32 window implementation" "$raw_class_source" "pub(super) fn create_window(args: SyscallArgs)"
 require_text "user32 client creation" "$user32_source" "pub fn create_window_ex_w"

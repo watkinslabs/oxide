@@ -109,6 +109,19 @@ name = "blockcipher"
 version = "0.1.0"
 
 [[package]]
+name = "bluetooth"
+version = "0.1.0"
+dependencies = [
+ "aes",
+ "crc",
+ "p256",
+ "sync",
+ "syscall",
+ "tty",
+ "vfs",
+]
+
+[[package]]
 name = "boot-info"
 version = "0.1.0"
 
@@ -133,6 +146,13 @@ dependencies = [
 [[package]]
 name = "cmdline"
 version = "0.1.0"
+
+[[package]]
+name = "conntrack"
+version = "0.1.0"
+dependencies = [
+ "sync",
+]
 
 [[package]]
 name = "core_maths"
@@ -193,6 +213,20 @@ name = "crypt"
 version = "0.1.0"
 
 [[package]]
+name = "devfs"
+version = "0.1.0"
+dependencies = [
+ "crng",
+ "drv",
+ "hal",
+ "kernfs",
+ "klog",
+ "sync",
+ "uaccess",
+ "vfs",
+]
+
+[[package]]
 name = "drm_probe"
 version = "0.1.0"
 dependencies = [
@@ -230,6 +264,7 @@ dependencies = [
  "hal",
  "klog",
  "pe",
+ "pmm",
  "sync",
  "syscall",
  "uaccess",
@@ -378,10 +413,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "ipc"
+version = "0.1.0"
+dependencies = [
+ "devfs",
+ "hal",
+ "hal-aarch64",
+ "hal-x86_64",
+ "klog",
+ "namespace-identity",
+ "netlink",
+ "pmm",
+ "sched",
+ "selinux-runtime",
+ "sync",
+ "syscall",
+ "timekeeper",
+ "uaccess",
+ "vfs",
+ "vmm",
+]
+
+[[package]]
 name = "kalloc"
 version = "0.1.0"
 dependencies = [
  "sync",
+]
+
+[[package]]
+name = "kernfs"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "klog",
+ "sync",
+ "vfs",
 ]
 
 [[package]]
@@ -429,6 +496,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 
 [[package]]
+name = "lsm"
+version = "0.1.0"
+dependencies = [
+ "sync",
+]
+
+[[package]]
 name = "movable"
 version = "0.1.0"
 
@@ -444,11 +518,86 @@ dependencies = [
 ]
 
 [[package]]
+name = "nat"
+version = "0.1.0"
+dependencies = [
+ "conntrack",
+ "sync",
+]
+
+[[package]]
+name = "net"
+version = "0.1.0"
+dependencies = [
+ "bitflags",
+ "bluetooth",
+ "cgroup",
+ "conntrack",
+ "cpu",
+ "crng",
+ "drv",
+ "hal",
+ "hal-aarch64",
+ "hal-x86_64",
+ "klog",
+ "landlock",
+ "namespace-identity",
+ "nat",
+ "network-namespace",
+ "nscg",
+ "pmm",
+ "sched",
+ "security",
+ "selinux",
+ "selinux-runtime",
+ "siphash",
+ "softirq",
+ "sync",
+ "syscall",
+ "timer",
+ "vfs",
+]
+
+[[package]]
+name = "netlink"
+version = "0.1.0"
+dependencies = [
+ "audit",
+ "namespace-identity",
+ "net",
+ "network-namespace",
+ "nscg",
+ "rtnl-link",
+ "sched",
+ "security",
+ "sync",
+ "syscall",
+ "vfs",
+]
+
+[[package]]
 name = "network-namespace"
 version = "0.1.0"
 dependencies = [
  "namespace-identity",
  "sync",
+]
+
+[[package]]
+name = "nscg"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "klog",
+ "namespace-identity",
+ "network-namespace",
+ "sched",
+ "selinux-runtime",
+ "sync",
+ "syscall",
+ "time-namespace",
+ "user-namespace",
+ "vfs",
 ]
 
 [[package]]
@@ -630,6 +779,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rtnl-link"
+version = "0.1.0"
+dependencies = [
+ "sync",
+ "syscall",
+]
+
+[[package]]
 name = "rustix"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -662,6 +819,7 @@ dependencies = [
  "cpu",
  "cpufreq",
  "cpuidle",
+ "elf",
  "hal",
  "hal-aarch64",
  "hal-x86_64",
@@ -686,6 +844,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "security"
+version = "0.1.0"
+dependencies = [
+ "cgroup",
+ "cmdline",
+ "crng",
+ "hal",
+ "kernfs",
+ "klog",
+ "lsm",
+ "namespace-identity",
+ "nscg",
+ "pmm",
+ "sched",
+ "selinux-runtime",
+ "sync",
+ "syscall",
+ "uaccess",
+ "vfs",
+]
+
+[[package]]
 name = "selinux"
 version = "0.1.0"
 
@@ -699,6 +879,10 @@ dependencies = [
  "selinux",
  "sync",
 ]
+
+[[package]]
+name = "siphash"
+version = "0.1.0"
 
 [[package]]
 name = "sm4"
@@ -812,6 +996,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31"
 dependencies = [
  "core_maths",
+]
+
+[[package]]
+name = "tty"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "hal-aarch64",
+ "hal-x86_64",
+ "klog",
+ "sched",
+ "sync",
+ "vfs",
 ]
 
 [[package]]
@@ -934,6 +1131,14 @@ name = "windows-audio"
 version = "0.1.0"
 
 [[package]]
+name = "windows-compositor"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "syscall",
+]
+
+[[package]]
 name = "windows-console"
 version = "0.1.0"
 
@@ -997,9 +1202,12 @@ dependencies = [
 name = "windows-runtime"
 version = "0.1.0"
 dependencies = [
+ "elf",
+ "ipc",
  "libc",
  "pe",
  "syscall",
+ "windows-gdi",
 ]
 
 [[package]]

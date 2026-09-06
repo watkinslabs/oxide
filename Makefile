@@ -75,7 +75,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
         smoke-ata-sat smoke-ata-sat-x86 smoke-ata-sat-arm \
         smoke-usb-scsi smoke-usb-scsi-x86 smoke-usb-scsi-arm \
         hosted-gate test-build-gate test-build-check-selftest \
-        smoke-hostshare smoke-hostshare-x86 smoke-hostshare-arm smoke-windows-notepad-x86 windows-nt-transition-test \
+        smoke-hostshare smoke-hostshare-x86 smoke-hostshare-arm smoke-windows-notepad-x86 windows-notepad-acceptance-x86 windows-nt-transition-test \
         smoke-ping smoke-ping-x86 smoke-ping-arm smoke-network-native-pci-x86 \
         stack-gate-baseline-x86 stack-gate-baseline-arm stack-report \
         clean clean-builds help
@@ -271,6 +271,14 @@ hosted-global-gate:
 QEMU_FEATURES_X86 := $(FEATURES)
 QEMU_FEATURES_ARM := $(FEATURES)
 
+# Keep the standard x86 developer image useful for NT/Notepad testing. Set
+# WINDOWS_NOTEPAD=0 for a deliberately minimal image or when the host Wine
+# runtime catalog is unavailable.
+WINDOWS_NOTEPAD ?= 1
+WINDOWS_WINE_NTDLL ?= target/lanes/wine-10.20-build/dlls/ntdll/ntdll.so
+WINDOWS_WINE_WIN32U ?= target/lanes/wine-10.20-build/dlls/win32u/win32u.so
+WINDOWS_NOTEPAD_ENV = $(if $(filter 0 no false,$(WINDOWS_NOTEPAD)),,OXIDE_WINDOWS_NOTEPAD_SMOKE=1 OXIDE_WINE_NTDLL=$(abspath $(WINDOWS_WINE_NTDLL)) OXIDE_WINE_WIN32U=$(abspath $(WINDOWS_WINE_WIN32U)))
+
 # SMP CPU count for qemu (default 1). The boot-smoke gate sets SMP=2 so
 # AP bring-up + the periodic load balancer are exercised every push.
 SMP ?= 1
@@ -280,7 +288,7 @@ SMP ?= 1
 # `cmd_grub` takes --arch/--smp/--features.
 qemu-x86:
 	$(TRIM_ROOTFS_CACHE)
-	$(XTASK) grub --arch x86_64  --smp $(SMP) $(if $(QEMU_FEATURES_X86),--features "$(QEMU_FEATURES_X86)",)
+	$(WINDOWS_NOTEPAD_ENV) $(XTASK) grub --arch x86_64  --smp $(SMP) $(if $(QEMU_FEATURES_X86),--features "$(QEMU_FEATURES_X86)",)
 
 # One image, one command. Each profile gets its OWN build namespace, so booting
 # a desktop does not overwrite the root image the next `make qemu-x86` boots —
@@ -329,7 +337,7 @@ lite:
 # Keep it opt-in so ordinary QEMU boots immediately show the generic console.
 qemu-x86-virtio-gpu:
 	$(TRIM_ROOTFS_CACHE)
-	OXIDE_QEMU_VIRTIO_GPU=1 $(XTASK) grub --arch x86_64 --smp $(SMP) $(if $(QEMU_FEATURES_X86),--features "$(QEMU_FEATURES_X86)",)
+	$(WINDOWS_NOTEPAD_ENV) OXIDE_QEMU_VIRTIO_GPU=1 $(XTASK) grub --arch x86_64 --smp $(SMP) $(if $(QEMU_FEATURES_X86),--features "$(QEMU_FEATURES_X86)",)
 
 qemu-arm:
 	$(TRIM_ROOTFS_CACHE)
@@ -339,7 +347,7 @@ qemu-arm:
 # these so SMOKE_TIMEOUT measures guest runtime, never a feature build.
 qemu-x86-image:
 	$(TRIM_ROOTFS_CACHE)
-	$(XTASK) image --arch x86_64 $(if $(QEMU_FEATURES_X86),--features "$(QEMU_FEATURES_X86)",)
+	$(WINDOWS_NOTEPAD_ENV) $(XTASK) image --arch x86_64 $(if $(QEMU_FEATURES_X86),--features "$(QEMU_FEATURES_X86)",)
 
 qemu-arm-image:
 	$(TRIM_ROOTFS_CACHE)
@@ -361,14 +369,14 @@ qemu-x86-grub: qemu-x86
 # makes it a usable answer to "does this kernel boot a board without a CSM".
 qemu-x86-uefi:
 	$(TRIM_ROOTFS_CACHE)
-	OXIDE_QEMU_UEFI=1 $(XTASK) grub --arch x86_64 --smp $(SMP) $(if $(QEMU_FEATURES_X86),--features "$(QEMU_FEATURES_X86)",)
+	$(WINDOWS_NOTEPAD_ENV) OXIDE_QEMU_UEFI=1 $(XTASK) grub --arch x86_64 --smp $(SMP) $(if $(QEMU_FEATURES_X86),--features "$(QEMU_FEATURES_X86)",)
 
 # Same but with `--features debug-all` (every syscall trace + LAPIC
 # tick + boot-pulse log). Useful for kernel debugging; not what you
 # want when just trying to log in and use it.
 qemu-x86-debug:
 	$(TRIM_ROOTFS_CACHE)
-	$(XTASK) grub --arch x86_64  --features debug-all
+	$(WINDOWS_NOTEPAD_ENV) $(XTASK) grub --arch x86_64  --features debug-all
 
 qemu-arm-debug:
 	$(TRIM_ROOTFS_CACHE)
@@ -921,6 +929,12 @@ smoke-windows-notepad-x86:
 	SMOKE_ALIVE_READY_MARKER='sh-5.2#' SMOKE_KEEP_LOG_DIR=target/windows-smoke-logs \
 	SMOKE_ALIVE_CMD=/usr/local/bin/windows-notepad-smoke \
 	SMOKE_RX_MARKER= ./tools/boot-smoke.sh x86 $(WINDOWS_NOTEPAD_SMOKE_TIMEOUT)
+
+# One-shot visible acceptance for the real 64-bit Wine Notepad. Unlike the
+# headless liveness smoke this owns QMP framebuffer/input evidence and never
+# retries a graphical run.
+windows-notepad-acceptance-x86:
+	./tools/windows-notepad-acceptance.py
 
 # Native Win32 window/message/GDI service smoke. The userspace probe is built
 # for the selected guest architecture and injected only into the disposable

@@ -18,15 +18,24 @@ const MODULE_BASE_NAME_OFFSET: u64 = 0x58;
 const LIST_LINK_OFFSET: u64 = 0;
 const MAX_MODULE_SCAN: usize = 64;
 
+macro_rules! pe_trace {
+    ($($body:tt)*) => {
+        #[cfg(feature = "debug-faultdiag")]
+        { $($body)* }
+    };
+}
+
 pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RelayProbe {
         return Some(probe_relay_descriptor(call.args.a0));
     }
     if call.service == NtService::RelayCall {
         let result = resolve_relay_call(call).unwrap_or(pe::relay::RELAY_TARGET_NOT_FOUND);
-        klog::write_raw(b"[WINDOWS-PE-RELAY-DISPATCH] descriptor="); klog::write_hex_u64(call.args.a0);
-        klog::write_raw(b" index="); klog::write_hex_u64(call.args.a1);
-        klog::write_raw(b" result="); klog::write_hex_u64(result); klog::write_raw(b"\n");
+        pe_trace! {
+            klog::write_raw(b"[WINDOWS-PE-RELAY-DISPATCH] descriptor="); klog::write_hex_u64(call.args.a0);
+            klog::write_raw(b" index="); klog::write_hex_u64(call.args.a1);
+            klog::write_raw(b" result="); klog::write_hex_u64(result); klog::write_raw(b"\n");
+        }
         return Some(result);
     }
     if call.service == NtService::RtlFindMessage {
@@ -53,20 +62,22 @@ fn probe_relay_descriptor(module: u64) -> u64 {
     if read_u32(marker) != Some(0xdeb9_0002) { return STATUS_INVALID_PARAMETER; }
     let Some(descriptor_rva) = read_u32(marker.saturating_add(4)) else { return STATUS_INVALID_PARAMETER; };
     let descriptor = module.saturating_add(descriptor_rva as u64);
-    let relay = read_u64_checked(descriptor.saturating_add(8)).unwrap_or(0);
-    let private = read_u64_checked(descriptor.saturating_add(16)).unwrap_or(0);
-    klog::write_raw(b"[WINDOWS-PE-RELAY-PROBE] module="); klog::write_hex_u64(module);
-    klog::write_raw(b" descriptor="); klog::write_hex_u64(descriptor);
-    klog::write_raw(b" relay="); klog::write_hex_u64(relay);
-    klog::write_raw(b" private="); klog::write_hex_u64(private); klog::write_raw(b"\n");
-    let functions = read_u32(export.saturating_add(28)).unwrap_or(0) as u64;
-    klog::write_raw(b"[WINDOWS-PE-RELAY-EAT] rva394=");
-    klog::write_hex_u64(read_u32(module.saturating_add(functions + 394 * 4)).unwrap_or(0) as u64);
-    klog::write_raw(b" rva395=");
-    klog::write_hex_u64(read_u32(module.saturating_add(functions + 395 * 4)).unwrap_or(0) as u64);
-    klog::write_raw(b" rva396=");
-    klog::write_hex_u64(read_u32(module.saturating_add(functions + 396 * 4)).unwrap_or(0) as u64);
-    klog::write_raw(b"\n");
+    let _ = descriptor;
+    pe_trace! {
+        klog::write_raw(b"[WINDOWS-PE-RELAY-PROBE] module="); klog::write_hex_u64(module);
+        klog::write_raw(b" descriptor="); klog::write_hex_u64(descriptor);
+        klog::write_raw(b" relay="); klog::write_hex_u64(read_u64_checked(descriptor.saturating_add(8)).unwrap_or(0));
+        klog::write_raw(b" private="); klog::write_hex_u64(read_u64_checked(descriptor.saturating_add(16)).unwrap_or(0)); klog::write_raw(b"\n");
+    }
+    pe_trace! {
+        klog::write_raw(b"[WINDOWS-PE-RELAY-EAT] rva394=");
+        klog::write_hex_u64(read_u32(module.saturating_add(read_u32(export.saturating_add(28)).unwrap_or(0) as u64 + 394 * 4)).unwrap_or(0) as u64);
+        klog::write_raw(b" rva395=");
+        klog::write_hex_u64(read_u32(module.saturating_add(read_u32(export.saturating_add(28)).unwrap_or(0) as u64 + 395 * 4)).unwrap_or(0) as u64);
+        klog::write_raw(b" rva396=");
+        klog::write_hex_u64(read_u32(module.saturating_add(read_u32(export.saturating_add(28)).unwrap_or(0) as u64 + 396 * 4)).unwrap_or(0) as u64);
+        klog::write_raw(b"\n");
+    }
     STATUS_SUCCESS
 }
 
@@ -98,7 +109,6 @@ fn resolve_relay_call(call: NtCall) -> Option<u64> {
     let function_rva_address = module.checked_add(functions as u64).and_then(|value| value.checked_add(ordinal_index * 4))?;
     let function_rva = read_u32(function_rva_address)?;
     if function_rva == 0 || function_rva >= size || (function_rva >= export_rva && function_rva < export_end) { return None; }
-    let original = module.saturating_add(function_rva as u64);
     let root = unsafe { cur.mm_ref() }.map(|mm| mm.root_pa()).unwrap_or(0);
     // The loader's snapshot is the canonical original EAT. Wine's private
     // relay state is mutable and may be absent when relay tracing is off;
@@ -107,11 +117,13 @@ fn resolve_relay_call(call: NtCall) -> Option<u64> {
         elf_load::pe_modules::original_export(root, module, ordinal_index as u32),
         resolve_relay_original(module, size, descriptor, ordinal_index as u32),
     )?;
-    klog::write_raw(b"[WINDOWS-PE-RELAY-TARGET] root="); klog::write_hex_u64(root);
-    klog::write_raw(b" module="); klog::write_hex_u64(module);
-    klog::write_raw(b" index="); klog::write_dec_u64(ordinal_index);
-    klog::write_raw(b" eat="); klog::write_hex_u64(original);
-    klog::write_raw(b" target="); klog::write_hex_u64(target); klog::write_raw(b"\n");
+    pe_trace! {
+        klog::write_raw(b"[WINDOWS-PE-RELAY-TARGET] root="); klog::write_hex_u64(root);
+        klog::write_raw(b" module="); klog::write_hex_u64(module);
+        klog::write_raw(b" index="); klog::write_dec_u64(ordinal_index);
+        klog::write_raw(b" eat="); klog::write_hex_u64(module.saturating_add(function_rva as u64));
+        klog::write_raw(b" target="); klog::write_hex_u64(target); klog::write_raw(b"\n");
+    }
     let target = resolve_import_veneer(target, module, size).unwrap_or(target);
     #[cfg(feature = "debug-faultdiag")]
     {
@@ -122,7 +134,7 @@ fn resolve_relay_call(call: NtCall) -> Option<u64> {
         klog::write_raw(b" index=");
         klog::write_dec_u64(ordinal_index as u64);
         klog::write_raw(b" eat=");
-        klog::write_hex_u64(original);
+        klog::write_hex_u64(module.saturating_add(function_rva as u64));
         klog::write_raw(b" target=");
         klog::write_hex_u64(target);
         klog::write_raw(b"\n");
@@ -167,25 +179,39 @@ pub fn find_exported_routine(module: u64, name_address: u64) -> u64 {
     let Some(cur) = sched::live::current() else { return 0; };
     if !cur.is_nt_personality() || module == 0 || name_address == 0 { return 0; }
     let Some((module_size, is_ntdll)) = module_info(&cur, module) else {
-        klog::write_raw(b"[WINDOWS-PE-EXPORT] module-info-miss module="); klog::write_hex_u64(module); klog::write_raw(b"\n");
+        pe_trace! { klog::write_raw(b"[WINDOWS-PE-EXPORT] module-info-miss module="); klog::write_hex_u64(module); klog::write_raw(b"\n"); }
         return 0;
     };
     let Some(name) = read_ascii_z_unbounded(name_address) else {
-        klog::write_raw(b"[WINDOWS-PE-EXPORT] name-read-miss module="); klog::write_hex_u64(module); klog::write_raw(b"\n");
+        pe_trace! { klog::write_raw(b"[WINDOWS-PE-EXPORT] name-read-miss module="); klog::write_hex_u64(module); klog::write_raw(b"\n"); }
         return 0;
     };
     let data = is_ntdll.then(|| elf_load::pe_loader::resolve_nt_runtime_data_export(module, &name)).flatten();
-    klog::write_raw(b"[WINDOWS-PE-EXPORT] module=");
-    klog::write_hex_u64(module);
-    klog::write_raw(b" ntdll=");
-    klog::write_hex_u64(is_ntdll as u64);
-    klog::write_raw(b" name=");
-    klog::write_raw(&name);
-    klog::write_raw(b" data=");
-    klog::write_hex_u64(data.unwrap_or(0));
-    klog::write_raw(b"\n");
-    let result = data
-        .or_else(|| resolve_export(&cur, module, module_size, Some(&name), 0, 0))
+    pe_trace! {
+        klog::write_raw(b"[WINDOWS-PE-EXPORT] module=");
+        klog::write_hex_u64(module);
+        klog::write_raw(b" ntdll=");
+        klog::write_hex_u64(is_ntdll as u64);
+        klog::write_raw(b" name=");
+        klog::write_raw(&name);
+        klog::write_raw(b" data=");
+        klog::write_hex_u64(data.unwrap_or(0));
+        klog::write_raw(b"\n");
+    }
+    // These Wine symbols are exported data, not executable routines.  Wine
+    // deliberately asks for their address and dereferences the slot to obtain
+    // the dispatcher/function-table pointer.  Do not pass them through the
+    // executable-VMA check used for ordinary PE procedure exports: the runtime
+    // data area is readable but non-executable by design.
+    if let Some(address) = data {
+        klog::write_raw(b"[WINDOWS-PE-DATA] name=");
+        klog::write_raw(&name);
+        klog::write_raw(b" slot=");
+        klog::write_hex_u64(address);
+        klog::write_raw(b"\n");
+        return address;
+    }
+    let result = resolve_export(&cur, module, module_size, Some(&name), 0, 0)
         .or_else(|| is_ntdll.then(|| elf_load::pe_loader::resolve_nt_runtime_export(module, &name)).flatten());
     result.and_then(|address| callable_win32_export(&cur, address)).unwrap_or(0)
 }
@@ -211,12 +237,14 @@ fn get_procedure(call: NtCall) -> u64 {
         .ok_or(STATUS_PROCEDURE_NOT_FOUND);
     let Ok(address) = address.and_then(|address| callable_win32_export(cur, address).ok_or(STATUS_PROCEDURE_NOT_FOUND)) else { return STATUS_PROCEDURE_NOT_FOUND; };
     if address >= call.args.a0 && address - call.args.a0 >= 0x4000 && address - call.args.a0 < 0x5000 {
-        klog::write_raw(b"[WINDOWS-PE-DYNAMIC-RELAY] module=");
-        klog::write_hex_u64(call.args.a0);
-        klog::write_raw(b" address=");
-        klog::write_hex_u64(address);
-        klog::write_raw(b" rva=");
-        klog::write_hex_u64(address - call.args.a0); klog::write_raw(b"\n");
+        pe_trace! {
+            klog::write_raw(b"[WINDOWS-PE-DYNAMIC-RELAY] module=");
+            klog::write_hex_u64(call.args.a0);
+            klog::write_raw(b" address=");
+            klog::write_hex_u64(address);
+            klog::write_raw(b" rva=");
+            klog::write_hex_u64(address - call.args.a0); klog::write_raw(b"\n");
+        }
     }
     #[cfg(feature = "debug-faultdiag")]
     {
@@ -229,13 +257,15 @@ fn get_procedure(call: NtCall) -> u64 {
         klog::write_raw(b"\n");
     }
     if address >= call.args.a0 && address - call.args.a0 < 0x8000 {
-        klog::write_raw(b"[WINDOWS-PE-PROC] module=");
-        klog::write_hex_u64(call.args.a0);
-        klog::write_raw(b" address=");
-        klog::write_hex_u64(address);
-        klog::write_raw(b" rva=");
-        klog::write_hex_u64(address - call.args.a0);
-        klog::write_raw(b"\n");
+        pe_trace! {
+            klog::write_raw(b"[WINDOWS-PE-PROC] module=");
+            klog::write_hex_u64(call.args.a0);
+            klog::write_raw(b" address=");
+            klog::write_hex_u64(address);
+            klog::write_raw(b" rva=");
+            klog::write_hex_u64(address - call.args.a0);
+            klog::write_raw(b"\n");
+        }
     }
     if uaccess::put_user_u64(call.args.a3, address).is_err() { return STATUS_INVALID_PARAMETER; }
     STATUS_SUCCESS

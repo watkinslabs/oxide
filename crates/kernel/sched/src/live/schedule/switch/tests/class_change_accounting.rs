@@ -54,8 +54,8 @@ fn change(task: &Arc<Task>, rq: &Runqueue, class: SchedClass) {
 }
 
 fn account(task: &Task, rq: &Runqueue, now: u64) {
-    let inner = rq.inner.lock();
-    super::super::handoff::update_curr(task, &inner, now);
+    let mut inner = rq.inner.lock();
+    super::super::handoff::update_curr(task, &mut inner, now);
 }
 
 fn total(task: &Task) -> u64 {

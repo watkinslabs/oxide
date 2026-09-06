@@ -57,7 +57,7 @@ pub use yield_api::{park_yield, sched_yield, schedule, tick_yield};
 /// `update_rq_clock()` plus `put_prev_task()` inside `sched_change_begin()`.
 /// Oxide's running task is outside the class tree, so only the accounting half
 /// is needed here; the transaction requests a reschedule after the mutation.
-pub(crate) fn settle_running_for_change(task: &Task, inner: &RunqueueInner, now: u64) {
+pub(crate) fn settle_running_for_change(task: &Task, inner: &mut RunqueueInner, now: u64) {
     handoff::update_curr(task, inner, now);
 }
 

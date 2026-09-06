@@ -12,6 +12,7 @@ mod migratetype;
 mod pcp;
 mod reserve;
 mod watermark_gate;
+mod render_perf;
 
 use super::*;
 use core::sync::atomic::AtomicU64;

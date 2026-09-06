@@ -491,7 +491,10 @@
         assert!(address >= runtime.base.as_u64() && address + 8 <= runtime.base.as_u64() + runtime.bytes as u64);
         let vma = as_.find_vma(UserVirtAddr::new(address).unwrap()).unwrap();
         assert!(matches!(vma.backing, VmaBacking::KernelBytes { .. }));
-        assert_eq!(address, runtime.wine_dispatcher);
+        assert_ne!(address, runtime.wine_dispatcher);
+        let data = match vma.backing { VmaBacking::KernelBytes { data, .. } => data, _ => panic!("Wine private exports must be kernel-backed") };
+        let offset = (address - runtime.base.as_u64()) as usize;
+        assert_eq!(&data[offset..offset + 8], &runtime.wine_dispatcher.to_le_bytes());
         assert_ne!(runtime.relay_call, runtime.wine_dispatcher);
     }
 
@@ -501,13 +504,19 @@
         let runtime = map_nt_runtime(&as_).unwrap();
         let dispatcher = resolve_nt_runtime_data_export(runtime.base.as_u64(), b"__wine_unix_call_dispatcher").unwrap();
         let handle = resolve_nt_runtime_data_export(runtime.base.as_u64(), b"__wine_unixlib_handle").unwrap();
-        assert_eq!(dispatcher, runtime.wine_unix_dispatcher);
-        assert_eq!(handle, runtime.wine_unixlib_handle);
+        assert_ne!(dispatcher, runtime.wine_unix_dispatcher);
+        assert_ne!(handle, runtime.wine_unixlib_handle);
         assert_ne!(dispatcher, handle);
-        let vma = as_.find_vma(UserVirtAddr::new(handle).unwrap()).unwrap();
+        let vma = as_.find_vma(UserVirtAddr::new(dispatcher).unwrap()).unwrap();
         let data = match vma.backing { VmaBacking::KernelBytes { data, .. } => data, _ => panic!("Wine private exports must be kernel-backed") };
-        let offset = (handle - runtime.base.as_u64()) as usize;
-        assert_eq!(&data[offset..offset + 8], &syscall::nt::WINE_UNIXLIB_HANDLE.to_le_bytes());
+        let offset = (dispatcher - runtime.base.as_u64()) as usize;
+        assert_eq!(&data[offset..offset + 8], &runtime.wine_unix_dispatcher.to_le_bytes());
+        let handle_offset = (handle - runtime.base.as_u64()) as usize;
+        assert_eq!(&data[handle_offset..handle_offset + 8], &syscall::nt::WINE_UNIXLIB_HANDLE.to_le_bytes());
+        let table = crate::elf_modules::unixlib_descriptor(as_.root_pa()).expect("native runtime must publish the Wine Unix table");
+        assert_eq!(table.entry_count as usize, syscall::nt_wine_unix::WINE_UNIX_FUNCTION_COUNT);
+        assert_eq!(table.entries, vec![runtime.wine_unix_dispatcher; syscall::nt_wine_unix::WINE_UNIX_FUNCTION_COUNT]);
+        assert!(table.table_address >= runtime.base.as_u64() && table.table_address < runtime.base.as_u64() + runtime.bytes as u64);
     }
 
     #[test]
@@ -616,9 +625,10 @@
         let env_vma = as_.find_vma(process.environment.base).unwrap();
         let data = match env_vma.backing { VmaBacking::KernelBytes { data, .. } => data, _ => panic!("PE environment must be kernel-backed") };
         let read64 = |offset: usize| u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
-        assert_eq!(read64(0x108), stack_top);
-        assert_eq!(read64(0x110), stack.as_u64());
-        assert_eq!(read64(0x1578), stack.as_u64());
+        let teb = (process.environment.teb.as_u64() - process.environment.base.as_u64()) as usize;
+        assert_eq!(read64(teb + 0x08), stack_top);
+        assert_eq!(read64(teb + 0x10), stack.as_u64());
+        assert_eq!(read64(teb + 0x1478), stack.as_u64());
     }
 
     #[test]
@@ -693,7 +703,12 @@
         let vma = as_.find_vma(process.environment.base).unwrap();
         let data = match vma.backing { VmaBacking::KernelBytes { data, .. } => data, _ => panic!("environment must be kernel-backed") };
         assert_eq!(u64::from_le_bytes(data[0x10..0x18].try_into().unwrap()), process.image.base);
-        assert_eq!(u32::from_le_bytes(data[0x1940..0x1944].try_into().unwrap()), process.image.size);
+        // Follow the loader's first-in-load-order link rather than coupling
+        // this cross-module test to the private arena's module-slot offset.
+        let ldr = u64::from_le_bytes(data[0x18..0x20].try_into().unwrap());
+        let first = u64::from_le_bytes(data[(ldr - process.environment.base.as_u64() + 0x10) as usize..(ldr - process.environment.base.as_u64() + 0x18) as usize].try_into().unwrap());
+        let module = (first - process.environment.base.as_u64()) as usize;
+        assert_eq!(u32::from_le_bytes(data[module + 0x40..module + 0x44].try_into().unwrap()), process.image.size);
     }
 
     #[test]

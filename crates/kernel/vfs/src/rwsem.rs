@@ -56,6 +56,14 @@ impl<C: LockClass> VfsRwsem<C> {
 
     fn key(&self) -> usize { self as *const Self as usize }
 
+    fn claim_reader(&self, observed: u32) -> bool {
+        self.state.compare_exchange(observed, observed + 1, Ordering::Acquire, Ordering::Relaxed).is_ok()
+    }
+
+    fn claim_writer(&self) -> bool {
+        self.state.compare_exchange(0, WRITER, Ordering::Acquire, Ordering::Relaxed).is_ok()
+    }
+
     fn park(&self, gate: sync::Guard<'_, (), C>, writer: bool) {
         let park = load_hook::<ParkHook>(&PARK_HOOK);
         let schedule = load_hook::<ScheduleHook>(&SCHEDULE_HOOK);
@@ -102,9 +110,14 @@ impl<C: LockClass> VfsRwsem<C> {
                 && state & READERS != READERS
                 && self.writers_waiting.load(Ordering::Relaxed) == 0
             {
-                self.state.store(state + 1, Ordering::Release);
+                // Fast readers change state without wait_lock. Preserve their
+                // increments and releases when claiming from the slow path.
+                if self.claim_reader(state) {
+                    drop(gate);
+                    return VfsRwsemReadGuard { lock: self };
+                }
                 drop(gate);
-                return VfsRwsemReadGuard { lock: self };
+                continue;
             }
             self.park(gate, false);
         }
@@ -119,9 +132,8 @@ impl<C: LockClass> VfsRwsem<C> {
                 self.writers_waiting.fetch_add(1, Ordering::Relaxed);
                 queued = true;
             }
-            if self.state.load(Ordering::Relaxed) == 0 {
+            if self.claim_writer() {
                 self.writers_waiting.fetch_sub(1, Ordering::Relaxed);
-                self.state.store(WRITER, Ordering::Release);
                 drop(gate);
                 return VfsRwsemWriteGuard {
                     lock: self,
@@ -196,6 +208,10 @@ impl<C: LockClass> core::ops::DerefMut for VfsRwsemWriteGuard<'_, C> {
         unsafe { &mut *self.lock.cell.get() }
     }
 }
+
+#[cfg(test)]
+#[path = "rwsem/tests/admission.rs"]
+mod admission_tests;
 
 #[cfg(test)]
 mod tests {

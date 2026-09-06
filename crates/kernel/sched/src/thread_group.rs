@@ -10,7 +10,7 @@ pub mod shared_signal;
 use crate::pid::PidIdentity;
 use crate::task::PosixTimer;
 use crate::Task;
-/// Initial state for the ordered native Windows runtime diagnostic phase.
+/// Reserved initial bit for the native Windows diagnostic event set.
 pub const NT_WINDOWS_MILESTONE_INITIAL: u8 = 1;
 /// Every real internal exit status is non-negative
 /// (`crate::exit::status`), so no group death can spell this value.
@@ -68,6 +68,8 @@ pub struct ThreadGroup {
     /// Process-local NT handle table; clone-threads share it, fork creates a
     /// fresh table through `ThreadGroup::new`, matching native process scope.
     pub nt_handles: crate::nt_object::NtHandleTable,
+    pub nt_window_station: Spinlock<Option<Arc<crate::nt_object::NtObject>>, TaskListClass>,
+    pub nt_default_desktop: Spinlock<crate::nt_object::ThreadDesktop, TaskListClass>,
     /// Recursive process-wide lock protecting the native PEB loader state.
     pub nt_peb_lock: crate::nt_object::NtMutant,
     /// Process-local Windows DLL-directory override, encoded as UTF-16 bytes.
@@ -82,6 +84,9 @@ pub struct ThreadGroup {
     pub nt_module_catalog: Spinlock<Option<Arc<Spinlock<pe::catalog::ModuleCatalog, TaskListClass>>>, TaskListClass>,
     /// Canonical process-owned source catalog for Wine builtin ELF modules.
     pub nt_unixlib_catalog: Spinlock<Option<Arc<Spinlock<elf::UnixlibCatalog, TaskListClass>>>, TaskListClass>,
+    /// Immutable ELF bootstrap admitted with the NT launch request. Child NT
+    /// processes reuse this exact image instead of reopening a host path.
+    pub nt_bootstrap: Spinlock<Option<Arc<[u8]>>, TaskListClass>,
     /// Modules whose `DLL_THREAD_ATTACH`/`DETACH` callbacks are disabled.
     pub nt_module_no_thread_calls: Spinlock<Vec<u64>, TaskListClass>,
     /// Process-owned Wine client procedure tables initialized by user32.
@@ -104,7 +109,7 @@ pub struct ThreadGroup {
     /// Process-wide default DLL search flags selected by the NT loader.
     pub nt_default_dll_search_flags: AtomicU32,
     pub nt_unhandled_filter: AtomicU64,
-    /// Process-local ordered native Windows runtime diagnostic phase.
+    /// Process-local native Windows diagnostic event bits.
     /// Stored with the NT process state so concurrent personalities cannot
     /// reset or consume another process's acceptance trace.
     pub nt_windows_milestone: AtomicU8,
@@ -270,12 +275,15 @@ impl ThreadGroup {
             posix_timers: UnsafeCell::new(alloc::vec![PosixTimer::default(); PosixTimer::SLOTS]),
             rlimits: Spinlock::new(crate::rlimit::DEFAULT_RLIMITS),
             nt_handles: crate::nt_object::NtHandleTable::new(),
+            nt_window_station: Spinlock::new(None),
+            nt_default_desktop: Spinlock::new(crate::nt_object::ThreadDesktop::default()),
             nt_peb_lock: crate::nt_object::NtMutant::new(None),
             nt_dll_directory: Spinlock::new(Vec::new()),
             nt_dll_directories: Spinlock::new(Vec::new()), nt_dll_directory_next: AtomicU64::new(1),
             nt_module_refs: Spinlock::new(Vec::new()),
             nt_module_catalog: Spinlock::new(None),
             nt_unixlib_catalog: Spinlock::new(None),
+            nt_bootstrap: Spinlock::new(None),
             nt_module_no_thread_calls: Spinlock::new(Vec::new()),
             nt_user_pfn: Spinlock::new(None),
             nt_user_module: Spinlock::new(None),
@@ -344,6 +352,12 @@ impl ThreadGroup {
     /// Install the source catalog retained across native loader calls. # C: O(1)
     pub fn set_nt_unixlib_catalog(&self, catalog: Arc<elf::UnixlibCatalog>) {
         *self.nt_unixlib_catalog.lock() = Some(Arc::new(Spinlock::new((*catalog).clone())));
+    }
+    /// Return the immutable bootstrap admitted for this NT process. # C: O(1)
+    pub fn nt_bootstrap(&self) -> Option<Arc<[u8]>> { self.nt_bootstrap.lock().clone() }
+    /// Install or clear the immutable bootstrap used by later NT children. # C: O(bytes)
+    pub fn set_nt_bootstrap(&self, image: Option<&[u8]>) {
+        *self.nt_bootstrap.lock() = image.map(|bytes| Arc::<[u8]>::from(bytes));
     }
     /// The process' `signalfd` readiness source, handed to every thread's
     /// `SignalPending` so both pending sets raise edges on one list. # C: O(1)

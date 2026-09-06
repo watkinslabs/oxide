@@ -30,11 +30,14 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     let Some(module_count) = read_u32(base.checked_add(72).unwrap_or(0)) else { return Some(STATUS_INVALID_PARAMETER); };
     let Some(unixlibs_ptr) = read_u64(base.checked_add(80).unwrap_or(0)) else { return Some(STATUS_INVALID_PARAMETER); };
     let Some(unixlib_count) = read_u32(base.checked_add(88).unwrap_or(0)) else { return Some(STATUS_INVALID_PARAMETER); };
+    let Some(bootstrap_ptr) = read_u64(base.checked_add(96).unwrap_or(0)) else { return Some(STATUS_INVALID_PARAMETER); };
+    let Some(bootstrap_len) = read_u64(base.checked_add(104).unwrap_or(0)) else { return Some(STATUS_INVALID_PARAMETER); };
     if image_len == 0 || image_len > MAX_IMAGE_BYTES || path_len == 0 || path_len > 32 * 1024
         || command_len == 0 || command_len > 32 * 1024 || command_ptr == 0
         || environment_len == 0 || environment_len > 1024 * 1024 || environment_ptr == 0
         || module_count > MAX_MODULES || unixlib_count > MAX_MODULES
-        || (module_count != 0 && modules_ptr == 0) || (unixlib_count != 0 && unixlibs_ptr == 0) { return Some(STATUS_INVALID_PARAMETER); }
+        || (module_count != 0 && modules_ptr == 0) || (unixlib_count != 0 && unixlibs_ptr == 0)
+        || bootstrap_len > MAX_IMAGE_BYTES || (bootstrap_len != 0 && bootstrap_ptr == 0) { return Some(STATUS_INVALID_PARAMETER); }
     let Some(image) = copy_bytes(image_ptr, image_len).ok().flatten() else { return Some(STATUS_INVALID_PARAMETER); };
     let Some(path_bytes) = copy_bytes(path_ptr, path_len as u64).ok().flatten() else { return Some(STATUS_INVALID_PARAMETER); };
     let Ok(path) = String::from_utf8(path_bytes) else { return Some(STATUS_INVALID_PARAMETER); };
@@ -42,6 +45,11 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     let Ok(command_line) = String::from_utf8(command_bytes) else { return Some(STATUS_INVALID_PARAMETER); };
     let Some(environment_bytes) = copy_bytes(environment_ptr, environment_len as u64).ok().flatten() else { return Some(STATUS_INVALID_PARAMETER); };
     let Some(environment) = decode_environment(&environment_bytes) else { return Some(STATUS_INVALID_PARAMETER); };
+    let bootstrap = if bootstrap_len == 0 { None } else {
+        match copy_bytes(bootstrap_ptr, bootstrap_len).ok().flatten() {
+            Some(bytes) => Some(bytes), None => return Some(STATUS_INVALID_PARAMETER),
+        }
+    };
     let mut catalog = pe::catalog::ModuleCatalog::new();
     for index in 0..module_count as u64 {
         let Some(record) = modules_ptr.checked_add(index.checked_mul(32).unwrap_or(u64::MAX)) else { return Some(STATUS_INVALID_PARAMETER); };
@@ -69,10 +77,11 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         let Some(image) = copy_bytes(image_ptr, image_len).ok().flatten() else { return Some(STATUS_INVALID_PARAMETER); };
         if unixlibs.add(&name, &path, &image).is_err() { return Some(STATUS_INVALID_PARAMETER); }
     }
-    match crate::pe_exec::try_commit_with_catalog_and_environment(cur, path.as_bytes(), &image, &catalog, &command_line, &environment) {
+    match crate::pe_exec::try_commit_with_catalog_and_environment_and_bootstrap(cur, path.as_bytes(), &image, &catalog, &command_line, &environment, bootstrap.as_deref()) {
         Ok(()) => {
             cur.thread_group.set_nt_module_catalog(alloc::sync::Arc::new(catalog));
             cur.thread_group.set_nt_unixlib_catalog(alloc::sync::Arc::new(unixlibs));
+            cur.thread_group.set_nt_bootstrap(bootstrap.as_deref());
             Some(STATUS_SUCCESS)
         },
         Err(error) if error == -(syscall::errno::Errno::Enomem.as_i32() as i64) => Some(STATUS_NO_MEMORY),

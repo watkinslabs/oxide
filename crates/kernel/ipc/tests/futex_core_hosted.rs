@@ -26,6 +26,9 @@ extern crate self as hal;
 extern crate self as hal_x86_64;
 extern crate self as sched;
 
+#[path = "futex_pi/irq_probe.rs"] mod irq_probe;
+pub use irq_probe::TestIrq as X86IrqGate;
+
 // The production source reaches user memory through `crate::useraccess`, the
 // crate's non-gated owner of the exception-table copies. Under this harness
 // `crate` is the test binary, so the real module is re-exported into that name

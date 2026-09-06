@@ -87,14 +87,6 @@ pub(crate) fn update_curr_dl(t: &Task, now: u64) -> Charged {
     out
 }
 
-/// The periodic tick's deadline-class hook. A task whose budget ran out must
-/// leave the CPU at once — waiting for its next voluntary schedule would let it
-/// consume bandwidth it was never admitted for.
-/// # C: O(1)
-pub(crate) fn task_tick_dl(t: &Task) {
-    if update_curr_dl(t, now_ns()) == Charged::Throttle { crate::preempt::set_need_resched(); }
-}
-
 /// `sched_yield` on a deadline task: give up the REMAINDER OF THE INSTANCE,
 /// not merely the CPU. The budget left in this period is donated, and the task
 /// returns at the start of the next one with a full grant and a deadline one

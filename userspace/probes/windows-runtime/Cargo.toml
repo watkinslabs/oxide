@@ -13,5 +13,10 @@ path = "src/main.rs"
 
 [dependencies]
 libc = { workspace = true }
+elf = { path = "../../../crates/shared/elf" }
 pe = { path = "../../../crates/shared/pe" }
 syscall = { path = "../../../crates/kernel/syscall" }
+windows-gdi = { path = "../windows-gdi" }
+
+[dev-dependencies]
+ipc = { path = "../../../crates/kernel/ipc" }

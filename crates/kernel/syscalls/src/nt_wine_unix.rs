@@ -24,6 +24,13 @@ const STATUS_SHARING_VIOLATION: u64 = 0xc000_0043;
 const STATUS_CONFLICTING_ADDRESSES: u64 = 0xc000_0018;
 const STATUS_MEMORY_NOT_ALLOCATED: u64 = 0xc000_00a0;
 const STATUS_INVALID_ADDRESS: u64 = 0xc000_0141;
+fn log_unix_failure(stage: &[u8], status: u64) {
+    klog::write_raw(b"[WINDOWS-NT-UNIX-FAIL] stage=");
+    klog::write_raw(stage);
+    klog::write_raw(b" status=");
+    klog::write_hex_u64(status);
+    klog::write_raw(b"\n");
+}
 const MAX_WINE_DEBUG_WRITE: usize = 1 << 20;
 const WINE_LOAD_SO_DLL_PARAMS_BYTES: u64 = 24;
 const WINE_LOAD_SO_DLL_MODULE_OFFSET: u64 = 16;
@@ -159,7 +166,7 @@ fn wine_spawnvp(_args: u64) -> u64 { STATUS_NOT_IMPLEMENTED }
 /// The table was decoded at admission; dispatch reads no user table memory.
 /// # C: O(log N)
 fn lookup_unixlib_entry(root: u64, table_address: u64, entry: u64) -> Result<u64, u64> {
-    let Some(descriptor) = elf_load::elf_modules::unixlib_descriptor(root) else {
+    let Some(descriptor) = elf_load::elf_modules::unixlib_descriptor_for_table(root, table_address) else {
         return Err(STATUS_INVALID_PARAMETER);
     };
     if descriptor.entry_count == 0 || descriptor.module_base >= descriptor.module_end {
@@ -172,7 +179,7 @@ fn lookup_unixlib_entry(root: u64, table_address: u64, entry: u64) -> Result<u64
     if descriptor.table_address < descriptor.module_base || table_end > descriptor.module_end {
         return Err(STATUS_ACCESS_VIOLATION);
     }
-    if table_address != descriptor.table_address || entry >= descriptor.entry_count {
+    if entry >= descriptor.entry_count {
         return Err(STATUS_ACCESS_VIOLATION);
     }
     let target = descriptor.entries.get(entry as usize).copied().ok_or(STATUS_ACCESS_VIOLATION)?;
@@ -193,6 +200,50 @@ fn current_x64_unix_call(callable: u64, call: NtCall) -> Result<pe::nt_stub::X64
         call.args.a0, call.args.a1, call.args.a2, callable,
         return_rip, syscall_rsp, hal::USER_VA_END,
     ).ok_or(STATUS_INVALID_PARAMETER)
+}
+
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+fn enter_x64_native_unix_call(callable: u64, call: NtCall) -> Result<(), u64> {
+    let frame = hal_x86_64::current_pt_regs();
+    if frame.is_null() { return Err(STATUS_INVALID_PARAMETER); }
+    // SAFETY: current_pt_regs is this task's live syscall frame and the NT
+    // dispatcher exclusively owns it until the architecture epilogue returns.
+    let (return_rip, syscall_rsp) = unsafe { ((*frame).rip, (*frame).rsp) };
+    let handoff = pe::nt_stub::prepare_x64_unix_call(
+        call.args.a0, call.args.a1, call.args.a2, callable,
+        return_rip, syscall_rsp, hal::USER_VA_END,
+    ).ok_or(STATUS_INVALID_PARAMETER)?;
+    let native_rsp = pe::nt_stub::native_x64_call_rsp(handoff.syscall_rsp, hal::USER_VA_END)
+        .ok_or(STATUS_INVALID_PARAMETER)?;
+    if uaccess::put_user_u64(native_rsp, handoff.return_rip).is_err() {
+        return Err(STATUS_ACCESS_VIOLATION);
+    }
+    // SAFETY: the frame remains live on this task's syscall stack until the
+    // epilogue consumes it; the validated user stack receives one return slot.
+    unsafe {
+        (*frame).rip = handoff.callable;
+        (*frame).rsp = native_rsp;
+        (*frame).rdi = handoff.args;
+    }
+    Ok(())
+}
+
+#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+fn enter_aarch64_native_unix_call(callable: u64, call: NtCall) -> Result<(), u64> {
+    let frame = hal_aarch64::current_svc_frame();
+    if frame.is_null() { return Err(STATUS_INVALID_PARAMETER); }
+    // SAFETY: current_svc_frame is this task's live SVC frame and the NT
+    // dispatcher exclusively owns it until the exception-return epilogue.
+    unsafe {
+        if (*frame).elr_el1 == 0 || (*frame).sp_el0 == 0 || callable == 0 {
+            return Err(STATUS_INVALID_PARAMETER);
+        }
+        // AAPCS64 passes the Unixlib request in x0. Wine's saved x30 remains
+        // the return link to its existing user-stack epilogue.
+        (*frame).elr_el1 = callable;
+        (*frame).gp[0] = call.args.a2;
+    }
+    Ok(())
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -796,20 +847,57 @@ fn validate_builtin_unwind(args: u64) -> u64 {
 /// Wine's `unixlib_handle_t` is a table identity. Only the native table may
 /// consume it; arbitrary user pointers are rejected before dispatch.
 fn dispatch_for_address_space(root: u64, call: NtCall) -> u64 {
-    if call.service != NtService::WineUnixCall || call.args.a0 != syscall::nt::WINE_UNIXLIB_HANDLE {
+    if call.service != NtService::WineUnixCall {
         return STATUS_INVALID_PARAMETER;
     }
-    let Some(descriptor) = elf_load::elf_modules::unixlib_descriptor(root) else {
-        return STATUS_INVALID_PARAMETER;
+    // The native NTDLL table keeps the fixed bootstrap token for ABI
+    // compatibility. Loaded Unixlibs carry their own table address as the
+    // Wine handle, which lets several modules coexist in one process.
+    let table_address = if call.args.a0 == syscall::nt::WINE_UNIXLIB_HANDLE {
+        let Some(descriptor) = elf_load::elf_modules::unixlib_descriptor(root) else {
+            log_unix_failure(b"native-table-missing", STATUS_INVALID_PARAMETER);
+            return STATUS_INVALID_PARAMETER;
+        };
+        descriptor.table_address
+    } else {
+        call.args.a0
     };
-    let callable = match lookup_unixlib_entry(root, descriptor.table_address, call.args.a1) {
+    let callable = match lookup_unixlib_entry(root, table_address, call.args.a1) {
         Ok(callable) => callable,
-        Err(status) => return status,
+        Err(status) => { log_unix_failure(b"lookup", status); return status; }
     };
+    let native_table = call.args.a0 != syscall::nt::WINE_UNIXLIB_HANDLE;
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+    if native_table {
+        #[cfg(feature = "debug-syscall")]
+        {
+            klog::write_raw(b"[WINDOWS-NT-UNIX] native handle=");
+            klog::write_hex_u64(call.args.a0);
+            klog::write_raw(b" code=");
+            klog::write_hex_u64(call.args.a1);
+            klog::write_raw(b" args=");
+            klog::write_hex_u64(call.args.a2);
+            klog::write_raw(b" callable=");
+            klog::write_hex_u64(callable);
+            klog::write_raw(b"\n");
+        }
+        if let Err(status) = enter_x64_native_unix_call(callable, call) {
+            log_unix_failure(b"native-handoff", status);
+            return status;
+        }
+        crate::nt_milestone::unix_entry();
+        return STATUS_SUCCESS;
+    }
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+    if native_table {
+        if let Err(status) = enter_aarch64_native_unix_call(callable, call) { return status; }
+        crate::nt_milestone::unix_entry();
+        return STATUS_SUCCESS;
+    }
     #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
     let handoff = match current_x64_unix_call(callable, call) {
         Ok(handoff) => handoff,
-        Err(status) => return status,
+        Err(status) => { log_unix_failure(b"managed-handoff", status); return status; }
     };
     crate::nt_milestone::unix_entry();
     let status = match WineUnixFunction::decode(call.args.a1) {
@@ -842,7 +930,7 @@ fn dispatch_for_address_space(root: u64, call: NtCall) -> u64 {
     #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
     { pe::nt_stub::complete_x64_unix_call(handoff, status).status }
     #[cfg(not(all(target_os = "oxide-kernel", target_arch = "x86_64")))]
-    { let _ = callable; status }
+    { let _ = (callable, native_table); status }
 }
 
 /// Enter the native Wine Unix-call boundary for the current address space.
@@ -917,7 +1005,7 @@ mod tests {
     fn descriptor(root: u64, table_address: u64, entry_count: u64, module_base: u64, module_end: u64) {
         let as_ = vmm::AddressSpace::new(root).unwrap();
         elf_load::elf_modules::register_unixlib_table(&as_, elf_load::elf_modules::ElfUnixlibDescriptor {
-            table_address, entry_count, module_base, module_end,
+            name: Vec::new(), table_address, entry_count, module_base, module_end,
             entries: (0..entry_count).map(|index| module_base + 0x100 + index * 8).collect(),
             executable_ranges: vec![(module_base + 0x100, module_end)],
         }).unwrap();
@@ -937,7 +1025,7 @@ mod tests {
         assert_eq!(lookup_unixlib_entry(root, 0x4200, 0), Err(STATUS_INVALID_PARAMETER));
         let as_ = vmm::AddressSpace::new(root).unwrap();
         assert_eq!(elf_load::elf_modules::register_unixlib_table(&as_, elf_load::elf_modules::ElfUnixlibDescriptor {
-            table_address: 0x3ff8, entry_count: 2, module_base: 0x4000, module_end: 0x5000,
+            name: Vec::new(), table_address: 0x3ff8, entry_count: 2, module_base: 0x4000, module_end: 0x5000,
             entries: vec![0x4100, 0x4108],
             executable_ranges: vec![(0x4100, 0x4200)],
         }), Err(elf_load::elf_modules::UnixlibRegistrationError::InvalidRange));
@@ -949,7 +1037,7 @@ mod tests {
         let root = 0x7_3200;
         let as_ = vmm::AddressSpace::new(root).unwrap();
         assert_eq!(elf_load::elf_modules::register_unixlib_table(&as_, elf_load::elf_modules::ElfUnixlibDescriptor {
-            table_address: 0x4000, entry_count: u64::MAX, module_base: 0x4000, module_end: u64::MAX,
+            name: Vec::new(), table_address: 0x4000, entry_count: u64::MAX, module_base: 0x4000, module_end: u64::MAX,
             entries: Vec::new(),
             executable_ranges: vec![(0x4100, 0x4200)],
         }), Err(elf_load::elf_modules::UnixlibRegistrationError::ArithmeticOverflow));
@@ -961,7 +1049,7 @@ mod tests {
         let root = 0x7_3300;
         let as_ = vmm::AddressSpace::new(root).unwrap();
         assert_eq!(elf_load::elf_modules::register_unixlib_table(&as_, elf_load::elf_modules::ElfUnixlibDescriptor {
-            table_address: u64::MAX - 7, entry_count: 2, module_base: u64::MAX - 7, module_end: u64::MAX,
+            name: Vec::new(), table_address: u64::MAX - 7, entry_count: 2, module_base: u64::MAX - 7, module_end: u64::MAX,
             entries: vec![u64::MAX - 6, u64::MAX - 5],
             executable_ranges: vec![(u64::MAX - 6, u64::MAX)],
         }), Err(elf_load::elf_modules::UnixlibRegistrationError::ArithmeticOverflow));
@@ -973,12 +1061,12 @@ mod tests {
         let root = 0x7_3400;
         let as_ = vmm::AddressSpace::new(root).unwrap();
         assert_eq!(elf_load::elf_modules::register_unixlib_table(&as_, elf_load::elf_modules::ElfUnixlibDescriptor {
-            table_address: 0x4200, entry_count: 0, module_base: 0x4000, module_end: 0x5000,
+            name: Vec::new(), table_address: 0x4200, entry_count: 0, module_base: 0x4000, module_end: 0x5000,
             entries: Vec::new(),
             executable_ranges: vec![(0x4100, 0x4200)],
         }), Err(elf_load::elf_modules::UnixlibRegistrationError::InvalidRange));
         assert_eq!(elf_load::elf_modules::register_unixlib_table(&as_, elf_load::elf_modules::ElfUnixlibDescriptor {
-            table_address: 0x4ff0, entry_count: 2, module_base: 0x4000, module_end: 0x5000,
+            name: Vec::new(), table_address: 0x4ff0, entry_count: 2, module_base: 0x4000, module_end: 0x5000,
             entries: vec![0x4100, 0x4108],
             executable_ranges: vec![(0x4100, 0x4200)],
         }), Ok(()));
@@ -997,6 +1085,8 @@ mod tests {
             args: syscall::SyscallArgs { a0: syscall::nt::WINE_UNIXLIB_HANDLE,
                 a1: WineUnixFunction::WineSpawnVp as u64, a2: 0, a3: 0, a4: 0, a5: 0 } };
         assert_eq!(dispatch_for_address_space(root, call), STATUS_NOT_IMPLEMENTED);
+        let module_call = NtCall { args: syscall::SyscallArgs { a0: image.base + 0x200, ..call.args }, ..call };
+        assert_eq!(dispatch_for_address_space(root, module_call), STATUS_NOT_IMPLEMENTED);
         let bad = NtCall { args: syscall::SyscallArgs { a1: 8, ..call.args }, ..call };
         assert_eq!(dispatch_for_address_space(root, bad), STATUS_ACCESS_VIOLATION);
         elf_load::elf_modules::clear(root);

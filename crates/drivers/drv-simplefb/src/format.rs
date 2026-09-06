@@ -49,19 +49,43 @@ pub(crate) fn copy_damage(
     rect: fbcon::kernel::FlushRect,
     fb: BootFramebuffer,
 ) {
+    copy_damage_at(pixels, dst, rect, rect.x as i32, rect.y as i32, fb);
+}
+
+/// Copy a source rectangle to a possibly translated native framebuffer
+/// destination, clipping only at the destination scanout. # C: O(rect.w * rect.h)
+pub(crate) fn copy_damage_at(
+    pixels: &[u8],
+    dst: &mut [u8],
+    rect: fbcon::kernel::FlushRect,
+    dst_x: i32,
+    dst_y: i32,
+    fb: BootFramebuffer,
+) {
     let Some(fb_len) = fb.byte_len() else { return };
     if dst.len() < fb_len as usize { return; }
-    let x1 = rect.x.saturating_add(rect.w).min(fb.width).min(rect.stride_px);
-    let y1 = rect.y.saturating_add(rect.h).min(fb.height);
-    if rect.x >= x1 || rect.y >= y1 { return; }
+    let Some(src_right) = rect.x.checked_add(rect.w).filter(|value| *value <= rect.stride_px) else { return; };
+    let clip_left = i64::from(dst_x).max(0).min(i64::from(fb.width));
+    let clip_top = i64::from(dst_y).max(0).min(i64::from(fb.height));
+    let Some(dst_right) = i64::from(dst_x).checked_add(i64::from(rect.w)) else { return; };
+    let Some(dst_bottom) = i64::from(dst_y).checked_add(i64::from(rect.h)) else { return; };
+    let clip_right = dst_right.max(clip_left).min(i64::from(fb.width));
+    let clip_bottom = dst_bottom.max(clip_top).min(i64::from(fb.height));
+    if clip_right <= clip_left || clip_bottom <= clip_top { return; }
     let native_bytes = usize::from(fb.bpp).div_ceil(8);
-    for y in rect.y..y1 {
-        let src_px = y as usize * rect.stride_px as usize + rect.x as usize;
-        let count = (x1 - rect.x) as usize;
+    let source_width = src_right - rect.x;
+    for row in 0..(clip_bottom - clip_top) as u32 {
+        let source_y = match i64::from(rect.y).checked_add(clip_top - i64::from(dst_y)).and_then(|value| value.checked_add(i64::from(row))).and_then(|value| u32::try_from(value).ok()) { Some(value) => value, None => return };
+        let source_x = match i64::from(rect.x).checked_add(clip_left - i64::from(dst_x)).and_then(|value| u32::try_from(value).ok()) { Some(value) => value, None => return };
+        let destination_y = clip_top as u32 + row;
+        let destination_x = clip_left as u32;
+        let count = (clip_right - clip_left) as usize;
+        let src_px = source_y as usize * rect.stride_px as usize + source_x as usize;
         let src_off = src_px * 4;
         let src_end = match src_off.checked_add(count * 4) { Some(end) => end, None => return };
         if src_end > pixels.len() { return; }
-        let dst_off = y as usize * fb.pitch as usize + rect.x as usize * native_bytes;
+        if source_x.checked_add(count as u32).is_none_or(|value| value > source_width + rect.x) { return; }
+        let dst_off = destination_y as usize * fb.pitch as usize + destination_x as usize * native_bytes;
         let dst_end = match dst_off.checked_add(count * native_bytes) { Some(end) => end, None => return };
         if dst_end > dst.len() { return; }
         if canonical_xrgb8888(fb) {

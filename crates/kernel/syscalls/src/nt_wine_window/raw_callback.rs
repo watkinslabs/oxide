@@ -24,11 +24,14 @@ pub(super) fn dispatch_message(pointer: u64) -> u64 {
 /// Execute a raw NtUserMessageCall using its Wine callback selector.
 /// # C: O(1) plus bounded usercopy
 pub(super) fn message_call(args: SyscallArgs) -> u64 {
-    let Some(callback_type) = crate::nt_dispatch::stack_argument(6) else { return STATUS_INVALID_PARAMETER; };
+    let Some((callback_type, ansi)) = crate::nt_message_call_abi::tail(args.a5, crate::nt_dispatch::stack_argument) else { return STATUS_INVALID_PARAMETER; };
+    let callback_type = callback_type as u64;
     let hwnd = args.a0;
     let message = args.a1;
     let wparam = args.a2;
     let lparam = args.a3;
+    if let Some(result) = super::message_send::prepare_current(hwnd, message as u32, wparam, lparam, args.a4, ansi, callback_type) { return result; }
+    if callback_type == crate::nt_message_params::SEND_MESSAGE { return crate::nt_window::send::send_for_current(hwnd, message as u32, wparam, lparam); }
     if callback_type == WINE_DEF_WINDOW_PROC {
         if message == WM_NCCREATE { return (lparam != 0) as u64; }
         if message == WM_NCDESTROY { return STATUS_SUCCESS; }
@@ -51,10 +54,8 @@ pub(super) fn message_call(args: SyscallArgs) -> u64 {
         return native(NtService::DefaultWindowProc, SyscallArgs { a0: hwnd, a1: message, a2: wparam, a3: lparam, a4: 0, a5: 0 });
     }
     if callback_type != WINE_CALL_WINDOW_PROC { return STATUS_NOT_IMPLEMENTED; }
-    let wndproc = if args.a4 != 0 { uaccess::get_user_u64(args.a4).ok().filter(|value| *value != 0) } else { None };
-    let wndproc = wndproc.or_else(|| crate::nt_window::window_wndproc_for_current(hwnd));
-    let Some(wndproc) = wndproc else { return STATUS_INVALID_PARAMETER; };
-    crate::nt_rtl::begin_wndproc_callback(hwnd, message, wparam, lparam, wndproc)
+    super::initialize_window_proc_params(args.a4, hwnd, message, wparam, lparam,
+                                         ansi as u64)
 }
 
 fn native(service: NtService, args: SyscallArgs) -> u64 {

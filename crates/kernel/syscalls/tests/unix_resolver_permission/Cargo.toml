@@ -1,0 +1,12 @@
+[package]
+name = "unix-resolver-permission-boundary"
+version = "0.1.0"
+edition = "2021"
+publish = false
+[workspace]
+[lib]
+path = "fixture.rs"
+[dependencies]
+vfs = { path = "../../../vfs" }
+net = { path = "../../../net", features = ["hosted"] }
+syscall = { path = "../../../syscall" }

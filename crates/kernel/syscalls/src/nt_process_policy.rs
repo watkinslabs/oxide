@@ -1,33 +1,11 @@
 //! Pure CLIENT_ID and process-handle access decisions for the NT adapter.
 
-// These are the process-create bits Wine passes to NtCreateUserProcess. The
-// native path names the supported contract instead of silently dropping bits.
-pub const PROCESS_CREATE_FLAGS_INHERIT_HANDLES: u32 = 0x0000_0004;
-pub const PROCESS_CREATE_FLAGS_SUSPENDED: u32 = 0x0000_0200;
-pub const PROCESS_CREATE_FLAGS_SUPPORTED: u32 =
-    PROCESS_CREATE_FLAGS_INHERIT_HANDLES | PROCESS_CREATE_FLAGS_SUSPENDED;
-
 /// Native thread-stack reservation floor and allocation granularity. Wine's
 /// 64-bit NT path applies both before creating the thread's TEB.
 pub const NT_THREAD_DEFAULT_STACK: u64 = 1 << 20;
 pub const NT_THREAD_MIN_STACK: u64 = 1 << 20;
 pub const NT_THREAD_MAX_STACK: u64 = 64 << 20;
 pub const NT_THREAD_STACK_GRANULARITY: u64 = 64 << 10;
-
-/// Select general handle-table inheritance from the NT create flags. # C: O(1)
-pub const fn inherits_process_handles(flags: u32) -> bool {
-    flags & PROCESS_CREATE_FLAGS_INHERIT_HANDLES != 0
-}
-
-/// Validate process-create flags implemented by the native x86-64 path. # C: O(1)
-pub fn valid_process_create_flags(flags: u32) -> bool {
-    flags & !PROCESS_CREATE_FLAGS_SUPPORTED == 0
-}
-
-/// Preserve initial suspension from either NT create flag. # C: O(1)
-pub fn initial_thread_suspended(process_flags: u32, thread_flags: u32) -> bool {
-    process_flags & PROCESS_CREATE_FLAGS_SUSPENDED != 0 || thread_flags & 1 != 0
-}
 
 /// Normalize an NtCreateThreadEx stack reservation before mapping it. # C: O(1)
 pub fn thread_stack_size(requested: u64) -> Option<u64> {
@@ -105,22 +83,6 @@ mod tests {
     }
 
     #[test]
-    fn process_create_accepts_wine_inheritance_and_suspension_bits_only() {
-        assert!(valid_process_create_flags(0));
-        assert!(valid_process_create_flags(PROCESS_CREATE_FLAGS_INHERIT_HANDLES));
-        assert!(valid_process_create_flags(PROCESS_CREATE_FLAGS_SUSPENDED));
-        assert!(valid_process_create_flags(PROCESS_CREATE_FLAGS_SUPPORTED));
-        assert!(!valid_process_create_flags(PROCESS_CREATE_FLAGS_SUPPORTED | 1));
-    }
-
-    #[test]
-    fn process_create_suspension_is_preserved_from_both_layers() {
-        assert!(!initial_thread_suspended(0, 0));
-        assert!(initial_thread_suspended(PROCESS_CREATE_FLAGS_SUSPENDED, 0));
-        assert!(initial_thread_suspended(0, 1));
-    }
-
-    #[test]
     fn thread_stack_uses_native_floor_and_granularity() {
         assert_eq!(thread_stack_size(0), Some(NT_THREAD_DEFAULT_STACK));
         assert_eq!(thread_stack_size(0x1000), Some(NT_THREAD_MIN_STACK));
@@ -136,13 +98,6 @@ mod tests {
     }
 
     #[test]
-    fn process_create_inherits_handles_only_when_wine_requests_it() {
-        assert!(!inherits_process_handles(0));
-        assert!(inherits_process_handles(PROCESS_CREATE_FLAGS_INHERIT_HANDLES));
-        assert!(inherits_process_handles(PROCESS_CREATE_FLAGS_SUPPORTED));
-    }
-
-    #[test]
     fn external_termination_targets_the_named_group() {
         assert!(terminates_external_process(41, 42));
         assert!(!terminates_external_process(41, 41));
@@ -154,3 +109,7 @@ mod tests {
         assert_eq!(termination_exit_status(0xffff_ffff), -1);
     }
 }
+
+#[cfg(test)]
+#[path = "nt_process_create/policy.rs"]
+mod create_policy_tests;

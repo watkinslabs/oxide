@@ -5,7 +5,7 @@ mod damage;
 mod raster;
 pub use client::{Gdi, GdiError, Font, Rect, TextExtent, TextMetrics};
 pub use damage::{DamageError, DamageRegion};
-pub use raster::{RasterError, RasterFont, RasterSurface, TextOutputError, ETO_CLIPPED, ETO_OPAQUE};
+pub use raster::{RasterError, RasterFont, RasterSurface, FontMeasurement, TextOutputError, ETO_CLIPPED, ETO_OPAQUE};
 
 #[cfg(test)]
 mod tests {

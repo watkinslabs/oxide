@@ -1,0 +1,14 @@
+[package]
+name = "native-thread-inherit-boundary"
+version = "0.1.0"
+edition = "2021"
+publish = false
+build = "build.rs"
+[workspace]
+[lib]
+path = "fixture.rs"
+[dependencies]
+canonical_sched = { package = "sched", path = "../../../sched", features = ["hosted"] }
+elf-load = { path = "../../../exec" }
+vmm = { path = "../../../mm-vmm" }
+syscall = { path = "../../../syscall" }

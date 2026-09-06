@@ -17,7 +17,21 @@ pub struct MappedUnixlibObject {
     pub name: Vec<u8>,
     pub path: Vec<u8>,
     pub image: super::MappedUnixlib,
-    mapped_start: u64,
+    pub callable_table: Option<MappedUnixlibTable>,
+    /// Relocation classes retained for the userspace runtime owner. The
+    /// kernel applies only the classes owned by its ELF mapping contract.
+    pub relocation_kinds: Vec<u32>,
+    pub(crate) mapped_start: u64,
+}
+
+/// A relocated Wine `__wine_unix_call_funcs` table owned by one mapped ELF
+/// object. The table is published only after the complete dependency context
+/// has mapped successfully.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MappedUnixlibTable {
+    pub table_address: u64,
+    pub entries: Vec<u64>,
+    pub executable_ranges: Vec<(u64, u64)>,
 }
 
 /// Consume a validated dependency-first context and publish all images in one
@@ -32,9 +46,9 @@ pub fn map_load_context(
     context.validate()?;
     let mut mapped = Vec::new();
     let mut scope = Vec::new();
-    for source in &context.objects {
-        let result = map_object(source, as_, &scope);
-        let (image, exports, mapped_start) = match result {
+    for (index, source) in context.objects.iter().enumerate() {
+        let result = map_object(source, index + 1 == context.objects.len(), as_, &scope);
+        let (image, exports, mapped_start, callable_table, relocation_kinds) = match result {
             Ok(value) => value,
             Err(error) => {
                 rollback(as_, &mapped);
@@ -45,18 +59,37 @@ pub fn map_load_context(
         mapped.push(MappedUnixlibObject {
             name: source.name.clone(), path: source.path.clone(), mapped_start,
             image,
+            callable_table,
+            relocation_kinds,
         });
     }
-    // Publication is deliberately last. The registry update takes one lock
-    // and cannot fail, so no partially admitted scope can be observed.
+    // Symbol and callable-table publication is deliberately last. No caller
+    // can observe the dependency scope while a mapping transaction is open.
+    let mut registered_tables = Vec::new();
+    for object in &mapped {
+        if let Some(table) = &object.callable_table {
+            if super::register_callable_table_named(
+                as_, object.image, &object.name, table.table_address.checked_sub(object.image.base)
+                    .ok_or(LoadError::Einval)?, &table.entries, &table.executable_ranges,
+            ).is_err() {
+                for table_address in registered_tables {
+                    super::super::elf_modules::unregister_unixlib_table(as_.root_pa(), table_address);
+                }
+                rollback(as_, &mapped);
+                return Err(LoadError::Einval);
+            }
+            registered_tables.push(table.table_address);
+        }
+    }
     super::super::elf_modules::append_symbols(as_, &scope);
     Ok(mapped)
 }
 
 fn map_object(
-    source: &UnixlibSourceObject, as_: &AddressSpace, scope: &[ElfRuntimeSymbol],
-) -> Result<(super::MappedUnixlib, Vec<ElfRuntimeSymbol>, u64), LoadError> {
-    let object = parse_shared_object(&source.file, ARCH_MACHINE).map_err(LoadError::from)?;
+    source: &UnixlibSourceObject, root: bool, as_: &AddressSpace, scope: &[ElfRuntimeSymbol],
+) -> Result<(super::MappedUnixlib, Vec<ElfRuntimeSymbol>, u64, Option<MappedUnixlibTable>, Vec<u32>), LoadError> {
+    let object = if root { parse_shared_object(&source.file, ARCH_MACHINE) }
+        else { elf::parse_dependency_object(&source.file, ARCH_MACHINE) }.map_err(LoadError::from)?;
     let (min_vaddr, max_vaddr) = mapping_span(&object).ok_or(LoadError::Einval)?;
     let span = max_vaddr.checked_sub(min_vaddr).ok_or(LoadError::Einval)?;
     let span_len: usize = span.try_into().map_err(|_| LoadError::Einval)?;
@@ -71,7 +104,15 @@ fn map_object(
         |name| scope.iter().find(|symbol| symbol.name.as_slice() == name)
             .map(|symbol| symbol.address),
     ).map_err(LoadError::from)?;
+    let relocation_kinds = elf::runtime_relocation_kinds(&source.file, &object).map_err(LoadError::from)?;
     let exports = defined_exports(&source.file, &object, bias)?;
+    let executable_ranges = object.parsed.loads.iter().filter(|seg| seg.flags.contains(PFlags::X)).filter_map(|seg| {
+        let start = seg.vaddr.checked_add(bias).map(align_down)?;
+        let end = seg.vaddr.checked_add(seg.mem_sz).and_then(align_up)?.checked_add(bias)?;
+        Some((start, end))
+    }).collect::<Vec<_>>();
+    let callable_table = relocated_callable_table(&source.file, &object, bias, arena, &image, &executable_ranges)?;
+    let staged_image = image.into_boxed_slice();
     let addr = UserVirtAddr::new(arena).ok_or(LoadError::Einval)?;
     let may = object.parsed.loads.iter().fold(VmaProt::empty(), |all, seg| {
         all | segment_protection(seg.flags)
@@ -79,7 +120,7 @@ fn map_object(
     if as_.mmap_with_may_at(
         MmapPlacement::FixedNoReplace(addr), span_len, VmaProt::empty(), may,
         VmaFlags::PRIVATE, VmaBacking::KernelBytes {
-            data: as_.stash_bytes(image.into_boxed_slice()), off: 0,
+            data: as_.stash_bytes(staged_image), off: 0,
         },
     ).is_err() {
         return Err(LoadError::Enomem);
@@ -105,7 +146,27 @@ fn map_object(
         finalized += 1;
     }
     if finalized == 0 { let _ = as_.munmap(addr, span_len); return Err(LoadError::Einval); }
-    Ok((super::MappedUnixlib { base: bias, end: max_vaddr.checked_add(bias).ok_or(LoadError::Einval)? }, exports, arena))
+    Ok((super::MappedUnixlib { base: bias, end: max_vaddr.checked_add(bias).ok_or(LoadError::Einval)? }, exports, arena, callable_table, relocation_kinds))
+}
+
+fn relocated_callable_table(
+    file: &[u8], object: &SharedObject<'_>, bias: u64, image_base: u64,
+    image: &[u8], executable_ranges: &[(u64, u64)],
+) -> Result<Option<MappedUnixlibTable>, LoadError> {
+    let Some(symbol) = elf::collect_dynamic_symbols(file, object).ok().and_then(|symbols|
+        symbols.into_iter().find(|symbol| symbol.defined && symbol.name == b"__wine_unix_call_funcs")) else {
+        return Ok(None);
+    };
+    if symbol.size == 0 || symbol.size % 8 != 0 || symbol.size > 4096 { return Err(LoadError::Einval); }
+    let table_address = bias.checked_add(symbol.value).ok_or(LoadError::Einval)?;
+    let start = table_address.checked_sub(image_base).ok_or(LoadError::Einval)? as usize;
+    let bytes = usize::try_from(symbol.size).map_err(|_| LoadError::Einval)?;
+    let table = image.get(start..start.checked_add(bytes).ok_or(LoadError::Einval)?).ok_or(LoadError::Einval)?;
+    let entries = table.chunks_exact(8).map(|slot| u64::from_le_bytes(slot.try_into().unwrap())).collect::<Vec<_>>();
+    if entries.iter().any(|entry| !executable_ranges.iter().any(|(begin, end)| *entry >= *begin && *entry < *end)) {
+        return Err(LoadError::Einval);
+    }
+    Ok(Some(MappedUnixlibTable { table_address, entries, executable_ranges: executable_ranges.to_vec() }))
 }
 
 fn copy_loads(

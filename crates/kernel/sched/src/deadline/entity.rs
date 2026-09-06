@@ -165,6 +165,8 @@ impl DlEntity {
 
     /// One coherent static/live entity generation. # C: O(1) expected
     pub(crate) fn snapshot(&self) -> (DlParams, DlSched) {
+        #[cfg(test)]
+        publication_test::check_reader(self);
         loop {
             let seq = self.inner.seq.load(Ordering::Acquire);
             if seq & 1 != 0 { core::hint::spin_loop(); continue; }
@@ -193,18 +195,17 @@ impl DlEntity {
     /// so a task cannot mint fresh budget by re-issuing its own parameters.
     /// # C: O(1)
     pub(crate) fn set_params(&self, p: &DlParams) {
-        self.inner.write_begin();
+        let _publication = self.inner.write_begin();
         self.inner.dl_runtime.store(p.runtime, Ordering::Release);
         self.inner.dl_deadline.store(p.deadline, Ordering::Release);
         self.inner.dl_period.store(p.period, Ordering::Release);
         self.inner.dl_bw.store(p.bw, Ordering::Release);
         self.inner.dl_density.store(p.density, Ordering::Release);
         self.inner.dl_flags.store(p.flags, Ordering::Release);
-        self.inner.write_end();
     }
 
     pub(crate) fn store_entity(&self, p: &DlParams, s: &DlSched) {
-        self.inner.write_begin();
+        let _publication = self.inner.write_begin();
         self.inner.dl_runtime.store(p.runtime, Ordering::Relaxed);
         self.inner.dl_deadline.store(p.deadline, Ordering::Relaxed);
         self.inner.dl_period.store(p.period, Ordering::Relaxed);
@@ -216,7 +217,6 @@ impl DlEntity {
         let bits = (s.throttled as u8) * BIT_THROTTLED
             | (s.yielded as u8) * BIT_YIELDED | (s.overrun as u8) * BIT_OVERRUN;
         self.inner.bits.store(bits, Ordering::Relaxed);
-        self.inner.write_end();
     }
 
     /// Drop the reservation and every instance latch. Run after inactive
@@ -232,14 +232,13 @@ impl DlEntity {
 
     /// # C: O(1)
     pub(crate) fn store_sched(&self, s: &DlSched) {
-        self.inner.write_begin();
+        let _publication = self.inner.write_begin();
         self.inner.runtime.store(s.runtime, Ordering::Release);
         self.inner.deadline.store(s.deadline, Ordering::Release);
         let b = (s.throttled as u8) * BIT_THROTTLED
             | (s.yielded as u8) * BIT_YIELDED
             | (s.overrun as u8) * BIT_OVERRUN;
         self.inner.bits.store(b, Ordering::Release);
-        self.inner.write_end();
     }
 
     /// Absolute deadline, read alone. The EDF ordering key.
@@ -254,9 +253,8 @@ impl DlEntity {
     /// are claimed by their inactive reservation under the bandwidth lock.
     /// # C: O(1)
     pub(crate) fn take_bw(&self) -> u64 {
-        self.inner.write_begin();
+        let _publication = self.inner.write_begin();
         let bw = self.inner.dl_bw.swap(0, Ordering::AcqRel);
-        self.inner.write_end();
         bw
     }
 
@@ -267,17 +265,15 @@ impl DlEntity {
     /// charge, which throttles it regardless of remaining budget.
     /// # C: O(1)
     pub(crate) fn set_yielded(&self) {
-        self.inner.write_begin();
+        let _publication = self.inner.write_begin();
         self.inner.bits.fetch_or(BIT_YIELDED, Ordering::AcqRel);
-        self.inner.write_end();
     }
 
     /// Take the pending overrun latch, if any. One signal per latch.
     /// # C: O(1)
     pub(crate) fn take_overrun(&self) -> bool {
-        self.inner.write_begin();
+        let _publication = self.inner.write_begin();
         let overrun = self.inner.bits.fetch_and(!BIT_OVERRUN, Ordering::AcqRel) & BIT_OVERRUN != 0;
-        self.inner.write_end();
         overrun
     }
 
@@ -379,13 +375,8 @@ impl DlEntity {
 }
 
 impl DlEntityState {
-    fn write_begin(&self) {
-        let seq = self.seq.fetch_add(1, Ordering::AcqRel);
-        hal::kassert!(seq & 1 == 0, "concurrent deadline entity writers");
-    }
-    fn write_end(&self) {
-        let seq = self.seq.fetch_add(1, Ordering::Release);
-        hal::kassert!(seq & 1 != 0, "deadline entity write ended without owner");
+    fn write_begin(&self) -> super::publication::Publication<'_> {
+        super::publication::Publication::begin(&self.seq)
     }
     pub(super) fn replenish_at(&self) -> u64 { self.replenish_at.load(Ordering::Acquire) }
     pub(super) fn set_replenish_at(&self, at: u64) { self.replenish_at.store(at, Ordering::Release); }
@@ -425,7 +416,7 @@ impl DlEntityState {
     }
 
     fn clear_current(&self) {
-        self.write_begin();
+        let _publication = self.write_begin();
         self.dl_runtime.store(0, Ordering::Release);
         self.dl_deadline.store(0, Ordering::Release);
         self.dl_period.store(0, Ordering::Release);
@@ -439,7 +430,6 @@ impl DlEntityState {
         self.replenish_at.store(0, Ordering::Release);
         self.replenish_word.store(REPLENISH_EMPTY, Ordering::Release);
         self.resume_inactive.store(false, Ordering::Release);
-        self.write_end();
     }
 }
 
@@ -469,3 +459,7 @@ impl ReplenishmentClaim {
 impl Default for DlEntity {
     fn default() -> Self { Self::new() }
 }
+
+#[cfg(test)]
+#[path = "tests/publication.rs"]
+mod publication_test;

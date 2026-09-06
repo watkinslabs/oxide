@@ -134,7 +134,10 @@ fn get_section(call: NtCall) -> u64 {
 
 fn map_named(cur: &sched::Task, name: alloc::string::String, pointer: u64, size: u64) -> u64 {
     if pointer == 0 || size == 0 { return STATUS_INVALID_PARAMETER; }
-    let path = format!("/usr/share/wine/nls/{name}.nls");
+    // The Windows smoke image owns the complete NLS catalog at this explicit
+    // boundary; it is not part of the host Wine installation path.
+    let path = if name == "locale" { "/usr/local/share/oxide/windows/nls/locale.nls".into() }
+        else { format!("/usr/local/share/oxide/windows/nls/{name}.nls") };
     let vp = match crate::pathresolve::resolve_at_path(crate::pathresolve::AT_FDCWD, &path, vfs::LookupFlags::default()) {
         Ok(vp) => vp,
         Err(_) => return STATUS_OBJECT_NAME_NOT_FOUND,

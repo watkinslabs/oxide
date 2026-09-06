@@ -27,6 +27,7 @@ use crate::sched_enc::{SCHED_BATCH, SCHED_IDLE, SCHED_NORMAL};
 use alloc::vec::Vec;
 
 mod current;
+mod accounting;
 
 /// Two installed runqueues, indexed by CPU id.
 struct Cpus {

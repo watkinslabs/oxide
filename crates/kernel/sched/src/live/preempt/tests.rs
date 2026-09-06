@@ -106,3 +106,21 @@ fn native_rotation_positive_control_detects_a_missing_tail_request() {
     assert_eq!(inner.pick_next_task().tid, task.tid,
         "positive control no longer detects a missing expiry rotation");
 }
+#[test]
+fn deadline_tick_holds_owner_across_snapshot_and_store() {
+    use alloc::sync::Arc;
+    let task = Arc::new(crate::Task::new(9913, "dl-tick", crate::SchedClass::Deadline));
+    let rq = crate::live::runqueue::Runqueue::new(0,
+        Arc::new(crate::Task::new(9914, "idle", crate::SchedClass::Idle)));
+    let params = crate::deadline::DlParams::from_request(1_000_000, 10_000_000, 10_000_000, 0);
+    task.sched.dl.set_params(&params);
+    task.sched.dl.store_sched(&crate::deadline::DlSched {
+        runtime: 1_000_000, deadline: 10_000_000, ..Default::default()
+    });
+    task.sched.dl.set_exec_start(1);
+    super::task_tick_with_clock(&task, &rq, || {
+        assert!(rq.inner.try_lock().is_none(), "deadline tick lacks its writer serializer");
+        100_001
+    });
+    assert_eq!(task.sched.dl.sched().runtime, 900_000);
+}

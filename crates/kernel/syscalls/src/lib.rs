@@ -28,74 +28,12 @@ pub mod mmsg_batch;
 pub mod msg_layout;
 pub mod nt_dispatch;
 pub(crate) mod nt_transition_measure;
-mod nt_system_info;
-mod nt_process_parameters;
-mod nt_process_policy;
-mod nt_directory_abi;
-pub(crate) mod nt_file_policy;
-mod nt_file_async_policy;
-mod nt_file_scatter_policy;
-mod nt_file_gather_policy;
-mod nt_file_volume_abi;
-mod nt_loader_dir_policy;
-pub(crate) mod nt_file_lock_policy;
-pub(crate) mod nt_registry_policy;
-pub(crate) mod nt_directory_notify_policy;
-mod nt_path;
-mod nt_path_type;
-mod nt_image;
-mod nt_dos83;
-#[cfg(target_os = "oxide-kernel")]
-mod nt_heap_lock;
-#[cfg(target_os = "oxide-kernel")]
-mod nt_oem;
-#[cfg(target_os = "oxide-kernel")]
-mod nt_exec;
-#[cfg(target_os = "oxide-kernel")]
-mod nt_file;
-#[cfg(target_os = "oxide-kernel")]
-mod nt_file_scatter;
-#[cfg(target_os = "oxide-kernel")]
-mod nt_file_gather;
-#[cfg(target_os = "oxide-kernel")]
-mod nt_file_volume;
-#[cfg(target_os = "oxide-kernel")]
-mod nt_file_lock;
-#[cfg(target_os = "oxide-kernel")]
-mod nt_duplicate;
-#[cfg(target_os = "oxide-kernel")]
-mod nt_process_handles;
-mod nt_process_vm_counters;
-mod nt_process_image_policy;
-mod nt_process_command_line;
-mod nt_handle_close_policy;
-mod nt_window_policy;
-#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
-mod nt_process_create;
-mod nt_process_memory;
-mod nt_process_memory_policy;
-mod nt_vulkan_policy;
-mod nt_system_time;
-#[cfg(target_os = "oxide-kernel")]
-mod nt_timer;
-#[cfg(target_os = "oxide-kernel")]
-mod nt_completion;
-#[cfg(target_os = "oxide-kernel")]
-mod nt_signal_wait;
-#[cfg(target_os = "oxide-kernel")]
-mod nt_token;
-#[cfg(target_os = "oxide-kernel")]
-mod nt_priority;
-mod nt_thread_info_policy;
-#[cfg(target_os = "oxide-kernel")]
-mod nt_registry;
-#[cfg(target_os = "oxide-kernel")]
-mod nt_directory_notify;
-#[cfg(target_os = "oxide-kernel")]
-mod nt_wine_window;
-mod nt_milestone;
+include!("nt_manifest.rs");
 mod nt_wine_unix;
+#[cfg(target_os = "oxide-kernel")]
+mod nt_wine_memory;
 mod nt_wine_unwind;
+#[cfg(any(test, target_arch = "x86_64"))]
 mod nt_unwind_policy;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_heap;
@@ -434,9 +372,6 @@ pub mod tkill_common;
 #[path = "219_restart_syscall.rs"] pub mod s219_restart_syscall;
 // madvise(2): compile its pure VMA/advice engine hosted so the canonical
 // PAGEOUT dispatch tests do not exist only as path-included phantom coverage.
-#[cfg(all(test, not(target_os = "oxide-kernel")))]
-#[path = "028_madvise.rs"]
-mod s028_madvise;
 // memfd_create (319): the `sanitize_flags` EINVAL/EACCES ladder plus the seal
 // word / inode mode `memfd_alloc_file` derives. execveat (322): the AT_* flag
 // mask, the empty-path ENOENT rule, the dirfd-base decision and the `may_open`

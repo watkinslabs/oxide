@@ -399,6 +399,8 @@ pub(crate) fn resolve_unix_addr(path: alloc::vec::Vec<u8>) -> Result<net::UnixAd
     let decoded = vfs::path_from_bytes(&path);
     let p = crate::pathresolve::resolve_path_raw(&decoded, false)
         .map_err(errno_from_vfs)?;
+    vfs::inode_permission(&p.inode, vfs::MAY_WRITE, &crate::pathresolve::current_cred())
+        .map_err(errno_from_vfs)?;
     if p.inode.file_type() != vfs::FileType::Socket {
         return Err(-(Errno::Econnrefused.as_i32() as i64));
     }

@@ -2,24 +2,9 @@
 
 pub(crate) const WM_SHOWWINDOW: u32 = 0x0018;
 pub(crate) const SW_HIDE: u64 = 0;
-pub(crate) const SW_SHOWDEFAULT: u64 = 10;
 pub(crate) const SW_FORCEMINIMIZE: u64 = 11;
 
 pub(crate) const CALL_ONE_PARAM_GET_SYSTEM_METRICS: u64 = 9;
-pub(crate) const SM_XVIRTUALSCREEN: u64 = 76;
-pub(crate) const SM_YVIRTUALSCREEN: u64 = 77;
-pub(crate) const SM_CXVIRTUALSCREEN: u64 = 78;
-pub(crate) const SM_CYVIRTUALSCREEN: u64 = 79;
-
-/// Resolve display-backed metrics from the canonical primary scanout geometry. # C: O(1)
-pub(crate) fn display_metric(index: u64, width: u32, height: u32) -> Option<u64> {
-    match index {
-        SM_XVIRTUALSCREEN | SM_YVIRTUALSCREEN => Some(0),
-        SM_CXVIRTUALSCREEN => Some(width as u64),
-        SM_CYVIRTUALSCREEN => Some(height as u64),
-        _ => None,
-    }
-}
 
 /// Return the WM_SHOWWINDOW wParam for one real visibility transition. # C: O(1)
 pub(crate) fn visibility_transition_message(previous: bool, visible: bool) -> Option<u64> {
@@ -37,9 +22,9 @@ pub(crate) fn show_command_visibility(command: u64) -> Option<bool> {
 
 #[cfg(test)]
 mod tests {
-    use super::{display_metric, show_command_visibility, visibility_transition_message,
-        SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
-        SW_FORCEMINIMIZE, SW_HIDE, SW_SHOWDEFAULT, WM_SHOWWINDOW};
+    use super::{show_command_visibility, visibility_transition_message,
+        SW_FORCEMINIMIZE, SW_HIDE, WM_SHOWWINDOW};
+    const SW_SHOWDEFAULT: u64 = 10;
 
     #[test]
     fn show_window_notifies_when_visibility_changes() {
@@ -68,17 +53,4 @@ mod tests {
         assert_eq!(show_command_visibility(u64::MAX), None);
     }
 
-    #[test]
-    fn display_metrics_follow_the_primary_virtual_screen_geometry() {
-        assert_eq!(display_metric(SM_XVIRTUALSCREEN, 1920, 1080), Some(0));
-        assert_eq!(display_metric(SM_YVIRTUALSCREEN, 1920, 1080), Some(0));
-        assert_eq!(display_metric(SM_CXVIRTUALSCREEN, 1920, 1080), Some(1920));
-        assert_eq!(display_metric(SM_CYVIRTUALSCREEN, 1920, 1080), Some(1080));
-    }
-
-    #[test]
-    fn display_metrics_do_not_claim_unowned_settings_metrics() {
-        assert_eq!(display_metric(0, 1920, 1080), None);
-        assert_eq!(display_metric(u64::MAX, 1920, 1080), None);
-    }
 }

@@ -10,6 +10,7 @@
 
 mod activation;
 mod completion;
+mod desktop;
 mod file_delete;
 #[allow(dead_code)]
 mod file_share;
@@ -24,6 +25,8 @@ mod token;
 
 pub use activation::NtActivationContext;
 pub use completion::{NtCompletionPacket, NtCompletionPort};
+pub use desktop::{bootstrap_desktop, DesktopBootstrap, DesktopBootstrapError, DesktopError, DesktopRoot, NtDesktop, ThreadDesktop};
+pub use namespace::{publish_desktop, publish_window_station, DesktopPublishError};
 pub use file_delete::NtDeleteOnClose;
 pub use file_share::NtFileShare;
 pub use handle::{NtHandle, NtHandleTable};

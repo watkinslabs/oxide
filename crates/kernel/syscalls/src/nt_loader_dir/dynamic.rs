@@ -145,37 +145,21 @@ pub(super) fn load_unixlib(name_descriptor: u64, module_output: u64) -> u64 {
     if name.is_empty() || name.iter().any(|byte| *byte == b'/' || *byte == b'\\' || *byte == 0) { return STATUS_INVALID_PARAMETER; }
     // SAFETY: the current task owns this address-space reference for the
     // duration of the loader transaction and the cloned Arc keeps it alive.
+    // The launcher admits the complete native source catalog before the NT
+    // personality begins. Do not reopen the host filesystem here: that would
+    // split admission from consumption and let a later path replacement alter
+    // the image being loaded.
+    let Some(catalog) = cur.thread_group.nt_unixlib_catalog() else { return STATUS_DLL_NOT_FOUND; };
     let Some(as_) = (unsafe { cur.mm_ref() }).map(|mm| mm.clone()) else { return STATUS_INVALID_PARAMETER; };
-    let mut root_path = staged_root().to_vec();
-    root_path.push(b'/');
-    root_path.extend_from_slice(&object_name);
-    let Some(root_text) = core::str::from_utf8(&root_path).ok() else { return STATUS_INVALID_PARAMETER; };
-    let Ok(root_file) = vfs::read_abs(root_text) else { return STATUS_DLL_NOT_FOUND; };
-    let context = match elf_load::unixlib::build_load_context(&object_name, &root_path, &root_file, |dependency| {
-        if dependency.is_empty() || dependency.iter().any(|byte| *byte == b'/' || *byte == b'\\' || *byte == 0) { return None; }
-        let mut path = staged_root().to_vec();
-        path.push(b'/');
-        path.extend_from_slice(dependency);
-        let file = core::str::from_utf8(&path).ok().and_then(|text| vfs::read_abs(text).ok())?;
-        Some((path, file))
-    }) { Ok(value) => value, Err(elf_load::LoadError::Enomem) => return 0xc000_0017,
-        Err(elf_load::LoadError::Enoexec) => return STATUS_DLL_NOT_FOUND,
-        Err(elf_load::LoadError::Einval) => return STATUS_INVALID_PARAMETER };
-    let mapped = match elf_load::unixlib::map_load_context(&context, &as_) {
+    let mapped = match elf_load::unixlib::load_named(&catalog, &object_name, &as_) {
         Ok(value) => value, Err(elf_load::LoadError::Enomem) => return 0xc000_0017,
         Err(elf_load::LoadError::Enoexec) => return STATUS_DLL_NOT_FOUND,
         Err(elf_load::LoadError::Einval) => return STATUS_INVALID_PARAMETER };
-    match mapped.last().map(|object| object.image.base) {
-        Some(base) if uaccess::put_user_u64(module_output, base).is_ok() => STATUS_SUCCESS,
-        Some(_) => STATUS_INVALID_PARAMETER,
-        None => STATUS_DLL_NOT_FOUND,
+    match uaccess::put_user_u64(module_output, mapped.image.base) {
+        Ok(()) => STATUS_SUCCESS,
+        Err(_) => STATUS_INVALID_PARAMETER,
     }
 }
-
-#[cfg(target_arch = "x86_64")]
-const fn staged_root() -> &'static [u8] { b"/usr/local/lib/oxide/windows/x86_64-unix" }
-#[cfg(target_arch = "aarch64")]
-const fn staged_root() -> &'static [u8] { b"/usr/local/lib/oxide/windows/aarch64-unix" }
 
 #[cfg(target_arch = "x86_64")]
 fn load_locked(cur: &sched::Task, name_descriptor: u64, module_output: u64) -> u64 {

@@ -103,7 +103,7 @@ impl NtHandleTable {
         Arc::new(NtObject { kind: NtObjectType::Job, id, event: None, semaphore: None, mutant: None,
             timer: None, completion: None, activation: None, token: None, job: Some(Arc::new(NtJob::new())), pipe: None, pipe_endpoint: None, file: None, file_info: None,
             section: None, symbolic_link: None, task: None, file_share: None, delete_on_close: None,
-            file_completion: Spinlock::new(None) })
+            desktop: None, handle_refs: core::sync::atomic::AtomicU32::new(0), file_completion: Spinlock::new(None) })
     }
 
     /// Allocate one named-pipe object with scheduler-owned configuration. # C: O(1)
@@ -113,7 +113,7 @@ impl NtHandleTable {
             mutant: None, timer: None, completion: None, activation: None, token: None, job: None,
             pipe: Some(Arc::new(NtPipe::new(config))), pipe_endpoint: None, file: None, file_info: None, section: None,
             symbolic_link: None, task: None, file_share: None, delete_on_close: None,
-            file_completion: Spinlock::new(None) })
+            desktop: None, handle_refs: core::sync::atomic::AtomicU32::new(0), file_completion: Spinlock::new(None) })
     }
 
     pub fn new_named_pipe_endpoint(&self, pipe: Arc<NtPipe>, side: NtPipeSide) -> Arc<NtObject> {
@@ -123,7 +123,7 @@ impl NtHandleTable {
             mutant: None, timer: None, completion: None, activation: None, token: None, job: None,
             pipe: Some(pipe), pipe_endpoint: Some(endpoint), file: None, file_info: None, section: None,
             symbolic_link: None, task: None, file_share: None, delete_on_close: None,
-            file_completion: Spinlock::new(None) })
+            desktop: None, handle_refs: core::sync::atomic::AtomicU32::new(0), file_completion: Spinlock::new(None) })
     }
 
     /// Allocate a waitable NT timer with a stable identity. # C: O(1)
@@ -136,7 +136,7 @@ impl NtHandleTable {
         let id = self.next_object_id.fetch_add(1, Ordering::Relaxed);
         Arc::new(NtObject { kind: NtObjectType::CompletionPort, id, event: None, semaphore: None,
             mutant: None, timer: None, completion: Some(Arc::new(NtCompletionPort::new(concurrency))), activation: None, token: None, job: None,
-            file: None, file_info: None, section: None, symbolic_link: None, task: None, pipe: None, pipe_endpoint: None, file_share: None, delete_on_close: None, file_completion: Spinlock::new(None) })
+            file: None, file_info: None, section: None, symbolic_link: None, task: None, pipe: None, pipe_endpoint: None, file_share: None, delete_on_close: None, desktop: None, handle_refs: core::sync::atomic::AtomicU32::new(0), file_completion: Spinlock::new(None) })
     }
 
     pub fn new_token(&self, uid: u32, gid: u32) -> Arc<NtObject> {
@@ -241,14 +241,19 @@ impl NtHandleTable {
 
     /// Insert an object with its granted access mask and return its handle. # C: O(N)
     pub fn insert(&self, object: Arc<NtObject>, access: u32) -> Option<NtHandle> {
-        let mut entries = self.entries.lock();
-        Self::insert_locked(&mut entries, object, access)
+        if !namespace::retain_handle(&object) { return None; }
+        let result = { let mut entries = self.entries.lock(); Self::insert_locked(&mut entries, object.clone(), access) };
+        if result.is_none() { namespace::release_handle(&object); }
+        result
     }
 
     fn insert_locked(entries: &mut Vec<Entry>, object: Arc<NtObject>, access: u32) -> Option<NtHandle> {
         let index = entries.iter().position(|entry| entry.object.is_none() && !entry.retired).unwrap_or(entries.len());
         if index >= HANDLE_INDEX_MASK as usize { return None; }
-        if index == entries.len() { entries.push(Entry { object: None, access: 0, flags: 0, generation: 1, retired: false }); }
+        if index == entries.len() {
+            entries.try_reserve(1).ok()?;
+            entries.push(Entry { object: None, access: 0, flags: 0, generation: 1, retired: false });
+        }
         let entry = &mut entries[index];
         if entry.generation == 0 { entry.generation = 1; }
         entry.object = Some(object);
@@ -295,8 +300,7 @@ impl NtHandleTable {
         let entry = entries.get(index - FIRST_INDEX)?;
         let object = entry.object.as_ref()?;
         if entry.generation != generation { return None; }
-        Some(entries.iter().filter(|candidate| candidate.object.as_ref().is_some_and(|other|
-            alloc::sync::Arc::ptr_eq(other, object))).count() as u32)
+        Some(object.handle_refs.load(Ordering::Acquire) as u32)
     }
 
     /// Return the granted rights and live object-handle count from one table
@@ -307,8 +311,7 @@ impl NtHandleTable {
         let entry = entries.get(index - FIRST_INDEX)?;
         let object = entry.object.as_ref()?;
         if entry.generation != generation { return None; }
-        let count = entries.iter().filter(|candidate| candidate.object.as_ref().is_some_and(|other|
-            alloc::sync::Arc::ptr_eq(other, object))).count() as u32;
+        let count = object.handle_refs.load(Ordering::Acquire) as u32;
         Some((entry.access, count))
     }
 
@@ -368,27 +371,30 @@ impl NtHandleTable {
             if entry.generation == 0 { entry.retired = true; }
             object
         };
-        let has_live_handle = object.as_ref().is_some_and(|object| entries.iter().any(|other|
-            other.object.as_ref().is_some_and(|candidate| alloc::sync::Arc::ptr_eq(candidate, object))));
         drop(entries);
-        if let Some(object) = object {
-            namespace::release_temporary(&object, has_live_handle);
-            drop(object);
-        }
-        Some(!has_live_handle)
+        object.map(|object| namespace::release_handle(&object))
     }
     /// Duplicate a handle with a subset of its granted rights. # C: O(1)
     pub fn duplicate(&self, handle: NtHandle, desired_access: u32) -> Option<NtHandle> {
         let (index, generation) = handle.parts()?;
-        let mut entries = self.entries.lock();
         let object = {
+            let entries = self.entries.lock();
             let entry = entries.get(index - FIRST_INDEX)?;
             if entry.generation != generation || entry.access & desired_access != desired_access {
                 return None;
             }
             entry.object.clone()?
         };
-        Self::insert_locked(&mut entries, object, desired_access)
+        if !namespace::retain_handle(&object) { return None; }
+        let result = {
+            let mut entries = self.entries.lock();
+            let valid = entries.get(index - FIRST_INDEX).is_some_and(|entry|
+                entry.generation == generation && entry.access & desired_access == desired_access
+                && entry.object.as_ref().is_some_and(|candidate| Arc::ptr_eq(candidate, &object)));
+            if valid { Self::insert_locked(&mut entries, object.clone(), desired_access) } else { None }
+        };
+        if result.is_none() { namespace::release_handle(&object); }
+        result
     }
 
     /// Wake wait-multiple callers after a state-bearing object changes. # C: O(N_waiters)
@@ -399,6 +405,17 @@ impl NtHandleTable {
     #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
     pub fn waiters(&self) -> &WaitList { &self.waiters }
 }
+
+impl Drop for NtHandleTable {
+    fn drop(&mut self) {
+        let entries = core::mem::take(&mut *self.entries.lock());
+        for entry in entries { if let Some(object) = entry.object { namespace::release_handle(&object); } }
+    }
+}
+
+#[cfg(test)]
+#[path = "handle/lifetime_tests.rs"]
+mod lifetime_tests;
 
 impl Default for NtHandleTable {
     fn default() -> Self { Self::new() }

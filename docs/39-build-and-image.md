@@ -101,6 +101,12 @@ the exposed Makefile controls.
 
 `xtask` runs builds in parallel via Cargo's job scheduler. Image build serial post-build.
 
+Probe staging resolves Cargo's target directory in the probe workspace with the
+same environment/configuration used for its build. Build receives that resolved
+directory explicitly; staged binary paths derive from it. A caller's target-dir
+override must never select stale artifacts from the default probe cache. Missing
+or malformed metadata fails staging without a fallback path.
+
 ## 9 Test contract (frozen)
 
 - `xtask kernel --arch x86_64` and `--arch aarch64` succeed clean checkout.
