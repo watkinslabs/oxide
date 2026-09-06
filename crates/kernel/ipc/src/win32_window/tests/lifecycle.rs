@@ -253,3 +253,33 @@ use super::tests::message;
         assert!(clipboard.close(11));
         assert!(clipboard.open(22, None));
     }
+
+#[test]
+fn default_handling_admits_a_window_at_nccreate() {
+    // Measured in the guest: an application called DefWindowProc for
+    // WM_NCCREATE, received 0, returned it, and the create was torn down with
+    // WM_NCDESTROY two milliseconds later. FALSE from this message is the
+    // documented way to abort creation, so the default must answer TRUE or no
+    // application can ever open a window.
+    assert_eq!(default_window_proc(WM_NCCREATE), DefaultWindowResult::Return(1));
+}
+
+#[test]
+fn default_handling_completes_a_window_at_ncdestroy() {
+    assert_eq!(default_window_proc(WM_NCDESTROY), DefaultWindowResult::Return(0));
+}
+
+#[test]
+fn nccreate_keeps_its_answer_when_geometry_is_known() {
+    // The geometry-aware entry only specialises hit testing; every other
+    // message must reach the same answer, including the one that admits the
+    // window. A window with a rect is exactly the case a real create hits.
+    let rect = WindowRect { left: 0, top: 0, right: 640, bottom: 480 };
+    assert_eq!(default_window_proc_for_rect(WM_NCCREATE, rect, 0), DefaultWindowResult::Return(1));
+}
+
+#[test]
+fn an_unhandled_message_still_answers_zero() {
+    // The admission above must not become a blanket TRUE.
+    assert_eq!(default_window_proc(0x7fff), DefaultWindowResult::Return(0));
+}

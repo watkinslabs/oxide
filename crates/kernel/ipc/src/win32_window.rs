@@ -71,6 +71,14 @@ pub const WM_RBUTTONUP: u32 = 0x0205;
 pub const WM_MBUTTONDOWN: u32 = 0x0207;
 pub const WM_MBUTTONUP: u32 = 0x0208;
 pub const WM_MOUSEWHEEL: u32 = 0x020a;
+/// Sent before a window's nonclient area is created. The default handling must
+/// answer TRUE: a FALSE return from this message is the documented way to
+/// abort creation, so treating it as an unhandled message destroys every
+/// window an application tries to open.
+pub const WM_NCCREATE: u32 = 0x0081;
+/// Sent as the last message of a window's life. The default handling answers
+/// zero, which the unhandled arm already does.
+pub const WM_NCDESTROY: u32 = 0x0082;
 pub const WM_NCHITTEST: u32 = 0x0084;
 pub const WM_NCACTIVATE: u32 = 0x0086;
 pub const WM_PAINT: u32 = 0x000f;
@@ -308,7 +316,14 @@ pub enum DefaultWindowResult { Return(i64), RequestDestroy }
 pub const fn dispatches_to_window_proc(message: u32) -> bool { message != WM_QUIT }
 
 pub fn default_window_proc(message: u32) -> DefaultWindowResult {
-    match message { WM_CLOSE => DefaultWindowResult::RequestDestroy, WM_NCHITTEST => DefaultWindowResult::Return(HTCLIENT), WM_NCACTIVATE => DefaultWindowResult::Return(1), _ => DefaultWindowResult::Return(0) }
+    match message {
+        WM_CLOSE => DefaultWindowResult::RequestDestroy,
+        WM_NCCREATE => DefaultWindowResult::Return(1),
+
+        WM_NCHITTEST => DefaultWindowResult::Return(HTCLIENT),
+        WM_NCACTIVATE => DefaultWindowResult::Return(1),
+        _ => DefaultWindowResult::Return(0),
+    }
 }
 
 /// Apply default handling that depends on canonical window geometry. # C: O(1)
