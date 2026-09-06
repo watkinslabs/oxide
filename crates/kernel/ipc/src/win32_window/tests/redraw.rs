@@ -1,5 +1,5 @@
 use super::*;
-use crate::win32_window::WindowRect;
+use crate::win32_window::{WindowRect, MessageFilter, QueueResult, WM_PAINT};
 
 fn window(state: &mut WindowManager, parent: Option<WindowId>) -> WindowId {
     let id = state.create(7, parent, 0x1000).unwrap();
@@ -99,4 +99,33 @@ fn showing_a_window_with_no_geometry_yet_leaves_nothing_to_paint() {
     let id = state.create(7, None, 0x1000).unwrap();
     assert_eq!(state.show(7, id, true), Ok(false));
     assert_eq!(state.next_pending_paint(id, None, PaintChildren::All), Ok(None));
+}
+
+// The full cycle an application actually performs, driven hosted because the
+// guest costs eight minutes per question: create, show, retrieve, paint,
+// retrieve again. Measured in the guest, WM_PAINT for the main window repeats
+// without bound - tens of thousands of deliveries at one timestamp - so
+// something in this cycle fails to clear the damage.
+#[test]
+fn a_painted_window_stops_asking_to_be_painted() {
+    let mut state = WindowManager::new();
+    let id = state.create(7, None, 0x1000).unwrap();
+    state.set_rect(id, WindowRect { left: 0, top: 0, right: 729, bottom: 546 }).unwrap();
+    state.show(7, id, true).unwrap();
+
+    let filter = MessageFilter { hwnd: None, first: 0, last: 0 };
+    // First retrieval hands the application its WM_PAINT.
+    let first = state.take_for_thread(7, filter);
+    assert!(matches!(first, QueueResult::Message(m) if m.message == WM_PAINT && m.hwnd == Some(id)),
+        "a shown window must be offered WM_PAINT, got {first:?}");
+
+    // The application paints, which is what validates the damage.
+    state.begin_paint(id).unwrap();
+    state.end_paint(id).unwrap();
+
+    // It must not be asked again. If it is, the application repaints forever
+    // and never makes progress, which is exactly what the guest shows.
+    let second = state.take_for_thread(7, filter);
+    assert!(matches!(second, QueueResult::Empty),
+        "a painted window must stop asking to be painted, got {second:?}");
 }
