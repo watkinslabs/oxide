@@ -81,6 +81,7 @@ mod nt_vulkan;
 mod nt_unwind;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_exception;
+mod nt_exception_frame;
 mod nt_nls;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_memory_lock;

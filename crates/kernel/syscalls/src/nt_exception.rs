@@ -43,7 +43,7 @@ fn publish(current: &sched::Task, record: [u8; EXCEPTION_RECORD_BYTES], mut cont
         return STATUS_INVALID_PARAMETER;
     }
     if !sched::nt_exception::prepare_dispatch_context(&record, &mut context) { return STATUS_INVALID_PARAMETER; }
-    let pending = Pending { record, context, first_chance };
+    let pending = Pending { record, context: Some(context), first_chance };
     if !pending.is_valid() { return STATUS_INVALID_PARAMETER; }
     current.nt_exception.publish(pending).map_or(STATUS_UNSUCCESSFUL, |_| STATUS_SUCCESS)
 }

@@ -66,6 +66,7 @@ fn native_bootstrap() -> ExitCode {
         Some(value) => value,
         None => { eprintln!("windows-runtime bootstrap: missing OXIDE_PE_STACK"); return ExitCode::from(1); }
     };
+    release_host_fault_handlers();
     // SAFETY: the kernel supplied both values in the bootstrap environment;
     // the registration syscall validated the native table before this jump.
     unsafe {
@@ -75,6 +76,32 @@ fn native_bootstrap() -> ExitCode {
         core::arch::asm!("mov sp, x16", "mov x18, x15", "br x17",
             in("x16") stack, in("x17") entry, in("x15") teb, options(noreturn));
     }
+}
+
+/// Hand the synchronous fault signals back to the default disposition before
+/// this thread becomes a PE thread.
+///
+/// The Rust runtime installs its own SIGSEGV/SIGBUS handler to name a stack
+/// overflow. Past this point the runtime is gone and every fault belongs to
+/// Windows code: the kernel delivers a Windows thread's faults to its own
+/// exception dispatcher and never raises these signals for it, so a signal
+/// arriving here means the exception could not be delivered. The runtime
+/// handler answers that by resetting the disposition and RETURNING, which
+/// re-executes the faulting instruction forever instead of reporting it.
+/// The default disposition reports it once, truthfully.
+fn release_host_fault_handlers() {
+    for signal in [libc::SIGSEGV, libc::SIGBUS, libc::SIGILL, libc::SIGFPE, libc::SIGTRAP] {
+        // SAFETY: `signal` is a valid signal number and SIG_DFL is the
+        // architecture-independent default disposition; no handler state of
+        // ours is freed, because none was installed by this program.
+        unsafe { libc::signal(signal, libc::SIG_DFL); }
+    }
+    // The runtime's alternate signal stack outlives its handler and would
+    // otherwise stay claimed under the PE thread's stack accounting.
+    let stack = libc::stack_t { ss_sp: core::ptr::null_mut(), ss_flags: libc::SS_DISABLE, ss_size: 0 };
+    // SAFETY: a disabling sigaltstack takes no memory from the caller and the
+    // old stack is not read back.
+    unsafe { libc::sigaltstack(&stack, core::ptr::null_mut()); }
 }
 
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
