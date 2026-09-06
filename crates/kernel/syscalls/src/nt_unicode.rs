@@ -29,10 +29,10 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
 
 fn utf8_to_unicode_n(call: NtCall) -> u64 {
     let destination = call.args.a0;
-    let destination_bytes = call.args.a1 as usize;
+    let destination_bytes = crate::nt_ulong::ulong(call.args.a1);
     let result_length = call.args.a2;
     let source = call.args.a3;
-    let source_bytes = call.args.a4 as usize;
+    let source_bytes = crate::nt_ulong::ulong(call.args.a4);
     if source == 0 { return STATUS_INVALID_PARAMETER_4; }
     if result_length == 0 { return STATUS_INVALID_PARAMETER; }
     let (required_units, conversion_status) = utf8_measure(source, source_bytes);
@@ -140,10 +140,10 @@ fn read_byte(source: u64, index: usize) -> Option<u8> {
 
 fn unicode_to_utf8_n(call: NtCall) -> u64 {
     let destination = call.args.a0;
-    let destination_bytes = call.args.a1 as usize;
+    let destination_bytes = crate::nt_ulong::ulong(call.args.a1);
     let result_length = call.args.a2;
     let source = call.args.a3;
-    let source_bytes = call.args.a4 as usize;
+    let source_bytes = crate::nt_ulong::ulong(call.args.a4);
     if source == 0 { return STATUS_INVALID_PARAMETER_4; }
     if result_length == 0 { return STATUS_INVALID_PARAMETER; }
     if destination != 0 && source_bytes & 1 != 0 { return STATUS_INVALID_PARAMETER_5; }
