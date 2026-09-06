@@ -38,6 +38,7 @@ pub fn dispatch(call: NtCall) -> u64 {
     if let Some(result) = gdi_route::descriptor(ordinal, &args) { return result; }
     if let Some(query) = object_raw::decode(ordinal, &args) { return object_raw::kernel::dispatch(query); }
     if let Some(result) = bitmap_raw::kernel::route(ordinal, &args) { return result; }
+    if let Some(result) = device_caps::kernel::route(ordinal, &args) { return result; }
     if let Some(operation) = brush_raw::decode(ordinal, &args) { return brush_raw::kernel::dispatch(operation); }
     if let Some(operation) = clip_raw::decode(ordinal, &args) { return clip_raw::kernel::dispatch(operation); }
     if let Some(result) = keyboard_query(ordinal, args[0]) { return result; }
@@ -200,6 +201,7 @@ pub fn dispatch_raw(ordinal: u64, args: SyscallArgs) -> Option<u64> {
     if let Some(query) = object_raw::decode(ordinal, &[args.a0, args.a1, args.a2]) { return Some(object_raw::kernel::dispatch(query)); }
     if let Some(result) = gdi_route::raw(ordinal, args) { return Some(result); }
     if let Some(result) = bitmap_raw::kernel::route(ordinal, &[args.a0, args.a1, args.a2, args.a3, args.a4, args.a5]) { return Some(result); }
+    if let Some(result) = device_caps::kernel::route(ordinal, &[args.a0, args.a1]) { return Some(result); }
     if let Some(operation) = brush_raw::decode(ordinal, &[args.a0, args.a1, args.a2, args.a3, args.a4, args.a5]) {
         return Some(brush_raw::kernel::dispatch(operation));
     }
