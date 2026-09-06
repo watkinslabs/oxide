@@ -129,3 +129,28 @@ fn a_painted_window_stops_asking_to_be_painted() {
     assert!(matches!(second, QueueResult::Empty),
         "a painted window must stop asking to be painted, got {second:?}");
 }
+
+#[test]
+fn deferring_a_paint_to_the_default_handler_still_clears_the_damage() {
+    // The guest's actual sequence: the application does not paint itself, it
+    // hands WM_PAINT to the default handler. That must consume the damage, or
+    // the same message is offered again immediately and the application never
+    // makes progress - which is exactly the unbounded repeat measured.
+    let mut state = WindowManager::new();
+    let id = state.create(7, None, 0x1000).unwrap();
+    state.set_rect(id, WindowRect { left: 0, top: 0, right: 729, bottom: 546 }).unwrap();
+    state.show(7, id, true).unwrap();
+    let filter = MessageFilter { hwnd: None, first: 0, last: 0 };
+
+    let first = state.take_for_thread(7, filter);
+    assert!(matches!(first, QueueResult::Message(m) if m.message == WM_PAINT));
+
+    // What default handling asks for, and what the kernel then performs.
+    assert_eq!(crate::win32_window::default_window_proc(WM_PAINT),
+        crate::win32_window::DefaultWindowResult::ValidatePaint);
+    state.begin_paint(id).unwrap();
+    state.end_paint(id).unwrap();
+
+    assert!(matches!(state.take_for_thread(7, filter), QueueResult::Empty),
+        "default paint handling must leave nothing to repaint");
+}

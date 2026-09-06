@@ -61,6 +61,9 @@ pub(super) fn message_call(args: SyscallArgs) -> u64 {
             return match ipc::win32_window::default_window_proc_for_rect(WM_NCHITTEST as u32, rect, lparam as i64) {
                 ipc::win32_window::DefaultWindowResult::Return(value) => value as u64,
                 ipc::win32_window::DefaultWindowResult::RequestDestroy => STATUS_SUCCESS,
+                // This asks specifically about a hit test, which never
+                // validates a window.
+                ipc::win32_window::DefaultWindowResult::ValidatePaint => STATUS_SUCCESS,
             };
         }
         if message == WM_NCACTIVATE { return 1; }

@@ -47,6 +47,16 @@ pub(super) fn dispatch_mode(call: NtCall, raw: bool) -> Option<u64> {
                     let rect = ipc::win32_window::WindowId::from_raw(hwnd as u32).and_then(|window| state.rect(window));
                     let result = match rect.map_or_else(|| ipc::win32_window::default_window_proc(message), |rect| ipc::win32_window::default_window_proc_for_rect(message, rect, lparam)) {
                         ipc::win32_window::DefaultWindowResult::Return(value) => value as u64,
+                        ipc::win32_window::DefaultWindowResult::ValidatePaint => {
+                            // Consume the damage exactly as an empty
+                            // BeginPaint/EndPaint pair would. Leaving it
+                            // pending offers the same WM_PAINT again at once.
+                            if let Some(window) = ipc::win32_window::WindowId::from_raw(hwnd as u32) {
+                                let _ = state.begin_paint(window);
+                                let _ = state.end_paint(window);
+                            }
+                            STATUS_SUCCESS
+                        }
                         ipc::win32_window::DefaultWindowResult::RequestDestroy => {
                             if hwnd != 0 {
                                 let Some(window) = ipc::win32_window::WindowId::from_raw(hwnd as u32) else { return Some(STATUS_INVALID_HANDLE); };

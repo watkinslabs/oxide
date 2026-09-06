@@ -283,3 +283,22 @@ fn an_unhandled_message_still_answers_zero() {
     // The admission above must not become a blanket TRUE.
     assert_eq!(default_window_proc(0x7fff), DefaultWindowResult::Return(0));
 }
+
+#[test]
+fn default_handling_of_a_paint_validates_the_window() {
+    // Measured in the guest: Notepad handed WM_PAINT to DefWindowProc, which
+    // answered zero and validated nothing, so the damage survived and the
+    // message was offered again immediately - tens of thousands of times.
+    // Default paint handling has to consume the damage the way an empty
+    // BeginPaint/EndPaint pair does.
+    assert_eq!(default_window_proc(WM_PAINT), DefaultWindowResult::ValidatePaint);
+}
+
+#[test]
+fn only_paint_asks_for_validation() {
+    // Validation clears damage, so it must not leak to other messages.
+    for message in [WM_NCCREATE, WM_NCDESTROY, WM_NCACTIVATE, 0x7fff] {
+        assert_ne!(default_window_proc(message), DefaultWindowResult::ValidatePaint,
+            "message {message:#x} must not validate the window");
+    }
+}
