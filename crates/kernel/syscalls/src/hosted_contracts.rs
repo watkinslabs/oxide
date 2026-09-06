@@ -31,6 +31,8 @@ pub(crate) mod nt_wine_two_param_contract;
 pub(crate) mod nt_wine_accel_contract;
 #[path = "nt_wine_window/dpi_context.rs"]
 pub(crate) mod nt_wine_dpi_context_contract;
+#[path = "nt_wine_window/builtin_classes.rs"]
+pub(crate) mod nt_wine_builtin_classes_contract;
 #[path = "nt_wine_window/unclaimed.rs"]
 pub(crate) mod nt_wine_unclaimed_contract;
 #[path = "nt_wine_window/long_raw.rs"]

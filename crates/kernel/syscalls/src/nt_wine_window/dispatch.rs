@@ -346,7 +346,14 @@ pub fn dispatch_raw(ordinal: u64, args: SyscallArgs) -> Option<u64> {
     let mut module = cur.thread_group.nt_user_module.lock();
     if module.is_some() { klog::write_raw(b"[WINDOWS-USER32-INIT] rejected=duplicate\n"); return Some(STATUS_INVALID_PARAMETER); }
     *module = Some(args.a3);
-    klog::write_raw(b"[WINDOWS-USER32-INIT] published\n");
+    drop(module);
+    // The reference registers the builtin classes from win32u when the
+    // thread's desktop window comes up; the W procedure array is the only
+    // input, so they are registered as soon as it is published.
+    let registered = builtin_classes::kernel::register_for_current(args.a1);
+    klog::write_raw(b"[WINDOWS-USER32-INIT] published builtin-classes=");
+    klog::write_hex_u64(registered as u64);
+    klog::write_raw(b"\n");
     Some(STATUS_SUCCESS)
 }
 
