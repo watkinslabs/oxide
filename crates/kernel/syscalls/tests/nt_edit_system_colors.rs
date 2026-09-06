@@ -43,7 +43,8 @@ fn selected_text_background_and_monochrome_frame_use_protected_distinct_brushes(
         assert!(owner.contains_object(brush));
         assert_eq!(raw::route(0x133d,&[index,7], |role|owner.system_brush(role)),Some(brush as u64));
     }
-    assert_eq!(selected,None);
+    // A fresh DC carries the stock white brush; the colour queries never replace it.
+    assert_eq!(selected,owner.stock_object(0).map(|stock|stock.handle));
     owner.delete_object(dc).unwrap();
     for handle in handles { assert!(owner.contains_object(handle)); }
 }
