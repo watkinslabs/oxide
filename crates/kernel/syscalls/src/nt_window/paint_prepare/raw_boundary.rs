@@ -42,7 +42,7 @@ impl policy::Owner for Current{
 }
 pub(crate) fn prepare_for_current(hwnd:u32,dc:u32,ps:u64)->u64{
     let tid={let state=STATE.lock().unwrap();WindowId::from_raw(hwnd).and_then(|id|state.windows.get(id)).map_or(0,|record|record.owner_tid)};
-    let prepared=policy::Prepared{hwnd,dc,destination:ps,nc_region:0,tid};
+    let prepared=policy::Prepared{hwnd,dc,destination:ps,nc_region:0,tid,kernel:false};
     let snapshot={let state=STATE.lock().unwrap();WindowId::from_raw(hwnd).and_then(|id|{
         let session=state.windows.validate_paint_session(id,dc).ok()?;
         if session.nonclient||session.erase{return None;} // callback execution belongs to the joined preparation harness

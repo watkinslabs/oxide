@@ -15,6 +15,10 @@ impl WindowManager {
     }
     /// Admit the raw WNDCLASSEX style into the canonical class record. # C: O(N_classes + name)
     pub fn register_class_with_style(&mut self, name: &[u16], wndproc: u64, cb_wnd_extra: i32, unicode: bool, style: u32) -> Result<u16, WindowError> {
+        self.register_class_with_background(name, wndproc, cb_wnd_extra, unicode, style, 0)
+    }
+    /// Retain the raw hbrBackground with the class; the default procedure erases with it. # C: O(N_classes + name)
+    pub fn register_class_with_background(&mut self, name: &[u16], wndproc: u64, cb_wnd_extra: i32, unicode: bool, style: u32, background: u64) -> Result<u16, WindowError> {
         let cb_wnd_extra = u32::try_from(cb_wnd_extra).ok().filter(|size| *size <= extra::MAX_WINDOW_EXTRA as u32).ok_or(WindowError::InvalidParent)?;
         if name.is_empty() || self.classes.iter().any(|class| same_name(&class.name, name)) { return Err(WindowError::InvalidParent); }
         let atom = self.next_atom;
@@ -23,7 +27,7 @@ impl WindowManager {
         owned_name.try_reserve_exact(name.len()).map_err(|_| WindowError::NoMemory)?;
         owned_name.extend_from_slice(name);
         self.classes.try_reserve(1).map_err(|_| WindowError::NoMemory)?;
-        self.classes.push(WindowClass { name: owned_name, wndproc, atom, cb_wnd_extra, unicode, style });
+        self.classes.push(WindowClass { name: owned_name, wndproc, atom, cb_wnd_extra, unicode, style, background });
         self.next_atom = next;
         Ok(atom)
     }
@@ -38,6 +42,11 @@ impl WindowManager {
     /// Query the registered per-window byte extent without creating a window. # C: O(N_classes)
     pub fn class_extra_by_atom(&self, atom: u16) -> Option<u32> {
         self.classes.iter().find(|class| class.atom == atom).map(|class| class.cb_wnd_extra)
+    }
+    /// Class background brush of a window; None for an unclassed HWND. # C: O(N_windows + N_classes)
+    pub fn class_background(&self, id: WindowId) -> Option<u64> {
+        let atom = self.get(id)?.class_atom?;
+        self.classes.iter().find(|class| class.atom == atom).map(|class| class.background)
     }
     /// Resolve a registered class name from its atom. # C: O(N_classes)
     pub fn class_name_by_atom(&self, atom: u16) -> Option<&[u16]> {

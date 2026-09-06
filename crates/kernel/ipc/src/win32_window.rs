@@ -196,7 +196,9 @@ impl MessageQueue {
 pub struct WindowRecord { pub owner_tid: u64, pub parent: Option<WindowId>, pub owner: Option<WindowId>, pub wndproc: u64, pub unicode: bool, pub class_atom: Option<u16>, pub visible: bool, pub menu: Option<u32>, pub id_menu: u64, pub presentation_ready: bool, pub style: u32, pub ex_style: u32, pub last_focus: Option<WindowId>, pub client_rect: Option<WindowRect> }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WindowClass { pub name: Vec<u16>, pub wndproc: u64, pub unicode: bool, pub atom: u16, pub cb_wnd_extra: u32, pub style: u32 }
+pub struct WindowClass { pub name: Vec<u16>, pub wndproc: u64, pub unicode: bool, pub atom: u16, pub cb_wnd_extra: u32, pub style: u32,
+    /// Raw WNDCLASSEX hbrBackground: a brush handle, or a system colour index plus one.
+    pub background: u64 }
 
 const USER_ATOM_BASE: u16 = 0xc000;
 const USER_ATOM_CAPACITY: usize = 0x4000;
@@ -311,11 +313,10 @@ fn same_name(left: &[u16], right: &[u16]) -> bool {
 pub enum DefaultWindowResult {
     Return(i64),
     RequestDestroy,
-    /// Default WM_PAINT handling validates the window's update region, as if
-    /// the application had begun and ended a paint that drew nothing. Without
-    /// it the damage survives, the message is offered again immediately, and
-    /// an application that defers WM_PAINT to the default handler spins
-    /// forever without making progress.
+    /// Default WM_PAINT handling begins and ends a paint that draws nothing:
+    /// the background is erased, the damage validated and the result
+    /// presented. Without it the damage survives and the message is offered
+    /// again immediately.
     ValidatePaint,
 }
 

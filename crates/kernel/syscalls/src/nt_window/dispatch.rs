@@ -11,8 +11,10 @@ pub(super) fn dispatch_mode(call: NtCall, raw: bool) -> Option<u64> {
     let operation = nt::decode_window(call).ok()?;
     let cur = sched::live::current()?;
     if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
-    if let NtWindowCall::DefaultProc { message, wparam, .. } = operation {
+    if let NtWindowCall::DefaultProc { hwnd, message, wparam, .. } = operation {
         if let Some(result) = control_color::for_current(message, wparam) { return Some(result); }
+        if let Some(result) = erase_background::kernel::for_current(message, hwnd, wparam) { return Some(result); }
+        if message == ipc::win32_window::WM_PAINT { return Some(default_paint::for_current(hwnd)); }
     }
     if let NtWindowCall::BeginPaint { hwnd, rect } = operation { return Some(paint::begin(hwnd, rect)); }
     if crate::nt_compositor::monitors_current().is_none() {
@@ -47,16 +49,9 @@ pub(super) fn dispatch_mode(call: NtCall, raw: bool) -> Option<u64> {
                     let rect = ipc::win32_window::WindowId::from_raw(hwnd as u32).and_then(|window| state.rect(window));
                     let result = match rect.map_or_else(|| ipc::win32_window::default_window_proc(message), |rect| ipc::win32_window::default_window_proc_for_rect(message, rect, lparam)) {
                         ipc::win32_window::DefaultWindowResult::Return(value) => value as u64,
-                        ipc::win32_window::DefaultWindowResult::ValidatePaint => {
-                            // Consume the damage exactly as an empty
-                            // BeginPaint/EndPaint pair would. Leaving it
-                            // pending offers the same WM_PAINT again at once.
-                            if let Some(window) = ipc::win32_window::WindowId::from_raw(hwnd as u32) {
-                                let _ = state.begin_paint(window);
-                                let _ = state.end_paint(window);
-                            }
-                            STATUS_SUCCESS
-                        }
+                        // WM_PAINT is answered before this lock by the real
+                        // BeginPaint/EndPaint sequence (default_paint).
+                        ipc::win32_window::DefaultWindowResult::ValidatePaint => STATUS_SUCCESS,
                         ipc::win32_window::DefaultWindowResult::RequestDestroy => {
                             if hwnd != 0 {
                                 let Some(window) = ipc::win32_window::WindowId::from_raw(hwnd as u32) else { return Some(STATUS_INVALID_HANDLE); };

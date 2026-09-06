@@ -35,17 +35,19 @@ pub(crate) fn intersect_clip_rect_for_current(dc: u64, rect: Rect) -> u64 {
     entry.state.intersect_clip_rect(dc, rect).unwrap_or(CLIP_ERROR) as u64
 }
 
+/// Effective-clip snapshot for kernel callers. # C: O(processes + DCs)
+pub(crate) fn app_clip_box_snapshot_for_current(dc: u64) -> Result<(u32, Rect), u64> {
+    let dc = u32::try_from(dc).map_err(|_| CLIP_ERROR as u64)?;
+    let _gate = lifecycle::ClientGate::acquire_current().map_err(|_| CLIP_ERROR as u64)?;
+    let current = sched::live::current().ok_or(CLIP_ERROR as u64)?;
+    let entries = GDI.lock();
+    let entry = entries.iter().find(|entry| entry.group.ptr_eq(&Arc::downgrade(&current.thread_group))).ok_or(CLIP_ERROR as u64)?;
+    entry.state.get_app_clip_box(dc).map(|(kind, rect)| (kind as u32, rect)).map_err(|_| CLIP_ERROR as u64)
+}
+
 /// Initialize the complete signed RECT from one effective-clip snapshot. # C: O(processes + DCs)
 pub(crate) fn get_app_clip_box_for_current(dc: u64, output: u64) -> u64 {
-    let Ok(dc) = u32::try_from(dc) else { return CLIP_ERROR as u64; };
-    let Ok(_gate) = lifecycle::ClientGate::acquire_current() else { return CLIP_ERROR as u64; };
-    let Some(current) = sched::live::current() else { return CLIP_ERROR as u64; };
-    let snapshot = {
-        let entries = GDI.lock();
-        let Some(entry) = entries.iter().find(|entry| entry.group.ptr_eq(&Arc::downgrade(&current.thread_group))) else { return CLIP_ERROR as u64; };
-        entry.state.get_app_clip_box(dc)
-    };
-    let Ok((kind, rect)) = snapshot else { return CLIP_ERROR as u64; };
+    let Ok((kind, rect)) = app_clip_box_snapshot_for_current(dc) else { return CLIP_ERROR as u64; };
     if output == 0 { return CLIP_ERROR as u64; }
     let mut bytes = [0u8; 16];
     for (index, value) in [rect.left, rect.top, rect.right, rect.bottom].into_iter().enumerate() {

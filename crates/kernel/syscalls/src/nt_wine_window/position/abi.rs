@@ -17,3 +17,12 @@ pub(crate) struct Context { pub rect: WindowRect, pub parent: Option<u64>, pub s
 /// Transient command, never persistent placement state. Flags retain owner execution semantics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Request { pub hwnd: u64, pub rect: WindowRect, pub order: Option<Order>, pub visible: Option<bool>, pub flags: u32 }
+
+/// `NtUserMoveWindow(hwnd, x, y, cx, cy, repaint)` is `NtUserSetWindowPos`
+/// with no z-order change, no activation, and no redraw unless asked.
+/// # C: O(1)
+pub(crate) fn move_window_args(args: &[u64; 6]) -> [u64; 7] {
+    let mut flags = NOZORDER | NOACTIVATE;
+    if args[5] as u32 == 0 { flags |= NOREDRAW; }
+    [args[0], 0, args[1], args[2], args[3], args[4], u64::from(flags)]
+}

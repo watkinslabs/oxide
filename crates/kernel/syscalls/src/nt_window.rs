@@ -11,6 +11,14 @@ use sync::{Spinlock, TaskList as GuiLockClass};
 use syscall::nt::{self, NtCall, NtWindowCall, NtWindowMessage};
 #[path = "nt_window/owner.rs"]
 mod owner;
+#[path = "nt_window/class_background.rs"]
+mod class_background;
+pub(crate) use class_background::{register_class_with_background_for_current, class_background_for_current};
+#[path = "nt_window/erase_background.rs"]
+mod erase_background;
+#[cfg(target_os = "oxide-kernel")]
+#[path = "nt_window/default_paint.rs"]
+mod default_paint;
 use owner::new_entry;
 #[path = "nt_window/control.rs"]
 mod control;
@@ -335,17 +343,7 @@ pub(crate) fn register_class_with_encoding_for_current(name: &[u16], wndproc: u6
 
 /// # C: O(processes + classes); raw class flags enter the canonical class owner.
 pub(crate) fn register_class_with_style_for_current(name: &[u16], wndproc: u64, extra: i32, unicode: bool, style: u32) -> Option<u64> {
-    let cur = sched::live::current()?;
-    if !cur.is_nt_personality() { return None; }
-    let group = Arc::clone(&cur.thread_group);
-    let mut entries = GUI.lock();
-    entries.retain(|entry| entry.group.upgrade().is_some());
-    let index = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group)))
-        .unwrap_or_else(|| {
-            entries.push(new_entry(&group));
-            entries.len() - 1
-        });
-    entries[index].state.register_class_with_style(name, wndproc, extra, unicode, style).ok().map(|atom| atom as u64)
+    register_class_with_background_for_current(name, wndproc, extra, unicode, style, 0)
 }
 
 /// Unregister one process-local Wine class through the canonical owner.

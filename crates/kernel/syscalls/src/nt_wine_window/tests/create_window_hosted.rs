@@ -29,7 +29,7 @@ struct State {
     metadata: Option<(u64, u32, u32, u64)>, control_id: Option<(u64, u64)>,
     registered: Option<(Vec<u16>, u64, i32)>, wndclass: u64, extra: i32,
     registered_unicode: Option<bool>, instance: Option<u64>,
-    class_style: u32, registered_style: Option<u32>,
+    class_style: u32, registered_style: Option<u32>, registered_background: Option<u64>,
     user_reads: Vec<u64>,
 }
 thread_local! { static STATE: RefCell<State> = RefCell::new(State::default()); }
@@ -84,6 +84,10 @@ mod nt_window {
     pub fn register_class_with_encoding_for_current(name: &[u16], wndproc: u64, extra: i32, unicode: bool) -> Option<u64> {
         STATE.with(|s| s.borrow_mut().registered_unicode = Some(unicode));
         register_class_with_extra_for_current(name, wndproc, extra)
+    }
+    pub fn register_class_with_background_for_current(name: &[u16], wndproc: u64, extra: i32, unicode: bool, style: u32, background: u64) -> Option<u64> {
+        STATE.with(|s| s.borrow_mut().registered_background = Some(background));
+        register_class_with_style_for_current(name, wndproc, extra, unicode, style)
     }
     pub fn register_class_with_style_for_current(name: &[u16], wndproc: u64, extra: i32, unicode: bool, style: u32) -> Option<u64> {
         STATE.with(|s| s.borrow_mut().registered_style = Some(style));

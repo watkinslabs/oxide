@@ -76,6 +76,7 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x147a, 4), // NtUserInitializeClientPfnArrays
     (0x148c, 3), // NtUserInvalidateRect
     (0x14b5, 7), // NtUserMessageCall
+    (0x14ba, 6), // NtUserMoveWindow
     (0x14c2, 2), // NtUserOpenClipboard
     (0x14ca, 5), // NtUserPeekMessage
     (0x14d0, 4), // NtUserPostMessage

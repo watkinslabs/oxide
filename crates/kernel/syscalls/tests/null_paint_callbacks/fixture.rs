@@ -2,6 +2,7 @@ use std::{sync::{Arc,Weak,Mutex,MutexGuard},cell::RefCell};
 use ipc::{win32_window::{WindowManager,WindowId,WindowRect,PaintRegion},win32_gdi::GdiManager};
 #[path="../../src/nt_window/paint_prepare/hosted_adapter.rs"]mod paint_prepare;
 #[path="../../src/nt_window/paint_prepare/hosted_callbacks.rs"]mod paint_callbacks;
+mod default_paint{pub(crate) fn finish_for_current(_:super::paint_prepare::Prepared,_:Result<bool,()>)->u64{unreachable!("default paint is a kernel-only path")}}
 #[path="../../src/nt_window/paint.rs"]mod paint;
 #[path="../../src/nt_window/redraw/erase.rs"]mod erase_contract;
 mod redraw{pub mod erase{

@@ -30,7 +30,7 @@ impl policy::Owner for Current{
     fn delete(&mut self,handle:u32){let mut state=STATE.lock().unwrap();if state.gdi.delete_object(handle).is_ok(){state.deletes+=1;}}
 }
 pub(crate) fn prepare_for_current(hwnd:u32,dc:u32,ps:u64)->u64{
-    let prepared=policy::Prepared{hwnd,dc,destination:ps,nc_region:0,tid:9};
+    let prepared=policy::Prepared{hwnd,dc,destination:ps,nc_region:0,tid:9,kernel:false};
     let snapshot={let state=STATE.lock().unwrap();WindowId::from_raw(hwnd).and_then(|id|{
         let session=state.windows.validate_paint_session(id,dc).ok()?;
         if session.nonclient||session.erase{return None;} // callback execution belongs to the joined preparation harness

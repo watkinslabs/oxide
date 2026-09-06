@@ -9,6 +9,8 @@ const WM_ERASEBKGND: u32 = 0x0014;
 pub(crate) enum Completion {
     Callback { token:u64, finish:fn(u64,Result<bool,()>)->u64 },
     Paint(super::super::paint_prepare::Prepared),
+    /// Default WM_PAINT: the kernel ends the paint itself once preparation completes.
+    DefaultPaint(super::super::paint_prepare::Prepared),
     Erase(super::super::redraw::erase::ErasePrepared),
 }
 #[derive(Clone, Copy)]
@@ -72,7 +74,7 @@ impl Queue {
     pub(crate) fn cancel_window(&mut self,hwnd:u64){for p in &mut self.pending{if p.resources.hwnd==hwnd{p.cancelled=true;}}}
     /// Destruction keeps a leased fresh paint HDC alive until its active callback returns.
     pub(crate) fn holds_dc(&self,dc:u32)->bool{self.pending.iter().any(|p|p.in_flight&&match p.completion{
-        Completion::Paint(prepared)=>prepared.dc==dc,Completion::Erase(prepared)=>prepared.dc==dc,Completion::Callback{..}=>false,
+        Completion::Paint(prepared)|Completion::DefaultPaint(prepared)=>prepared.dc==dc,Completion::Erase(prepared)=>prepared.dc==dc,Completion::Callback{..}=>false,
     })}
     /// Only quiescent entries may release HDC/HRGN before a callback return.
     pub(crate) fn take_window(&mut self,hwnd:u64)->Option<Completion>{

@@ -3,6 +3,7 @@ use std::{sync::{Arc,Weak,Mutex,MutexGuard},cell::RefCell};
 use ipc::{win32_window::{WindowManager,PaintRegion},win32_gdi::GdiManager};
 #[path="hosted_adapter.rs"]mod paint_prepare;
 #[path="hosted_callbacks.rs"]mod paint_callbacks;
+mod default_paint{pub(crate) fn finish_for_current(_:super::paint_prepare::Prepared,_:Result<bool,()>)->u64{unreachable!("default paint is a kernel-only path")}}
 #[path="hosted_redraw.rs"]mod redraw;
 #[path="hosted_gdi.rs"]pub(crate) mod gdi_adapter;
 pub mod thread_group{pub struct ThreadGroup;}

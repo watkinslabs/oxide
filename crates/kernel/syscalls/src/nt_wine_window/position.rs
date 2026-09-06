@@ -1,7 +1,7 @@
 // Module manifest: ABI values, position planning, canonical kernel adapter, hosted contracts.
 #[path = "position/abi.rs"] mod abi;
 #[path = "position/policy.rs"] mod policy;
-pub(crate) use abi::{Context, Request, Order};
+pub(crate) use abi::{Context, Request, Order, move_window_args};
 #[cfg(target_os = "oxide-kernel")]
 #[path = "position/kernel.rs"] mod kernel;
 #[cfg(target_os = "oxide-kernel")]

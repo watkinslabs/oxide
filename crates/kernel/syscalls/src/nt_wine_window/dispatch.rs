@@ -238,6 +238,9 @@ pub fn dispatch_raw(ordinal: u64, args: SyscallArgs) -> Option<u64> {
         let Some(flags) = crate::nt_dispatch::stack_argument(6) else { return Some(0); };
         return Some(position::set(&[args.a0, args.a1, args.a2, args.a3, args.a4, args.a5, flags]));
     }
+    if ordinal == WINE_MOVE_WINDOW {
+        return Some(position::set(&position::move_window_args(&[args.a0, args.a1, args.a2, args.a3, args.a4, args.a5])));
+    }
     if ordinal == WINE_GET_MENU_ITEM_RECT {
         let Some(rect) = crate::nt_window::menu_item_rect_for_current(args.a0, args.a1, args.a2) else { return Some(0); };
         let bytes = [rect.left.to_le_bytes(), rect.top.to_le_bytes(), rect.right.to_le_bytes(), rect.bottom.to_le_bytes()];

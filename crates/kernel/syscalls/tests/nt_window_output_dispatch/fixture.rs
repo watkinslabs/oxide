@@ -116,6 +116,8 @@ mod nt_window{
     enum CreateReturnConvention{NativeStatus}
     mod create{use super::*;pub(super) fn begin_create_lifecycle_for_current(_:u64,_:CreateStructArgs,_:CreateReturnConvention)->u64{panic!("unexpected create")}}
     mod control_color{pub fn for_current(_:u32,_:u64)->Option<u64>{None}}
+    mod erase_background{pub mod kernel{pub fn for_current(_:u32,_:u64,_:u64)->Option<u64>{None}}}
+    mod default_paint{pub fn for_current(_:u64)->u64{0}}
     mod retrieval{pub fn pump(_:super::NtCall,_:bool)->Option<u64>{None}}
     pub(super) mod paint{
         pub fn begin(_:u64,_:syscall::UserPtr<syscall::nt::NtWindowRect>)->u64{panic!("unexpected paint")}
