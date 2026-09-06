@@ -661,7 +661,17 @@ pub(crate) fn begin_wndproc_callback(hwnd: u64, message: u64, wparam: u64, lpara
 
 #[cfg(target_arch = "x86_64")]
 pub(crate) fn begin_wndproc_callback_with_completion(hwnd: u64, message: u64, wparam: u64, lparam: u64, wndproc: u64, completion: sched::nt_callback::Completion) -> u64 {
-    if hwnd == 0 || wndproc == 0 || !uaccess::access_ok(wndproc, 1) { return STATUS_INVALID_PARAMETER; }
+    klog::write_raw(b"[WINDOWS-WNDPROC-ENTER] hwnd=");
+    klog::write_hex_u64(hwnd);
+    klog::write_raw(b" msg=");
+    klog::write_hex_u64(message);
+    klog::write_raw(b" wndproc=");
+    klog::write_hex_u64(wndproc);
+    klog::write_raw(b" queued=1\n");
+    if hwnd == 0 || wndproc == 0 || !uaccess::access_ok(wndproc, 1) {
+        reject_create_callback(b"bad-wndproc", hwnd, message, wndproc);
+        return STATUS_INVALID_PARAMETER;
+    }
     let Some(task) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !task.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
     let ntdll = crate::nt_loader_proc::module_base_by_name(task, b"ntdll.dll").unwrap_or(0);
@@ -674,9 +684,21 @@ pub(crate) fn begin_wndproc_callback_with_completion(hwnd: u64, message: u64, wp
     if regs.is_null() { return STATUS_INVALID_PARAMETER; }
     let frame = unsafe { &mut *regs };
     let callback_rsp = frame.rsp.checked_sub(48).unwrap_or(0);
-    if callback_rsp == 0 || callback_rsp & 0xf != 8 { return STATUS_INVALID_PARAMETER; }
-    for slot in 0..4u64 { if uaccess::put_user_u64(callback_rsp + 8 + slot * 8, 0).is_err() { return STATUS_INVALID_PARAMETER; } }
-    if uaccess::put_user_u64(callback_rsp, continuation).is_err() { return STATUS_INVALID_PARAMETER; }
+    if callback_rsp == 0 || callback_rsp & 0xf != 8 {
+        // The frame this builds must land where the Windows ABI expects it.
+        // A call site whose stack does not satisfy that gets no callback at
+        // all, and the message it was dispatching is simply dropped.
+        reject_create_callback(b"callback-stack-align", hwnd, message, callback_rsp);
+        return STATUS_INVALID_PARAMETER;
+    }
+    for slot in 0..4u64 { if uaccess::put_user_u64(callback_rsp + 8 + slot * 8, 0).is_err() {
+        reject_create_callback(b"callback-shadow-write", hwnd, message, callback_rsp);
+        return STATUS_INVALID_PARAMETER;
+    } }
+    if uaccess::put_user_u64(callback_rsp, continuation).is_err() {
+        reject_create_callback(b"callback-return-write", hwnd, message, callback_rsp);
+        return STATUS_INVALID_PARAMETER;
+    }
     let post_rip = frame.rip;
     let post_rsp = frame.rsp;
     if !task.nt_callback_stack.lock().push(sched::nt_callback::Frame { rip: post_rip, rsp: post_rsp, completion }) {
