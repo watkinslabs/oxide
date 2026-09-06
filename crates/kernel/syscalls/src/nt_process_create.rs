@@ -1,10 +1,14 @@
 //! x86-64 native process creation: validate the user ABI, prepare a PE image,
 //! then publish one fully initialized task and its process/thread objects.
+//! Children: policy validates creation flags; identity publishes canonical executable metadata.
 #![cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 
 use alloc::{string::String, sync::Arc, vec, vec::Vec};
 use core::sync::atomic::Ordering;
 use syscall::nt::NtCall;
+
+mod policy;
+mod identity;
 
 const SUCCESS: u64 = 0;
 const INVALID_PARAMETER: u64 = 0xc000_000d;
@@ -27,7 +31,7 @@ pub fn dispatch(call: NtCall, stack: [u64; 5]) -> u64 {
     let Ok(c) = syscall::nt::decode_user_process(call, stack) else { return INVALID_PARAMETER; };
     let Some(cur) = sched::live::current() else { return INVALID_PARAMETER; };
     if !cur.is_nt_personality()
-        || !crate::nt_process_policy::valid_process_create_flags(c.process_flags as u32)
+        || !policy::valid_process_create_flags(c.process_flags as u32)
         || c.thread_flags & !CREATE_SUSPENDED != 0
         || !crate::nt_process_handles::valid_object_attributes(c.process_attributes)
         || !crate::nt_process_handles::valid_object_attributes(c.thread_attributes)
@@ -38,7 +42,18 @@ pub fn dispatch(call: NtCall, stack: [u64; 5]) -> u64 {
     let Ok(image_path) = String::from_utf8(image.clone()) else { return INVALID_PARAMETER; };
     let Some((command, environment, current_directory, current_directory_handle, console_handle, standard_handles)) =
         process_parameters(c.process_parameters) else { return INVALID_PARAMETER; };
-    let environment_refs: Vec<(&str, &str)> = environment.iter().map(|(name, value)|
+    let catalog = cur.thread_group.nt_module_catalog();
+    let bootstrap = cur.thread_group.nt_bootstrap();
+    let unixlib_catalog = cur.thread_group.nt_unixlib_catalog();
+    let mut child_environment = environment;
+    if bootstrap.is_some() && !child_environment.iter().any(|(name, _)| name == "OXIDE_WINE_UNIXLIB_PATH") {
+        if let Some(source) = unixlib_catalog.as_ref().and_then(|catalog| catalog.load(b"win32u.so")) {
+            if let Ok(path) = String::from_utf8(source.path.clone()) {
+                child_environment.push(("OXIDE_WINE_UNIXLIB_PATH".into(), path));
+            }
+        }
+    }
+    let environment_refs: Vec<(&str, &str)> = child_environment.iter().map(|(name, value)|
         (name.as_str(), value.as_str())).collect();
     let params = elf_load::process_env::NtProcessParameters {
         current_directory: current_directory.as_str(), current_directory_handle,
@@ -46,9 +61,8 @@ pub fn dispatch(call: NtCall, stack: [u64; 5]) -> u64 {
     };
     let Ok((blob, vp)) = crate::execve_common::open_exec_image(&image) else { return NOT_FOUND; };
     let tid = sched::live::next_tid();
-    let catalog = cur.thread_group.nt_module_catalog();
     let Ok(prepared) = crate::pe_exec::prepare_pe_process(&cur, &image, &blob,
-        Some(command.as_str()), &environment_refs, Some(&params), vp.as_ref(), catalog.as_deref(), tid, tid, false) else { return INVALID_PARAMETER; };
+        Some(command.as_str()), &environment_refs, Some(&params), vp.as_ref(), catalog.as_deref(), tid, tid, false, bootstrap.as_deref()) else { return INVALID_PARAMETER; };
     let Ok(continuation) = crate::pe_exec::PeLaunchContinuation::new(prepared) else { return INVALID_PARAMETER; };
     let prepared = continuation.prepared();
 
@@ -70,12 +84,11 @@ pub fn dispatch(call: NtCall, stack: [u64; 5]) -> u64 {
     sched::initialize_new_thread(&child);
     child.set_nt_peb(prepared.process.environment.peb.as_u64());
     child.set_nt_teb(prepared.process.environment.teb.as_u64());
-    child.set_exe_path(Some(image_path.clone()));
-    // SAFETY: the unpublished child owns the freshly prepared address space;
-    // no other task can observe or replace this mm before publication below.
-    if let Some(mm) = unsafe { child.mm_ref() } { mm.set_exe_path(image_path.clone()); }
+    identity::publish(&child, &image_path);
     if let Some(catalog) = catalog { child.thread_group.set_nt_module_catalog(catalog); }
-    if crate::nt_process_policy::inherits_process_handles(c.process_flags as u32) {
+    child.thread_group.set_nt_bootstrap(bootstrap.as_deref());
+    if let Some(unixlib_catalog) = unixlib_catalog { child.thread_group.set_nt_unixlib_catalog(unixlib_catalog); }
+    if policy::inherits_process_handles(c.process_flags as u32) {
         if let Some(fd) = cur.clone_fd_table() {
             // A new NT process owns an independent descriptor snapshot. A
             // shared Arc would make parent-side close/exec mutations visible
@@ -84,8 +97,7 @@ pub fn dispatch(call: NtCall, stack: [u64; 5]) -> u64 {
         }
     }
     let startup = continuation.startup();
-    unsafe { sched::live::arm_user_entry(&child, startup.transfer_entry.as_u64(),
-        startup.stack_pointer.as_u64()); }
+    unsafe { sched::live::arm_user_entry(&child, prepared.initial_entry, prepared.initial_stack); }
     // The NT TEB is addressed through GS on x86-64.  `arm_user_entry` builds
     // a generic user context, so the native process transaction must publish
     // the image-specific GS base before the task becomes visible to the
@@ -125,7 +137,7 @@ pub fn dispatch(call: NtCall, stack: [u64; 5]) -> u64 {
     }
     let _ = continuation.take();
     sched::live::publish_new_task(&child);
-    if crate::nt_process_policy::initial_thread_suspended(c.process_flags as u32, c.thread_flags as u32) { let _ = child.nt_suspend(); }
+    if policy::initial_thread_suspended(c.process_flags as u32, c.thread_flags as u32) { let _ = child.nt_suspend(); }
     else { sched::live::wake_new_task(&child); }
     SUCCESS
 }

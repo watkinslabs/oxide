@@ -235,18 +235,32 @@ impl Ext4StatData {
     /// Publish only the directory geometry changed by `ext4_append()`. The
     /// namespace transaction owns `i_size`; VFS-owned flags, project ID, and
     /// link-count updates have separate owners and must not be overwritten by
-    /// this publication. # C: 1 inode read
+    /// this publication. The parent i_rwsem is sleepable; no raw-cache spinlock
+    /// spans the metadata read. # C: 1 inode read
     pub(crate) fn refresh_namespace_size(&self, inode: &Inode) {
         match self.st.mount.read_inode(self.ino) {
-            Ok(raw) => {
-                if raw.size == inode.size() { return; }
-                inode.set_size(raw.size);
-                let mut cached = (*self.raw.lock()).as_ref().clone();
-                cached.size = raw.size;
-                self.publish_raw(cached);
-            }
+            Ok(raw) => self.publish_namespace_geometry(inode, &raw),
             Err(_) => self.invalidate_raw(),
         }
+    }
+
+    /// Publish namespace-owned mapping and allocation without overwriting live
+    /// ioctl/link owners. Also used when lookup retries an invalidated image.
+    /// # C: O(1)
+    pub(crate) fn publish_namespace_geometry(&self, inode: &Inode, raw: &crate::inode::Inode) {
+        const LAYOUT_FLAGS: u32 = crate::EXT4_INDEX_FL | crate::inode::EXT4_EXTENTS_FL
+            | crate::inode::EXT4_INLINE_DATA_FL | crate::inode::EXT4_HUGE_FILE_FL;
+        let mut cached = (*self.raw.lock()).as_ref().clone();
+        cached.size = raw.size;
+        cached.i_blocks = raw.i_blocks;
+        cached.i_block = raw.i_block;
+        cached.i_flags = (self.raw_flags.load(Ordering::Acquire) & !LAYOUT_FLAGS)
+            | (raw.i_flags & LAYOUT_FLAGS);
+        cached.i_projid = inode.projid();
+        cached.links_count = inode.nlink().min(u16::MAX as u32) as u16;
+        inode.set_size(raw.size);
+        inode.set_blocks(raw.i_blocks);
+        self.publish_raw(cached);
     }
 
 }

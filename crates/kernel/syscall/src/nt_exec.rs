@@ -29,6 +29,22 @@ pub struct NtExecUnixlib {
     pub image_len: u64,
 }
 
+/// User-space dynamic-loader registration for one already mapped Wine ELF
+/// module. The kernel validates the table and publishes only its identity;
+/// relocation, TLS, constructors, and loader lifetime stay in user space.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct NtWineUnixlibRegistration {
+    pub name: UserPtr<u8>,
+    pub name_len: u32,
+    pub _name_padding: u32,
+    pub module_base: u64,
+    pub module_end: u64,
+    pub table: UserPtr<u64>,
+    pub entry_count: u32,
+    pub _table_padding: u32,
+}
+
 /// Root image plus an explicit DLL catalog supplied by the runtime.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -50,6 +66,10 @@ pub struct NtExecRequest {
     pub unixlibs: UserPtr<NtExecUnixlib>,
     pub unixlib_count: u32,
     pub _unixlibs_padding: u32,
+    /// Optional dynamically linked ELF bootstrap entered before the PE image.
+    /// Its loader owns native relocation, TLS, constructors, and registration.
+    pub bootstrap: UserPtr<u8>,
+    pub bootstrap_len: u64,
 }
 
 #[cfg(test)]
@@ -60,8 +80,9 @@ mod tests {
     fn handoff_records_are_fixed_x86_64_layouts() {
         assert_eq!(core::mem::size_of::<NtExecModule>(), 32);
         assert_eq!(core::mem::size_of::<NtExecUnixlib>(), 48);
+        assert_eq!(core::mem::size_of::<NtWineUnixlibRegistration>(), 48);
         assert_eq!(core::mem::align_of::<NtExecModule>(), 8);
-        assert_eq!(core::mem::size_of::<NtExecRequest>(), 96);
+        assert_eq!(core::mem::size_of::<NtExecRequest>(), 112);
         assert_eq!(core::mem::align_of::<NtExecRequest>(), 8);
     }
 }

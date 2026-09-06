@@ -108,9 +108,8 @@ impl Mount {
     /// Create an empty subdirectory `name` under `parent_ino`.
     /// Allocates a fresh inode, initializes mode `S_IFDIR | perm`,
     /// nlink=2 (the implicit `.` self-link), then `dir_link`s the
-    /// name into the parent. The new directory has no `.` / `..`
-    /// data block yet — callers that need to populate it should
-    /// follow with `append_block`.
+    /// name into the parent, with a populated `.` / `..` block.
+    /// # Lk: caller serializes parent namespace mutations; VFS holds parent i_rwsem exclusive.
     /// # C: O(parent entries) + 1 inode alloc + 2 I/Os
     pub fn create_dir(
         &self,
@@ -129,6 +128,7 @@ impl Mount {
     /// inode). `size` is stamped to the `.`/`..` block this writes, matching
     /// the `set_inode_size` below.
     /// # C: same as `create_dir`, minus one inode-table read
+    /// # Lk: same parent namespace exclusion as `create_dir`.
     pub fn create_dir_inode(
         &self,
         parent_ino: u32,
@@ -220,11 +220,12 @@ impl Mount {
             let mut gdt_bytes = m.read_gdt_bytes()?;
             gdt::adjust_used_dirs(&mut gdt_bytes, ng, &m.sb, 1)?;
             m.persist_gdt_slot_bytes_meta(ng, &gdt_bytes)?;
+            // Persist the parent's new '..' reference in the same transaction
+            // as the child and dirent. Read the staged slot so directory growth
+            // above is retained; the caller's parent image predates that growth.
+            // Parent namespace exclusion is sleepable, not a held spinlock.
             let (mut pb, _poff) = m.read_inode_bytes(parent_ino)?;
-            let pl = match parent {
-                Some(parent) => parent.links_count.saturating_add(1),
-                None => u16::from_le_bytes([pb[0x1A], pb[0x1B]]).saturating_add(1),
-            };
+            let pl = u16::from_le_bytes([pb[0x1A], pb[0x1B]]).saturating_add(1);
             pb[0x1A..0x1C].copy_from_slice(&pl.to_le_bytes());
             m.write_inode_bytes(parent_ino, &pb)?;
             Ok((new_ino, node))

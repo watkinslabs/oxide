@@ -49,6 +49,14 @@ pub struct DamageRect {
     pub h: u32,
 }
 
+/// Registration point for the compositor-owned submission of a kernel XRGB
+/// surface. A scanout driver must not install itself here: the active native
+/// window/compositor bridge owns the consumer and is responsible for importing
+/// the surface without bypassing Mutter. Callers do not write framebuffer
+/// memory directly.
+pub type SurfacePresenter = fn(pixels: &[u32], width: u32, height: u32,
+                               x: i32, y: i32, damage: DamageRect) -> bool;
+
 impl DamageRect {
     /// Whole `w` x `h` surface. # C: O(1)
     pub fn full(w: u32, h: u32) -> Self { DamageRect { x: 0, y: 0, w, h } }
@@ -83,6 +91,22 @@ impl ScanoutDriverKey {
 }
 
 static SCANOUT_OPS: Spinlock<Vec<Option<ScanoutOps>>, OpsLockClass> = Spinlock::new(Vec::new());
+static PRIMARY_SURFACE: Spinlock<Option<SurfacePresenter>, OpsLockClass> = Spinlock::new(None);
+
+/// Install or clear the primary surface presenter owned by the native window
+/// compositor bridge. This is deliberately not installed by simplefb or a
+/// KMS scanout driver. # C: O(1)
+pub fn set_primary_surface_presenter(presenter: Option<SurfacePresenter>) {
+    *PRIMARY_SURFACE.lock() = presenter;
+}
+
+/// Submit one kernel-owned XRGB surface through the active DRM display owner.
+/// # C: O(damage pixels)
+pub fn present_primary_surface(pixels: &[u32], width: u32, height: u32,
+                               x: i32, y: i32, damage: DamageRect) -> bool {
+    let presenter = *PRIMARY_SURFACE.lock();
+    presenter.is_some_and(|present| present(pixels, width, height, x, y, damage))
+}
 
 /// Install the runtime scanout backend for a stable DRM card id.
 /// # C: O(N) only when extending the sparse card table.

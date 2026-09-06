@@ -119,6 +119,26 @@ pub struct StackLayout {
 #[cfg(target_os = "oxide-kernel")]
 pub const AUXV_SLOTS: usize = 24;
 
+#[cfg(target_os = "oxide-kernel")]
+enum StackDestination {
+    Current,
+    Foreign(u64),
+}
+
+#[cfg(target_os = "oxide-kernel")]
+impl StackDestination {
+    fn write(&self, address: u64, bytes: &[u8]) -> bool {
+        match self {
+            Self::Current => uaccess::copy_to_user(address, bytes).is_ok(),
+            Self::Foreign(root) => {
+                // SAFETY: the private address space is retained by the caller;
+                // its planned stack range is prefaulted and writable here.
+                unsafe { pmm::user_as::write_foreign_user(*root, address, bytes) == bytes.len() }
+            }
+        }
+    }
+}
+
 /// Build the initial user stack from a populated `plan`.
 /// `argv`/`envp` are slices of NUL-free byte strings; the builder
 /// adds the trailing NUL. Returns the new SP (16-byte aligned,
@@ -159,19 +179,64 @@ pub fn build_user_stack(
     creds: AuxCreds,
     min_sigstksz: u64,
 ) -> Option<StackLayout> {
+    build_user_stack_with_destination(
+        StackDestination::Current, plan, argv, envp, img, random16, exec_path,
+        vdso_ehdr, hwcap, hwcap2, creds, min_sigstksz,
+    )
+}
+
+/// Build an ELF initial stack in a private address space without activating it.
+/// The caller must map and prefault `plan.start()..plan.write_top` first.
+/// # C: O(strings_total + auxv_count)
+#[cfg(target_os = "oxide-kernel")]
+pub fn build_user_stack_in(
+    as_: &vmm::AddressSpace,
+    plan: InitialStackPlan,
+    argv: &[&[u8]],
+    envp: &[&[u8]],
+    img: &LoadedImage,
+    random16: &[u8; 16],
+    exec_path: &[u8],
+    vdso_ehdr: u64,
+    hwcap: u64,
+    hwcap2: u64,
+    creds: AuxCreds,
+    min_sigstksz: u64,
+) -> Option<StackLayout> {
+    build_user_stack_with_destination(
+        StackDestination::Foreign(as_.root_pa()), plan, argv, envp, img, random16,
+        exec_path, vdso_ehdr, hwcap, hwcap2, creds, min_sigstksz,
+    )
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn build_user_stack_with_destination(
+    destination: StackDestination,
+    plan: InitialStackPlan,
+    argv: &[&[u8]],
+    envp: &[&[u8]],
+    img:  &LoadedImage,
+    random16: &[u8; 16],
+    exec_path: &[u8],
+    vdso_ehdr: u64,
+    hwcap: u64,
+    hwcap2: u64,
+    creds: AuxCreds,
+    min_sigstksz: u64,
+) -> Option<StackLayout> {
     let mut cursor = plan.write_top;
 
     // 1. Strings region (top-down): random, platform, execfn,
     //    argv[*], envp[*]. Track the user VA each lands at.
-    let random_va  = push_bytes(&mut cursor, random16)?;
-    let platform_va = push_bytes(&mut cursor, PLATFORM)?;
+    let random_va  = push_bytes(&destination, &mut cursor, random16)?;
+    let platform_va = push_bytes(&destination, &mut cursor, PLATFORM)?;
 
     // F62 attempted to set AT_EXECFN to the real exec path — but that
     // broke the shell's startup path. Revert to the legacy argv[0]
     // value while we investigate.
     let _ = exec_path;
     let execfn_bytes: &[u8] = if !argv.is_empty() { argv[0] } else { b"\0" };
-    let execfn_va = push_cstr(&mut cursor, execfn_bytes)?;
+    let execfn_va = push_cstr(&destination, &mut cursor, execfn_bytes)?;
 
     // Push envp then argv, each from the LAST element to the FIRST. The
     // cursor moves top-down, so pushing last→first makes the WITHIN-block
@@ -193,11 +258,11 @@ pub fn build_user_stack(
     // of entries and reserved the page anyway.
     let mut envp_vas = alloc::vec![0u64; envp.len()];
     for i in (0..envp.len()).rev() {
-        envp_vas[i] = push_cstr(&mut cursor, envp[i])?;
+        envp_vas[i] = push_cstr(&destination, &mut cursor, envp[i])?;
     }
     let mut argv_vas = alloc::vec![0u64; argv.len()];
     for i in (0..argv.len()).rev() {
-        argv_vas[i] = push_cstr(&mut cursor, argv[i])?;
+        argv_vas[i] = push_cstr(&destination, &mut cursor, argv[i])?;
     }
 
     // 2. Compute total size of the pointer/auxv vector area, then
@@ -241,17 +306,17 @@ pub fn build_user_stack(
 
     // 3. Write the vector area at sp, low → high.
     let mut w = sp;
-    write_u64(&mut w, argv.len() as u64)?;   // argc
-    for i in 0..argv.len() { write_u64(&mut w, argv_vas[i])?; }
-    write_u64(&mut w, 0)?;                    // argv NULL
-    for i in 0..envp.len() { write_u64(&mut w, envp_vas[i])?; }
-    write_u64(&mut w, 0)?;                    // envp NULL
+    write_u64(&destination, &mut w, argv.len() as u64)?;   // argc
+    for i in 0..argv.len() { write_u64(&destination, &mut w, argv_vas[i])?; }
+    write_u64(&destination, &mut w, 0)?;                    // argv NULL
+    for i in 0..envp.len() { write_u64(&destination, &mut w, envp_vas[i])?; }
+    write_u64(&destination, &mut w, 0)?;                    // envp NULL
     for &(k, v) in auxv.iter() {
-        write_u64(&mut w, k)?;
-        write_u64(&mut w, v)?;
+        write_u64(&destination, &mut w, k)?;
+        write_u64(&destination, &mut w, v)?;
     }
-    write_u64(&mut w, AT_NULL)?;
-    write_u64(&mut w, 0)?;
+    write_u64(&destination, &mut w, AT_NULL)?;
+    write_u64(&destination, &mut w, 0)?;
 
     let _ = AT_IGNORE;                       // silence unused
 
@@ -278,25 +343,25 @@ pub fn build_user_stack(
 /// Push a byte slice to the user stack at `*cursor`, decrementing
 /// `*cursor`. No NUL added. Returns the user VA the bytes start at.
 #[cfg(target_os = "oxide-kernel")]
-fn push_bytes(cursor: &mut u64, bytes: &[u8]) -> Option<u64> {
+fn push_bytes(destination: &StackDestination, cursor: &mut u64, bytes: &[u8]) -> Option<u64> {
     let n = bytes.len() as u64;
     let dst = cursor.checked_sub(n)?;
-    uaccess::copy_to_user(dst, bytes).ok()?;
+    if !destination.write(dst, bytes) { return None; }
     *cursor = dst;
     Some(dst)
 }
 
 /// Like `push_bytes` but appends a trailing NUL.
 #[cfg(target_os = "oxide-kernel")]
-fn push_cstr(cursor: &mut u64, bytes: &[u8]) -> Option<u64> {
-    let _ = push_bytes(cursor, &[0u8])?;
-    push_bytes(cursor, bytes)
+fn push_cstr(destination: &StackDestination, cursor: &mut u64, bytes: &[u8]) -> Option<u64> {
+    let _ = push_bytes(destination, cursor, &[0u8])?;
+    push_bytes(destination, cursor, bytes)
 }
 
 /// Write a u64 at `*w`, advancing.
 #[cfg(target_os = "oxide-kernel")]
-fn write_u64(w: &mut u64, val: u64) -> Option<()> {
-    uaccess::copy_to_user(*w, &val.to_ne_bytes()).ok()?;
+fn write_u64(destination: &StackDestination, w: &mut u64, val: u64) -> Option<()> {
+    if !destination.write(*w, &val.to_ne_bytes()) { return None; }
     *w += 8;
     Some(())
 }

@@ -9,6 +9,7 @@ const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 const STATUS_BUFFER_OVERFLOW: u64 = 0x8000_0005;
 const STATUS_NO_MEMORY: u64 = 0xc000_0017;
 const UNICODE_STRING_BYTES: usize = 16;
+const PROCESS_HEAP_HANDLE: u64 = 1;
 
 /// Convert a counted UTF-16 string into the native ANSI representation.
 /// # C: O(source length) plus usercopy and optional heap allocation
@@ -605,7 +606,7 @@ fn duplicate_unicode_string(add_nul: i32, source: u64, destination: u64) -> u64 
         return STATUS_SUCCESS;
     }
     let allocation = length + if add_nul != 0 { 2 } else { 0 };
-    let call = NtCall { service: NtService::AllocateHeap, args: syscall::SyscallArgs { a0: 0, a1: 0, a2: allocation as u64, a3: 0, a4: 0, a5: 0 } };
+    let call = NtCall { service: NtService::AllocateHeap, args: syscall::SyscallArgs { a0: PROCESS_HEAP_HANDLE, a1: 0, a2: allocation as u64, a3: 0, a4: 0, a5: 0 } };
     let Some(output) = crate::nt_heap::dispatch(call).filter(|value| *value != 0) else { return STATUS_NO_MEMORY; };
     let mut bytes = alloc::vec![0u8; allocation];
     if length != 0 && uaccess::copy_from_user(&mut bytes[..length], buffer).is_err() {
@@ -640,7 +641,7 @@ fn upcase_unicode_string(target: u64, source: u64, allocate: bool) -> u64 {
     if !allocate && length > target_maximum { return STATUS_BUFFER_OVERFLOW; }
     let mut destination = u64::from_le_bytes(target_descriptor[8..16].try_into().unwrap());
     if allocate {
-        let call = NtCall { service: NtService::AllocateHeap, args: syscall::SyscallArgs { a0: 0, a1: 0, a2: length as u64, a3: 0, a4: 0, a5: 0 } };
+        let call = NtCall { service: NtService::AllocateHeap, args: syscall::SyscallArgs { a0: PROCESS_HEAP_HANDLE, a1: 0, a2: length as u64, a3: 0, a4: 0, a5: 0 } };
         let Some(buffer) = crate::nt_heap::dispatch(call).filter(|value| *value != 0) else { return STATUS_NO_MEMORY; };
         destination = buffer;
     }
@@ -725,7 +726,7 @@ fn unicode_string_to_ansi_string(target: u64, source: u64, allocate: bool) -> u6
     let destination_maximum = u16::from_le_bytes([target_descriptor[2], target_descriptor[3]]) as usize;
     let mut destination = u64::from_le_bytes(target_descriptor[8..16].try_into().unwrap());
     let (length, maximum, result) = if allocate {
-        let call = NtCall { service: NtService::AllocateHeap, args: syscall::SyscallArgs { a0: 0, a1: 0, a2: required as u64, a3: 0, a4: 0, a5: 0 } };
+        let call = NtCall { service: NtService::AllocateHeap, args: syscall::SyscallArgs { a0: PROCESS_HEAP_HANDLE, a1: 0, a2: required as u64, a3: 0, a4: 0, a5: 0 } };
         let Some(buffer) = crate::nt_heap::dispatch(call).filter(|value| *value != 0) else { return STATUS_NO_MEMORY; };
         destination = buffer;
         (converted.len(), required, STATUS_SUCCESS)

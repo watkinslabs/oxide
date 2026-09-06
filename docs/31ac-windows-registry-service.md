@@ -1,6 +1,6 @@
 # Windows registry service
 
-FROZEN 2026-08-31. Dep:`01`,`03`,`29a`,`31ab`,`52`,`53`. Provides: one userspace registry owner for the initial Windows runtime.
+FROZEN 2026-09-06. Dep:`01`,`03`,`29a`,`31ab`,`52`,`53`. Provides: one userspace registry owner for the initial Windows runtime.
 
 ## 1 Contract
 
@@ -30,6 +30,11 @@ FROZEN 2026-08-31. Dep:`01`,`03`,`29a`,`31ab`,`52`,`53`. Provides: one userspace
   session and exposes its endpoint as `OXIDE_REGISTRY_SOCKET`; the database path
   is `OXIDE_REGISTRY_DATABASE` and remains owned by the service.
 - The registry has one source of truth; no kernel shadow database or alternate string-key side channel is permitted.
+- Explicit configured prefix/database/socket paths take precedence. Default mutable paths are per-user: data-home/oxide/windows-prefix, state-home/oxide/registry.db and runtime-dir/oxide/registry.sock. Data/state homes use absolute XDG_DATA_HOME/XDG_STATE_HOME or HOME/.local/share and HOME/.local/state; relative XDG values are ignored. Runtime directory requires absolute XDG_RUNTIME_DIR, user ownership and private permissions, with no global /run or /var/lib fallback. Path selection is configuration, not an authority grant.
+- Runtime initialization validates ownership/type/permissions before use, creates private user directories, preserves existing databases and rejects malformed state. Immutable seed content is used only for an absent database; initialization must not overwrite a concurrent owner's database.
+- One canonical daemon serves a selected database/socket pair across application lifetimes. Launchers never unlink its live socket or terminate it because one application exits. Only an exclusive database-lock owner may reclaim its stale socket. Socket existence alone is not readiness; clients verify the live service. Concurrent clients must not monopolize acceptance while idle.
+- Native registry admission consumes the selected endpoint through canonical caller filesystem/network namespace and socket security checks (`24§9`). No root-credential lookup, guessed endpoint or initial-namespace fallback authorizes a user launch.
+- Listener admits at most128 live client workers by default. Every worker shares the same RegistryStore through a sleeping userspace mutex; request read/decode and response encode/write occur outside that mutex, execute/durable flush inside. Idle or partial-frame clients cannot monopolize the database owner or listener. Excess clients close without a success response; worker spawn failure releases the stream and admission permit. Only EOF before a new header is a clean disconnect; truncated headers/payloads fail framing.
 
 ## 2 Tests
 

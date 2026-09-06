@@ -97,10 +97,11 @@ pub fn map_with_exit(as_: &AddressSpace, app_entry: UserVirtAddr,
     for initializer in initializers {
         // The process entry is reached by a jump, so there is no return
         // address on the stack yet. Preserve the one nonvolatile register
-        // Wine's x64 DLL-entry wrapper protects, then reserve 32 bytes of
-        // home space plus one alignment slot before making the call. RBX is
-        // preserved because it is nonvolatile across the Windows x64 ABI.
-        code.extend_from_slice(&[0x53, 0x48, 0x83, 0xec, 0x28]);
+        // Wine's x64 DLL-entry wrapper protects, then reserve the 32-byte
+        // home space before making the call. The direct process-start RSP is
+        // 8 mod 16; PUSH RBX makes it 0 mod 16, so 0x20 keeps the callee's
+        // post-return-address RSP at 8 mod 16.
+        code.extend_from_slice(&[0x53, 0x48, 0x83, 0xec, 0x20]);
         #[cfg(feature = "debug-faultdiag")]
         {
             code.extend_from_slice(&[0x48, 0xbf]);
@@ -118,7 +119,7 @@ pub fn map_with_exit(as_: &AddressSpace, app_entry: UserVirtAddr,
         code.extend_from_slice(&[0xba, 1, 0, 0, 0, 0x45, 0x31, 0xc0, 0x48, 0xb8]);
         code.extend_from_slice(&initializer.entry.as_u64().to_le_bytes());
         code.extend_from_slice(&[0xff, 0xd0]);
-        code.extend_from_slice(&[0x48, 0x83, 0xc4, 0x28, 0x5b]);
+        code.extend_from_slice(&[0x48, 0x83, 0xc4, 0x20, 0x5b]);
         if initializer.kind == super::pe_loader::PeInitializerKind::DllEntry && exit_entry.as_u64() != 0 {
             // Wine turns a FALSE DLL_PROCESS_ATTACH result into a process
             // initialization failure; TLS callbacks have no BOOL result.
@@ -136,9 +137,10 @@ pub fn map_with_exit(as_: &AddressSpace, app_entry: UserVirtAddr,
         code.extend_from_slice(&[0xff, 0xe0]);
     } else {
         // The initial exec frame has no caller return address. Reserve the
-        // required 32-byte home space, call the application, then preserve
-        // its integer return value as RtlExitUserProcess's first argument.
-        code.extend_from_slice(&[0x48, 0x83, 0xec, 0x20, 0x48, 0xb8]);
+        // required 32-byte home space plus the alignment slot, call the
+        // application, then preserve its integer return value as
+        // RtlExitUserProcess's first argument.
+        code.extend_from_slice(&[0x48, 0x83, 0xec, 0x28, 0x48, 0xb8]);
         code.extend_from_slice(&app_entry.as_u64().to_le_bytes());
         code.extend_from_slice(&[0xff, 0xd0, 0x48, 0x89, 0xc1, 0x48, 0xb8]);
         code.extend_from_slice(&exit_entry.as_u64().to_le_bytes());
@@ -237,10 +239,10 @@ mod tests {
         let trampoline = map_with_exit(&as_, UserVirtAddr::new(0x6000_1010).unwrap(), &initializers, UserVirtAddr::new(0x7000_1010).unwrap()).unwrap();
         let vma = as_.find_vma(trampoline.base).unwrap();
         let data = match vma.backing { VmaBacking::KernelBytes { data, .. } => data, _ => panic!("trampoline must be kernel-backed") };
-        assert_eq!(&data[..5], &[0x53, 0x48, 0x83, 0xec, 0x28]);
+        assert_eq!(&data[..5], &[0x53, 0x48, 0x83, 0xec, 0x20]);
         assert_eq!(&data[25..30], &[0xba, 1, 0, 0, 0]);
         assert_eq!(&data[43..45], &[0xff, 0xd0]);
-        assert_eq!(&data[45..50], &[0x48, 0x83, 0xc4, 0x28, 0x5b]);
+        assert_eq!(&data[45..50], &[0x48, 0x83, 0xc4, 0x20, 0x5b]);
         assert!(data.windows(4).any(|bytes| bytes == [0x48, 0x83, 0xec, 0x20]));
         assert!(data.windows(3).any(|bytes| bytes == [0x48, 0x89, 0xc1]));
         assert!(data.windows(2).any(|bytes| bytes == [0xff, 0xd0]));
@@ -314,8 +316,8 @@ mod tests {
         let trampoline = map_with_exit(&as_, UserVirtAddr::new(0x6000_1010).unwrap(), &[], UserVirtAddr::new(0x7000_1010).unwrap()).unwrap();
         let vma = as_.find_vma(trampoline.base).unwrap();
         let data = match vma.backing { VmaBacking::KernelBytes { data, .. } => data, _ => panic!("trampoline must be kernel-backed") };
-        assert_eq!(&data[..4], &[0x48, 0x83, 0xec, 0x20]);
-        assert_eq!(&data[0..4], &[0x48, 0x83, 0xec, 0x20]);
+        assert_eq!(&data[..4], &[0x48, 0x83, 0xec, 0x28]);
+        assert_eq!(&data[0..4], &[0x48, 0x83, 0xec, 0x28]);
         assert_eq!(&data[14..16], &[0xff, 0xd0]);
         assert_eq!(&data[16..19], &[0x48, 0x89, 0xc1]);
         assert_eq!(&data[29..31], &[0xff, 0xd0]);
@@ -330,8 +332,8 @@ mod tests {
         let vma = as_.find_vma(trampoline.base).unwrap();
         let data = match vma.backing { VmaBacking::KernelBytes { data, off } => (data, off), _ => panic!("initializer trampoline must be kernel-backed") };
         let bytes = &data.0[data.1..data.1 + trampoline.bytes];
-        assert!(bytes.windows(5).any(|window| window == [0x53, 0x48, 0x83, 0xec, 0x28]));
-        assert!(bytes.windows(5).any(|window| window == [0x48, 0x83, 0xc4, 0x28, 0x5b]));
+        assert!(bytes.windows(5).any(|window| window == [0x53, 0x48, 0x83, 0xec, 0x20]));
+        assert!(bytes.windows(5).any(|window| window == [0x48, 0x83, 0xc4, 0x20, 0x5b]));
     }
 
     #[test]

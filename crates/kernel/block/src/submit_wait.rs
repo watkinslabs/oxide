@@ -13,6 +13,10 @@ use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, Ordering};
 use crate::{BlockDevice, BlockRequest, KResult};
 
+#[cfg(any(target_os = "oxide-kernel", test))]
+#[path = "submit_wait/policy.rs"]
+mod policy;
+
 /// The submitter's side of one outstanding request: what the completion has to
 /// hand back, and the flag it publishes when it has.
 struct IoWait {
@@ -138,7 +142,7 @@ fn wait_done(state: &Arc<IoWait>) {
         // fault rather than a wait. Anything that cannot sleep polls the
         // completion instead: it is published by the block softirq, which
         // still runs on the interrupt return this spin permits.
-        if !can_sleep() {
+        if !policy::can_sleep(sched::current(), sched::preempt::in_atomic()) {
             core::hint::spin_loop();
             continue;
         }
@@ -171,13 +175,6 @@ fn wait_done(state: &Arc<IoWait>) {
     }
 }
 
-/// Whether this context may block. A caller with no current task is early
-/// boot or an interrupt, and one holding a preemption count is atomic;
-/// neither can be taken off-CPU.
-/// # C: O(1)
-#[cfg(target_os = "oxide-kernel")]
-fn can_sleep() -> bool { sched::current().is_some() && !sched::preempt::in_atomic() }
-
 /// Hosted: completions run inline on the submitting thread.
 /// # C: O(1)
 #[cfg(not(target_os = "oxide-kernel"))]
@@ -186,20 +183,5 @@ fn wait_done(state: &Arc<IoWait>) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{BlockRequest, IoWait};
-    use crate::{BlockError, BlockOp};
-    use core::sync::atomic::Ordering;
-
-    #[test]
-    fn duplicate_completion_preserves_first_owned_result() {
-        let state = IoWait::new();
-        state.complete(BlockRequest::new_read(0, 1, 512), Ok(()));
-        state.complete(BlockRequest {
-            op: BlockOp::Read, ..BlockRequest::new_read(1, 1, 512)
-        }, Err(BlockError::Eio));
-        assert!(state.done.load(Ordering::Acquire));
-        let (_, result) = state.slot.lock().take().expect("first completion retained");
-        assert_eq!(result, Ok(()));
-    }
-}
+#[path = "tests/submit_wait.rs"]
+mod tests;

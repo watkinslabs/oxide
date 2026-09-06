@@ -212,7 +212,13 @@ fn concurrent_clones_cannot_share_the_last_pids_slot() {
         let gate = alloc::sync::Arc::clone(&gate);
         workers.push(std::thread::spawn(move || {
             gate.wait();
-            prepare_resolved(Some(cgid), parent, false)
+            // Finish the fork transaction on its creator before joining.
+            // Returning a live read guard lets an unrelated exit writer
+            // block the other worker while join retains the first reader.
+            let prepared = prepare_resolved(Some(cgid), parent, false)?;
+            let child = parent + 100;
+            commit_new_task(prepared, child);
+            Ok::<u64, i64>(child)
         }));
     }
     gate.wait();
@@ -220,7 +226,7 @@ fn concurrent_clones_cannot_share_the_last_pids_slot() {
     let mut refused = 0;
     for worker in workers {
         match worker.join().unwrap() {
-            Ok(prepared) => admitted = Some(prepared),
+            Ok(child) => admitted = Some(child),
             Err(error) => {
                 assert_eq!(error, -(syscall::errno::Errno::Eagain.as_i32() as i64));
                 refused += 1;
@@ -229,7 +235,10 @@ fn concurrent_clones_cannot_share_the_last_pids_slot() {
     }
     assert!(admitted.is_some(), "one clone owns the final pids slot");
     assert_eq!(refused, 1, "the second concurrent clone is refused");
-    drop(admitted);
+    let child = admitted.unwrap();
+    assert_eq!(cgroup::cgroup_of(child), cgid);
+    assert_eq!(cgroup::read_file(cgid, "pids.current").unwrap(), b"1\n");
+    cgroup::on_exit(child, child);
     let cancelled = prepare_resolved(Some(cgid), 98_184, false).unwrap();
     drop(cancelled);
     cgroup::rmdir_child(cgroup::ROOT_CGROUP, name).unwrap();

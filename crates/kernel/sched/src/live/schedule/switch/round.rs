@@ -38,7 +38,7 @@ pub unsafe fn schedule_once(keep_irqs_disabled: bool) {
         // SAFETY: rq.current is non-null after install_global.
         let prev_ref = unsafe { rq.current_ref() };
         prev_ref.debug_check_canary("schedule_prev_update");
-        update_curr(prev_ref, &inner, now);
+        update_curr(prev_ref, &mut inner, now);
         // A dying deadline task can accrue runtime until this final switch.
         // Only after the last charge may zero-lag release be calculated.
         crate::live::rq_locate::finish_terminal_deadline(prev_ref);

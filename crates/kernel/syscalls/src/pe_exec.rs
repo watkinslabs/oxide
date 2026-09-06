@@ -3,6 +3,8 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use alloc::string::String;
+#[cfg(target_arch = "x86_64")]
+use alloc::{format, vec, vec::Vec};
 
 #[cfg(target_arch = "x86_64")]
 use hal::MmuOps;
@@ -17,6 +19,8 @@ pub struct PreparedPeProcess {
     pub stack: hal::UserVirtAddr,
     pub stack_top: u64,
     pub process: elf_load::pe_loader::PeProcess,
+    pub initial_entry: u64,
+    pub initial_stack: u64,
 }
 
 /// Private PE launch continuation. The mapped image, environment, and
@@ -101,7 +105,7 @@ fn inherit_nt_standard_handles(cur: &sched::Task) -> Option<NtStandardHandles> {
 pub fn try_commit(cur: &sched::Task, path: &[u8], blob: &[u8], exec_vp: Option<&vfs::VfsPath>) -> Option<Result<(), i64>> {
     if !matches!(elf_load::format::identify(blob), elf_load::format::BinaryFormat::Pe) { return None; }
     #[cfg(target_arch = "x86_64")]
-    { Some(commit_x86(cur, path, blob, exec_vp, None, None, &[])) }
+    { Some(commit_x86(cur, path, blob, exec_vp, None, None, &[], None)) }
     #[cfg(target_arch = "aarch64")]
     { let _ = (cur, path, blob, exec_vp); Some(Err(-(syscall::errno::Errno::Enoexec.as_i32() as i64))) }
 }
@@ -120,23 +124,28 @@ pub fn try_commit_with_catalog_and_command_line(cur: &sched::Task, path: &[u8], 
 
 #[cfg(target_os = "oxide-kernel")]
 pub fn try_commit_with_catalog_and_environment(cur: &sched::Task, path: &[u8], blob: &[u8], catalog: &pe::catalog::ModuleCatalog, command_line: &str, environment: &[(String, String)]) -> Result<(), i64> {
+    try_commit_with_catalog_and_environment_and_bootstrap(cur, path, blob, catalog, command_line, environment, None)
+}
+
+#[cfg(target_os = "oxide-kernel")]
+pub fn try_commit_with_catalog_and_environment_and_bootstrap(cur: &sched::Task, path: &[u8], blob: &[u8], catalog: &pe::catalog::ModuleCatalog, command_line: &str, environment: &[(String, String)], bootstrap: Option<&[u8]>) -> Result<(), i64> {
     #[cfg(target_arch = "x86_64")]
     {
         let environment_refs: alloc::vec::Vec<(&str, &str)> = environment.iter().map(|(name, value)| (name.as_str(), value.as_str())).collect();
-        commit_x86(cur, path, blob, None, Some(catalog), Some(command_line), &environment_refs)
+        commit_x86(cur, path, blob, None, Some(catalog), Some(command_line), &environment_refs, bootstrap)
     }
     #[cfg(target_arch = "aarch64")]
-    { let _ = (cur, path, blob, catalog, command_line, environment); Err(-(syscall::errno::Errno::Enoexec.as_i32() as i64)) }
+    { let _ = (cur, path, blob, catalog, command_line, environment, bootstrap); Err(-(syscall::errno::Errno::Enoexec.as_i32() as i64)) }
 }
 
 #[cfg(target_arch = "x86_64")]
-fn commit_x86(cur: &sched::Task, path: &[u8], blob: &[u8], exec_vp: Option<&vfs::VfsPath>, catalog: Option<&pe::catalog::ModuleCatalog>, command_line: Option<&str>, environment: &[(&str, &str)]) -> Result<(), i64> {
+fn commit_x86(cur: &sched::Task, path: &[u8], blob: &[u8], exec_vp: Option<&vfs::VfsPath>, catalog: Option<&pe::catalog::ModuleCatalog>, command_line: Option<&str>, environment: &[(&str, &str)], bootstrap: Option<&[u8]>) -> Result<(), i64> {
     let enoexec = || -(syscall::errno::Errno::Enoexec.as_i32() as i64);
     let table = cur.thread_group.nt_handles();
     let mut stdio = inherit_nt_standard_handles(cur);
     let params = stdio.as_ref().map(|stdio| &stdio.params);
     let prepared = match prepare_pe_process(cur, path, blob, command_line, environment, params, exec_vp, catalog,
-        cur.tgid.load(core::sync::atomic::Ordering::Acquire), cur.tid, true) {
+        cur.tgid.load(core::sync::atomic::Ordering::Acquire), cur.tid, true, bootstrap) {
         Ok(prepared) => prepared,
         Err(error) => { close_stdio(&mut stdio, &table); return Err(error); },
     };
@@ -166,7 +175,7 @@ fn commit_x86(cur: &sched::Task, path: &[u8], blob: &[u8], exec_vp: Option<&vfs:
     let startup_view = continuation.prepared().process.startup.facts();
     if let Err(error) = select_nt_personality(cur, startup_view) { close_stdio(&mut stdio, &table); return Err(error); }
     let (prepared, startup) = continuation.take();
-    let PreparedPeProcess { mm: as_, stack, stack_top, process, .. } = prepared;
+    let PreparedPeProcess { mm: as_, stack, stack_top, process, initial_entry, initial_stack } = prepared;
     let cpu = (hal_x86_64::X86CpuOps::current_cpu() as usize).min(cpu::MAX_CPUS - 1);
     as_.mark_cpu(cpu);
     // SAFETY: root belongs to this freshly-built address space and activation
@@ -196,15 +205,15 @@ fn commit_x86(cur: &sched::Task, path: &[u8], blob: &[u8], exec_vp: Option<&vfs:
     let frame = unsafe { &mut *regs };
     crate::nt_milestone::reset();
     klog::write_raw(b"[WINDOWS-PE-START] entry=");
-    klog::write_hex_u64(startup.transfer_entry.as_u64());
+    klog::write_hex_u64(initial_entry);
     klog::write_raw(b" rsp=");
-    klog::write_hex_u64(startup.stack_pointer.as_u64());
+    klog::write_hex_u64(initial_stack);
     klog::write_raw(b" stack=");
     klog::write_hex_u64(stack.as_u64());
     klog::write_raw(b"-");
     klog::write_hex_u64(stack_top);
     klog::write_raw(b"\n");
-    *frame = hal_x86_64::PtRegs { rip: startup.transfer_entry.as_u64(), rsp: startup.stack_pointer.as_u64(), rflags: 0x202,
+    *frame = hal_x86_64::PtRegs { rip: initial_entry, rsp: initial_stack, rflags: 0x202,
         cs: hal_x86_64::USER_CS_SELECTOR, ss: hal_x86_64::USER_SS_SELECTOR,
         vector: frame.vector, error: frame.error, ..Default::default() };
     sched::live::vfork_done(cur);
@@ -260,7 +269,7 @@ fn build_pe_address_space(cur: &sched::Task, stack_bytes: usize, replace_current
 /// `replace_current = true`; native child creation uses `false` and receives a
 /// fresh address space. # C: O(image + N_vmas)
 #[cfg(target_arch = "x86_64")]
-pub fn prepare_pe_process(cur: &sched::Task, path: &[u8], blob: &[u8], command_line: Option<&str>, environment: &[(&str, &str)], params: Option<&elf_load::process_env::NtProcessParameters<'_>>, _exec_vp: Option<&vfs::VfsPath>, catalog: Option<&pe::catalog::ModuleCatalog>, process_id: u32, thread_id: u32, replace_current: bool) -> Result<PreparedPeProcess, i64> {
+pub fn prepare_pe_process(cur: &sched::Task, path: &[u8], blob: &[u8], command_line: Option<&str>, environment: &[(&str, &str)], params: Option<&elf_load::process_env::NtProcessParameters<'_>>, _exec_vp: Option<&vfs::VfsPath>, catalog: Option<&pe::catalog::ModuleCatalog>, process_id: u32, thread_id: u32, replace_current: bool, bootstrap: Option<&[u8]>) -> Result<PreparedPeProcess, i64> {
     const STACK_BYTES: usize = 8 * 1024 * 1024;
     let enoexec = || -(syscall::errno::Errno::Enoexec.as_i32() as i64);
     let path = core::str::from_utf8(path).map_err(|_| enoexec())?;
@@ -284,7 +293,101 @@ pub fn prepare_pe_process(cur: &sched::Task, path: &[u8], blob: &[u8], command_l
             return Err(enoexec());
         }
     };
-    Ok(PreparedPeProcess { mm: as_, stack, stack_top, process })
+    let startup = process.startup.facts();
+    let rnd = crate::exec_transition::exec_rnd(cur, 0);
+    let (initial_entry, initial_stack) = match bootstrap {
+        Some(blob) => prepare_native_bootstrap(&as_, blob, environment, startup.transfer_entry.as_u64(), startup.stack_pointer.as_u64(), startup.teb.as_u64(), startup.peb.as_u64(), &rnd, enoexec())?,
+        None => (startup.transfer_entry.as_u64(), startup.stack_pointer.as_u64()),
+    };
+    Ok(PreparedPeProcess { mm: as_, stack, stack_top, initial_entry, initial_stack, process })
+}
+
+#[cfg(target_arch = "x86_64")]
+fn prepare_native_bootstrap(
+    as_: &alloc::sync::Arc<vmm::AddressSpace>,
+    blob: &[u8],
+    environment: &[(&str, &str)],
+    pe_entry: u64,
+    pe_stack: u64,
+    teb: u64,
+    peb: u64,
+    rnd: &aslr::ExecRnd,
+    enoexec: i64,
+) -> Result<(u64, u64), i64> {
+    const BOOTSTRAP_STACK_BYTES: usize = 2 * 1024 * 1024;
+    let stack = as_.mmap(None, BOOTSTRAP_STACK_BYTES, vmm::VmaProt::READ | vmm::VmaProt::WRITE,
+        vmm::EXEC_STACK_VMA_FLAGS, vmm::VmaBacking::Anonymous, false).map_err(|_| enoexec)?;
+    let stack_top = stack.as_u64().checked_add(BOOTSTRAP_STACK_BYTES as u64).ok_or(enoexec)?;
+    let image = match elf_load::load_image(elf_load::Image::embedded(blob), None, as_, rnd) {
+        Ok(image) => image,
+        Err(error) => {
+            log_bootstrap_failure(b"elf-load", error);
+            return Err(enoexec);
+        }
+    };
+    let argv_storage = vec![b"windows-runtime".to_vec(), b"--native-bootstrap".to_vec()];
+    let mut env_storage: Vec<Vec<u8>> = environment.iter().map(|(name, value)| format!("{name}={value}").into_bytes()).collect();
+    env_storage.push(format!("OXIDE_PE_ENTRY=0x{pe_entry:x}").into_bytes());
+    env_storage.push(format!("OXIDE_PE_STACK=0x{pe_stack:x}").into_bytes());
+    // The source-owned Wine adapter uses these canonical Oxide addresses to
+    // attach its existing thread_data record before any native constructor
+    // calls NtCurrentTeb(). They are bootstrap-only inputs, not a replacement
+    // for the kernel's GS/TEB publication.
+    env_storage.push(format!("OXIDE_NT_TEB=0x{teb:x}").into_bytes());
+    env_storage.push(format!("OXIDE_NT_PEB=0x{peb:x}").into_bytes());
+    let argv: Vec<&[u8]> = argv_storage.iter().map(|value| value.as_slice()).collect();
+    let envp: Vec<&[u8]> = env_storage.iter().map(|value| value.as_slice()).collect();
+    let plan = match elf_load::stack::plan_initial_stack(stack_top, BOOTSTRAP_STACK_BYTES as u64, &argv, &envp, rnd) {
+        Some(plan) => plan,
+        None => {
+            klog::write_raw(b"[WINDOWS-PE-BOOTSTRAP-FAIL] stage=stack-plan\n");
+            return Err(enoexec);
+        }
+    };
+    let random16 = crate::auxrandom::at_random_bytes();
+    // The generic prefault path resolves pages through the active MmuOps root;
+    // this task still owns its old Linux mm while the NT replacement is private.
+    // Keep the non-sleeping prefault/write interval on the new root and prevent
+    // a scheduler switch until the old root is restored.
+    let previous_root = hal_x86_64::read_cr3() & !(hal::PAGE_SIZE_BYTES - 1);
+    let preempt = sched::preempt::PreemptGuard::new();
+    // SAFETY: `as_` is the unpublished replacement with a shared kernel half;
+    // preemption is disabled for the explicit-root page population interval.
+    unsafe { <hal_x86_64::mmu_ops::X86Mmu as MmuOps>::activate(as_.root_pa()); }
+    let prefault = pmm::user_as::prefault_user_range(as_, plan.start(), plan.write_len()).is_ok();
+    let layout = if prefault {
+        elf_load::stack::build_user_stack_in(as_, plan, &argv, &envp, &image, &random16,
+            b"/usr/local/bin/windows-runtime", 0, 0, 0, elf_load::stack::AuxCreds::default(), 0)
+    } else { None };
+    // SAFETY: `previous_root` is the running task's still-owned Linux mm root;
+    // it is restored before the preemption guard can schedule another task.
+    unsafe { <hal_x86_64::mmu_ops::X86Mmu as MmuOps>::activate(previous_root); }
+    drop(preempt);
+    if !prefault {
+        klog::write_raw(b"[WINDOWS-PE-BOOTSTRAP-FAIL] stage=stack-prefault\n");
+        return Err(enoexec);
+    }
+    let layout = match layout {
+        Some(layout) => layout,
+        None => {
+            klog::write_raw(b"[WINDOWS-PE-BOOTSTRAP-FAIL] stage=stack-build\n");
+            return Err(enoexec);
+        }
+    };
+    Ok((image.user_ip(), layout.sp))
+}
+
+#[cfg(target_arch = "x86_64")]
+fn log_bootstrap_failure(stage: &'static [u8], error: elf_load::LoadError) {
+    klog::write_raw(b"[WINDOWS-PE-BOOTSTRAP-FAIL] stage=");
+    klog::write_raw(stage);
+    klog::write_raw(b" error=");
+    klog::write_raw(match error {
+        elf_load::LoadError::Enoexec => b"enoexec",
+        elf_load::LoadError::Einval => b"einval",
+        elf_load::LoadError::Enomem => b"enomem",
+    });
+    klog::write_raw(b"\n");
 }
 
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]

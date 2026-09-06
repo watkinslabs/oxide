@@ -46,6 +46,13 @@ pub enum WineUnixFunction {
     SystemTimePrecise = 7,
 }
 
+/// Number of entries in Wine's native NTDLL Unix-call table.
+pub const WINE_UNIX_FUNCTION_COUNT: usize = 8;
+
+/// Private memory-query class used by a userspace ELF loader to publish one
+/// already initialized Unixlib table for the native Wine loader.
+pub const MEMORY_WINE_REGISTER_UNIXLIB: u32 = 1005;
+
 impl WineUnixFunction {
     /// Decode a table slot without allowing a widened or unknown selector.
     pub const fn decode(value: u64) -> Option<Self> {

@@ -40,6 +40,15 @@ use crate::nt_loader_dir_policy::{self,
 
 mod dynamic;
 
+// Loader enumeration is diagnostic only. Keep it off the normal image: each
+// serial write is observable as startup latency during Wine initialization.
+macro_rules! loader_trace {
+    ($($body:tt)*) => {
+        #[cfg(feature = "debug-faultdiag")]
+        { $($body)* }
+    };
+}
+
 pub fn dispatch(call: NtCall) -> Option<u64> {
     match call.service {
         NtService::RtlAcquirePebLock => Some(acquire_peb_lock()),
@@ -54,8 +63,10 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         NtService::LdrGetDllHandleEx => Some(get_handle(call.args.a0 as u32, call.args.a3, call.args.a4)),
         NtService::LdrGetDllHandle => Some(get_handle(1, call.args.a2, call.args.a3)),
         NtService::RtlFindExportedRoutineByName => {
-            klog::write_raw(b"[WINDOWS-PE-DISPATCH] RtlFind module="); klog::write_hex_u64(call.args.a0);
-            klog::write_raw(b" name="); klog::write_hex_u64(call.args.a1); klog::write_raw(b"\n");
+            loader_trace! {
+                klog::write_raw(b"[WINDOWS-PE-DISPATCH] RtlFind module="); klog::write_hex_u64(call.args.a0);
+                klog::write_raw(b" name="); klog::write_hex_u64(call.args.a1); klog::write_raw(b"\n");
+            }
             Some(crate::nt_loader_proc::find_exported_routine(call.args.a0, call.args.a1))
         },
         NtService::LdrGetDllPath => Some(get_path(call.args.a0, call.args.a1 as u32, call.args.a2, call.args.a3)),
@@ -135,7 +146,7 @@ fn get_handle(flags: u32, name_descriptor: u64, module_output: u64) -> u64 {
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
     let Some(wanted) = read_unicode(name_descriptor) else { return STATUS_INVALID_PARAMETER; };
-    klog::write_raw(b"[WINDOWS-PE-LDR] wanted="); klog::write_raw(&wanted); klog::write_raw(b"\n");
+    loader_trace! { klog::write_raw(b"[WINDOWS-PE-LDR] wanted="); klog::write_raw(&wanted); klog::write_raw(b"\n"); }
     let Some(peb_address) = cur.nt_teb().checked_add(TEB_PEB_OFFSET) else { return STATUS_INVALID_PARAMETER; };
     let peb = read_u64_checked(peb_address).unwrap_or(0);
     let Some(ldr_address) = peb.checked_add(PEB_LDR_OFFSET) else { return STATUS_INVALID_PARAMETER; };
@@ -146,13 +157,12 @@ fn get_handle(flags: u32, name_descriptor: u64, module_output: u64) -> u64 {
     for _ in 0..MAX_MODULE_SCAN {
         if entry == 0 || entry == head { break; }
         let Some(name_descriptor) = entry.checked_add(MODULE_BASE_NAME_OFFSET) else { break; };
-        let mut name_raw = [0u8; UNICODE_STRING_BYTES];
-        let name_len = if uaccess::copy_from_user(&mut name_raw, name_descriptor).is_ok() { u16::from_le_bytes([name_raw[0], name_raw[1]]) as u64 } else { 0 };
-        klog::write_raw(b"[WINDOWS-PE-LDR] entry="); klog::write_hex_u64(entry);
         let base = entry.checked_add(MODULE_BASE_OFFSET).and_then(read_u64_checked).unwrap_or(0);
-        klog::write_raw(b" base="); klog::write_hex_u64(base);
-        klog::write_raw(b" len="); klog::write_hex_u64(name_len);
-        klog::write_raw(b"\n");
+        loader_trace! {
+            klog::write_raw(b"[WINDOWS-PE-LDR] entry="); klog::write_hex_u64(entry);
+            klog::write_raw(b" base="); klog::write_hex_u64(base);
+            klog::write_raw(b"\n");
+        }
         if module_name_matches(&wanted, name_descriptor) {
             let module = base;
             if uaccess::put_user_u64(module_output, module).is_err() { return STATUS_INVALID_PARAMETER; }
@@ -163,7 +173,7 @@ fn get_handle(flags: u32, name_descriptor: u64, module_output: u64) -> u64 {
         let Some(link_address) = entry.checked_add(LIST_LINK_OFFSET) else { break; };
         entry = read_u64_checked(link_address).unwrap_or(0);
     }
-    klog::write_raw(b"[WINDOWS-PE-LDR] not-found wanted="); klog::write_raw(&wanted); klog::write_raw(b"\n");
+    loader_trace! { klog::write_raw(b"[WINDOWS-PE-LDR] not-found wanted="); klog::write_raw(&wanted); klog::write_raw(b"\n"); }
     STATUS_DLL_NOT_FOUND
 }
 

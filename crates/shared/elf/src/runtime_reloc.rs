@@ -3,11 +3,50 @@
 use crate::parser::{ElfError, LoadSegment};
 use crate::SharedObject;
 
+pub const R_X86_64_64: u32 = 1;
 pub const R_X86_64_GLOB_DAT: u32 = 6;
 pub const R_X86_64_JUMP_SLOT: u32 = 7;
 pub const R_X86_64_RELATIVE: u32 = 8;
+pub const R_X86_64_DTPMOD64: u32 = 16;
+pub const R_X86_64_DTPOFF64: u32 = 17;
+pub const R_X86_64_TPOFF64: u32 = 18;
+pub const R_X86_64_IRELATIVE: u32 = 37;
 pub const R_AARCH64_ABS64: u32 = 257;
+pub const R_AARCH64_TLS_DTPMOD64: u32 = 1028;
+pub const R_AARCH64_TLS_DTPREL64: u32 = 1029;
+pub const R_AARCH64_TLS_TPREL64: u32 = 1030;
+pub const R_AARCH64_IRELATIVE: u32 = 1032;
 const MAX_DYNAMIC_SYMBOLS: u64 = 65_536;
+const MAX_RELOCATION_KINDS: usize = 128;
+
+/// Return every relocation class present in the validated dynamic tables.
+/// The result is a bounded, de-duplicated description for the runtime owner;
+/// it does not apply relocations or execute resolver addresses.
+/// # C: O(N_relocations)
+pub fn runtime_relocation_kinds(file: &[u8], object: &SharedObject<'_>) -> Result<alloc::vec::Vec<u32>, ElfError> {
+    let mut kinds = alloc::vec::Vec::new();
+    let mut tables = [None, None];
+    if let (Some(addr), Some(size), Some(ent)) = (object.dynamic.rela_addr, object.dynamic.rela_size, object.dynamic.rela_ent) {
+        tables[0] = Some((addr, size, ent));
+    }
+    if let (Some(addr), Some(size), Some(kind)) = (object.dynamic.jmprel_addr, object.dynamic.pltrel_size, object.dynamic.pltrel_kind) {
+        if kind != 7 { return Err(ElfError::Eopnotsupp); }
+        tables[1] = Some((addr, size, object.dynamic.rela_ent.unwrap_or(0)));
+    }
+    for (addr, size, ent) in tables.into_iter().flatten() {
+        if ent != 24 || size % ent != 0 { return Err(ElfError::Einval); }
+        for index in 0..size / ent {
+            let entry = addr.checked_add(index.checked_mul(ent).ok_or(ElfError::Einval)?).ok_or(ElfError::Einval)?;
+            let off = vaddr_to_file(object.parsed.loads.as_slice(), entry, 24).ok_or(ElfError::Einval)?;
+            let kind = u64_at(file, off + 8)? as u32;
+            if !kinds.contains(&kind) {
+                if kinds.len() == MAX_RELOCATION_KINDS { return Err(ElfError::Einval); }
+                kinds.push(kind);
+            }
+        }
+    }
+    Ok(kinds)
+}
 
 /// Apply the dynamic relocation tables of a mapped shared object to one
 /// contiguous staged image. The resolver owns process-wide symbol lookup;
@@ -41,7 +80,7 @@ where F: FnMut(&[u8]) -> Option<u64> {
             let dest = target.checked_sub(image_base).ok_or(ElfError::Einval)? as usize;
             let value = match kind {
                 R_X86_64_RELATIVE => load_bias.wrapping_add(addend as u64),
-                R_X86_64_GLOB_DAT | R_X86_64_JUMP_SLOT | R_AARCH64_ABS64 => {
+                R_X86_64_64 | R_X86_64_GLOB_DAT | R_X86_64_JUMP_SLOT | R_AARCH64_ABS64 => {
                     let symbol = read_dynamic_symbol(file, object, sym_index)?;
                     if !symbol.defined { resolve(symbol.name).ok_or(ElfError::Einval)? } else { load_bias.checked_add(symbol.value).ok_or(ElfError::Einval)? }
                         .wrapping_add(addend as u64)
@@ -88,7 +127,7 @@ fn apply_relative(image: &mut [u8], image_base: u64, load_bias: u64, offset: u64
 /// One validated dynamic symbol. Undefined symbols require resolution from
 /// the process ELF catalog; defined symbols are relative to this object.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct DynamicSymbol<'a> { pub name: &'a [u8], pub value: u64, pub defined: bool }
+pub struct DynamicSymbol<'a> { pub name: &'a [u8], pub value: u64, pub size: u64, pub defined: bool }
 
 /// Read one symbol from the validated object's dynamic symbol table.
 /// # C: O(1)
@@ -103,13 +142,14 @@ pub fn read_dynamic_symbol<'a>(file: &'a [u8], object: &SharedObject<'_>, index:
     let name_off = u32_at(file, off)? as u64;
     let shndx = u16_at(file, off + 6)?;
     let value = u64_at(file, off + 8)?;
+    let size = u64_at(file, off + 16)?;
     let strtab = dynamic.strtab_addr.ok_or(ElfError::Einval)?;
     let strsz = dynamic.strtab_size.ok_or(ElfError::Einval)?;
     let str_off = vaddr_to_file(loads, strtab, strsz).ok_or(ElfError::Einval)?;
     let name = file.get(str_off..str_off.checked_add(strsz as usize).ok_or(ElfError::Einval)?).ok_or(ElfError::Einval)?;
     let start = name_off as usize;
     let end = name.get(start..).ok_or(ElfError::Einval)?.iter().position(|b| *b == 0).map(|n| start + n).ok_or(ElfError::Einval)?;
-    Ok(DynamicSymbol { name: &name[start..end], value, defined: shndx != 0 })
+    Ok(DynamicSymbol { name: &name[start..end], value, size, defined: shndx != 0 })
 }
 
 /// Collect the defined dynamic symbols advertised by the object's hash table.
@@ -202,5 +242,18 @@ mod tests {
         let object = crate::parse_shared_object(&bytes, crate::EM_X86_64).unwrap();
         let symbols = collect_dynamic_symbols(&bytes, &object).unwrap();
         assert!(symbols.iter().any(|symbol| symbol.name == b"__wine_unix_call_funcs"));
+    }
+
+    #[test]
+    fn installed_libc_runtime_classes_expose_loader_and_tls_boundary() {
+        let paths = ["/lib64/libc.so.6", "/usr/lib64/libc.so.6", "/lib/x86_64-linux-gnu/libc.so.6"];
+        let Some(path) = paths.iter().find(|path| std::path::Path::new(path).is_file()) else { return };
+        let bytes = std::fs::read(path).unwrap();
+        let object = crate::parse_dependency_object(&bytes, crate::EM_X86_64).unwrap();
+        assert!(object.parsed.interp.is_some());
+        assert!(object.parsed.tls.is_some());
+        let kinds = runtime_relocation_kinds(&bytes, &object).unwrap();
+        assert!(kinds.contains(&R_X86_64_IRELATIVE));
+        assert!(kinds.contains(&R_X86_64_TPOFF64));
     }
 }

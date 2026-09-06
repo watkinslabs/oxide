@@ -55,9 +55,19 @@ fn flush_pixels(pixels: &[u8], rect: fbcon::kernel::FlushRect) {
 /// # C: O(damage pixels)
 pub fn present_xrgb(pixels: &[u8], stride_px: u32, width: u32, height: u32,
                     x: u32, y: u32, w: u32, h: u32) -> bool {
+    present_xrgb_at(pixels, stride_px, width, height, x as i32, y as i32, x, y, w, h)
+}
+
+/// Present one source region at an independent destination position through
+/// the active native scanout. # C: O(damage pixels)
+pub fn present_xrgb_at(pixels: &[u8], stride_px: u32, width: u32, height: u32,
+                       dst_x: i32, dst_y: i32, src_x: u32, src_y: u32,
+                       w: u32, h: u32) -> bool {
     let mut live = LIVE.lock();
     let Some(live) = live.as_mut() else { return false; };
-    if stride_px < width || width > live.fb.width || height > live.fb.height { return false; }
+    if stride_px < width || width == 0 || height == 0 || width > live.fb.width || height > live.fb.height
+        || src_x.checked_add(w).is_none_or(|right| right > width)
+        || src_y.checked_add(h).is_none_or(|bottom| bottom > height) { return false; }
     let bytes = match u64::from(stride_px).checked_mul(u64::from(height)).and_then(|n| n.checked_mul(4)) {
         Some(n) => n,
         None => return false,
@@ -65,7 +75,7 @@ pub fn present_xrgb(pixels: &[u8], stride_px: u32, width: u32, height: u32,
     if bytes > pixels.len() as u64 { return false; }
     // SAFETY: Live owns its complete WC mapping while present_xrgb holds LIVE.
     let dst = unsafe { core::slice::from_raw_parts_mut(live.fb_va as *mut u8, live.bytes as usize) };
-    format::copy_damage(pixels, dst, fbcon::kernel::FlushRect { x, y, w, h, stride_px }, live.fb);
+    format::copy_damage_at(pixels, dst, fbcon::kernel::FlushRect { x: src_x, y: src_y, w, h, stride_px }, dst_x, dst_y, live.fb);
     true
 }
 
@@ -291,3 +301,7 @@ pub fn driver() -> &'static dyn drv::Driver { &DRIVER }
 /// Canonical platform address matched by [`driver`].
 /// # C: O(1)
 pub fn device_addr() -> &'static str { DEVICE_ADDR }
+
+#[cfg(test)]
+#[path = "tests/render_perf.rs"]
+mod render_perf;

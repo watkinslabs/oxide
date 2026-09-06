@@ -342,6 +342,8 @@ pub enum NtService {
     TpReleaseTimer = 550,
     /// Arm or cancel one process-owned native thread-pool timer object.
     TpSetTimer = 551,
+    /// Bind a connected desktop bridge socket capability to the current process.
+    BindCompositor = 552,
 }
 impl NtService {
     /// Return the tagged entry selector emitted by an NTDLL syscall stub.
@@ -355,7 +357,7 @@ pub enum NtMemoryCall {
     Allocate { process: u64, base: UserPtr<u64>, zero_bits: u64, size: UserPtr<u64>, allocation_type: u32, protect: u32 },
     Free { process: u64, base: UserPtr<u64>, size: UserPtr<u64>, free_type: u32 },
     Protect { process: u64, base: UserPtr<u64>, size: UserPtr<u64>, protect: u32, old_protect: UserPtr<u32> },
-    Query { process: u64, address: u64, info_class: u32, info: UserPtr<u8>, info_size: u64, return_length: UserPtr<u64> },
+    Query { process: u64, address: u64, info_class: u32, info: UserPtr<u8>, info_size: u64, return_length: Option<UserPtr<u64>> },
     Flush { process: u64, address: UserPtr<u64>, size: UserPtr<u64>, io: Option<UserPtr<u8>> },
     Lock { process: u64, address: UserPtr<u64>, size: UserPtr<u64>, unknown: u32 },
     Unlock { process: u64, address: UserPtr<u64>, size: UserPtr<u64>, unknown: u32 },
@@ -785,6 +787,7 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 549 { return Some(NtCall { service: NtService::TpReleaseWork, args }); }
     if service == 550 { return Some(NtCall { service: NtService::TpReleaseTimer, args }); }
     if service == 551 { return Some(NtCall { service: NtService::TpSetTimer, args }); }
+    if service == 552 { return Some(NtCall { service: NtService::BindCompositor, args }); }
     if service == 493 { return Some(NtCall { service: NtService::Strnicmp, args }); }
     if service == 494 { return Some(NtCall { service: NtService::Vsnwprintf, args }); }
     if service == 495 { return Some(NtCall { service: NtService::Isalnum, args }); }
@@ -1092,7 +1095,7 @@ pub fn decode_entry(entry: u64, args: SyscallArgs) -> Option<NtCall> {
 pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
     let a = call.args;
     match call.service {
-        NtService::RelayProbe | NtService::SetWindowRectValues => Err(Errno::Enosys),
+        NtService::RelayProbe | NtService::SetWindowRectValues | NtService::BindCompositor => Err(Errno::Enosys),
         NtService::AllocateVirtualMemory => Ok(NtMemoryCall::Allocate {
             process: a.a0, base: UserPtr::new(a.a1)?, zero_bits: a.a2,
             size: UserPtr::new(a.a3)?, allocation_type: a.a4 as u32, protect: a.a5 as u32,
@@ -1110,7 +1113,7 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
         }),
         NtService::QueryVirtualMemory => Ok(NtMemoryCall::Query {
             process: a.a0, address: a.a1, info_class: a.a2 as u32, info: UserPtr::new(a.a3)?,
-            info_size: a.a4, return_length: UserPtr::new(a.a5)?,
+            info_size: a.a4, return_length: optional_ptr(a.a5)?,
         }),
         NtService::NtFlushVirtualMemory => Ok(NtMemoryCall::Flush {
             process: a.a0, address: UserPtr::new(a.a1)?, size: UserPtr::new(a.a2)?, io: optional_ptr(a.a3)?,

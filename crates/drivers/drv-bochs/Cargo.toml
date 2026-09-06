@@ -17,6 +17,7 @@ fbcon = { path = "../fbcon" }
 pci = { path = "../pci" }
 pmm = { path = "../../kernel/mm-pmm" }
 sync = { path = "../../shared/sync" }
+klog = { path = "../../shared/klog" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 hal-x86_64 = { path = "../../arch/hal-x86_64" }

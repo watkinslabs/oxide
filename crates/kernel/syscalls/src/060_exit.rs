@@ -79,6 +79,8 @@ pub fn do_exit(status: i32) -> i64 {
             let task: &sched::Task = unsafe { &*raw };
             task.debug_check_canary("sys_exit_current");
             task.nt_exception.clear();
+            crate::nt_window::cleanup_thread_at_exit(task);
+            crate::nt_native_thread::cleanup_at_exit(task);
             sched::cpustat::exit_current(task);
             if task.thread_group.is_single_member() {
                 sched::timers::clear_process_timers(task);
@@ -271,6 +273,9 @@ pub fn do_exit(status: i32) -> i64 {
             sched::live::run_disassociate_ctty(task);
             sched::live::reparent_children(task.tid);
             sched::live::mark_done(task);
+            // finish_exit inside mark_done retires the canonical group member.
+            // Only the zero-live process state disconnects the shared transport.
+            if task.thread_group.live_count() == 0 { crate::nt_compositor::disconnect(&task.thread_group); }
             debug_sched! {
                 klog::write_raw(b"[INFO]  sys_exit: tid=");
                 klog::write_dec_u64(task.tid as u64);

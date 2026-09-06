@@ -21,7 +21,7 @@ use core::convert::TryInto;
 pub enum ElfError {
     Enoexec  = 8,   // wrong magic / wrong class / wrong endian / wrong arch
     Einval   = 22,  // malformed header / phdr table / wx-violation
-    Eopnotsupp = 95, // PT_TLS, etc. not yet handled
+    Eopnotsupp = 95, // runtime metadata or relocation requires another owner
 }
 
 pub type KResult<T> = core::result::Result<T, ElfError>;
@@ -101,6 +101,18 @@ pub struct LoadSegment {
     pub align:    u64,
 }
 
+/// One PT_TLS template. The bytes are copied into each native thread's TLS
+/// block by the dynamic-runtime owner; the ELF parser only validates its file
+/// and sizing contract.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct TlsSegment {
+    pub file_off: u64,
+    pub file_sz: u64,
+    pub vaddr: u64,
+    pub mem_sz: u64,
+    pub align: u64,
+}
+
 /// Parsed ELF view. The full file is borrowed by the parser; the
 /// caller drives `mmap` from these descriptors.
 #[derive(Debug)]
@@ -110,6 +122,8 @@ pub struct ParsedElf<'a> {
     pub machine:    u16,
     pub entry:      u64,
     pub loads:      Vec<LoadSegment>,
+    /// Native TLS template, when PT_TLS is present.
+    pub tls:        Option<TlsSegment>,
     /// Slice of the raw file holding the interp path (with the
     /// trailing NUL trimmed).
     pub interp:     Option<&'a [u8]>,
@@ -166,6 +180,7 @@ pub fn parse(file: &[u8], arch_machine: u16) -> KResult<ParsedElf<'_>> {
     let mut loads = Vec::with_capacity(phnum);
     let mut interp: Option<&[u8]> = None;
     let mut dynamic = None;
+    let mut tls = None;
 
     for i in 0..phnum {
         let base = phoff + i * phentsize;
@@ -216,8 +231,15 @@ pub fn parse(file: &[u8], arch_machine: u16) -> KResult<ParsedElf<'_>> {
                 }
             }
             x if x == PType::Tls as u32 => {
-                // TLS template handling lands with userspace TLS support;
-                // for v1 a TLS phdr is allowed but unused.
+                if p_filesz > p_memsz || p_offset.checked_add(p_filesz as usize).map_or(true, |e| e > file.len()) {
+                    return Err(ElfError::Einval);
+                }
+                if tls.replace(TlsSegment {
+                    file_off: p_offset as u64, file_sz: p_filesz, vaddr: p_vaddr,
+                    mem_sz: p_memsz, align: p_align,
+                }).is_some() {
+                    return Err(ElfError::Einval);
+                }
             }
             x if x == PType::Dynamic as u32 => {
                 let end = p_offset.checked_add(p_filesz as usize).ok_or(ElfError::Einval)?;
@@ -230,7 +252,7 @@ pub fn parse(file: &[u8], arch_machine: u16) -> KResult<ParsedElf<'_>> {
 
     Ok(ParsedElf {
         raw: file, elf_type, machine, entry, loads, interp,
-        phoff: phoff as u64, phentsize: phentsize as u16, phnum: phnum as u16, dynamic,
+        phoff: phoff as u64, phentsize: phentsize as u16, phnum: phnum as u16, dynamic, tls,
     })
 }
 

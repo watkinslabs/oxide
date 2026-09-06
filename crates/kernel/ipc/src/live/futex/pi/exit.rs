@@ -4,8 +4,12 @@ use crate::futex_pi_rules::{dead_owner_handoff_word, owner_died_word};
 
 use super::super::core::{cmpxchg_user_u32, load_user_u32};
 use super::lock::fault_in_writeable_word;
-use super::graph::{handoff, retire_state};
+use super::graph::{handoff, retire_state, TaskPiIrq};
 use super::state::{Grant, PI_TABLE, PiWaiter, find_id, grant, wake as wake_waiter};
+
+#[cfg(test)]
+#[path = "exit/tests/irq.rs"]
+mod irq_tests;
 
 /// Linux `exit_pi_state_list` — run for every dying thread, from BOTH exit
 /// paths, while its address space is still mapped.
@@ -27,7 +31,7 @@ use super::state::{Grant, PI_TABLE, PiWaiter, find_id, grant, wake as wake_waite
 /// # C: O(N_owned · (S + log N_waiters))
 pub fn exit_pi_state_list(dying: &sched::Task) {
     loop {
-        let Some(lock_id) = dying.pi_lock.lock().first_owned_lock() else { break };
+        let Some(lock_id) = dying.pi_lock.lock_irqsave::<TaskPiIrq>().first_owned_lock() else { break };
         let uaddr = {
             let tbl = PI_TABLE.lock();
             let i = find_id(&tbl, lock_id).expect("task PI tree names no futex state");

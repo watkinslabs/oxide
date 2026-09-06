@@ -6,11 +6,13 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use windows_runtime::RuntimeRequest;
+mod compositor;
 
 fn main() -> ExitCode {
     let mut args = env::args_os();
     args.next();
     match args.next() {
+        Some(flag) if flag == std::ffi::OsStr::new("--native-bootstrap") => native_bootstrap(),
         Some(flag) if flag == std::ffi::OsStr::new("--steam-launch") => {
             let Some(path) = args.next() else { usage(); return ExitCode::from(2); };
             if args.next().is_some() { usage(); return ExitCode::from(2); }
@@ -20,6 +22,67 @@ fn main() -> ExitCode {
         Some(flag) if flag == std::ffi::OsStr::new("--launch") => launch(&mut args),
         _ => { usage(); ExitCode::from(2) }
     }
+}
+
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+fn native_bootstrap() -> ExitCode {
+    let path = match env::var_os("OXIDE_WINE_UNIXLIB_PATH") {
+        Some(path) => PathBuf::from(path),
+        None => { eprintln!("windows-runtime bootstrap: missing OXIDE_WINE_UNIXLIB_PATH"); return ExitCode::from(1); }
+    };
+    let teb = match env::var("OXIDE_NT_TEB").ok().and_then(|value| parse_hex(&value)) {
+        Some(value) => value,
+        None => { eprintln!("windows-runtime bootstrap: missing OXIDE_NT_TEB"); return ExitCode::from(1); }
+    };
+    let peb = match env::var("OXIDE_NT_PEB").ok().and_then(|value| parse_hex(&value)) {
+        Some(value) => value,
+        None => { eprintln!("windows-runtime bootstrap: missing OXIDE_NT_PEB"); return ExitCode::from(1); }
+    };
+    if let Err(error) = windows_runtime::attach_native_thread(&path, teb, peb) {
+        eprintln!("windows-runtime bootstrap: native attachment failed: {error:?}");
+        return ExitCode::from(1);
+    }
+    if let Err(status) = windows_runtime::native_thread::install_factory(&path) {
+        eprintln!("windows-runtime bootstrap: native factory registration failed: {status:#x}");
+        return ExitCode::from(1);
+    }
+    if let Err(error) = windows_runtime::native_gdi::install() {
+        eprintln!("windows-runtime bootstrap: native text registration failed: {error}");
+        return ExitCode::from(1);
+    }
+    if let Err(error) = windows_runtime::load_and_register_unixlib(&path, b"win32u.so") {
+        eprintln!("windows-runtime bootstrap: native registration failed: {error:?}");
+        return ExitCode::from(1);
+    }
+    let entry = match env::var("OXIDE_PE_ENTRY").ok().and_then(|value| parse_hex(&value)) {
+        Some(value) => value,
+        None => { eprintln!("windows-runtime bootstrap: missing OXIDE_PE_ENTRY"); return ExitCode::from(1); }
+    };
+    let stack = match env::var("OXIDE_PE_STACK").ok().and_then(|value| parse_hex(&value)) {
+        Some(value) => value,
+        None => { eprintln!("windows-runtime bootstrap: missing OXIDE_PE_STACK"); return ExitCode::from(1); }
+    };
+    // SAFETY: the kernel supplied both values in the bootstrap environment;
+    // the registration syscall validated the native table before this jump.
+    unsafe {
+        #[cfg(target_arch = "x86_64")]
+        core::arch::asm!("mov rsp, {stack}; jmp {entry}", stack = in(reg) stack, entry = in(reg) entry, options(noreturn));
+        #[cfg(target_arch = "aarch64")]
+        core::arch::asm!("mov sp, x16", "mov x18, x15", "br x17",
+            in("x16") stack, in("x17") entry, in("x15") teb, options(noreturn));
+    }
+}
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+fn native_bootstrap() -> ExitCode {
+    eprintln!("windows-runtime bootstrap: unsupported architecture");
+    ExitCode::from(1)
+}
+
+fn parse_hex(value: &str) -> Option<u64> {
+    let value = value.strip_prefix("0x").or_else(|| value.strip_prefix("0X"))?;
+    if value.is_empty() { return None; }
+    u64::from_str_radix(value, 16).ok()
 }
 
 fn launch(args: &mut impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
@@ -38,6 +101,10 @@ fn launch(args: &mut impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
     };
     let selector = syscall::nt::NtService::ExecuteWithCatalog.entry();
     eprintln!("windows-runtime phase=handoff operation=execute_with_catalog outcome=attempt modules={} selector=0x{selector:016x}", request.module_count());
+    let _compositor = match compositor::start() {
+        Ok(session) => session,
+        Err(error) => { eprintln!("windows-runtime: compositor startup failed: {error}"); return ExitCode::from(1); }
+    };
     match request.execute() {
         Ok(status) => { println!("windows-runtime phase=commit operation=execute_with_catalog outcome=committed ntstatus=0x{status:08x}"); ExitCode::SUCCESS }
         Err(windows_runtime::ExecuteError::KernelUnavailable { selector, errno }) => {

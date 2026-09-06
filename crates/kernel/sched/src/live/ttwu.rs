@@ -8,7 +8,7 @@
 use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
 
-use crate::sched_enc::wakeup::{cand_of, wakeup_preempt};
+use preempt::{prepare_wake, wake_preempts};
 use crate::task::PendingWake;
 use crate::live::runqueue::{RqIrq, Runqueue};
 use crate::Task;
@@ -18,6 +18,7 @@ use super::runqueue::global_for;
 
 mod wake_list;
 mod cpu_target;
+mod preempt;
 pub(crate) mod affinity;
 pub use wake_list::wake_list_debug;
 
@@ -111,23 +112,17 @@ pub fn sched_ttwu_pending(cpu: u32, current: *mut Task, rq: &Runqueue) -> bool {
                 retry = Some(Arc::clone(&task));
             }
             PendingWake::Ready => {
-                // SAFETY: `current` is this CPU's running task, kept alive by
-                // the runqueue's strong reference for this locked decision.
-                let raw = rq.current.load(Ordering::Acquire);
-                // SAFETY: `raw` is the runqueue's current-task pointer read under the held rq
-                // lock, and the runqueue holds a strong reference to whatever it names, so the
-                // borrow cannot outlive the task or race a swap of `rq.current`.
-                let curr = if raw.is_null() { None } else { Some(cand_of(unsafe { &*raw })) };
                 #[cfg(feature = "debug-watchdog")]
                 task.wake_diag_mark(WakeDiagPhase::Activating, wake_diag_now_ns());
-                task.lift_vruntime(inner.cfs.min_vruntime_for(&task));
-                let outranks = curr.is_none_or(|c| wakeup_preempt(cand_of(&task), c));
+                prepare_wake(rq, &mut inner, &task,
+                    crate::deadline::clock::now_ns());
                 rq.account_wake(&task);
                 #[cfg(target_os = "oxide-kernel")]
                 let wake_util = task.update_util(crate::deadline::clock::now_ns(), false);
                 #[cfg(target_os = "oxide-kernel")]
                 let wake_iowait = task.take_iowait();
                 let inserted = inner.enqueue(Arc::clone(&task));
+                let outranks = inserted && wake_preempts(rq, &inner, &task);
                 #[cfg(target_os = "oxide-kernel")]
                 crate::cpufreq_hook::update_from_scheduler(
                     cpu as usize, wake_util, wake_iowait, crate::deadline::clock::now_ns());
@@ -285,6 +280,14 @@ fn place_runnable_locked_with_active<'a, F, A, P>(get_rq: &F, me: u32,
     task: Arc<Task>, force_defer: bool, active: &A, probe: &mut P)
 where F: Fn(u32) -> Option<&'a Runqueue>, A: Fn(u32) -> bool,
       P: FnMut(PlacementPoint, u32) {
+    place_runnable_locked_with_clock(get_rq, me, task, force_defer, active,
+        probe, crate::deadline::clock::now_ns);
+}
+
+fn place_runnable_locked_with_clock<'a, F, A, P, C>(get_rq: &F, me: u32,
+    task: Arc<Task>, force_defer: bool, active: &A, probe: &mut P, clock: C)
+where F: Fn(u32) -> Option<&'a Runqueue>, A: Fn(u32) -> bool,
+      P: FnMut(PlacementPoint, u32), C: FnOnce() -> u64 {
     // CPU-down clears ACTIVE and then waits for this read-side section before
     // evacuation. Therefore a target sampled active below remains a legal
     // destination until either its rq-locked enqueue or wake-list publication
@@ -336,10 +339,6 @@ where F: Fn(u32) -> Option<&'a Runqueue>, A: Fn(u32) -> bool,
     // `on_cpu` until we enqueue; the `on_cpu == false` check above therefore
     // can't race a fresh switch-on.
     if let Some(rq) = get_rq(target) {
-        let curr = rq.current.load(Ordering::Acquire);
-        // SAFETY: `current` is non-null after `Runqueue::new`; the runqueue holds
-        // the strong reference, so this snapshot read is sound.
-        let curr = if curr.is_null() { None } else { Some(cand_of(unsafe { &*curr })) };
         let preempt;
         let inserted;
         {
@@ -348,14 +347,12 @@ where F: Fn(u32) -> Option<&'a Runqueue>, A: Fn(u32) -> bool,
             // TaskPi + destination rq publish ownership before class-tree
             // visibility, matching deferred publication and migration.
             task.cpu.store(target as u16, Ordering::Release);
-            // Sleeper credit on wake (F211).
-            task.lift_vruntime(inner.cfs.min_vruntime_for(&task));
             // Linux `ttwu_do_activate` -> `wakeup_preempt`: the wake only takes
             // the CPU away from the running task when the class/policy/priority
             // comparison says it should. Resching unconditionally here made
             // SCHED_FIFO lose the CPU to an equal-priority peer and let a
             // SCHED_BATCH / SCHED_IDLE wakee preempt a SCHED_NORMAL task.
-            preempt = curr.is_none_or(|c| wakeup_preempt(cand_of(&task), c));
+            prepare_wake(rq, &mut inner, &task, clock());
             #[cfg(feature = "debug-watchdog")]
             task.wake_diag_mark(WakeDiagPhase::Activating, wake_diag_now_ns());
             rq.account_wake(&task);
@@ -363,7 +360,8 @@ where F: Fn(u32) -> Option<&'a Runqueue>, A: Fn(u32) -> bool,
             let wake_util = task.update_util(crate::deadline::clock::now_ns(), false);
             #[cfg(target_os = "oxide-kernel")]
             let wake_iowait = task.take_iowait();
-            inserted = inner.enqueue(task);
+            inserted = inner.enqueue(Arc::clone(&task));
+            preempt = inserted && wake_preempts(rq, &inner, &task);
             #[cfg(target_os = "oxide-kernel")]
             crate::cpufreq_hook::update_from_scheduler(
                 target as usize, wake_util, wake_iowait, crate::deadline::clock::now_ns());

@@ -1,5 +1,8 @@
 //! Native RTL string operations used by the Windows personality.
 #![cfg(target_os = "oxide-kernel")]
+#[path = "nt_rtl/wndproc_payload.rs"]
+mod wndproc_payload;
+pub(crate) use wndproc_payload::begin as begin_wndproc_payload_callback;
 use syscall::{nt::{NtCall, NtService}, SyscallArgs}; use alloc::{string::String, vec, vec::Vec}; use sync::{Modules as ModulesLockClass, Spinlock};
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d; const STATUS_BUFFER_OVERFLOW: u64 = 0x8000_0005; const STATUS_INVALID_PARAMETER_2: u64 = 0xc000_00f0; const STATUS_ACCESS_VIOLATION: u64 = 0xc000_0005;
 const STATUS_PENDING: u64 = 0x0000_0103; const STATUS_UNSUCCESSFUL: u64 = 0xc000_0001;
@@ -57,17 +60,10 @@ const CONTEXT_EX_BYTES: u64 = 0x20;
 const XSTATE_LEGACY_BYTES: u64 = 512;
 #[cfg(target_arch = "x86_64")]
 const XSTATE_HEADER_BYTES: u64 = 64;
-const NTUSER_CLIENT_PROCS_BYTES: u64 = 18 * 8;
-const NTUSER_WORKERS_BYTES: u64 = 11 * 8;
+use crate::nt_wine_window::pfn::{self, CLIENT_PROCS_BYTES as NTUSER_CLIENT_PROCS_BYTES, WORKERS_BYTES as NTUSER_WORKERS_BYTES};
 
 pub(crate) fn validate_nt_user_pfn_table(base: u64, bytes: u64) -> bool {
-    if bytes == 0 { return true; }
-    let entries = bytes / 8;
-    for index in 0..entries {
-        let Some(address) = base.checked_add(index * 8) else { return false; };
-        if uaccess::get_user_u64(address).is_err() { return false; }
-    }
-    true
+    pfn::validate_table(base, bytes, |address| uaccess::get_user_u64(address).is_ok())
 }
 
 pub(crate) fn validate_nt_user_pfn_tables(a: u64, w: u64, workers: u64) -> bool {
@@ -120,10 +116,25 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if let Some(result) = crate::nt_rtl_xstate::dispatch(call) { return Some(result); }
     if call.service == NtService::RtlGetExePath { return Some(get_exe_path(call.args.a0, call.args.a1)); }
     if call.service == NtService::RtlInitializeNtUserPfn {
+        let Some([a0, a1, a2, a3, a4, a5]) = pfn::initialize_args([
+            call.args.a0, call.args.a1, call.args.a2, call.args.a3, call.args.a4, call.args.a5,
+        ]) else { return Some(STATUS_INVALID_PARAMETER); };
+        let call = NtCall { service: call.service, args: SyscallArgs { a0, a1, a2, a3, a4, a5 } };
         let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
-        if !cur.is_nt_personality() || call.args.a1 > NTUSER_CLIENT_PROCS_BYTES
-            || call.args.a3 > NTUSER_CLIENT_PROCS_BYTES || call.args.a5 > NTUSER_WORKERS_BYTES
-            || call.args.a1 % 8 != 0 || call.args.a3 % 8 != 0 || call.args.a5 % 8 != 0 {
+        klog::write_raw(b"[WINDOWS-USER32-INIT] rtl-pfn a=");
+        klog::write_hex_u64(call.args.a1);
+        klog::write_raw(b" w=");
+        klog::write_hex_u64(call.args.a3);
+        klog::write_raw(b" workers=");
+        klog::write_hex_u64(call.args.a5);
+        klog::write_raw(b" ptrs=");
+        klog::write_hex_u64(call.args.a0);
+        klog::write_raw(b",");
+        klog::write_hex_u64(call.args.a2);
+        klog::write_raw(b",");
+        klog::write_hex_u64(call.args.a4);
+        klog::write_raw(b"\n");
+        if !cur.is_nt_personality() {
             return Some(STATUS_INVALID_PARAMETER);
         }
         if (call.args.a1 != 0 && call.args.a0 == 0) || (call.args.a3 != 0 && call.args.a2 == 0)
@@ -136,6 +147,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         let mut state = cur.thread_group.nt_user_pfn.lock();
         if state.is_some() { return Some(STATUS_INVALID_PARAMETER); }
         *state = Some([call.args.a0, call.args.a1, call.args.a2, call.args.a3, call.args.a4, call.args.a5]);
+        klog::write_raw(b"[WINDOWS-USER32-INIT] rtl-pfn-published\n");
         return Some(STATUS_SUCCESS);
     }
     if call.service == NtService::RtlRetrieveNtUserPfn {
@@ -144,6 +156,19 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
             return Some(STATUS_INVALID_PARAMETER);
         }
         let Some(state) = *cur.thread_group.nt_user_pfn.lock() else { return Some(STATUS_INVALID_PARAMETER); };
+        klog::write_raw(b"[WINDOWS-USER32-INIT] retrieve out=");
+        klog::write_hex_u64(call.args.a0);
+        klog::write_raw(b",");
+        klog::write_hex_u64(call.args.a1);
+        klog::write_raw(b",");
+        klog::write_hex_u64(call.args.a2);
+        klog::write_raw(b" state=");
+        klog::write_hex_u64(state[0]);
+        klog::write_raw(b",");
+        klog::write_hex_u64(state[2]);
+        klog::write_raw(b",");
+        klog::write_hex_u64(state[4]);
+        klog::write_raw(b"\n");
         if uaccess::put_user_u64(call.args.a0, state[0]).is_err()
             || uaccess::put_user_u64(call.args.a1, state[2]).is_err()
             || uaccess::put_user_u64(call.args.a2, state[4]).is_err() {
@@ -660,11 +685,48 @@ pub(crate) fn begin_wndproc_callback_with_completion(hwnd: u64, message: u64, wp
     STATUS_PENDING
 }
 
+/// Begin a WndProc create callback with an ABI-shaped CREATESTRUCTW in the
+/// callback's user stack frame. That frame remains owned by the callback stack
+/// while WM_NCCREATE and WM_CREATE are chained synchronously.
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn begin_wndproc_create_callback(hwnd: u64, message: u64, wndproc: u64, params: crate::nt_window::CreateStructArgs, completion: sched::nt_callback::Completion) -> u64 {
+    if hwnd == 0 || wndproc == 0 || !uaccess::access_ok(wndproc, 1) { return STATUS_INVALID_PARAMETER; }
+    let Some(task) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !task.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    let ntdll = crate::nt_loader_proc::module_base_by_name(task, b"ntdll.dll").unwrap_or(0);
+    let Some(continuation) = elf_load::pe_loader::resolve_nt_runtime_wndproc_continuation(ntdll) else { return STATUS_INVALID_PARAMETER; };
+    let regs = hal_x86_64::current_pt_regs();
+    if regs.is_null() { return STATUS_INVALID_PARAMETER; }
+    let frame = unsafe { &mut *regs };
+    let callback_rsp = frame.rsp.checked_sub(crate::nt_window::CALLBACK_FRAME_BYTES).unwrap_or(0);
+    let Some(layout) = crate::nt_window::callback_layout(callback_rsp) else { return STATUS_INVALID_PARAMETER; };
+    let create_struct = layout.create_struct;
+    let create_bytes = crate::nt_window::serialize_create_struct(params);
+    for slot in 0..4u64 { if uaccess::put_user_u64(callback_rsp + 8 + slot * 8, 0).is_err() { return STATUS_INVALID_PARAMETER; } }
+    if uaccess::put_user_u64(callback_rsp, continuation).is_err()
+        || uaccess::copy_to_user(create_struct, &create_bytes).is_err() {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let post_rip = frame.rip;
+    let post_rsp = frame.rsp;
+    if !task.nt_callback_stack.lock().push(sched::nt_callback::Frame { rip: post_rip, rsp: post_rsp, completion }) { return STATUS_INVALID_PARAMETER; }
+    frame.rip = wndproc;
+    frame.rsp = callback_rsp;
+    frame.rcx = hwnd;
+    frame.rdx = message;
+    frame.r8 = 0;
+    frame.r9 = create_struct;
+    STATUS_PENDING
+}
+
 #[cfg(target_arch = "aarch64")]
 pub(crate) fn begin_wndproc_callback(_: u64, _: u64, _: u64, _: u64, _: u64) -> u64 { STATUS_NOT_SUPPORTED }
 
 #[cfg(target_arch = "aarch64")]
 pub(crate) fn begin_wndproc_callback_with_completion(_: u64, _: u64, _: u64, _: u64, _: u64, _: sched::nt_callback::Completion) -> u64 { STATUS_NOT_SUPPORTED }
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn begin_wndproc_create_callback(_: u64, _: u64, _: u64, _: crate::nt_window::CreateStructArgs, _: sched::nt_callback::Completion) -> u64 { STATUS_NOT_SUPPORTED }
 
 /// Complete a synchronous callback and restore the syscall frame that
 /// initiated it. Wine passes a pointer to one eight-byte LRESULT.
@@ -681,7 +743,7 @@ pub(crate) fn callback_return(call: NtCall) -> u64 {
         frame.rip = saved.rip;
         frame.rsp = saved.rsp;
         frame.rax = result;
-        if saved.completion.kind != 0 { return crate::nt_window::complete_callback(saved.completion); }
+        if saved.completion.kind != 0 { return crate::nt_window::complete_callback(saved.completion, result); }
         result
     }
     #[cfg(target_arch = "aarch64")]

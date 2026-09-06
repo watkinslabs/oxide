@@ -10,6 +10,35 @@ const PELT_PERIOD_NS: u64 = 1_024_000;
 // gives that same half-life without floating point or a tick dependency.
 const DECAY_NUM: u64 = 978;
 const DECAY_DEN: u64 = 1000;
+const FP_SHIFT: u32 = 32;
+const FP_ONE: u64 = 1 << FP_SHIFT;
+const DECAY_FP: u64 = (DECAY_NUM << FP_SHIFT) / DECAY_DEN;
+const RUNNING_CONTRIB: u64 = UTIL_SCALE * (DECAY_DEN - DECAY_NUM) / DECAY_DEN;
+// Solve v = v * decay + contribution in the same units as the old recurrence.
+const RUNNING_STEADY: u64 = RUNNING_CONTRIB * DECAY_DEN / (DECAY_DEN - DECAY_NUM);
+
+fn decay_factor(mut periods: u64) -> u64 {
+    let mut result = FP_ONE;
+    let mut base = DECAY_FP;
+    while periods != 0 {
+        if periods & 1 != 0 { result = ((result as u128 * base as u128) >> FP_SHIFT) as u64; }
+        periods >>= 1;
+        if periods != 0 { base = ((base as u128 * base as u128) >> FP_SHIFT) as u64; }
+    }
+    result
+}
+
+fn decay_periods(value: u64, periods: u64, running: bool) -> u64 {
+    if periods == 0 { return value; }
+    let factor = decay_factor(periods);
+    let residual = ((value as u128 * factor as u128) >> FP_SHIFT) as u64;
+    if !running { return residual; }
+    if value <= RUNNING_STEADY {
+        RUNNING_STEADY.saturating_sub(((RUNNING_STEADY - value) as u128 * factor as u128 >> FP_SHIFT) as u64)
+    } else {
+        RUNNING_STEADY.saturating_add(((value - RUNNING_STEADY) as u128 * factor as u128 >> FP_SHIFT) as u64)
+    }
+}
 
 #[inline]
 fn update_value(mut value: u64, delta_ns: u64, running: bool) -> u32 {
@@ -17,10 +46,7 @@ fn update_value(mut value: u64, delta_ns: u64, running: bool) -> u32 {
     let remainder = delta_ns % PELT_PERIOD_NS;
     // A task that slept for a long time has no useful residual signal. The
     // bound also keeps a corrupted clock delta from becoming unbounded work.
-    for _ in 0..periods.min(128) {
-        value = value * DECAY_NUM / DECAY_DEN;
-        if running { value += UTIL_SCALE * (DECAY_DEN - DECAY_NUM) / DECAY_DEN; }
-    }
+    value = decay_periods(value, periods.min(128), running);
     if remainder != 0 {
         let decay = DECAY_DEN.saturating_sub(
             (DECAY_DEN - DECAY_NUM) * remainder / PELT_PERIOD_NS);
@@ -59,18 +85,5 @@ impl Task {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{update_value, UTIL_SCALE, PELT_PERIOD_NS};
-
-    #[test]
-    fn short_running_burst_is_visible_before_a_tick() {
-        let value = update_value(0, PELT_PERIOD_NS / 2, true);
-        assert!(value > 0 && value < UTIL_SCALE as u32);
-    }
-
-    #[test]
-    fn idle_signal_decays() {
-        let value = update_value(UTIL_SCALE, PELT_PERIOD_NS * 32, false);
-        assert!(value < 600);
-    }
-}
+#[path = "tests/util.rs"]
+mod tests;

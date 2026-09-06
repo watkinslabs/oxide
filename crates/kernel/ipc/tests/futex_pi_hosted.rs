@@ -18,6 +18,9 @@ extern crate self as hal;
 extern crate self as hal_x86_64;
 extern crate self as sched;
 
+#[path = "futex_pi/irq_probe.rs"] mod irq_probe;
+pub use irq_probe::TestIrq as X86IrqGate;
+
 // Production PI source resolves this harness-owned race-injecting uaccess shim.
 #[path = "futex_pi/useraccess.rs"] pub mod useraccess;
 

@@ -1,9 +1,9 @@
 //! Transactional publication of one dynamically mapped PE in the PEB lists.
 
-use alloc::vec::Vec;
-#[cfg(any(target_os = "oxide-kernel", test))]
-use alloc::vec;
-use super::{Error, NtModuleInput, API_SET_OFF, BLOCK_BYTES, LDR_OFF, MAX_MODULES, MOD_OFF, MOD_STRIDE, STR_OFF};
+use alloc::{vec, vec::Vec};
+use pe::Error;
+use super::NtModuleInput;
+use super::layout::{BLOCK_BYTES, LDR_OFF, MAX_MODULES, MOD_OFF, MOD_STRIDE, STR_OFF, ENV_OFF, WCHAR_BYTES};
 
 const LISTS: [(usize, usize); 3] = [(0x10, 0), (0x20, 0x10), (0x30, 0x20)];
 const FULL_NAME_OFF: usize = 0x48;
@@ -23,18 +23,31 @@ pub fn publish_module(peb: u64, module: &NtModuleInput<'_>) -> Result<(), Error>
 /// # C: O(BLOCK_BYTES + N_modules * MAX_MODULES)
 #[cfg(target_os = "oxide-kernel")]
 pub fn publish_modules(peb: u64, modules: &[NtModuleInput<'_>]) -> Result<(), Error> {
+    publish_using(peb, modules,
+        |address, bytes| uaccess::copy_from_user(bytes, address).map_err(|_| Error::Einval),
+        |address, bytes| uaccess::copy_to_user(address, bytes).map_err(|_| Error::Einval))
+}
+
+/// Read and commit only catalog-owned bytes; caller serializes catalog writers.
+/// # C: O(BLOCK_BYTES + N_modules * MAX_MODULES)
+pub(super) fn publish_using(peb: u64, modules: &[NtModuleInput<'_>],
+    mut read: impl FnMut(u64, &mut [u8]) -> Result<(), Error>,
+    mut write: impl FnMut(u64, &[u8]) -> Result<(), Error>) -> Result<(), Error> {
     if peb == 0 || modules.is_empty() { return Err(Error::Einval); }
     if modules.iter().any(|module| module.base == 0 || module.full_name.is_empty() || module.base_name.is_empty()) { return Err(Error::Einval); }
+    let catalog = peb.checked_add(LDR_OFF as u64).ok_or(Error::Einval)?;
+    peb.checked_add(BLOCK_BYTES as u64).ok_or(Error::Einval)?;
     let mut block = vec![0u8; BLOCK_BYTES];
-    uaccess::copy_from_user(&mut block, peb).map_err(|_| Error::Einval)?;
+    read(catalog, &mut block[LDR_OFF..ENV_OFF])?;
     for module in modules { plan(&mut block, peb, module)?; }
-    uaccess::copy_to_user(peb, &block).map_err(|_| Error::Einval)
+    write(catalog, &block[LDR_OFF..ENV_OFF])
 }
 
 /// Apply one validated module publication to an in-memory PEB block.
 /// # C: O(BLOCK_BYTES + MAX_MODULES)
 pub fn plan(mut block: &mut [u8], base: u64, module: &NtModuleInput<'_>) -> Result<(), Error> {
     if block.len() != BLOCK_BYTES || base == 0 || module.base == 0 || module.full_name.is_empty() || module.base_name.is_empty() { return Err(Error::Einval); }
+    base.checked_add(BLOCK_BYTES as u64).ok_or(Error::Einval)?;
     let (order, mut topology) = read_order(&block, base, 0)?;
     if order.len() >= MAX_MODULES { return Err(Error::Einval); }
     for (list, _) in LISTS.iter().enumerate() {
@@ -47,9 +60,9 @@ pub fn plan(mut block: &mut [u8], base: u64, module: &NtModuleInput<'_>) -> Resu
     let name = utf16(module.base_name)?;
     let cursor = string_cursor(&block, base, &order)?;
     let full_at = cursor;
-    let base_at = full_at.checked_add(full.len()).ok_or(Error::Einval)?;
-    let end = base_at.checked_add(name.len()).ok_or(Error::Einval)?;
-    if end > API_SET_OFF { return Err(Error::Einval); }
+    let base_at = full_at.checked_add(full.len().checked_mul(WCHAR_BYTES).ok_or(Error::Einval)?).ok_or(Error::Einval)?;
+    let end = base_at.checked_add(name.len().checked_mul(WCHAR_BYTES).ok_or(Error::Einval)?).ok_or(Error::Einval)?;
+    if end > ENV_OFF { return Err(Error::Einval); }
     put_u64(&mut block, MOD_OFF + slot * MOD_STRIDE + MODULE_BASE_OFF, module.base);
     put_u64(&mut block, MOD_OFF + slot * MOD_STRIDE + MODULE_ENTRY_OFF, module.entry);
     put_u32(&mut block, MOD_OFF + slot * MOD_STRIDE + MODULE_SIZE_OFF, module.size);
@@ -102,7 +115,7 @@ fn string_cursor(block: &[u8], base: u64, order: &[usize]) -> Result<usize, Erro
             let start = pointer.checked_sub(base).ok_or(Error::Einval)? as usize;
             let capacity = u16::from_le_bytes(block[descriptor + 2..descriptor + 4].try_into().map_err(|_| Error::Einval)?) as usize;
             let end = start.checked_add(capacity).ok_or(Error::Einval)?;
-            if start < STR_OFF || end > API_SET_OFF { return Err(Error::Einval); }
+            if start < STR_OFF || end > ENV_OFF || start % WCHAR_BYTES != 0 || capacity % WCHAR_BYTES != 0 || capacity < WCHAR_BYTES { return Err(Error::Einval); }
             cursor = cursor.max(end);
         }
     }

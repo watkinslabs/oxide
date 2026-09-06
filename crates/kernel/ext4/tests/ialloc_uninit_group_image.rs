@@ -203,48 +203,8 @@ fn batched_allocation_crossing_into_an_uninit_group_stays_consistent() {
     let _ = std::fs::remove_file(&path);
     assert!(ok, "after a batched crossing the image is inconsistent:\n{log}");
 }
-
-/// Several contexts allocating at once is what the boot does: udev workers,
-/// tmpfiles and the manager all create under `/var` together. The crossing
-/// must stay consistent when more than one of them is inside it.
-#[test]
-fn concurrent_allocation_crossing_into_an_uninit_group_stays_consistent() {
-    let Some(path) = build_image("concurrent") else { return };
-    {
-        let m = Arc::new(open_rw(&path));
-        m.begin_batch();
-        let ipg = m.sb.inodes_per_group;
-        let mut handles = std::vec::Vec::new();
-        for t in 0..4u32 {
-            let m = m.clone();
-            handles.push(std::thread::spawn(move || {
-                let dir = m.create_dir(2, std::format!("t{t}").as_bytes(), 0o755, 0, 0)
-                    .expect("scratch dir");
-                let mut mine = std::vec::Vec::new();
-                for i in 0..(ipg / 2) {
-                    let name = std::format!("f{i:05}");
-                    match m.create_file(dir, name.as_bytes(), 0o644, 0, 0) {
-                        Ok(ino) => mine.push((ino, name)),
-                        Err(ext4::MountError::NoSpace) => break,
-                        Err(e) => panic!("thread {t} create #{i}: {e:?}"),
-                    }
-                }
-                for (ino, name) in &mine {
-                    let raw = m.read_inode(*ino)
-                        .unwrap_or_else(|e| panic!("thread {t} read_inode({ino}) {name}: {e:?}"));
-                    assert!(raw.is_reg(), "thread {t}: inode {ino} ({name}) is not a regular file");
-                }
-                mine.len()
-            }));
-        }
-        let total: usize = handles.into_iter().map(|h| h.join().expect("thread")).sum();
-        eprintln!("concurrent created={total}");
-        m.commit_batch().expect("commit batch");
-    }
-    let (ok, log) = fsck(&path);
-    let _ = std::fs::remove_file(&path);
-    assert!(ok, "after a concurrent crossing the image is inconsistent:\n{log}");
-}
+#[path = "ialloc_uninit_group_image/concurrent.rs"]
+mod concurrent;
 
 /// The boot image itself: it ships with only a handful of free inodes below
 /// its first lazily initialised group, which is the state the synthetic

@@ -36,7 +36,7 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `21-hal-aarch64.md` | FROZEN | 2026-05-02 | `01`,`02`,`06`,`07`,`14`,`22`,`23`,`38` |
 | `22-irq-and-exceptions.md` | FROZEN | 2026-05-02 | `01`,`02`,`06`,`07`,`14`,`20`,`21` |
 | `23-time.md` | FROZEN | 2026-05-02 | `01`,`02`,`06`,`07`,`14`,`20`,`21`,`22` |
-| `24-ipc.md` | FROZEN REVIEW | 2026-05-02 | `01`,`02`,`06`,`12`,`13`,`16`,`23` |
+| `24-ipc.md` | FROZEN REVIEW | 2026-09-06 | `01`,`02`,`06`,`12`,`13`,`16`,`23` |
 | `25-net.md` | FROZEN REVIEW | 2026-05-02 | `01`,`02`,`06`,`12`,`13`,`16`,`24`,`33`,`34` |
 | `25a-conntrack-nat-vlan-bonding.md` | FROZEN REVIEW | 2026-08-16 | `01`,`02`,`06`,`25`,`26`,`52` |
 | `26-namespaces-cgroups.md` | FROZEN | 2026-09-03 | `01`,`02`,`03`,`06`,`13`,`13a`,`15`,`16`,`19`,`25` |
@@ -50,7 +50,7 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `31b-windows-process-environment.md` | FROZEN | 2026-08-31 | `01`,`02`,`06`,`11`,`14`,`31a`,`52` |
 | `31c-nt-memory.md` | FROZEN | 2026-08-31 | `01`,`02`,`06`,`11`,`31a`,`31b`,`53` |
 | `31d-nt-syscall-abi.md` | FROZEN | 2026-08-31 | `01`,`02`,`15`,`31c`,`53` |
-| `31e-windows-pe-exec.md` | FROZEN REVIEW | 2026-08-31 | `01`,`02`,`11`,`13`,`14`,`31a`,`31b`,`31c`,`31d`,`52`,`53` |
+| `31e-windows-pe-exec.md` | FROZEN REVIEW | 2026-09-06 | `01`,`02`,`11`,`13`,`14`,`31a`,`31b`,`31c`,`31d`,`52`,`53` |
 | `31f-windows-nt-objects.md` | FROZEN REVIEW | 2026-08-31 | `01`,`02`,`06`,`13`,`31d`,`52`,`53` |
 | `31g-windows-nt-synchronization.md` | FROZEN REVIEW | 2026-08-31 | `01`,`02`,`06`,`13`,`31f`,`52`,`53` |
 | `31h-windows-ntdll-runtime.md` | FROZEN | 2026-08-31 | `01`,`02`,`31a`,`31b`,`31d`,`31e`,`52`,`53` |
@@ -59,7 +59,7 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `31k-windows-nt-process-query.md` | FROZEN REVIEW | 2026-08-31 | `01`,`02`,`13`,`31b`,`31d`,`31f`,`31h`,`52`,`53` |
 | `31l-windows-nt-thread-create.md` | FROZEN REVIEW | 2026-08-31 | `01`,`02`,`06`,`13`,`31b`,`31d`,`31f`,`31g`,`31k`,`52`,`53` |
 | `31m-windows-nt-thread-lifecycle.md` | FROZEN REVIEW | 2026-08-31 | `01`,`02`,`06`,`13`,`31b`,`31d`,`31f`,`31l`,`52`,`53` |
-| `31n-windows-thread-environment.md` | FROZEN REVIEW | 2026-08-31 | `01`,`02`,`06`,`13`,`31b`,`31l`,`31m`,`52`,`53` |
+| `31n-windows-thread-environment.md` | FROZEN REVIEW | 2026-09-06 | `01`,`02`,`06`,`13`,`31b`,`31l`,`31m`,`52`,`53` |
 | `31o-windows-thread-handle-targets.md` | FROZEN REVIEW | 2026-08-31 | `01`,`02`,`06`,`13`,`31f`,`31k`,`31m`,`52`,`53` |
 | `31p-windows-runtime-module-catalog.md` | FROZEN | 2026-08-31 | `01`,`02`,`31a`,`31h`,`52`,`53` |
 | `31q-windows-pe-forwarders.md` | FROZEN | 2026-08-31 | `01`,`02`,`31a`,`31h`,`31p`,`52`,`53` |
@@ -97,6 +97,9 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `31ga-windows-nt-ldr-get-dll-path.md` | FROZEN | 2026-09-04 | `01`,`02`,`31h`,`31ax`,`52`,`53` |
 | `31gb-windows-winsock-events.md` | FROZEN | 2026-09-04 | `01`,`02`,`25`,`31d`,`31f`,`31g`,`52`,`53` |
 | `31gc-windows-winsock-overlapped.md` | FROZEN | 2026-09-04 | `01`,`02`,`25`,`31aa`,`31gb`,`52`,`53` |
+| `31gd-windows-compositor-bridge.md` | FROZEN | 2026-09-06 | `25`,`31ab`,`31fj`,`31fk`,`31fl`,`52`,`53` |
+| `31ge-windows-native-text-callback.md` | FROZEN | 2026-09-06 | `31fk`,`31n`,`31l`,`52`,`53`,`54` |
+| `31gf-windows-gdi-client-state.md` | FROZEN | 2026-09-06 | `31fk`,`31fj`,`31n`,`52`,`53` |
 | `31ay-windows-nt-add-atom.md` | FROZEN | 2026-08-31 | `01`,`02`,`31h`,`52`,`53` |
 | `31az-windows-nt-assign-process-job.md` | FROZEN | 2026-08-31 | `01`,`02`,`31h`,`52`,`53` |
 | `31ba-windows-nt-create-job.md` | FROZEN | 2026-08-31 | `01`,`02`,`31h`,`52`,`53` |
@@ -177,7 +180,7 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `31co-windows-nt-io-completion-callback.md` | FROZEN REVIEW | 2026-08-31 | `01`,`02`,`06`,`13`,`31d`,`31f`,`31g`,`31h`,`31aa`,`31cn`,`52`,`53` |
 | `31cp-windows-nt-threadpool-waits.md` | FROZEN | 2026-09-04 | `01`,`02`,`06`,`13`,`31g`,`31h`,`31co`,`52`,`53` |
 | `31ab-windows-runtime-launcher.md` | FROZEN | 2026-08-31 | `01`,`02`,`29a`,`31a`,`31h`,`31p`,`31y`,`52`,`53` |
-| `31ac-windows-registry-service.md` | FROZEN | 2026-08-31 | `01`,`03`,`29a`,`31ab`,`52`,`53` |
+| `31ac-windows-registry-service.md` | FROZEN | 2026-09-06 | `01`,`03`,`29a`,`31ab`,`52`,`53` |
 | `32-power-reset.md` | FROZEN | 2026-08-15 | `01`,`02`,`15`,`20`,`21`,`33` |
 | `32a-suspend-resume.md` | FROZEN REVIEW | 2026-08-15 | `01`,`02`,`06`,`13`,`15`,`20`,`21`,`23`,`32`,`33`,`35`,`54` |
 | `32b-hibernation.md` | FROZEN REVIEW | 2026-08-21 | `01`,`02`,`06`,`10`,`13`,`15`,`16`,`17`,`20`,`21`,`23`,`29`,`32`,`32a`,`35`,`36`,`52`,`54` |
@@ -256,8 +259,8 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `31fh-windows-nt-apiset-query.md` | FROZEN | 2026-09-01 | `01`,`02`,`31fg`,`52`,`53` |
 | `31fi-windows-nt-volume-information.md` | FROZEN | 2026-09-01 | `01`,`02`,`16`,`31h`,`52`,`53` |
 | `31fj-windows-user32-adapter.md` | FROZEN | 2026-09-01 | `01`,`02`,`29a`,`31h`,`31fi`,`52`,`53` |
-| `31fk-windows-gdi-text.md` | FROZEN | 2026-09-01 | `01`,`02`,`29a`,`31h`,`31fj`,`52`,`53` |
-| `31fl-windows-user32-window-state.md` | FROZEN | 2026-09-01 | `01`,`02`,`29a`,`31h`,`31fj`,`52`,`53` |
+| `31fk-windows-gdi-text.md` | FROZEN | 2026-09-06 | `01`,`02`,`29a`,`31h`,`31fj`,`52`,`53` |
+| `31fl-windows-user32-window-state.md` | FROZEN | 2026-09-06 | `01`,`02`,`29a`,`31h`,`31fj`,`52`,`53` |
 | `31fm-windows-user32-paint-invalidation.md` | FROZEN | 2026-09-01 | `01`,`02`,`29a`,`31h`,`31fl`,`52`,`53` |
 | `31fn-windows-native-input-routing.md` | FROZEN | 2026-09-01 | `28`,`31t`,`31u`,`31fl`,`52`,`53` |
 | `31fo-windows-nt-relay-target.md` | FROZEN | 2026-09-02 | `01`,`02`,`31h`,`31q`,`52`,`53` |

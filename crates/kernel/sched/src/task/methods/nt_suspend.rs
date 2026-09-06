@@ -36,6 +36,13 @@ impl Task {
         self.nt_suspend_count.load(Ordering::Acquire) != 0
     }
 
+    /// Claim the single activation of an off-runqueue NT child. # C: O(1)
+    pub fn claim_nt_initial_wake(&self) -> bool {
+        if self.nt_creation_pending.load(Ordering::Acquire) || self.nt_suspend_requested()
+            || self.on_rq.load(Ordering::Acquire) || self.on_cpu.load(Ordering::Acquire) { return false; }
+        self.cas_state(crate::TaskState::Runnable, crate::TaskState::Waking).is_ok()
+    }
+
     /// Claim a sleeping task for the final NT resume. # C: O(1)
     pub(crate) fn claim_nt_wake(&self) -> bool {
         if self.nt_suspend_requested() { return false; }

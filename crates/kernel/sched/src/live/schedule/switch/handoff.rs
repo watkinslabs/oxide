@@ -23,7 +23,7 @@ pub fn now_ns() -> u64 {
 /// prev at its old key and the BTreeMap tiebreak (lower tid) would
 /// re-select it, starving higher-tid peers (the F144 rotation bug).
 /// Runs before pick + re-enqueue so the re-keyed insert sorts correctly.
-pub fn update_curr(prev: &Task, inner: &RunqueueInner, now: u64) {
+pub fn update_curr(prev: &Task, inner: &mut RunqueueInner, now: u64) {
     prev.update_util(now, true);
     // The deadline class charges wall time against a budget, not vruntime
     // against a weight, so it has its own accounting (`deadline::live`). Doing
@@ -60,6 +60,7 @@ pub fn update_curr(prev: &Task, inner: &RunqueueInner, now: u64) {
         return;
     }
     let load = prev.sched.se.load.snapshot().weight;
+    inner.cfs.account_runtime(prev, delta);
     let vdelta = crate::cputime::vruntime_delta(delta, load).max(1);
     let cur = prev.sched.se.vruntime.load(Ordering::Acquire);
     let floor = inner.cfs.min_vruntime_for(prev);

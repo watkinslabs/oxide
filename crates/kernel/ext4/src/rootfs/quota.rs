@@ -3,8 +3,16 @@ use super::state::RootfsState;
 
 /// Charge quota for a soon-to-exist ext4 inode. # C: O(1)+VFS quota
 pub(crate) fn charge_new_inode(st: &RootfsState, parent_ino: u32, mode: u16, uid: u32, gid: u32) -> vfs::KResult<()> {
-    let Some(sb) = st.i_sb() else { return Ok(()); };
+    if st.i_sb().is_none() { return Ok(()); }
     let projid = inherited_projid(&st.mount, parent_ino, mode)?;
+    charge_new_inode_with_projid(st, projid, uid, gid)
+}
+
+/// Charge a VFS create whose caller already owns the canonical parent inode.
+/// The project id is part of that resolved parent image; rereading the parent
+/// from ext4 here would sleep in block I/O while the VFS holds `i_rwsem`.
+pub(crate) fn charge_new_inode_with_projid(st: &RootfsState, projid: u32, uid: u32, gid: u32) -> vfs::KResult<()> {
+    let Some(sb) = st.i_sb() else { return Ok(()); };
     vfs::dquot_alloc_inode(&sb, uid, gid, projid, vfs::DquotUsage::inode(0, 0))
 }
 
@@ -20,6 +28,16 @@ pub(crate) fn rollback_new_inode_charge(st: &RootfsState, parent_ino: u32, mode:
     match release_new_inode_charge(st, parent_ino, mode, uid, gid) {
         Ok(()) => Ok(()),
         Err(_) => release_new_inode_charge(st, parent_ino, mode, uid, gid),
+    }
+}
+
+/// Roll back a VFS create charge without rereading its locked parent.
+pub(crate) fn rollback_new_inode_charge_with_projid(st: &RootfsState, projid: u32, uid: u32, gid: u32) -> vfs::KResult<()> {
+    let Some(sb) = st.i_sb() else { return Ok(()); };
+    let usage = vfs::DquotUsage::inode(0, 0);
+    match vfs::dquot_free_inode(&sb, uid, gid, projid, usage) {
+        Ok(()) => Ok(()),
+        Err(_) => vfs::dquot_free_inode(&sb, uid, gid, projid, usage),
     }
 }
 

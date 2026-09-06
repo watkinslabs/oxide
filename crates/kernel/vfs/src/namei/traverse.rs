@@ -11,9 +11,22 @@ use crate::types::{KResult, VfsError};
 /// Negative-dentry caching safety gate for filesystem-backed directories.
 /// # C: O(1)
 pub(crate) fn neg_cache_ok(dir: &InodeRef, name: &str) -> bool {
-    let filesystem_allows = dir.i_sb().is_some_and(|sb|
-        matches!(sb.s_type.name(), "ext4" | "tmpfs" | "ramfs"));
-    filesystem_allows || dir.i_op().negative_dentry_ok(dir, name)
+    stable_negative_cache(dir) || dir.i_op().negative_dentry_ok(dir, name)
+}
+
+fn stable_negative_cache(dir: &InodeRef) -> bool {
+    dir.i_sb().is_some_and(|sb| matches!(sb.s_type.name(), "ext4" | "tmpfs" | "ramfs"))
+}
+
+/// Whether a negative miss needs the bounded dynamic-filesystem recheck.
+/// Stable filesystem implementations are ordered by the parent inode lock, so
+/// their miss and negative publication are one lookup transaction.  An inode
+/// operation that explicitly opts into negative dentries may instead have
+/// namespace changes outside that ordinary VFS create path; retain one
+/// backend recheck for that contract (the kernfs-style case).
+/// # C: O(1)
+pub(crate) fn neg_cache_recheck(dir: &InodeRef, name: &str) -> bool {
+    !stable_negative_cache(dir) && dir.i_op().negative_dentry_ok(dir, name)
 }
 
 /// Follow stacked mountpoints DOWN from `d`: while `d` is a mountpoint, switch

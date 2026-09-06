@@ -1,6 +1,16 @@
 use super::*;
 
 #[test]
+fn compositor_binding_has_distinct_tagged_service_and_preserves_fd() {
+    let args = SyscallArgs { a0: 17, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 };
+    let call = decode_entry(NtService::BindCompositor.entry(), args).unwrap();
+    assert_eq!(call.service, NtService::BindCompositor);
+    assert_eq!(call.args, args);
+    assert_ne!(NtService::BindCompositor.entry(), NtService::TpSetTimer.entry());
+    assert!(decode_entry(552, args).is_none());
+}
+
+#[test]
 fn wine_dispatcher_service_preserves_ordinal_and_argument_pointer() {
     let args = SyscallArgs { a0: 0x136b, a1: 0x1234_5678, a2: 9, a3: 8, a4: 7, a5: 6 };
     let call = decode(536, args).unwrap();
@@ -520,6 +530,12 @@ fn user_client_pfn_services_round_trip_through_the_nt_namespace() {
         assert!(matches!(decode_memory(decode(1, a).unwrap()), Ok(NtMemoryCall::Free { .. })));
         assert!(matches!(decode_memory(decode(2, a).unwrap()), Ok(NtMemoryCall::Protect { .. })));
         assert!(matches!(decode_memory(decode(3, a).unwrap()), Ok(NtMemoryCall::Query { .. })));
+    }
+
+    #[test]
+    fn query_memory_allows_wine_null_return_length() {
+        let args = SyscallArgs { a0: u64::MAX, a1: 0x1000, a2: 1002, a3: 0x2000, a4: 16, a5: 0 };
+        assert!(matches!(decode_memory(decode(3, args).unwrap()), Ok(NtMemoryCall::Query { return_length: None, .. })));
     }
 
     #[test]

@@ -68,7 +68,7 @@ pub fn run() {
     assert_eq!(parsed.entry_rva, 0x1010);
     assert_eq!(parsed.materialize().unwrap()[0x1010], 0xcc);
     assert_eq!(core::mem::size_of::<NtExecModule>(), 32);
-    assert_eq!(core::mem::size_of::<NtExecRequest>(), 80);
+    assert_eq!(core::mem::size_of::<NtExecRequest>(), 112);
     assert_eq!(core::mem::size_of::<NtObjectAttributes>(), 48);
     assert_eq!(core::mem::size_of::<NtUnicodeString>(), 16);
     assert_eq!(core::mem::size_of::<NtWindowMessage>(), 32);

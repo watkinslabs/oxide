@@ -152,6 +152,7 @@ impl Mount {
             Err(e) => { self.batch_frame_rollback(); Err(e) }
         };
         self.txn_release();
+        self.batch_wait.wake_all();
         if result.is_ok() { self.maybe_commit_batch()?; }
         result
     }

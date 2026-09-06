@@ -5,6 +5,14 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use sync::{Spinlock, TaskList as TaskListClass};
 use super::{NtObject, NtObjectType};
 
+mod desktop;
+pub use desktop::{create_desktop, create_window_station, publish_desktop, publish_window_station, DesktopPublishError};
+
+#[path = "namespace/lifetime.rs"]
+mod lifetime;
+pub(super) use lifetime::{retain_handle, release_handle};
+pub use lifetime::release_temporary;
+
 struct NamedObject {
     path: String,
     object: Arc<NtObject>,
@@ -304,17 +312,6 @@ pub fn make_permanent(object: &NtObject) {
     namespace.objects[index].permanent = true;
 }
 
-/// Remove a temporary object's name after its final handle reference closes. # C: O(N_namespace)
-pub fn release_temporary(object: &Arc<NtObject>, has_live_handle: bool) {
-    let mut namespace = OBJECT_NAMESPACE.lock();
-    seed(&mut namespace);
-    let Some(index) = namespace.objects.iter().position(|entry|
-        !entry.permanent && core::ptr::eq(entry.object.as_ref(), object.as_ref())) else { return; };
-    if !has_live_handle {
-        namespace.objects.remove(index);
-    }
-}
-
 /// Return the canonical path of a directory object. # C: O(N_namespace)
 pub fn directory_path(object: &NtObject) -> Option<String> {
     let mut namespace = OBJECT_NAMESPACE.lock();
@@ -347,6 +344,8 @@ pub fn directory_entries(object: &NtObject) -> Vec<(String, String)> {
             NtObjectType::SymbolicLink => "SymbolicLink",
             NtObjectType::NamedPipe => "NamedPipe",
             NtObjectType::ActivationContext => "ActivationContext",
+            NtObjectType::WindowStation => "WindowStation",
+            NtObjectType::Desktop => "Desktop",
             _ => "Object",
         };
         Some((leaf(&entry.path).into(), kind.into()))

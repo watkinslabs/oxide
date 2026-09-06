@@ -41,29 +41,42 @@ pub fn task_tick() {
     // SAFETY: timer IRQ context is preempt-disabled and this CPU's runqueue
     // owns its current task for the complete tick callback.
     let cur = unsafe { rq.current_arc() };
-    // Deadline class first: it is the only class whose tick can REVOKE the CPU
-    // outright, and its budget must be charged before any other class rule runs.
-    if matches!(cur.sched_class(), crate::SchedClass::Deadline) {
-        crate::deadline::live::task_tick_dl(&cur);
-        return;
-    }
     task_tick_with_clock(&cur, rq, crate::live::schedule::change_clock_now);
 }
 
 fn task_tick_with_clock<F>(cur: &alloc::sync::Arc<crate::Task>,
                            rq: &crate::live::runqueue::Runqueue, now: F)
 where F: FnOnce() -> u64 {
-    use core::sync::atomic::Ordering;
+    task_tick_with_windows(cur, rq, now, || {}, || {});
+}
 
+fn task_tick_with_windows<F, B, N>(cur: &alloc::sync::Arc<crate::Task>,
+    rq: &crate::live::runqueue::Runqueue, now: F, before_rq: B, before_native: N)
+where F: FnOnce() -> u64, B: FnOnce(), N: FnOnce() {
+    before_rq();
+    let mut inner = rq.inner.lock_irqsave::<crate::live::runqueue::RqIrq>();
     if matches!(cur.sched_class(), crate::SchedClass::NtFixed { .. }) {
-        nt_task_tick(cur, rq, now());
+        // Native priority publication requires TaskPi before rq. Release rq
+        // before that acquisition and revalidate class under the stable owner.
+        drop(inner);
+        before_native();
+        nt_task_tick(cur, rq, now);
         return;
     }
+    tick_rq_locked(cur, &mut inner, now);
+}
 
-    // The rq lock serialises this snapshot with class changes and keeps the
-    // running Fair entity outside its class tree while its vruntime advances.
-    let inner = rq.inner.lock_irqsave::<crate::live::runqueue::RqIrq>();
-    crate::live::schedule::settle_running_for_change(cur, &inner, now());
+fn tick_rq_locked<F>(cur: &alloc::sync::Arc<crate::Task>,
+    inner: &mut crate::RunqueueInner, now: F)
+where F: FnOnce() -> u64 {
+    use core::sync::atomic::Ordering;
+    if matches!(cur.sched_class(), crate::SchedClass::Deadline) {
+        if crate::deadline::live::update_curr_dl(cur, now()) == crate::deadline::Charged::Throttle {
+            crate::preempt::set_need_resched();
+        }
+        return;
+    }
+    crate::live::schedule::settle_running_for_change(cur, inner, now());
     let policy = cur.sched_policy_code();
     if policy == crate::sched_enc::SCHED_FIFO { return; }
     if policy != crate::sched_enc::SCHED_RR {
@@ -93,15 +106,20 @@ where F: FnOnce() -> u64 {
     }
 }
 
-fn nt_task_tick(cur: &alloc::sync::Arc<crate::Task>,
-                rq: &crate::live::runqueue::Runqueue, now: u64) {
+fn nt_task_tick<F>(cur: &alloc::sync::Arc<crate::Task>,
+                rq: &crate::live::runqueue::Runqueue, now: F)
+where F: FnOnce() -> u64 {
     use core::sync::atomic::Ordering;
     let stable = crate::live::rq_locate::task_rq_lock_with(
         &|cpu| if cpu == rq.cpu as u32 { Some(rq) } else { None }, cur);
-    let crate::live::rq_locate::StableTaskGuard::Owned(lock) = stable else {
+    let crate::live::rq_locate::StableTaskGuard::Owned(mut lock) = stable else {
         panic!("running native task lost its runqueue owner")
     };
-    let change = crate::live::rq_locate::SchedChange::from_lock(lock, cur, now);
+    if !matches!(cur.sched_class(), crate::SchedClass::NtFixed { .. }) {
+        tick_rq_locked(cur, lock.inner_mut(), now);
+        return;
+    }
+    let change = crate::live::rq_locate::SchedChange::from_lock(lock, cur, now());
     let outcome = crate::nt::tick_unlocked(cur);
     let level = cur.sched.nt_snapshot().dynamic_priority;
     let peer = change.has_nt_peer_at(level);
@@ -117,3 +135,7 @@ fn nt_task_tick(cur: &alloc::sync::Arc<crate::Task>,
 #[cfg(test)]
 #[path = "preempt/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "preempt/tests/transition.rs"]
+mod transition_tests;

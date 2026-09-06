@@ -31,24 +31,36 @@ impl Mount {
         self.commit_batch_for(None, false).map(|_| ())
     }
 
+    /// Wait for a durable journal commit; checkpoint only for whole-fs sync.
+    /// Direct synchronous writes require a device flush. Returns true only
+    /// when that direct-write barrier was completed. # C: O(transaction I/O)
     pub(crate) fn commit_batch_for(&self, inode: Option<(u32, bool)>, wait_checkpoint: bool) -> Result<bool, MountError> {
-        if self.committing_batch.swap(true, core::sync::atomic::Ordering::AcqRel) {
-            // A writeback operation can reach this method through a nested
-            // journaled write. The outer commit owns the ordering/commit
-            // sequence; starting another one here would recurse through the
-            // block device and consume the task stack.
-            return Ok(false);
-        }
-        let _commit_guard = BatchCommitGuard(&self.committing_batch);
         #[cfg(feature = "debug-fsync-latency")]
         let gate_ns = crate::fsync_latency::now_ns();
-        // A commit takes the transaction gate FIRST, and only then looks at
-        // whether any operation is still inside the running transaction. The
-        // reference locks the transaction against new handles and waits for
-        // the outstanding ones to finish before it submits the ordered data
-        // or writes anything; nothing that belongs to the commit may run while
-        // another context is still building the transaction it is committing.
-        self.txn_acquire();
+        loop {
+            self.txn_acquire();
+            // The gate serializes committers. Only a recursive call from its
+            // owner can see the flag set here; another task must wait.
+            if self.committing_batch.load(core::sync::atomic::Ordering::Acquire) {
+                self.txn_release();
+                return Ok(false);
+            }
+            let (active, nested) = {
+                let s = self.state.lock();
+                (s.active_handles != 0, s.handles.contains_key(&super::core::ctx_id()))
+            };
+            if !active { break; }
+            self.txn_release();
+            if nested { return Ok(false); }
+            // SAFETY: commit admission holds no lock while active metadata
+            // handles finish and notify the mount's batch waiters.
+            let _ = unsafe {
+                sched::live::wait_event_uninterruptible(&self.batch_wait,
+                    || self.state.lock().active_handles == 0)
+            };
+        }
+        self.committing_batch.store(true, core::sync::atomic::Ordering::Release);
+        let _commit_guard = BatchCommitGuard(self);
         #[cfg(feature = "debug-fsync-latency")]
         crate::fsync_latency::report(b"batch-gate", gate_ns, 0);
         let needed = inode.map_or(true, |(ino, datasync)| self.inode_sync_needed(ino, datasync));
@@ -56,53 +68,39 @@ impl Mount {
         let staged_blocks = self.state.lock().shadow.as_ref().map_or(0, |s| s.len() as u64);
         #[cfg(feature = "debug-fsync-latency")]
         let commit_ns = crate::fsync_latency::now_ns();
-        let active_handles = {
-            let s = self.state.lock();
-            s.active_handles != 0
-        };
         // Ordered-mode data submission is part of the commit, not a prelude to
         // it: it allocates blocks and stages their bitmaps through the same
         // transaction. Run outside the gate, alongside another context's
         // writeback, two allocations read the same group bitmap and one
         // overwrote the other -- an extent pointing at blocks the bitmap calls
         // free, which the next allocation then hands to a second file.
-        let result = if active_handles || !needed {
+        let result = if !needed {
             Ok(false)
         } else {
             #[cfg(feature = "debug-fsync-latency")]
             let started_ns = crate::fsync_latency::now_ns();
-            let ordered = self.order_data_before_commit(inode.map(|(ino, _)| ino));
+            let ordered = self.order_data_before_commit();
             #[cfg(feature = "debug-fsync-latency")]
             crate::fsync_latency::report(b"batch-order", started_ns, 0);
             ordered.and_then(|()| self.commit_batch_inner())
         };
         #[cfg(feature = "debug-fsync-latency")]
         crate::fsync_latency::report(b"batch-commit", commit_ns, staged_blocks);
-        self.txn_release();
-        let direct = match result {
-            Ok(direct) => direct,
-            Err(err) => {
-                self.batch_wait.wake_all();
-                return Err(err);
-            }
-        };
-        self.batch_wait.wake_all();
-        let generation = self.state.lock().committed_generation;
-        let barrier_needed = direct && self.behaviour().barrier && {
-            let s = self.state.lock();
-            generation > s.barrier_generation
-        };
-        if wait_checkpoint { self.checkpoint_pending_sync()?; }
-        if !needed || !barrier_needed {
-            return Ok(false);
+        result?;
+        if wait_checkpoint { self.checkpoint_pending()?; }
+        // Journal commits already published a durable recovery record.
+        // Direct writes have no such fence: synchronous callers must flush
+        // even when only file data changed and no metadata commit was needed.
+        // Background direct writeback leaves the barrier generation untouched.
+        if self.sb.journal_inum == 0 && self.behaviour().barrier
+            && (wait_checkpoint || inode.is_some())
+        {
+            self.dev.flush().map_err(|_| MountError::BlockIo)?;
+            let generation = self.state.lock().committed_generation;
+            self.mark_generation_barriered(generation);
+            return Ok(true);
         }
-        // `checkpoint_pending_sync` has flushed the checkpoint targets before
-        // writing the clean journal superblock. A crash that leaves that final
-        // ordinary superblock write unwritten merely leaves `s_start` non-zero,
-        // so recovery safely replays an already-checkpointed transaction.
-        // Flushing again here therefore buys no durability.
-        self.mark_generation_barriered(generation);
-        Ok(true)
+        Ok(false)
     }
 
     /// `data=ordered`: put this mount's dirty file data on the device BEFORE
@@ -116,16 +114,12 @@ impl Mount {
     /// exchange for not waiting here; `journal` needs nothing here because its
     /// data already went through the journal with the metadata.
     ///
-    /// Runs BEFORE the transaction gate is taken: the writeback stages through
-    /// that same gate, and the commit it precedes must see what it produced.
+    /// Runs under the reentrant transaction gate. All dirty inodes must be
+    /// ordered because the running metadata transaction spans the mount.
     /// # C: O(N_dirty) when ordered, O(1) otherwise
-    fn order_data_before_commit(&self, inode: Option<u32>) -> Result<(), MountError> {
+    fn order_data_before_commit(&self) -> Result<(), MountError> {
         if !self.behaviour().data.orders_data() { return Ok(()); }
-        let result = match inode {
-            Some(ino) => crate::rootfs::framecache::writeback_inode(self, ino),
-            None => crate::rootfs::framecache::writeback_dirty(Some(self)),
-        };
-        result.map_err(|_| MountError::BlockIo)
+        crate::rootfs::framecache::writeback_dirty(Some(self)).map_err(|_| MountError::BlockIo)
     }
 
     fn commit_batch_inner(&self) -> Result<bool, MountError> {
@@ -286,10 +280,12 @@ impl Mount {
     }
 }
 
-struct BatchCommitGuard<'a>(&'a ::core::sync::atomic::AtomicBool);
+struct BatchCommitGuard<'a>(&'a Mount);
 
 impl Drop for BatchCommitGuard<'_> {
     fn drop(&mut self) {
-        self.0.store(false, ::core::sync::atomic::Ordering::Release);
+        self.0.committing_batch.store(false, ::core::sync::atomic::Ordering::Release);
+        self.0.txn_release();
+        self.0.batch_wait.wake_all();
     }
 }

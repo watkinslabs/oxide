@@ -31,9 +31,12 @@ impl GroupEntity {
             rq: Box::new(CfsRunqueue::new_group(group.id(), group.depth())) }
     }
 
-    fn charge(&mut self) {
-        self.vruntime = self.vruntime.wrapping_add(group_request(self.shares));
-        self.deadline = request_deadline(self.vruntime, self.shares);
+    fn charge(&mut self, delta_ns: u64) {
+        self.vruntime = self.vruntime.wrapping_add(
+            crate::eevdf::request_delta(delta_ns, self.shares.max(1) as u64));
+        if !vruntime_before(self.vruntime, self.deadline) {
+            self.deadline = request_deadline(self.vruntime, self.shares);
+        }
     }
 }
 
@@ -259,7 +262,6 @@ impl CfsRunqueue {
                 let group = self.children.get_mut(&id)
                     .expect("selected fair group disappeared");
                 let task = group.rq.pick_one()?;
-                group.charge();
                 self.nr_running = self.nr_running.saturating_sub(1);
                 Some(task)
             }
@@ -269,6 +271,10 @@ impl CfsRunqueue {
     fn pick_entity(&self) -> Option<Choice> {
         let (floor, total, sum) = self.stats();
         if total == 0 { return None; }
+        self.best_queued(floor, total, sum).map(|(_, choice)| choice)
+    }
+
+    fn best_queued(&self, floor: u64, total: u64, sum: i128) -> Option<(PickKey, Choice)> {
         let task_key = |task: &Task| entity_key(sum, total, floor,
             task.sched.se.vruntime.load(Ordering::Acquire),
             task.sched.se.deadline.load(Ordering::Acquire), task.tid as u64, false);
@@ -280,7 +286,20 @@ impl CfsRunqueue {
                 best = Some((key, Choice::Group(group.id)));
             }
         }
-        best.map(|(_, choice)| choice)
+        best
+    }
+
+    /// Charge actual execution to each ancestor of the running task. # C: O(depth)
+    pub(crate) fn account_runtime(&mut self, task: &Task, delta_ns: u64) {
+        if delta_ns == 0 || task.sched.group_id() == ROOT_GROUP_ID { return; }
+        let path = self.paths.get(&task.sched.group_id())
+            .expect("running task references an offline fair group");
+        let mut children = &mut self.children;
+        for id in &path[1..] {
+            let group = children.get_mut(id).expect("running fair path is stale");
+            group.charge(delta_ns);
+            children = &mut group.rq.children;
+        }
     }
 
     fn stats(&self) -> (u64, u64, i128) {
@@ -399,3 +418,10 @@ fn cmp(a: (u64, u32), b: (u64, u32)) -> CmpOrdering {
 pub(crate) fn vruntime_before(a: u64, b: u64) -> bool {
     (a.wrapping_sub(b) as i64) < 0
 }
+
+#[cfg(test)]
+#[path = "cfs/tests/runtime.rs"]
+mod runtime_tests;
+
+#[path = "cfs/preempt.rs"]
+mod preempt;

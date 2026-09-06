@@ -15,10 +15,14 @@ pub struct TaskCore {
     pub nt_peb: AtomicU64,
     /// TEB address published by an NT PE exec for this thread.
     pub nt_teb: AtomicU64,
+    /// Handle-visible NT creation has not committed its task publication yet.
+    pub nt_creation_pending: AtomicBool,
+    pub nt_native_thread: Spinlock<crate::nt_native_thread::State, TaskListClass>,
     /// Win32 thread entry address published at native NT thread creation.
     pub nt_start_address: AtomicU64,
     /// Thread-local Windows preferred UI-language multi-string and input mode.
     pub nt_thread_ui_languages: Spinlock<(u32, alloc::vec::Vec<u16>), TaskListClass>,
+    pub nt_desktop: Spinlock<crate::nt_object::ThreadDesktop, TaskListClass>,
     /// Native NT job identity assigned to this process, or zero when free.
     pub nt_job_id: AtomicU64,
     /// Canonical PID identity, retained by pidfds after `release_task`.

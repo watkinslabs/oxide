@@ -27,6 +27,7 @@ pub struct ElfRuntimeSymbol {
 /// Address-space-owned bounds for one Wine Unixlib function table.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ElfUnixlibDescriptor {
+    pub name: Vec<u8>,
     pub table_address: u64,
     pub entry_count: u64,
     pub module_base: u64,
@@ -42,7 +43,7 @@ static MODULES: Spinlock<BTreeMap<u64, Vec<ElfRuntimeModule>>, Modules> =
     Spinlock::new(BTreeMap::new());
 static SYMBOLS: Spinlock<BTreeMap<u64, Vec<ElfRuntimeSymbol>>, Modules> =
     Spinlock::new(BTreeMap::new());
-static UNIXLIBS: Spinlock<BTreeMap<u64, ElfUnixlibDescriptor>, Modules> =
+static UNIXLIBS: Spinlock<BTreeMap<u64, Vec<ElfUnixlibDescriptor>>, Modules> =
     Spinlock::new(BTreeMap::new());
 
 pub fn register(as_: &AddressSpace, modules: &[ElfRuntimeModule]) {
@@ -82,8 +83,8 @@ pub fn append_symbols(as_: &AddressSpace, symbols: &[ElfRuntimeSymbol]) {
     }
 }
 
-/// Publish the one canonical Unixlib descriptor for an address space.
-/// # C: O(log N) for the address-space registry
+/// Publish one canonical Unixlib descriptor for an address space.
+/// # C: O(N) for the address-space registry
 pub fn register_unixlib_table(as_: &AddressSpace, descriptor: ElfUnixlibDescriptor)
     -> Result<(), UnixlibRegistrationError>
 {
@@ -110,17 +111,46 @@ pub fn register_unixlib_table(as_: &AddressSpace, descriptor: ElfUnixlibDescript
         return Err(UnixlibRegistrationError::InvalidRange);
     }
     let mut tables = UNIXLIBS.lock();
-    match tables.get(&as_.root_pa()) {
+    let entries = tables.entry(as_.root_pa()).or_default();
+    match entries.iter().find(|existing| existing.table_address == descriptor.table_address) {
         Some(existing) if *existing != descriptor => Err(UnixlibRegistrationError::AlreadyRegistered),
         Some(_) => Ok(()),
-        None => { tables.insert(as_.root_pa(), descriptor); Ok(()) }
+        None => { entries.push(descriptor); Ok(()) }
     }
 }
 
-/// Read the Unixlib descriptor owned by an address space.
-/// # C: O(log N)
+/// Read the first Unixlib descriptor owned by an address space.
+///
+/// This compatibility view is used by the synthetic native NTDLL path. New
+/// consumers that receive a table identity must use
+/// [`unixlib_descriptor_for_table`] so independently loaded Unixlibs remain
+/// distinct.
+/// # C: O(N)
 pub fn unixlib_descriptor(root: u64) -> Option<ElfUnixlibDescriptor> {
-    UNIXLIBS.lock().get(&root).cloned()
+    UNIXLIBS.lock().get(&root).and_then(|tables| tables.first().cloned())
+}
+
+/// Read the descriptor identified by Wine's table handle.
+/// # C: O(N)
+pub fn unixlib_descriptor_for_table(root: u64, table_address: u64) -> Option<ElfUnixlibDescriptor> {
+    UNIXLIBS.lock().get(&root)?.iter()
+        .find(|descriptor| descriptor.table_address == table_address).cloned()
+}
+
+/// Read the already-published native Unixlib identified by its loader name.
+/// # C: O(N)
+pub fn unixlib_descriptor_for_name(root: u64, name: &[u8]) -> Option<ElfUnixlibDescriptor> {
+    UNIXLIBS.lock().get(&root)?.iter()
+        .find(|descriptor| descriptor.name.as_slice() == name).cloned()
+}
+
+/// Retire one table identity after a failed load transaction or module exit.
+/// # C: O(N)
+pub fn unregister_unixlib_table(root: u64, table_address: u64) {
+    let mut tables = UNIXLIBS.lock();
+    let Some(entries) = tables.get_mut(&root) else { return };
+    entries.retain(|descriptor| descriptor.table_address != table_address);
+    if entries.is_empty() { tables.remove(&root); }
 }
 
 /// Resolve one exact ELF symbol name in the current process scope.
@@ -169,7 +199,7 @@ mod tests {
     #[test]
     fn unixlib_descriptor_is_scoped_to_one_address_space() {
         let as_ = AddressSpace::new(0x7_2000).unwrap();
-        let descriptor = ElfUnixlibDescriptor { table_address: 0x4200, entry_count: 3,
+        let descriptor = ElfUnixlibDescriptor { name: Vec::new(), table_address: 0x4200, entry_count: 3,
             module_base: 0x4000, module_end: 0x5000, entries: vec![0x4100, 0x4108, 0x4110],
             executable_ranges: vec![(0x4100, 0x4200)] };
         register_unixlib_table(&as_, descriptor.clone()).unwrap();
@@ -177,5 +207,22 @@ mod tests {
         assert_eq!(unixlib_descriptor(as_.root_pa() + 1), None);
         clear(as_.root_pa());
         assert_eq!(unixlib_descriptor(as_.root_pa()), None);
+    }
+
+    #[test]
+    fn address_space_can_publish_distinct_unixlib_tables() {
+        let as_ = AddressSpace::new(0x7_3000).unwrap();
+        let first = ElfUnixlibDescriptor { name: b"first.so".to_vec(), table_address: 0x4200, entry_count: 1,
+            module_base: 0x4000, module_end: 0x5000, entries: vec![0x4100],
+            executable_ranges: vec![(0x4100, 0x4200)] };
+        let second = ElfUnixlibDescriptor { name: Vec::new(), table_address: 0x8200, entry_count: 1,
+            module_base: 0x8000, module_end: 0x9000, entries: vec![0x8100],
+            executable_ranges: vec![(0x8100, 0x8200)] };
+        register_unixlib_table(&as_, first.clone()).unwrap();
+        register_unixlib_table(&as_, second.clone()).unwrap();
+        assert_eq!(unixlib_descriptor_for_table(as_.root_pa(), first.table_address), Some(first));
+        assert_eq!(unixlib_descriptor_for_table(as_.root_pa(), second.table_address), Some(second));
+        assert_eq!(unixlib_descriptor_for_name(as_.root_pa(), b"first.so").unwrap().table_address, 0x4200);
+        clear(as_.root_pa());
     }
 }

@@ -152,9 +152,9 @@ pub type InodeInitSecurityAnonHook = fn(&InodeRef, &str, Option<&InodeRef>) -> K
 
 static INODE_CREATE_HOOK: sync::Spinlock<Option<InodeCreateHook>, sync::Inode> =
     sync::Spinlock::new(None);
-static INODE_INSTANTIATE_HOOK: sync::Spinlock<Option<InodeInstantiateHook>, sync::Inode> =
+pub(super) static INODE_INSTANTIATE_HOOK: sync::Spinlock<Option<InodeInstantiateHook>, sync::Inode> =
     sync::Spinlock::new(None);
-static INODE_INIT_SECURITY_ANON_HOOK: sync::Spinlock<Option<InodeInitSecurityAnonHook>, sync::Inode> =
+pub(super) static INODE_INIT_SECURITY_ANON_HOOK: sync::Spinlock<Option<InodeInitSecurityAnonHook>, sync::Inode> =
     sync::Spinlock::new(None);
 
 /// Install the create-time inode label hook. # C: O(1)
@@ -179,13 +179,15 @@ pub fn notify_inode_created(dir: &InodeRef, name: &str) {
 
 /// Notify the installed LSM after a positive dentry binds an inode. # C: O(1) + hook
 pub fn inode_instantiated(dentry: &crate::dentry::Dentry, inode: &InodeRef) {
-    if let Some(hook) = *INODE_INSTANTIATE_HOOK.lock() { hook(dentry, inode); }
+    let hook = *INODE_INSTANTIATE_HOOK.lock();
+    if let Some(hook) = hook { hook(dentry, inode); }
 }
 
 /// Initialize security state before a secure anonymous inode is published. # C: O(1) + hook
 pub fn inode_init_security_anon(inode: &InodeRef, name: &str,
                                 context_inode: Option<&InodeRef>) -> KResult<()> {
-    match *INODE_INIT_SECURITY_ANON_HOOK.lock() {
+    let hook = *INODE_INIT_SECURITY_ANON_HOOK.lock();
+    match hook {
         Some(hook) => hook(inode, name, context_inode),
         None => Ok(()),
     }

@@ -132,6 +132,11 @@ pub fn set_plane(card_id: u32, card: &Arc<dyn DrmDriver>, arg: u64, token: u64) 
 /// atomic and legacy paths converge here so `CURRENT_FB` and scanout ownership
 /// cannot diverge. # C: O(1) + O(scanout)
 pub fn atomic_primary(card_id: u32, card: &Arc<dyn DrmDriver>, crtc_id: u32, fb_id: u32, token: u64) -> i64 {
+    {
+        klog::write_raw(b"[DRM-ATOMIC] card="); klog::write_hex_u64(card_id as u64);
+        klog::write_raw(b" crtc="); klog::write_hex_u64(crtc_id as u64);
+        klog::write_raw(b" fb="); klog::write_hex_u64(fb_id as u64); klog::write_raw(b"\n");
+    }
     if crtc_idx_of(crtc_id, card.crtc_ids().len()).is_none() { return einval(); }
     let ops = match scanout_ops(card_id) { Some(ops) => ops, None => return einval() };
     if fb_id == 0 {
@@ -145,7 +150,12 @@ pub fn atomic_primary(card_id: u32, card: &Arc<dyn DrmDriver>, crtc_id: u32, fb_
     let (res_id, width, height) = match crate::crtc::fb_scanout_resource(card_id, ops, fb_id) {
         Some(v) => v, None => return einval(),
     };
-    if !(ops.present)(ops.driver_key, res_id, width, height, crate::node::DamageRect::full(width, height)) { return einval(); }
+    let presented = (ops.present)(ops.driver_key, res_id, width, height, crate::node::DamageRect::full(width, height));
+    {
+        klog::write_raw(b"[DRM-ATOMIC] resource="); klog::write_hex_u64(res_id as u64);
+        klog::write_raw(if presented { b" present=ok\n" } else { b" present=fail\n" });
+    }
+    if !presented { return einval(); }
     crate::diag::record(crate::diag::Present::Flip, fb_id, res_id);
     crate::crtc::set_current_fb(card_id, fb_id);
     crate::crtc::set_owner(card_id, token);

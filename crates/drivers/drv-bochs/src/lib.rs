@@ -77,6 +77,7 @@ mod kernel {
     struct Resource { key: u32, id: u32, pa: u64, width: u32, height: u32, pitch: u32, format: u32 }
     static RESOURCES: Spinlock<Vec<Resource>, DriverLockClass> = Spinlock::new(Vec::new());
     static NEXT_RESOURCE: AtomicU32 = AtomicU32::new(1);
+    static PRESENT_CALLS: AtomicU32 = AtomicU32::new(0);
 
     struct BochsDrm { unique: String }
 
@@ -127,6 +128,13 @@ mod kernel {
     fn resource_key(bdf: pci::Bdf) -> u32 { u32::from(bdf.raw()) + 1 }
 
     fn create_from_pa(key: drm::node::ScanoutDriverKey, pa: u64, width: u32, height: u32, pitch: u32, format: u32) -> Option<u32> {
+        {
+            klog::write_raw(b"[BOCHS-RESOURCE] pa="); klog::write_hex_u64(pa);
+            klog::write_raw(b" w="); klog::write_hex_u64(width as u64);
+            klog::write_raw(b" h="); klog::write_hex_u64(height as u64);
+            klog::write_raw(b" pitch="); klog::write_hex_u64(pitch as u64);
+            klog::write_raw(b" fmt="); klog::write_hex_u64(format as u64); klog::write_raw(b"\n");
+        }
         if width != MODE_WIDTH || height != MODE_HEIGHT || pitch < width.checked_mul(4)?
             || !matches!(format, DRM_FORMAT_XRGB8888 | DRM_FORMAT_ARGB8888) { return None; }
         let id = NEXT_RESOURCE.fetch_add(1, Ordering::AcqRel);
@@ -142,6 +150,7 @@ mod kernel {
     }
 
     fn present(key: drm::node::ScanoutDriverKey, id: u32, width: u32, height: u32, damage: drm::node::DamageRect) -> bool {
+        let call = PRESENT_CALLS.fetch_add(1, Ordering::Relaxed) + 1;
         let resources = RESOURCES.lock();
         let Some(resource) = resources.iter().find(|resource| resource.key == key.raw() && resource.id == id
             && resource.width == width && resource.height == height
@@ -151,7 +160,13 @@ mod kernel {
         // SAFETY: the live dumb buffer owns this contiguous PMM allocation until
         // the DRM core calls destroy_resource after releasing its scanout ref.
         let src = unsafe { core::slice::from_raw_parts(src_va as *const u8, bytes as usize) };
-        drv_simplefb::present_xrgb(src, resource.pitch / 4, width, height, damage.x, damage.y, damage.w, damage.h)
+        let ok = drv_simplefb::present_xrgb(src, resource.pitch / 4, width, height, damage.x, damage.y, damage.w, damage.h);
+        if call <= 4 {
+            klog::write_raw(b"[BOCHS-PRESENT] n="); klog::write_hex_u64(call as u64);
+            klog::write_raw(b" id="); klog::write_hex_u64(id as u64);
+            klog::write_raw(if ok { &b" ok\n"[..] } else { &b" fail\n"[..] });
+        }
+        ok
     }
 
     fn restore_console(_key: drm::node::ScanoutDriverKey) -> bool { fbcon::kernel::force_repaint(); true }

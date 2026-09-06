@@ -39,7 +39,8 @@ impl Ext4StatInodeOps {
         let (uid, gid, m) = vfs::prepare_create_owner_mode(ctx.idmap, inode, mode as u16,
             0o7777, vfs::types::S_IFREG, ctx.cred, 0);
         let acl = crate::acl::inherit(inode, m, ctx.umask, vfs::posix_acl::NewKind::Other)?;
-        super::super::quota::charge_new_inode(&d.st, d.ino, acl.mode, uid, gid)?;
+        let parent_projid = inode.projid();
+        super::super::quota::charge_new_inode_with_projid(&d.st, parent_projid, uid, gid)?;
         // The canonical VFS inode is the same parent image that lookup used.
         // Pass it through the Linux-shaped create owner when available; a
         // non-canonical helper inode has no safe lifetime/invalidator and uses
@@ -54,7 +55,7 @@ impl Ext4StatInodeOps {
         let (ino, node) = match created {
             Ok(v) => v,
             Err(e) => {
-                let _ = super::super::quota::rollback_new_inode_charge(&d.st, d.ino, acl.mode, uid, gid);
+                let _ = super::super::quota::rollback_new_inode_charge_with_projid(&d.st, parent_projid, uid, gid);
                 return Err(super::regular::fs_err(&d.st, e));
             }
         };
@@ -78,7 +79,8 @@ impl Ext4StatInodeOps {
         let (uid, gid, m) = vfs::prepare_create_owner_mode(ctx.idmap, inode, mode as u16,
             0o1777, vfs::types::S_IFDIR, ctx.cred, 0);
         let acl = crate::acl::inherit(inode, m, ctx.umask, vfs::posix_acl::NewKind::Dir)?;
-        super::super::quota::charge_new_inode(&d.st, d.ino, acl.mode, uid, gid)?;
+        let parent_projid = inode.projid();
+        super::super::quota::charge_new_inode_with_projid(&d.st, parent_projid, uid, gid)?;
         let parent_raw = if d.canonical { d.mutation_parent(inode) } else { None };
         let created = match parent_raw.as_ref() {
             Some(parent) => d.st.mount.create_dir_inode_with_acl_parent(
@@ -89,7 +91,7 @@ impl Ext4StatInodeOps {
         let (ino, node) = match created {
             Ok(v) => v,
             Err(e) => {
-                let _ = super::super::quota::rollback_new_inode_charge(&d.st, d.ino, acl.mode, uid, gid);
+                let _ = super::super::quota::rollback_new_inode_charge_with_projid(&d.st, parent_projid, uid, gid);
                 return Err(super::regular::fs_err(&d.st, e));
             }
         };
@@ -189,7 +191,7 @@ impl InodeOps for Ext4StatInodeOps {
                 .map_err(|e| if matches!(e, crate::MountError::NotFound) {
                     VfsError::Enoent
                 } else { super::regular::vfs_error_from_mount(e) })?;
-            d.publish_raw(fresh);
+            d.publish_namespace_geometry(inode, &fresh);
             Ok(child)
         }.map_err(|e| if matches!(e, crate::MountError::NotFound) {
             VfsError::Enoent
@@ -309,12 +311,13 @@ impl InodeOps for Ext4StatInodeOps {
         let (uid, gid, m) = vfs::prepare_create_owner_mode(ctx.idmap, inode, mode as u16,
             0o7777, vfs::types::S_IFREG, ctx.cred, 0);
         let acl = crate::acl::inherit(inode, m, ctx.umask, vfs::posix_acl::NewKind::Other)?;
-        super::super::quota::charge_new_inode(&d.st, d.ino, acl.mode, uid, gid)?;
+        let parent_projid = inode.projid();
+        super::super::quota::charge_new_inode_with_projid(&d.st, parent_projid, uid, gid)?;
         let (ino, node) = match d.st.mount.create_anonymous_inode_with_acl(
             d.ino, acl.mode & 0o7777, uid, gid, &acl) {
             Ok(v) => v,
             Err(e) => {
-                let _ = super::super::quota::rollback_new_inode_charge(&d.st, d.ino, acl.mode, uid, gid);
+                let _ = super::super::quota::rollback_new_inode_charge_with_projid(&d.st, parent_projid, uid, gid);
                 return Err(super::regular::fs_err(&d.st, e));
             }
         };
@@ -397,8 +400,8 @@ impl Ext4StatInodeOps {
         if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
         if check_existing && d.st.lookup_child_ino(d.ino, name).is_some() { return Err(VfsError::Eexist); }
         let (uid, gid) = vfs::prepare_symlink_owner(ctx.idmap, inode, ctx.cred);
-        let mode = vfs::types::S_IFLNK | 0o777;
-        super::super::quota::charge_new_inode(&d.st, d.ino, mode, uid, gid)?;
+        let parent_projid = inode.projid();
+        super::super::quota::charge_new_inode_with_projid(&d.st, parent_projid, uid, gid)?;
         let parent_raw = d.mutation_parent(inode);
         let created = match parent_raw.as_ref() {
             Some(parent) => d.st.mount.create_symlink_with_parent(
@@ -408,7 +411,7 @@ impl Ext4StatInodeOps {
         let ino = match created {
             Ok(ino) => ino,
             Err(e) => {
-                let _ = super::super::quota::rollback_new_inode_charge(&d.st, d.ino, mode, uid, gid);
+                let _ = super::super::quota::rollback_new_inode_charge_with_projid(&d.st, parent_projid, uid, gid);
                 return Err(super::regular::vfs_error_from_mount(e));
             }
         };
@@ -425,7 +428,8 @@ impl Ext4StatInodeOps {
         let (uid, gid, m) = vfs::prepare_create_owner_mode(ctx.idmap, inode, mode,
             mode, mode, ctx.cred, 0);
         let acl = crate::acl::inherit(inode, m, ctx.umask, vfs::posix_acl::NewKind::Other)?;
-        super::super::quota::charge_new_inode(&d.st, d.ino, acl.mode, uid, gid)?;
+        let parent_projid = inode.projid();
+        super::super::quota::charge_new_inode_with_projid(&d.st, parent_projid, uid, gid)?;
         let parent_raw = d.mutation_parent(inode);
         let created = match parent_raw.as_ref() {
             Some(parent) => d.st.mount.create_mknod_with_acl_parent(
@@ -436,7 +440,7 @@ impl Ext4StatInodeOps {
         let ino = match created {
             Ok(ino) => ino,
             Err(e) => {
-                let _ = super::super::quota::rollback_new_inode_charge(&d.st, d.ino, acl.mode, uid, gid);
+                let _ = super::super::quota::rollback_new_inode_charge_with_projid(&d.st, parent_projid, uid, gid);
                 return Err(super::regular::fs_err(&d.st, e));
             }
         };

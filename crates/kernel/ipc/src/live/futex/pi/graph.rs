@@ -5,6 +5,11 @@ use core::sync::atomic::Ordering;
 
 use sched::Task;
 
+#[cfg(target_arch = "x86_64")]
+pub(super) use hal_x86_64::X86IrqGate as TaskPiIrq;
+#[cfg(target_arch = "aarch64")]
+pub(super) use hal_aarch64::ArmIrqGate as TaskPiIrq;
+
 use super::state::{NEXT_CHAIN_EPOCH, PiState, PiWaiter, find_id, next_waiter_order};
 
 fn waiter_index(state: &PiState, waiter_id: u64) -> Option<usize> {
@@ -12,15 +17,15 @@ fn waiter_index(state: &PiState, waiter_id: u64) -> Option<usize> {
 }
 
 fn blocked_on(task: &Task) -> Option<sched::PiBlockedOn> {
-    task.pi_lock.lock().blocked_on()
+    task.pi_lock.lock_irqsave::<TaskPiIrq>().blocked_on()
 }
 
 fn set_blocked(waiter: &PiWaiter) {
-    waiter.task.pi_lock.lock().set_blocked_on(waiter.blocked_on());
+    waiter.task.pi_lock.lock_irqsave::<TaskPiIrq>().set_blocked_on(waiter.blocked_on());
 }
 
 fn clear_blocked(waiter: &PiWaiter) {
-    waiter.task.pi_lock.lock().clear_blocked_on(waiter.waiter_id());
+    waiter.task.pi_lock.lock_irqsave::<TaskPiIrq>().clear_blocked_on(waiter.waiter_id());
 }
 
 /// Refresh an allocated but unlinked node at the exact wait-lock insertion point.
@@ -173,3 +178,7 @@ pub(crate) fn retire_state(table: &mut [PiState], state_index: usize) -> Option<
     if let Some(owner) = changed_owner.as_ref() { propagate_from(table, owner); }
     changed_owner
 }
+
+#[cfg(test)]
+#[path = "graph/tests/irq.rs"]
+mod irq_tests;

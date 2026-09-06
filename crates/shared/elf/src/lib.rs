@@ -16,7 +16,7 @@ extern crate std;
 
 pub mod parser;
 pub use parser::{
-    parse, ElfError, ElfType, KResult as ParseResult, LoadSegment, ParsedElf, PFlags, PType,
+    parse, ElfError, ElfType, KResult as ParseResult, LoadSegment, ParsedElf, PFlags, PType, TlsSegment,
     EI_MAG, ELFCLASS64, ELFDATA2LSB, EM_AARCH64, EM_X86_64, EV_CURRENT,
 };
 
@@ -33,7 +33,7 @@ pub mod dynamic;
 pub mod shared_object;
 pub use shared_object::{needed_names, parse_dependency_object, parse_shared_object, soname, SharedObject};
 pub mod runtime_reloc;
-pub use runtime_reloc::{apply_runtime_relocations, collect_dynamic_symbols, read_dynamic_symbol, DynamicSymbol};
+pub use runtime_reloc::{apply_runtime_relocations, collect_dynamic_symbols, read_dynamic_symbol, runtime_relocation_kinds, DynamicSymbol};
 pub mod hash;
 pub mod dwarf;
 pub mod cfa;

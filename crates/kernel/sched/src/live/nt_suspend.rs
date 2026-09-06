@@ -6,17 +6,17 @@ use crate::{Task, TaskState, WaitState};
 
 /// Release the final NT suspend depth through the scheduler wake owner. # C: O(N_cpus + log N)
 pub fn resume_task(task: &Arc<Task>) {
+    if task.nt_creation_pending.load(core::sync::atomic::Ordering::Acquire) { return; }
     if task.nt_suspend_count.load(core::sync::atomic::Ordering::Acquire) != 0 { return; }
     if task.nt_suspend_ack.load(core::sync::atomic::Ordering::Acquire)
         || task.nt_wake_pending.load(core::sync::atomic::Ordering::Acquire) {
         // SAFETY: the task Arc pins the target; this owns the state-to-rq transition.
         unsafe { super::ttwu::wake_nt_suspended(Arc::clone(task)); }
-    } else if task.state() == TaskState::Runnable && !task.on_rq.load(core::sync::atomic::Ordering::Acquire)
-        && !task.on_cpu.load(core::sync::atomic::Ordering::Acquire) {
+    } else if task.claim_nt_initial_wake() {
         // CREATE_SUSPENDED tasks are published Runnable but intentionally stay
         // off-rq until their first final resume.
-        // SAFETY: the task is off every rq and pinned by this Arc; placement is
-        // the sole scheduler activation owner.
+        // SAFETY: the Runnable-to-Waking claim excludes concurrent birth/resume
+        // placement; this Arc pins the task through the scheduler activation.
         unsafe { super::ttwu::place_runnable(Arc::clone(task), false); }
     }
 }

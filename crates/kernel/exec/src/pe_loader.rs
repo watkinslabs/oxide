@@ -459,13 +459,16 @@ pub fn resolve_nt_runtime_data_export(base: u64, name: &[u8]) -> Option<u64> {
     let continuation = pe::nt_stub::encode_x64_run_once_continuation(syscall::nt::NtService::RtlRunOnceComplete.entry());
     let wndproc_continuation = pe::nt_stub::encode_x64_wndproc_continuation(syscall::nt::NtService::CallbackReturn.entry());
     let apc_continuation = pe::nt_stub::encode_x64_apc_continuation();
-    let relay = pe::nt_stub::X64_RELAY_STUB_BYTES as u64;
-    let relay_offset = offset.checked_add(continuation.len() as u64)?.checked_add(wndproc_continuation.len() as u64)?
-        .checked_add(apc_continuation.len() as u64)?.checked_add(8)?;
-    let dispatcher_offset = relay_offset.checked_add(relay)?;
-    let unix_dispatcher_offset = dispatcher_offset.checked_add(pe::nt_stub::encode_x64_wine_dispatcher_stub(syscall::nt::NtService::WineSyscall.entry()).len() as u64)?;
-    let handle_offset = unix_dispatcher_offset.checked_add(pe::nt_stub::encode_x64_unix_call_dispatcher_stub(syscall::nt::NtService::WineUnixCall.entry()).len() as u64)?;
-    let target = if name == WINE_SYSCALL_DISPATCHER { dispatcher_offset } else if name == b"__wine_unix_call_dispatcher" { unix_dispatcher_offset } else { handle_offset };
+    // Wine declares these three symbols as data. Its unix_lib initializer
+    // obtains the symbol address, then loads the dispatcher pointer from that
+    // slot before jumping. Keep the slot identity distinct from the code
+    // entry; returning the code address makes Wine interpret instruction bytes
+    // as a function pointer.
+    let data_offset = offset.checked_add(continuation.len() as u64)?.checked_add(wndproc_continuation.len() as u64)?
+        .checked_add(apc_continuation.len() as u64)?;
+    let target = if name == WINE_SYSCALL_DISPATCHER { data_offset }
+        else if name == b"__wine_unix_call_dispatcher" { data_offset.checked_add(8)? }
+        else { data_offset.checked_add(16)? };
     base.checked_add(target)
 }
 pub fn map_nt_runtime(as_: &AddressSpace) -> Result<NtRuntime, pe::Error> {
@@ -476,8 +479,11 @@ pub fn map_nt_runtime(as_: &AddressSpace) -> Result<NtRuntime, pe::Error> {
     let wine_unix_dispatcher = pe::nt_stub::encode_x64_unix_call_dispatcher_stub(syscall::nt::NtService::WineUnixCall.entry());
     let wndproc_continuation = pe::nt_stub::encode_x64_wndproc_continuation(syscall::nt::NtService::CallbackReturn.entry());
     let apc_continuation = pe::nt_stub::encode_x64_apc_continuation();
-    let code_bytes = stub_bytes + continuation.len() + wndproc_continuation.len() + apc_continuation.len() + 8 + pe::nt_stub::X64_RELAY_STUB_BYTES + wine_dispatcher.len() + wine_unix_dispatcher.len() + 8;
+    let code_bytes = stub_bytes + continuation.len() + wndproc_continuation.len() + apc_continuation.len() + 24 + pe::nt_stub::X64_RELAY_STUB_BYTES + wine_dispatcher.len() + wine_unix_dispatcher.len() + 8
+        + syscall::nt_wine_unix::WINE_UNIX_FUNCTION_COUNT * core::mem::size_of::<u64>();
     let mapped_bytes = (code_bytes + page - 1) / page * page;
+    let arena = as_.get_unmapped_area(mapped_bytes).map_err(|_| pe::Error::Einval)?.as_u64();
+    let base_address = UserVirtAddr::new(arena).ok_or(pe::Error::Einval)?;
     let mut code = alloc::vec![0u8; mapped_bytes];
     let mut addresses = [0u64; 513];
     let mut offset = 0usize;
@@ -485,11 +491,7 @@ pub fn map_nt_runtime(as_: &AddressSpace) -> Result<NtRuntime, pe::Error> {
         // Keep the debug exports tied to their actual catalog indexes. This
         // block predates the generated selector table and is the one place
         // where the handwritten table differs from the export array.
-        let selector = if index == 185 { syscall::nt::NtService::Wcstoul }
-        else if index == 186 { syscall::nt::NtService::WineDbgHeader }
-        else if index == 187 { syscall::nt::NtService::WineDbgOutput }
-        else if index == 188 { syscall::nt::NtService::WineDbgStrdup }
-        else { match index {
+        let selector = match index {
             0 => syscall::nt::NtService::AllocateVirtualMemory,
             1 => syscall::nt::NtService::FreeVirtualMemory,
             2 => syscall::nt::NtService::ProtectVirtualMemory,
@@ -602,49 +604,48 @@ pub fn map_nt_runtime(as_: &AddressSpace) -> Result<NtRuntime, pe::Error> {
             110 => syscall::nt::NtService::SetInformationProcess,
             111 => syscall::nt::NtService::SetInformationThread,
             112 => syscall::nt::NtService::SetThreadExecutionState, 113 => syscall::nt::NtService::TerminateJobObject,
-            114 => syscall::nt::NtService::RtlAcquirePebLock, 115 => syscall::nt::NtService::RtlReleasePebLock, 116 => syscall::nt::NtService::RtlAddAtomToAtomTable, 117 => syscall::nt::NtService::RtlAnsiStringToUnicodeString, 118 => syscall::nt::NtService::RtlCaptureContext, 119 => syscall::nt::NtService::RtlCharToInteger, 120 => syscall::nt::NtService::RtlCreateAtomTable, 121 => syscall::nt::NtService::RtlCreateHeap, 122 => syscall::nt::NtService::RtlCreateUnicodeString, 123 => syscall::nt::NtService::RtlDeleteAtomFromAtomTable, 124 => syscall::nt::NtService::RtlDeregisterWait, 125 => syscall::nt::NtService::RtlDestroyAtomTable, 126 => syscall::nt::NtService::RtlDestroyHeap, 127 => syscall::nt::NtService::RtlDetermineDosPathNameTypeU, 128 => syscall::nt::NtService::RtlDosPathNameToNtPathNameUWithStatus, 129 => syscall::nt::NtService::RtlExitUserProcess, 130 => syscall::nt::NtService::RtlGetProcessHeaps, 131 => syscall::nt::NtService::RtlGetUserInfoHeap, 132 => syscall::nt::NtService::RtlImageNtHeader, 133 => syscall::nt::NtService::RtlInitializeCriticalSection, 134 => syscall::nt::NtService::RtlInitializeCriticalSectionAndSpinCount, 135 => syscall::nt::NtService::RtlInitializeCriticalSectionEx, 136 => syscall::nt::NtService::RtlIsNameLegalDOS8Dot3, 137 => syscall::nt::NtService::RtlLockHeap, 138 => syscall::nt::NtService::RtlUnlockHeap, 139 => syscall::nt::NtService::RtlLookupAtomInAtomTable, 140 => syscall::nt::NtService::RtlOemStringToUnicodeString, 141 => syscall::nt::NtService::RtlQueryAtomInAtomTable, 142 => syscall::nt::NtService::RtlRegisterWait, 143 => syscall::nt::NtService::RtlRestoreContext, 144 => syscall::nt::NtService::RtlSetIoCompletionCallback, 145 => syscall::nt::NtService::RtlGetLastWin32Error, 146 => syscall::nt::NtService::RtlRestoreLastWin32Error, 147 => syscall::nt::NtService::RtlSetLastWin32Error, 148 => syscall::nt::NtService::RtlSetSearchPathMode, 149 => syscall::nt::NtService::RtlSetUnhandledExceptionFilter, 150 => syscall::nt::NtService::RtlSetUserValueHeap, 151 => syscall::nt::NtService::RtlTimeFieldsToTime, 152 => syscall::nt::NtService::RtlTimeToTimeFields, 153 => syscall::nt::NtService::RtlUnicodeStringToAnsiSize, 154 => syscall::nt::NtService::RtlUnicodeStringToAnsiString, 155 => syscall::nt::NtService::RtlUnicodeStringToInteger, 156 => syscall::nt::NtService::RtlUnicodeStringToOemSize, 157 => syscall::nt::NtService::RtlUnicodeStringToOemString, 158 => syscall::nt::NtService::RtlUnicodeToMultiByteN,
-            159 => syscall::nt::NtService::RtlUnicodeToMultiByteSize,
-            160 => syscall::nt::NtService::RtlUnicodeToOemN,
-            161 => syscall::nt::NtService::RtlUpcaseUnicodeString,
-            162 => syscall::nt::NtService::RtlUpperChar,
-            163 => syscall::nt::NtService::Wcsicmp,
-            164 => syscall::nt::NtService::Wcsnicmp,
-            165 => syscall::nt::NtService::Isalpha,
-            166 => syscall::nt::NtService::Islower,
-            167 => syscall::nt::NtService::Memcpy,
-            168 => syscall::nt::NtService::Memmove,
-            169 => syscall::nt::NtService::Memset,
-            170 => syscall::nt::NtService::Strcat,
-            171 => syscall::nt::NtService::Strchr,
-            172 => syscall::nt::NtService::Strcpy,
-            173 => syscall::nt::NtService::Strlen,
-            174 => syscall::nt::NtService::Strpbrk,
-            175 => syscall::nt::NtService::Strrchr,
-            176 => syscall::nt::NtService::Tolower,
-            177 => syscall::nt::NtService::Wcscat,
-            178 => syscall::nt::NtService::Wcschr,
-            179 => syscall::nt::NtService::Wcscmp,
-            180 => syscall::nt::NtService::Wcscpy,
-            181 => syscall::nt::NtService::Wcslen,
-            182 => syscall::nt::NtService::Wcsncmp,
-            183 => syscall::nt::NtService::Wcsrchr,
-            184 => syscall::nt::NtService::Wcstoul,
-            185 => syscall::nt::NtService::WineDbgHeader,
-            186 => syscall::nt::NtService::WineDbgOutput,
-            187 => syscall::nt::NtService::WineDbgStrdup,
-            188 => syscall::nt::NtService::RtlGUIDFromString,
-            189 => syscall::nt::NtService::RtlRandom,
-            190 => syscall::nt::NtService::WineGetHostVersion,
-            191 => syscall::nt::NtService::RtlInterlockedFlushSList,
-            192 => syscall::nt::NtService::RtlInterlockedPushEntrySList,
-            193 => syscall::nt::NtService::RtlTryEnterCriticalSection,
-            194 => syscall::nt::NtService::RtlAreBitsClear,
-            195 => syscall::nt::NtService::RtlAreBitsSet,
-            196 => syscall::nt::NtService::RtlInitializeBitMap,
-            197 => syscall::nt::NtService::RtlLookupFunctionEntry,
-            198 => syscall::nt::NtService::RtlPcToFileHeader,
-            199 => syscall::nt::NtService::RtlSetBits,
-            200 => syscall::nt::NtService::RtlTimeToSecondsSince1970,
+            114 => syscall::nt::NtService::RtlAcquirePebLock, 115 => syscall::nt::NtService::RtlReleasePebLock, 116 => syscall::nt::NtService::RtlAddAtomToAtomTable, 117 => syscall::nt::NtService::RtlAnsiStringToUnicodeString, 118 => syscall::nt::NtService::RtlCaptureContext, 119 => syscall::nt::NtService::RtlCharToInteger, 120 => syscall::nt::NtService::RtlCreateAtomTable, 121 => syscall::nt::NtService::RtlCreateHeap, 122 => syscall::nt::NtService::RtlCreateUnicodeString, 123 => syscall::nt::NtService::RtlDeleteAtomFromAtomTable, 124 => syscall::nt::NtService::RtlDeregisterWait, 125 => syscall::nt::NtService::RtlDestroyAtomTable, 126 => syscall::nt::NtService::RtlDestroyHeap, 127 => syscall::nt::NtService::RtlDetermineDosPathNameTypeU, 128 => syscall::nt::NtService::RtlDosPathNameToNtPathNameUWithStatus, 129 => syscall::nt::NtService::RtlExitUserProcess, 130 => syscall::nt::NtService::RtlGetProcessHeaps, 131 => syscall::nt::NtService::RtlGetUserInfoHeap, 132 => syscall::nt::NtService::RtlImageNtHeader, 133 => syscall::nt::NtService::RtlInitializeCriticalSection, 134 => syscall::nt::NtService::RtlInitializeCriticalSectionAndSpinCount, 135 => syscall::nt::NtService::RtlInitializeCriticalSectionEx, 136 => syscall::nt::NtService::RtlIsNameLegalDOS8Dot3, 137 => syscall::nt::NtService::RtlLockHeap, 138 => syscall::nt::NtService::RtlUnlockHeap, 139 => syscall::nt::NtService::RtlLookupAtomInAtomTable, 140 => syscall::nt::NtService::RtlOemStringToUnicodeString, 141 => syscall::nt::NtService::RtlQueryAtomInAtomTable, 142 => syscall::nt::NtService::RtlRegisterWait, 143 => syscall::nt::NtService::RtlRestoreContext, 144 => syscall::nt::NtService::RtlSetIoCompletionCallback, 145 => syscall::nt::NtService::RtlGetLastWin32Error, 146 => syscall::nt::NtService::RtlRestoreLastWin32Error, 147 => syscall::nt::NtService::RtlSetLastWin32Error, 148 => syscall::nt::NtService::RtlSetSearchPathMode, 149 => syscall::nt::NtService::RtlSetUnhandledExceptionFilter, 150 => syscall::nt::NtService::RtlSetUserValueHeap, 151 => syscall::nt::NtService::RtlTimeFieldsToTime, 152 => syscall::nt::NtService::RtlTimeToTimeFields, 153 => syscall::nt::NtService::RtlTimeToSecondsSince1970, 154 => syscall::nt::NtService::RtlUnicodeStringToAnsiSize, 155 => syscall::nt::NtService::RtlUnicodeStringToAnsiString, 156 => syscall::nt::NtService::RtlUnicodeStringToInteger, 157 => syscall::nt::NtService::RtlUnicodeStringToOemSize, 158 => syscall::nt::NtService::RtlUnicodeStringToOemString, 159 => syscall::nt::NtService::RtlUnicodeToMultiByteN,
+            160 => syscall::nt::NtService::RtlUnicodeToMultiByteSize,
+            161 => syscall::nt::NtService::RtlUnicodeToOemN,
+            162 => syscall::nt::NtService::RtlUpcaseUnicodeString,
+            163 => syscall::nt::NtService::RtlUpperChar,
+            164 => syscall::nt::NtService::Wcsicmp,
+            165 => syscall::nt::NtService::Wcsnicmp,
+            166 => syscall::nt::NtService::Isalpha,
+            167 => syscall::nt::NtService::Islower,
+            168 => syscall::nt::NtService::Memcpy,
+            169 => syscall::nt::NtService::Memmove,
+            170 => syscall::nt::NtService::Memset,
+            171 => syscall::nt::NtService::Strcat,
+            172 => syscall::nt::NtService::Strchr,
+            173 => syscall::nt::NtService::Strcpy,
+            174 => syscall::nt::NtService::Strlen,
+            175 => syscall::nt::NtService::Strpbrk,
+            176 => syscall::nt::NtService::Strrchr,
+            177 => syscall::nt::NtService::Tolower,
+            178 => syscall::nt::NtService::Wcscat,
+            179 => syscall::nt::NtService::Wcschr,
+            180 => syscall::nt::NtService::Wcscmp,
+            181 => syscall::nt::NtService::Wcscpy,
+            182 => syscall::nt::NtService::Wcslen,
+            183 => syscall::nt::NtService::Wcsncmp,
+            184 => syscall::nt::NtService::Wcsrchr,
+            185 => syscall::nt::NtService::Wcstoul,
+            186 => syscall::nt::NtService::WineDbgHeader,
+            187 => syscall::nt::NtService::WineDbgOutput,
+            188 => syscall::nt::NtService::WineDbgStrdup,
+            189 => syscall::nt::NtService::RtlGUIDFromString,
+            190 => syscall::nt::NtService::RtlRandom,
+            191 => syscall::nt::NtService::WineGetHostVersion,
+            192 => syscall::nt::NtService::RtlInterlockedFlushSList,
+            193 => syscall::nt::NtService::RtlInterlockedPushEntrySList,
+            194 => syscall::nt::NtService::RtlTryEnterCriticalSection,
+            195 => syscall::nt::NtService::RtlAreBitsClear,
+            196 => syscall::nt::NtService::RtlAreBitsSet,
+            197 => syscall::nt::NtService::RtlInitializeBitMap,
+            198 => syscall::nt::NtService::RtlLookupFunctionEntry,
+            199 => syscall::nt::NtService::RtlPcToFileHeader,
+            200 => syscall::nt::NtService::RtlSetBits,
             201 => syscall::nt::NtService::RtlUnwindEx,
             202 => syscall::nt::NtService::Setjmp,
             203 => syscall::nt::NtService::Setjmpex,
@@ -957,7 +958,7 @@ pub fn map_nt_runtime(as_: &AddressSpace) -> Result<NtRuntime, pe::Error> {
             511 => syscall::nt::NtService::TpReleaseTimer,
             512 => syscall::nt::NtService::TpSetTimer,
             _ => syscall::nt::NtService::FreeHeap,
-        }};
+        };
         let bytes = if index == 505 { pe::nt_stub::encode_x64_zero_arg_stub(selector.entry()).to_vec() }
             else if matches!(index, 6 | 242 | 435 | 436 | 437 | 483 | 507 | 509 | 510 | 511) { pe::nt_stub::encode_x64_unary_stub(selector.entry()).to_vec() }
             else { pe::nt_stub::encode_x64_six_arg_stub(selector.entry()).to_vec() };
@@ -972,7 +973,8 @@ pub fn map_nt_runtime(as_: &AddressSpace) -> Result<NtRuntime, pe::Error> {
     code[offset..offset + wndproc_continuation.len()].copy_from_slice(&wndproc_continuation);
     offset += wndproc_continuation.len();
     code[offset..offset + apc_continuation.len()].copy_from_slice(&apc_continuation);
-    let relay_offset = offset + apc_continuation.len() + 8;
+    let data_offset = offset + apc_continuation.len();
+    let relay_offset = data_offset + 24;
     let relay = pe::nt_stub::encode_x64_relay_stub(syscall::nt::NtService::RelayCall.entry());
     code[relay_offset..relay_offset + relay.len()].copy_from_slice(&relay);
     let dispatcher_offset = relay_offset + relay.len();
@@ -981,14 +983,38 @@ pub fn map_nt_runtime(as_: &AddressSpace) -> Result<NtRuntime, pe::Error> {
     code[unix_dispatcher_offset..unix_dispatcher_offset + wine_unix_dispatcher.len()].copy_from_slice(&wine_unix_dispatcher);
     let handle_offset = unix_dispatcher_offset + wine_unix_dispatcher.len();
     code[handle_offset..handle_offset + 8].copy_from_slice(&syscall::nt::WINE_UNIXLIB_HANDLE.to_le_bytes());
+    let table_offset = handle_offset + 8;
+    let dispatcher = arena.checked_add(dispatcher_offset as u64).ok_or(pe::Error::Einval)?;
+    let unix_callable = arena.checked_add(unix_dispatcher_offset as u64).ok_or(pe::Error::Einval)?;
+    let callable = arena.checked_add(unix_dispatcher_offset as u64).ok_or(pe::Error::Einval)?;
+    let table_end = table_offset.checked_add(syscall::nt_wine_unix::WINE_UNIX_FUNCTION_COUNT * core::mem::size_of::<u64>()).ok_or(pe::Error::Einval)?;
+    if table_end > code.len() { return Err(pe::Error::Einval); }
+    for slot in code[table_offset..table_end].chunks_exact_mut(core::mem::size_of::<u64>()) {
+        slot.copy_from_slice(&callable.to_le_bytes());
+    }
+    code[data_offset..data_offset + 8].copy_from_slice(&dispatcher.to_le_bytes());
+    code[data_offset + 8..data_offset + 16].copy_from_slice(&unix_callable.to_le_bytes());
+    code[data_offset + 16..data_offset + 24].copy_from_slice(&syscall::nt::WINE_UNIXLIB_HANDLE.to_le_bytes());
     let data = as_.stash_bytes(code.into_boxed_slice());
-    let base = as_.mmap(None, mapped_bytes, VmaProt::READ | VmaProt::EXEC, VmaFlags::PRIVATE,
-        VmaBacking::KernelBytes { data, off: 0 }, false).map_err(|_| pe::Error::Einval)?;
+    let base = as_.mmap_with_may_at(MmapPlacement::FixedNoReplace(base_address), mapped_bytes, VmaProt::READ | VmaProt::EXEC, VmaProt::READ | VmaProt::EXEC, VmaFlags::PRIVATE,
+        VmaBacking::KernelBytes { data, off: 0 }).map_err(|_| pe::Error::Einval)?;
     for address in &mut addresses { *address = base.as_u64().checked_add(*address).ok_or(pe::Error::Einval)?; }
     let relay_call = base.as_u64().checked_add(relay_offset as u64).ok_or(pe::Error::Einval)?;
     let wine_dispatcher = base.as_u64().checked_add(dispatcher_offset as u64).ok_or(pe::Error::Einval)?;
     let wine_unix_dispatcher = base.as_u64().checked_add(unix_dispatcher_offset as u64).ok_or(pe::Error::Einval)?;
     let wine_unixlib_handle = base.as_u64().checked_add(handle_offset as u64).ok_or(pe::Error::Einval)?;
+    let entries = [wine_unix_dispatcher; syscall::nt_wine_unix::WINE_UNIX_FUNCTION_COUNT];
+    // Oxide owns the native NTDLL Unix-call implementations in the kernel;
+    // this table is the process-local identity Wine stores in
+    // __wine_unixlib_handle. The dispatcher validates the bounded entry and
+    // executes the typed implementation, so the PE side never receives an
+    // arbitrary user pointer as a substitute for the native table.
+    if crate::unixlib::register_callable_table(
+        as_, crate::unixlib::MappedUnixlib { base: base.as_u64(), end: base.as_u64().checked_add(mapped_bytes as u64).ok_or(pe::Error::Einval)? },
+        table_offset as u64, &entries, &[(base.as_u64(), base.as_u64().checked_add(table_end as u64).ok_or(pe::Error::Einval)?)]).is_err() {
+        let _ = as_.munmap(base, mapped_bytes);
+        return Err(pe::Error::Einval);
+    }
     Ok(NtRuntime { base, bytes: mapped_bytes, relay_call, wine_dispatcher, wine_unix_dispatcher, wine_unixlib_handle, addresses })
 }
 
@@ -1241,13 +1267,16 @@ fn load_pe_image_with_resolver_at_mode<R: ImportResolver>(blob: &[u8], as_: &Add
             let slot = (descriptor_rva as usize).checked_add(8).ok_or(pe::Error::Einval)?;
             let end = slot.checked_add(8).ok_or(pe::Error::Einval)?;
             image.get_mut(slot..end).ok_or(pe::Error::Einval)?.copy_from_slice(&relay_call.to_le_bytes());
-            klog::write_raw(b"[WINDOWS-PE-RELAY] base=");
-            klog::write_hex_u64(base);
-            klog::write_raw(b" descriptor=");
-            klog::write_hex_u64(base.checked_add(descriptor_rva as u64).ok_or(pe::Error::Einval)?);
-            klog::write_raw(b" dispatcher=");
-            klog::write_hex_u64(relay_call);
-            klog::write_raw(b"\n");
+            #[cfg(feature = "debug-faultdiag")]
+            {
+                klog::write_raw(b"[WINDOWS-PE-RELAY] base=");
+                klog::write_hex_u64(base);
+                klog::write_raw(b" descriptor=");
+                klog::write_hex_u64(base.checked_add(descriptor_rva as u64).ok_or(pe::Error::Einval)?);
+                klog::write_raw(b" dispatcher=");
+                klog::write_hex_u64(relay_call);
+                klog::write_raw(b"\n");
+            }
         }
     }
     as_.munmap(reservation, len).map_err(|_| pe::Error::Einval)?;
@@ -1333,6 +1362,7 @@ pub fn load_pe_module_graph<'a, R: ImportResolver>(modules: &[pe::Module<'a>], a
         };
         bases.push(PeModuleBase { name: module.name, base: reservation.as_u64(), size: module.image.size_of_image });
     }
+    #[cfg(feature = "debug-faultdiag")]
     for module in &bases {
         klog::write_raw(b"[WINDOWS-PE-MODULE] name=");
         klog::write_raw(module.name);

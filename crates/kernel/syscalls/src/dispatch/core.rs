@@ -52,11 +52,24 @@ fn syscall_entry_work(orig_nr: u64, args: &SyscallArgs) -> (Option<u64>, u64) {
 #[inline(never)]
 fn dispatch_routed_syscall(entry: (Option<u64>, u64), nr: u64, args: &SyscallArgs) -> i64 {
     if let Some(rv) = entry.0 { return rv as i64; }
+    // Keep the raw Wine ordinals observable at the common routing boundary.
+    // The generated PE win32u.dll thunks enter with the ordinal in RAX; a
+    // missing marker here means the call never reached the raw adapter and a
+    // handler-side diagnostic would be misleading.  This is intentionally
+    // limited to the window calls under active bring-up, not a per-syscall
+    // trace.
+    if matches!(nr, 0x13d8 | 0x13d9 | 0x136b | 0x14eb) {
+        klog::write_raw(b"[WINDOWS-PE-WINE-RAW-ENTRY] ordinal=");
+        klog::write_hex_u64(nr);
+        klog::write_raw(b" nt=");
+        klog::write_hex_u64(sched::live::current().is_some_and(|task| task.is_nt_personality()) as u64);
+        klog::write_raw(b"\n");
+    }
     // Real Wine win32u PE stubs use their generated raw ordinal namespace
     // rather than Oxide's tagged synthetic dispatcher entry. Only an NT task
     // may claim this otherwise-unreserved raw number.
     if sched::live::current().is_some_and(|task| task.is_nt_personality()) {
-        if let Some(rv) = crate::nt_wine_window::dispatch_raw(nr, *args) { return rv as i64; }
+        if let Some(rv) = crate::nt_wine_window::dispatch_raw_linux(nr, *args) { return rv as i64; }
     }
     // A tagged NT word is consumed before the Linux number tables. The common
     // syscall entry/return frame is retained, but no Linux handler can claim
@@ -81,6 +94,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
     nr: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64,
     #[cfg(target_arch = "aarch64")] entry_frame: *mut hal_aarch64::SvcFrame,
 ) -> u64 {
+    #[cfg(feature = "debug-syscall")]
     if nr >> 32 == syscall::nt::NT_SERVICE_NAMESPACE >> 32 {
         klog::write_raw(b"[WINDOWS-PE-RAW-NT] nr="); klog::write_hex_u64(nr);
         klog::write_raw(b" service="); klog::write_hex_u64(nr & 0xffff_ffff);

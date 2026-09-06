@@ -59,8 +59,10 @@ pub unsafe fn new_nt_thread_unpublished(
     // SAFETY: child is unpublished and its context is exclusively initialized here.
     unsafe {
         let ctx = child.arch_ctx_ptr::<hal_aarch64::ContextAArch64>();
-        *((*ctx).sp as *mut u64) = parameter;
-        (*ctx).tpidr = teb;
+        let regs = (*ctx).sp as *mut hal_aarch64::SvcFrame;
+        (*regs).gp[0] = parameter;
+        (*regs).retval = parameter;
+        (*regs).x18_x29[0] = teb;
     }
     Ok(task)
 }

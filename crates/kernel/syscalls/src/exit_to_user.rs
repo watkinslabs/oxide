@@ -288,12 +288,27 @@ pub unsafe fn exit_to_user_mode_loop(regs: *mut UserRegs, syscall_rv: Option<i64
     let mut syscall_pass = from_syscall;
     let mut passes: u32 = 0;
     loop {
+        if let Some(task) = sched::live::current() {
+            // SAFETY: this loop owns the actual live frame on every IRQ,
+            // exception and syscall return; native restoration never uses a stale syscall frame.
+            if let Some(status) = unsafe { crate::nt_native_thread::exit_to_user(task, regs) } {
+                rv = status as i64;
+                arch_retval = Some(status);
+                owe_signal_arm = false;
+                syscall_pass = false;
+            }
+        }
+        let native_callbacks = sched::live::current().map(|task| {
+            let state = task.nt_native_thread.lock();
+            state.callbacks_ready()
+        }).unwrap_or(true);
         let w = work_flags();
         let apc_pending = sched::live::current().map(|task| task.is_nt_personality()
-            && task.nt_apc_queue.delivery_pending()).unwrap_or(false);
+            && native_callbacks && task.nt_apc_queue.delivery_pending()).unwrap_or(false);
         let exception_pending = sched::live::current().map(|task| task.is_nt_personality()
-            && task.nt_exception.is_pending()).unwrap_or(false);
+            && native_callbacks && task.nt_exception.is_pending()).unwrap_or(false);
         let nt_suspend_pending = sched::live::current().map(|task| task.is_nt_personality()
+            && native_callbacks && !task.nt_creation_pending.load(core::sync::atomic::Ordering::Acquire)
             && task.nt_suspend_requested()).unwrap_or(false);
         let want_notify = (w & work::NOTIFY_SIGNAL) != 0;
         let want_freeze = (w & work::FREEZE) != 0;
