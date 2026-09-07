@@ -4,6 +4,7 @@ use super::*;
 fn dword(value: u64) -> u32 { value as u32 }
 fn bounded(bytes: u64) -> Option<u32> { (bytes <= abi::MAX_QUERY_BYTES as u64).then_some(bytes as u32) }
 
+/// Place every Windows argument into its declared request field. # C: O(1)
 pub(super) fn build(ordinal: u64, args: &[u64], fetched: Option<u64>) -> Option<Request> {
     match ordinal {
         FONT_IS_LINKED => return Some(Request::FontIsLinked),
