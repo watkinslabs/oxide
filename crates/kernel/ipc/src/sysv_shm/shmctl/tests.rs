@@ -283,3 +283,73 @@ fn syscall_entry_copies_stat_info_and_set_buffers() {
     assert_eq!(sys_shmctl(&info_args), 0);
     assert_eq!(get_u64(&info, SHMINFO_SHMMNI_OFF), SHMMNI as u64);
 }
+
+/// The X server's `ShmAttach` does `shmat` then `shmctl(IPC_STAT)` then a
+/// credential check on the reported perm block, and toolkits mark the segment
+/// for destruction as soon as they have attached it themselves. `SHM_DEST` is
+/// therefore the NORMAL state of a segment under `IPC_STAT`: a marked segment
+/// with attachers is a valid object, `IPC_STAT` reports it (mode carries the
+/// flag), and only a segment already gone reports otherwise.
+#[test]
+fn stat_reports_a_segment_marked_for_destruction() {
+    let _shm = crate::sysv_shm::test_claim::claim_shm();
+    let owner = cred(10, 20, &[], false);
+    let id = shmget(0x5901, 4096, crate::sysv_shm::IPC_CREAT | 0o600, owner.clone()) as i32;
+    lookup_by_id(id).unwrap().nattch.store(2, Ordering::Release);
+    assert_eq!(rmid_segment(id, &owner), 0);
+
+    let (seg, ret) = stat_segment(id, IPC_STAT, &owner).expect("IPC_STAT on a marked segment");
+    assert_eq!(ret, 0);
+    let ds = encode_shmid64(&seg);
+    assert_eq!(get_u32(&ds, IPC64_PERM_MODE_OFF), 0o600 | SHM_DEST,
+               "mode carries SHM_DEST to the caller instead of failing the call");
+    assert_eq!(get_u32(&ds, IPC64_PERM_UID_OFF), 10);
+    assert_eq!(get_u32(&ds, IPC64_PERM_CUID_OFF), 10);
+    assert_eq!(get_u32(&ds, IPC64_PERM_GID_OFF), 20);
+    assert_eq!(get_u32(&ds, IPC64_PERM_CGID_OFF), 20);
+    assert_eq!(get_u64(&ds, SHMID64_NATTCH_OFF), 2);
+
+    let mut out = [0u8; SHMID64_DS_BYTES];
+    let args = syscall::SyscallArgs { a0: id as u64, a1: IPC_STAT, a2: out.as_mut_ptr() as u64, ..Default::default() };
+    assert_eq!(sys_shmctl(&args), 0, "the syscall entry answers as well as the work function");
+    assert_eq!(get_u32(&out, IPC64_PERM_MODE_OFF), 0o600 | SHM_DEST);
+    reset();
+}
+
+/// The other control commands are equally live on a marked segment: the flag
+/// records a pending destruction, it does not close the object.
+#[test]
+fn set_lock_and_a_second_rmid_still_work_on_a_marked_segment() {
+    let _shm = crate::sysv_shm::test_claim::claim_shm();
+    let owner = cred_caps(10, 20, &[], false, true, false);
+    let id = shmget(0x5902, 4096, crate::sysv_shm::IPC_CREAT | 0o600, owner.clone()) as i32;
+    lookup_by_id(id).unwrap().nattch.store(1, Ordering::Release);
+    assert_eq!(rmid_segment(id, &owner), 0);
+
+    assert_eq!(set_segment(id, &owner, ShmctlSet { uid: 11, gid: 21, mode: 0o640 }), 0);
+    let seg = lookup_by_id(id).unwrap();
+    assert_eq!(seg.mode.load(Ordering::Acquire), 0o640 | SHM_DEST,
+               "IPC_SET replaces the permission bits and preserves SHM_DEST");
+    drop(seg);
+    assert_eq!(lock_segment(id, SHM_LOCK, &owner), 0);
+    assert_ne!(lookup_by_id(id).unwrap().mode.load(Ordering::Acquire) & SHM_LOCKED, 0);
+    assert_eq!(rmid_segment(id, &owner), 0, "a second IPC_RMID re-marks rather than failing");
+    assert!(lookup_by_id(id).is_some(), "an attached segment is still not removed");
+    reset();
+}
+
+/// `SHM_INFO` counts every segment the namespace still holds; a marked
+/// segment is still held until its last detach.
+#[test]
+fn shm_info_counts_a_segment_marked_for_destruction() {
+    let _shm = crate::sysv_shm::test_claim::claim_shm();
+    let owner = cred(10, 20, &[], false);
+    let id = shmget(0x5903, 8192, crate::sysv_shm::IPC_CREAT | 0o600, owner.clone()) as i32;
+    lookup_by_id(id).unwrap().nattch.store(1, Ordering::Release);
+    assert_eq!(rmid_segment(id, &owner), 0);
+    let ns = crate::ipc_namespace::current().unwrap().key();
+    let si = encode_shm_info(&ns_segments(ns), ns);
+    assert_eq!(u32::from_le_bytes(si[SHM_INFO_USED_IDS_OFF..SHM_INFO_USED_IDS_OFF + 4].try_into().unwrap()), 1);
+    assert_eq!(get_u64(&si, SHM_INFO_TOT_OFF), 2);
+    reset();
+}

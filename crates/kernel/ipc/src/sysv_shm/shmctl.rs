@@ -140,14 +140,18 @@ fn encode_shminfo64() -> [u8; SHMINFO64_BYTES] {
     b
 }
 
+/// `used_ids` and `shm_tot` count every segment the namespace still holds.
+/// A segment marked `SHM_DEST` is still held — the mark schedules destruction
+/// at the last detach, it does not unlink the segment — so excluding it here
+/// would report a namespace smaller than the one `SHM_STAT` can index.
 fn encode_shm_info(segs: &[alloc::sync::Arc<ShmSegment>], ns: namespace_identity::NamespaceId) -> [u8; SHM_INFO_BYTES] {
     let mut b = [0u8; SHM_INFO_BYTES];
-    let live = segs.iter().filter(|s| s.ns == ns && (s.mode.load(Ordering::Acquire) & SHM_DEST) == 0);
+    let held = segs.iter().filter(|s| s.ns == ns);
     let mut used = 0i32;
     let mut pages = 0u64;
     let mut resident = 0u64;
     let mut swapped = 0u64;
-    for seg in live {
+    for seg in held {
         used += 1;
         pages += ((seg.size as u64) + PAGE_SIZE - 1) / PAGE_SIZE;
         let (backing_resident, backing_swapped) = seg.backing.page_counts();
@@ -173,6 +177,12 @@ fn max_stat_index(segs: &[alloc::sync::Arc<ShmSegment>]) -> i64 {
     if segs.is_empty() { 0 } else { (segs.len() - 1) as i64 }
 }
 
+/// `IPC_STAT` / `SHM_STAT` / `SHM_STAT_ANY`. A segment marked `SHM_DEST` is a
+/// valid object with attachers, so it is reported like any other and the mark
+/// reaches the caller in `mode`: the MIT-SHM attach sequence stats exactly such
+/// a segment, because the toolkit marks it as soon as it has attached its own
+/// end. Only a segment no longer in the table is an error, and that is the
+/// `EINVAL` below.
 fn stat_segment(shmid: i32, cmd: u64, cred: &IpcCred) -> Result<(alloc::sync::Arc<ShmSegment>, i64), i64> {
     let owner = crate::ipc_namespace::current().map_err(|_| err(Errno::Einval))?;
     let ns = owner.key();
@@ -182,7 +192,6 @@ fn stat_segment(shmid: i32, cmd: u64, cred: &IpcCred) -> Result<(alloc::sync::Ar
         if shmid < 0 { return Err(err(Errno::Einval)); }
         ns_segments(ns).get(shmid as usize).cloned().ok_or(err(Errno::Einval))?
     };
-    if (seg.mode.load(Ordering::Acquire) & SHM_DEST) != 0 { return Err(err(Errno::Eidrm)); }
     if cmd != SHM_STAT_ANY && (!ipc_permitted(&seg, cred, S_IRUGO)
         || !super::security_permissions(&seg, &["getattr", "associate"])) { return Err(err(Errno::Eacces)); }
     let ret = if cmd == IPC_STAT { 0 } else { seg.id as i64 };
@@ -196,7 +205,6 @@ fn set_segment(shmid: i32, cred: &IpcCred, set: ShmctlSet) -> i64 {
     let ns = owner.key();
     let g = REG.segs.lock();
     let Some(s) = g.iter().find(|s| s.id == shmid && s.ns == ns) else { return err(Errno::Einval); };
-    if (s.mode.load(Ordering::Acquire) & SHM_DEST) != 0 { return err(Errno::Eidrm); }
     if !can_admin(s, cred) { return err(Errno::Eperm); }
     if !super::security_permissions(s, &["setattr"]) { return err(Errno::Eacces); }
     s.uid.store(set.uid, Ordering::Release);
@@ -212,7 +220,6 @@ fn rmid_segment(shmid: i32, cred: &IpcCred) -> i64 {
     let ns = owner.key();
     let mut g = REG.segs.lock();
     let Some(pos) = g.iter().position(|s| s.id == shmid && s.ns == ns) else { return err(Errno::Einval); };
-    if (g[pos].mode.load(Ordering::Acquire) & SHM_DEST) != 0 { return err(Errno::Eidrm); }
     if !can_admin(&g[pos], cred) { return err(Errno::Eperm); }
     if !super::security_permissions(&g[pos], &["destroy"]) { return err(Errno::Eacces); }
     if g[pos].nattch.load(Ordering::Acquire) > 0 {
@@ -239,7 +246,6 @@ fn lock_segment(shmid: i32, cmd: u64, cred: &IpcCred) -> i64 {
     let ns = owner.key();
     let g = REG.segs.lock();
     let Some(s) = g.iter().find(|s| s.id == shmid && s.ns == ns) else { return err(Errno::Einval); };
-    if (s.mode.load(Ordering::Acquire) & SHM_DEST) != 0 { return err(Errno::Eidrm); }
     if !can_lock(s, cred) { return err(Errno::Eperm); }
     if !super::security_permissions(s, &["lock"]) { return err(Errno::Eacces); }
     // Huge pages are already unevictable — there is no swap path to lock them
