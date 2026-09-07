@@ -1,5 +1,4 @@
 use std::env;
-use std::time::Duration;
 
 /// Milliseconds since this process started, for startup measurements.
 fn elapsed_ms(start: std::time::Instant) -> u128 { start.elapsed().as_millis() }
@@ -34,5 +33,10 @@ fn main() {
         std::process::exit(1);
     }
     eprintln!("windows-compositor: monitor geometry published after {}ms", elapsed_ms(start));
-    loop { match backend.run_once(&mut transport) { Ok(true) => {}, Ok(false) => std::thread::sleep(Duration::from_millis(1)), Err(error) => { eprintln!("windows-compositor: {error:?}"); break; } } }
+    // Everything ready is drained on each wake and the loop then blocks on
+    // both descriptors. Polling the two sources and sleeping between rounds
+    // instead spent a wake per millisecond on a single-processor guest and
+    // held every arrival for the rest of its sleep.
+    let error = windows_compositor::run(&mut backend, &mut transport);
+    eprintln!("windows-compositor: {}", windows_compositor::describe(&error));
 }

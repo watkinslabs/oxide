@@ -3,6 +3,8 @@
 //! The transport adapter is intentionally supplied by the shared syscall
 //! protocol owner. This crate owns X11 objects and translation only.
 
+mod bridge;
+mod eventloop;
 mod ffi;
 mod geometry;
 mod keyboard;
@@ -19,6 +21,8 @@ pub use keyboard::{evdev_x11_scan, key_flags, key_lparam, keysym_to_vk, state_ut
 pub use readiness::{parse_args, publish_then_notify, Options, UsageError, READY_TOKEN};
 pub use protocol::{BridgeCommand, BridgeEvent, Frame, Inbound, InputEvent, NativeTransport, StreamTransport, TransportError};
 pub use x11::{Backend, BackendError, Xid};
+pub use bridge::{describe, run, Bridge};
+pub use eventloop::{wait_readable, EventSource, WAIT_FOREVER};
 
 /// Environment switch that turns the per-record bridge trace on.
 pub const TRACE_ENV: &str = "OXIDE_COMPOSITOR_TRACE";
