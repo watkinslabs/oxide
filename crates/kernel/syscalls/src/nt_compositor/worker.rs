@@ -80,7 +80,7 @@ extern "C" fn reader(arg: usize) -> ! {
                 // The desktop confirming pixels it was handed is the frame
                 // milestone; nothing waits on the completion any more, so
                 // this is where that acknowledgement is observed.
-                Ok(true) => crate::nt_milestone::desktop_ack(),
+                Ok(true) => { crate::nt_gdi_frame_trace::acknowledged(sequence); crate::nt_milestone::desktop_ack() }
                 Ok(false) => {}
                 Err(_) => { teardown(b"rx-ack-unmatched", sequence, hwnd); break; }
             }
@@ -114,12 +114,14 @@ extern "C" fn writer(arg: usize) -> ! {
     // SAFETY: spawn passed exactly one Arc strong reference to this worker.
     let binding = unsafe { Arc::from_raw(arg as *const Binding) };
     while binding.live() {
-        let bytes = binding.state.lock().queue.take_send();
+        let (bytes, active) = { let mut state = binding.state.lock(); (state.queue.take_send(), state.queue.active()) };
         if let Some(bytes) = bytes {
+            crate::nt_gdi_frame_trace::taken(active.unwrap_or(0));
             let deadline = net::sock_clock::monotonic_ns_safe().saturating_add(TRANSFER_TIMEOUT_NS);
             if stream::write_record(&bytes, |slice| write_chunk(&binding, slice, deadline)).is_err() {
                 teardown(b"tx-write", 0, 0); break;
             }
+            crate::nt_gdi_frame_trace::written(active.unwrap_or(0));
             if binding.state.lock().queue.sent().is_err() { teardown(b"tx-sent-unmatched", 0, 0); break; }
             binding.wait.wake_all();
         } else {

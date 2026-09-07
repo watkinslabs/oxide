@@ -149,7 +149,7 @@ fn notepad_visible_child_statusbar_starts_at_zero_extent() {
         assert!(Record::new(opcode, 2, child, rect.encode_window().unwrap().to_vec()).is_ok());
     }
     assert!(wire::Rect::decode(&rect.encode_window().unwrap()).is_err());
-    assert!(wire::pixel_len(0, 0, 0, wire::PIXEL_BGRA8888).is_err());
+    assert!(wire::frame_pixel_len(0, 0, 0, wire::PIXEL_BGRA8888, wire::Damage { left: 0, top: 0, right: 1, bottom: 1 }).is_err());
     let mut monitors = 1u32.to_le_bytes().to_vec();
     monitors.extend_from_slice(&rect.encode_window().unwrap()); monitors.extend_from_slice(&rect.encode_window().unwrap());
     assert!(Record::new(Opcode::Monitors, 3, 0, monitors).is_err());
@@ -169,10 +169,26 @@ fn zero_window_dimension_does_not_relax_bounds_or_coordinate_overflow() {
 fn version_opcode_reserved_and_pixels_are_checked() {
     let bytes = Record::new(Opcode::Close, 1, 1, vec![]).unwrap().encode().unwrap();
     for index in [0, 4, 6, 12] { let mut bad = bytes.clone(); bad[index] = 0xff; assert!(Header::decode(&bad).is_err()); }
-    assert_eq!(wire::pixel_len(4, 3, 16, wire::PIXEL_BGRA8888), Ok(48));
-    for (w,h,s,f) in [(0,1,4,1),(1,0,4,1),(4,3,15,1),(4,3,16,2),(8192,8192,u32::MAX,1)] { assert!(wire::pixel_len(w,h,s,f).is_err()); }
-    let mut p = vec![]; for v in [4u32, 3, 16, 1] { p.extend_from_slice(&v.to_le_bytes()); } p.resize(16+47, 0);
-    assert!(Record::new(Opcode::Frame, 1, 1, p).is_err());
+    let whole = wire::Damage { left: 0, top: 0, right: 4, bottom: 3 };
+    assert_eq!(wire::frame_pixel_len(4, 3, 16, wire::PIXEL_BGRA8888, whole), Ok(48));
+    // The bytes belong to the sub-rectangle, so one row of the same surface is one row of bytes.
+    assert_eq!(wire::frame_pixel_len(4, 3, 16, wire::PIXEL_BGRA8888, wire::Damage { left: 0, top: 1, right: 4, bottom: 2 }), Ok(16));
+    for (w,h,s,f) in [(0,1,4,1),(1,0,4,1),(4,3,15,1),(4,3,16,2),(8192,8192,u32::MAX,1)] { assert!(wire::frame_pixel_len(w,h,s,f,whole).is_err()); }
+    // A stride below the sub-rectangle's own row, and a sub-rectangle outside the surface.
+    assert!(wire::frame_pixel_len(4, 3, 12, wire::PIXEL_BGRA8888, whole).is_err());
+    assert!(wire::frame_pixel_len(4, 3, 16, wire::PIXEL_BGRA8888, wire::Damage { left: 0, top: 0, right: 5, bottom: 3 }).is_err());
+    let frame = |stride: u32, damage: wire::Damage, bytes: usize| {
+        let mut p = vec![]; for v in [4u32, 3, stride, 1] { p.extend_from_slice(&v.to_le_bytes()); }
+        p.extend_from_slice(&damage.encode()); p.resize(wire::FRAME_HEADER_BYTES + bytes, 0); p
+    };
+    assert!(Record::new(Opcode::Frame, 1, 1, frame(16, whole, 47)).is_err());
+    assert!(Record::new(Opcode::Frame, 1, 1, frame(16, whole, 48)).is_ok());
+    // A payload sized for the whole surface while naming one row is refused:
+    // it describes pixels its own header does not account for.
+    let row = wire::Damage { left: 0, top: 1, right: 4, bottom: 2 };
+    assert!(Record::new(Opcode::Frame, 1, 1, frame(16, row, 48)).is_err());
+    assert!(Record::new(Opcode::Frame, 1, 1, frame(16, row, 16)).is_ok());
+    assert!(Record::new(Opcode::Frame, 1, 1, frame(16, wire::Damage { left: 2, top: 0, right: 6, bottom: 3 }, 48)).is_err());
 }
 
 #[test]

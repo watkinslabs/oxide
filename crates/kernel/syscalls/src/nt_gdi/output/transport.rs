@@ -10,8 +10,9 @@ const STATUS_INVALID_PARAMETER:u64=0xc000000d;
 /// # C: bounded queue lookup; # Sleeps: no
 pub(crate) fn submit_frame(frame:Result<syscall::nt_compositor::Record,u64>)->u64{
     let frame=match frame{Ok(frame)=>frame,Err(status)=>return status};
+    let start=crate::nt_gdi_frame_trace::now();
     match crate::nt_compositor::submit_current(frame.header.opcode,frame.header.hwnd,frame.payload){
-        Ok(_)=>STATUS_SUCCESS,
+        Ok(sequence)=>{crate::nt_gdi_frame_trace::enqueued(start,sequence);STATUS_SUCCESS},
         Err(_)=>STATUS_INVALID_PARAMETER,
     }
 }

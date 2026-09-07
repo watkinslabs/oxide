@@ -94,6 +94,8 @@ impl Queue {
         if result != Completion::Pending { let entry = self.entries.remove(i).ok_or(TransportError::Unknown)?; self.bytes -= entry.charge; }
         Ok(result)
     }
+    /// The record this queue currently has in flight on the stream. # C: O(1)
+    pub fn active(&self) -> Option<u64> { self.active }
     /// # C: O(records)
     pub fn has_send(&self) -> bool { !self.dead && self.active.is_none() && self.entries.iter().any(|e| e.bytes.is_some()) }
     /// # C: O(records)

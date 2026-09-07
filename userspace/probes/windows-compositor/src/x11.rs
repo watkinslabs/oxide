@@ -16,7 +16,7 @@ mod visibility;
 #[derive(Debug)]
 pub enum BackendError { DisplayUnavailable, X11, InvalidCommand, Transport(TransportError) }
 
-struct Window { xid: Xid, parent: Xid, gc: ffi::Gcontext, rect: Rect, width: u32, height: u32, requested_visible: bool, suppress_backing_configure: bool, last_frame: Option<Frame>, caret: crate::caret::Surface }
+struct Window { xid: Xid, parent: Xid, gc: ffi::Gcontext, rect: Rect, width: u32, height: u32, requested_visible: bool, suppress_backing_configure: bool, surface: Option<crate::retained::Retained>, caret: crate::caret::Surface }
 
 pub struct Backend { conn: *mut ffi::Connection, keymap: *mut ffi::XkbKeymap, state: *mut ffi::XkbState, context: *mut ffi::XkbContext, max_request_bytes: usize, root: Xid, visual: ffi::Visualid, depth: u8, screen: Rect, atoms: Atoms, windows: BTreeMap<u32, Window>, xid_to_hwnd: BTreeMap<Xid, u32>, down_keys: BTreeMap<u8, bool>, extra_buttons: u32, pending: VecDeque<BridgeEvent> }
 
@@ -243,29 +243,44 @@ impl Backend {
         if width == 0 || height == 0 { unsafe { ffi::xcb_unmap_window(self.conn, xid); } }
         let requested_visible = style & WS_VISIBLE != 0;
         if requested_visible && width != 0 && height != 0 { unsafe { ffi::xcb_map_window(self.conn, xid); } }
-        self.windows.insert(hwnd, Window { xid, parent: x_parent, gc, rect, width, height, requested_visible, suppress_backing_configure: width == 0 || height == 0, last_frame: None, caret: crate::caret::Surface::default() }); self.xid_to_hwnd.insert(xid, hwnd); Ok(())
+        self.windows.insert(hwnd, Window { xid, parent: x_parent, gc, rect, width, height, requested_visible, suppress_backing_configure: width == 0 || height == 0, surface: None, caret: crate::caret::Surface::default() }); self.xid_to_hwnd.insert(xid, hwnd); Ok(())
     }
 
+    /// Apply one frame's sub-rectangle to the surface this backend retains for
+    /// the window, then put that sub-rectangle on the display.
     fn present(&mut self, hwnd: u32, frame: &Frame) -> Result<(), BackendError> {
-        if self.windows.get(&hwnd).ok_or(BackendError::InvalidCommand)?.width != frame.width || self.windows.get(&hwnd).ok_or(BackendError::InvalidCommand)?.height != frame.height { return Err(BackendError::InvalidCommand); }
-        self.windows.get_mut(&hwnd).ok_or(BackendError::InvalidCommand)?.last_frame = Some(frame.clone());
+        {
+            let window = self.windows.get_mut(&hwnd).ok_or(BackendError::InvalidCommand)?;
+            if window.width != frame.width || window.height != frame.height { return Err(BackendError::InvalidCommand); }
+            if !window.surface.as_ref().is_some_and(|s| s.width == frame.width && s.height == frame.height) {
+                window.surface = Some(crate::retained::Retained::new(frame.width, frame.height).map_err(BackendError::Transport)?);
+            }
+            window.surface.as_mut().ok_or(BackendError::InvalidCommand)?.apply(frame).map_err(BackendError::Transport)?;
+        }
         self.repaint(hwnd, frame.damage)
     }
 
     fn repaint(&mut self, hwnd: u32, damage: Rect) -> Result<(), BackendError> {
         let window = self.windows.get(&hwnd).ok_or(BackendError::InvalidCommand)?;
-        let frame = window.last_frame.as_ref().ok_or(BackendError::InvalidCommand)?;
-        if frame.width != window.width || frame.height != window.height { return Err(BackendError::InvalidCommand); }
-        let composed = window.caret.compose(frame).map_err(BackendError::Transport)?;
-        let bytes = unsafe { std::slice::from_raw_parts(composed.as_ptr() as *const u8, composed.len() * 4) };
-        let damage_width = (damage.right - damage.left) as usize; let damage_height = (damage.bottom - damage.top) as usize;
-        if damage.left < 0 || damage.top < 0 || damage.right > frame.width as i32 || damage.bottom > frame.height as i32 || damage_width == 0 || damage_height == 0 { return Err(BackendError::InvalidCommand); }
+        let surface = window.surface.as_ref().ok_or(BackendError::InvalidCommand)?;
+        if surface.width != window.width || surface.height != window.height { return Err(BackendError::InvalidCommand); }
+        if !damage.is_inside(surface.width, surface.height) { return Err(BackendError::InvalidCommand); }
+        // The overlay is applied while the damaged pixels are assembled, so
+        // the retained surface keeps what the application drew and no second
+        // copy of the window exists to hold a composite.
+        let overlay = window.caret.covered();
+        let damage_width = (damage.right - damage.left) as usize;
         let payload_limit = self.max_request_bytes.saturating_sub(32).max(4);
         let tile_width = damage_width.min(payload_limit / 4).max(1);
         let tile_height = (payload_limit / tile_width.saturating_mul(4)).max(1);
         for y in (damage.top as usize..damage.bottom as usize).step_by(tile_height) { for x in (damage.left as usize..damage.right as usize).step_by(tile_width) {
             let w = tile_width.min(damage.right as usize - x); let h = tile_height.min(damage.bottom as usize - y); let mut damaged = Vec::with_capacity(w.saturating_mul(h).saturating_mul(4));
-            for row in y..y + h { let start = row.checked_mul(frame.stride as usize).and_then(|v| v.checked_add(x)).and_then(|v| v.checked_mul(4)).ok_or(BackendError::InvalidCommand)?; let end = start.checked_add(w.checked_mul(4).ok_or(BackendError::InvalidCommand)?).ok_or(BackendError::InvalidCommand)?; damaged.extend_from_slice(bytes.get(start..end).ok_or(BackendError::InvalidCommand)?); }
+            for row in y..y + h {
+                let line = surface.run(row, x, w).ok_or(BackendError::InvalidCommand)?;
+                let touched = overlay.is_some_and(|o| (row as i32) >= o.top && (row as i32) < o.bottom && (x as i32) < o.right && ((x + w) as i32) > o.left);
+                if touched { for (index, pixel) in line.iter().enumerate() { damaged.extend_from_slice(&(pixel ^ window.caret.xor_at((x + index) as i32, row as i32)).to_le_bytes()); } }
+                else { for pixel in line { damaged.extend_from_slice(&pixel.to_le_bytes()); } }
+            }
             // An image put is a one-way request. Waiting for its reply costs a
             // full server round trip per tile, and one window's line of text
             // is tens of tiles: the client's own paint blocks for all of them

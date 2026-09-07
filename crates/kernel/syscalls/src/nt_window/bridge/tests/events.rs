@@ -243,7 +243,7 @@ fn notepad_visible_statusbar_child_keeps_zero_geometry_and_main_parent() {
     assert_eq!(ready.rect.width, 0);
     assert_eq!(ready.rect.height, 0);
     assert!(ready.rect.validate().is_err());
-    assert!(wire::pixel_len(0, 0, 0, wire::PIXEL_BGRA8888).is_err());
+    assert!(wire::frame_pixel_len(0, 0, 0, wire::PIXEL_BGRA8888, wire::Damage { left: 0, top: 0, right: 1, bottom: 1 }).is_err());
 }
 
 #[test]

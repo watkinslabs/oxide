@@ -8,16 +8,27 @@ use syscall::nt_compositor::{self as wire, Opcode, Record};
 pub const MAX_TITLE_UNITS: usize = 4096;
 pub const MAX_PIXELS: usize = 16 * 1024 * 1024;
 
+/// One update of a window's surface: the extent the surface has, the damaged
+/// sub-rectangle of it, and only that sub-rectangle's pixels, `stride` of them
+/// per row. The surface itself is retained by the backend across frames, so a
+/// re-expose repaints from its own copy rather than from a resend.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Frame { pub width: u32, pub height: u32, pub stride: u32, pub pixels: Vec<u32>, pub damage: Rect }
 
 impl Frame {
     pub fn new(width: u32, height: u32, stride: u32, pixels: Vec<u32>, damage: Rect) -> Result<Self, TransportError> {
-        let count = usize::try_from(stride).ok().and_then(|s| usize::try_from(height).ok().and_then(|h| s.checked_mul(h))).ok_or(TransportError::InvalidFrame)?;
-        if width == 0 || height == 0 || stride < width || count > MAX_PIXELS || pixels.len() != count || !damage.is_inside(width, height) {
-            return Err(TransportError::InvalidFrame);
-        }
+        if width == 0 || height == 0 || !damage.is_inside(width, height) { return Err(TransportError::InvalidFrame); }
+        let rows = usize::try_from(damage.bottom - damage.top).map_err(|_| TransportError::InvalidFrame)?;
+        let row = u32::try_from(damage.right - damage.left).map_err(|_| TransportError::InvalidFrame)?;
+        let count = usize::try_from(stride).ok().and_then(|s| s.checked_mul(rows)).ok_or(TransportError::InvalidFrame)?;
+        if stride < row || count > MAX_PIXELS || pixels.len() != count { return Err(TransportError::InvalidFrame); }
         Ok(Self { width, height, stride, pixels, damage })
+    }
+    /// Pixels of one carried row of the damage rectangle. # C: O(1)
+    pub fn row(&self, index: usize) -> Option<&[u32]> {
+        let row = (self.damage.right - self.damage.left) as usize;
+        let start = index.checked_mul(self.stride as usize)?;
+        self.pixels.get(start..start.checked_add(row)?)
     }
 }
 
@@ -121,7 +132,7 @@ fn decode_command(opcode: Opcode, hwnd: u64, p: &[u8]) -> Result<BridgeCommand, 
         // the whole window instead costs one server request per tile of it on
         // every paint, which is what a caret blink or a typed character used
         // to pay.
-        Opcode::Frame => { let width = wire::u32_at(p, 0).map_err(|_| TransportError::Unsupported)?; let height = wire::u32_at(p, 4).map_err(|_| TransportError::Unsupported)?; let stride = wire::u32_at(p, 8).map_err(|_| TransportError::Unsupported)?; let format = wire::u32_at(p, 12).map_err(|_| TransportError::Unsupported)?; if p.len() < wire::FRAME_HEADER_BYTES { return Err(TransportError::InvalidFrame); } let damage = wire::Damage::decode(&p[16..wire::FRAME_HEADER_BYTES]).map_err(|_| TransportError::InvalidFrame)?; let bytes = &p[wire::FRAME_HEADER_BYTES..]; if wire::pixel_len(width, height, stride, format).map_err(|_| TransportError::InvalidFrame)? != bytes.len() || bytes.len() % 4 != 0 { return Err(TransportError::InvalidFrame); } let pixels = bytes.chunks_exact(4).map(|v| u32::from_le_bytes(v.try_into().unwrap())).collect(); BridgeCommand::Frame { hwnd: id, frame: Frame::new(width, height, stride / 4, pixels, Rect { left: damage.left, top: damage.top, right: damage.right, bottom: damage.bottom }).map_err(|_| TransportError::InvalidFrame)? } },
+        Opcode::Frame => { let width = wire::u32_at(p, 0).map_err(|_| TransportError::Unsupported)?; let height = wire::u32_at(p, 4).map_err(|_| TransportError::Unsupported)?; let stride = wire::u32_at(p, 8).map_err(|_| TransportError::Unsupported)?; let format = wire::u32_at(p, 12).map_err(|_| TransportError::Unsupported)?; if p.len() < wire::FRAME_HEADER_BYTES { return Err(TransportError::InvalidFrame); } let damage = wire::Damage::decode(&p[16..wire::FRAME_HEADER_BYTES]).map_err(|_| TransportError::InvalidFrame)?; let bytes = &p[wire::FRAME_HEADER_BYTES..]; if wire::frame_pixel_len(width, height, stride, format, damage).map_err(|_| TransportError::InvalidFrame)? != bytes.len() || bytes.len() % 4 != 0 { return Err(TransportError::InvalidFrame); } let pixels = bytes.chunks_exact(4).map(|v| u32::from_le_bytes(v.try_into().unwrap())).collect(); BridgeCommand::Frame { hwnd: id, frame: Frame::new(width, height, stride / 4, pixels, Rect { left: damage.left, top: damage.top, right: damage.right, bottom: damage.bottom }).map_err(|_| TransportError::InvalidFrame)? } },
         _ => return Err(TransportError::Unsupported),
     })
 }
