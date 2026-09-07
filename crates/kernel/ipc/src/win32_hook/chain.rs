@@ -83,3 +83,16 @@ pub fn runs_in_thread(hook: &Hook, target: HookThread) -> bool {
 pub fn runs_in_owner_thread(hook: &Hook, current: u64) -> bool {
     matches!(hook.id, WH_KEYBOARD_LL | WH_MOUSE_LL) && hook.owner != current
 }
+
+impl HookTable {
+    /// Re-key one hook so registry-wide handles stay unique across scopes.
+    /// # C: O(N_hooks)
+    pub(super) fn rename(&mut self, from: u32, to: u32) -> Result<(), HookError> {
+        let hook = self.hooks.iter_mut().find(|hook| hook.handle == from).ok_or(HookError::InvalidHandle)?;
+        hook.handle = to;
+        Ok(())
+    }
+
+    /// Every handle in this table, newest first. # C: O(N_hooks)
+    pub(super) fn chain_handles(&self) -> Vec<u32> { self.hooks.iter().map(|hook| hook.handle).collect() }
+}

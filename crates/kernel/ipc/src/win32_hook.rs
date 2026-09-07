@@ -75,6 +75,9 @@ pub use install::{admit_table_install, admit_win_event_hook, admit_window_hook, 
 #[path = "win32_hook/chain.rs"]
 mod chain;
 pub use chain::{runs_in_owner_thread, runs_in_thread, HookThread};
+#[path = "win32_hook/registry.rs"]
+mod registry;
+pub use registry::{HookLocation, HookRegistry};
 
 #[cfg(test)]
 #[path = "win32_hook/tests/install.rs"]
