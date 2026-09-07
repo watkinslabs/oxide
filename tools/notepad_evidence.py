@@ -17,6 +17,12 @@ TITLE_WORD = re.compile(r"notepad", re.IGNORECASE)
 # These margins are a heuristic bound on chrome width, not exact geometry.
 LEFT_MARGIN = 220
 RIGHT_MARGIN = 40
+# A desktop-drawn frame is near-white; the wallpaper behind it is not. Every
+# channel at or above this level counts as frame chrome.
+FRAME_LEVEL = 200
+# Rows of the title band to measure, relative to the title text's top: above
+# it, through it (those rows hit glyphs and measure short), and below it.
+TITLE_BAND = range(-10, 12)
 
 
 def _tsv_words(path):
@@ -51,6 +57,47 @@ def image_size(path):
     return int(width), int(height)
 
 
+def frame_extent(image, centre_x, title_top):
+    """Measure a window's frame from its chrome, or None when it is absent.
+
+    Returns (left, right, bottom) of the near-white frame containing
+    `centre_x` in the title band at `title_top`. The widest run across the
+    band is the window's width: rows crossing the title glyphs measure short,
+    rows above and below them measure the full frame. The bottom is where the
+    frame's own column stops being chrome. A title word painted on the
+    wallpaper rather than on a frame yields no run and answers None.
+    """
+    pixels = image.convert("RGB").load()
+    width, height = image.size
+    if not 0 <= centre_x < width:
+        return None
+
+    def chrome(x, y):
+        return 0 <= x < width and 0 <= y < height and min(pixels[x, y]) >= FRAME_LEVEL
+
+    best = None
+    for offset in TITLE_BAND:
+        y = title_top + offset
+        if not chrome(centre_x, y):
+            continue
+        left = centre_x
+        while chrome(left - 1, y): left -= 1
+        right = centre_x
+        while chrome(right + 1, y): right += 1
+        if best is None or right - left > best[1] - best[0]:
+            best = (left, right, y)
+    if best is None:
+        return None
+    left, right, row = best
+    # The centre column crosses the title glyphs, so measure the depth down
+    # the frame's own edges, which carry no text.
+    bottom = row
+    for column in (left + 2, right - 2):
+        depth = row
+        while depth + 1 < height and chrome(column, depth + 1): depth += 1
+        bottom = max(bottom, depth)
+    return (left, right + 1, bottom + 1)
+
 def locate_notepad_window(path):
     """Return (left, top, right, bottom) of the Notepad window, or None.
 
@@ -75,6 +122,15 @@ def locate_notepad_window(path):
     right = min(width, max(rights) + RIGHT_MARGIN)
     top = max(0, title_top)
     bottom = height
+    # The title text is centred in its frame, so projecting the window from
+    # that text alone answers a rectangle narrower than the window: text the
+    # application drew at the left of its client area then falls outside the
+    # crop. Measure the frame itself when it can be measured.
+    from PIL import Image
+    with Image.open(path) as image:
+        measured = frame_extent(image, (min(lefts) + max(rights)) // 2, title_top)
+    if measured is not None:
+        left, right, bottom = measured[0], measured[1], max(measured[2], top + 1)
     if left >= right or top >= bottom:
         return None
     return (left, top, right, bottom)
