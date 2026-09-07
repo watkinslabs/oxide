@@ -47,6 +47,8 @@ mod dc_lease;
 pub use dc_lease::DcLeaseContext;
 #[path = "win32_window/redraw.rs"]
 mod redraw;
+#[path = "win32_window/pump_profile.rs"]
+pub mod pump_profile;
 #[path = "win32_window/hung.rs"]
 mod hung;
 pub use hung::HUNG_QUEUE_NS;
@@ -484,6 +486,9 @@ pub fn default_window_proc_for_rect(message: u32, rect: WindowRect, lparam: i64)
 #[cfg(test)]
 #[path = "win32_window/tests/state.rs"]
 mod tests;
+#[cfg(test)]
+#[path = "win32_window/tests/pump_profile.rs"]
+mod pump_profile_tests;
 #[cfg(test)]
 #[path = "win32_window/tests/lifecycle.rs"]
 mod lifecycle_tests;

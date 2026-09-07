@@ -1,10 +1,14 @@
 //! Canonical caret snapshots use the existing bounded compositor connection.
 use syscall::nt_compositor::{caret::Snapshot,Opcode};
-const ACK_TIMEOUT_NS:u64=5_000_000_000;
-/// Caller resolves canonical owner, frame coordinates and real XOR mask before unlocking GUI/GDI.
-/// # C: O(mask pixels); # Sleeps: yes; no GUI/GDI locks may be held
+/// Submit one caret snapshot to the desktop. A caret move is a drawing
+/// operation, not a transaction: the reference draws the caret into the
+/// window's own device context and returns, leaving presentation to the frames
+/// that follow. Waiting here for the desktop to acknowledge each snapshot put
+/// a desktop round trip between the application and its next message - the
+/// edit control moves the caret once per typed character, which cost the pump
+/// over a hundred milliseconds per keystroke.
+/// # C: O(mask pixels); # Sleeps: no; no GUI/GDI locks may be held
 pub(crate) fn publish_current(hwnd:u64,snapshot:&Snapshot)->bool{
     let Ok(payload)=snapshot.encode()else{return false;};
-    let Ok(sequence)=super::enqueue_current(Opcode::Caret,hwnd,payload)else{return false;};
-    matches!(super::wait_completion_current(sequence,ACK_TIMEOUT_NS),Ok(super::Completion::Presented))
+    super::submit_current(Opcode::Caret,hwnd,payload).is_ok()
 }

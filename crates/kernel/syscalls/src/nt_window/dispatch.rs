@@ -149,6 +149,7 @@ pub(super) fn dispatch_mode(call: NtCall, raw: bool) -> Option<u64> {
                             // WM_PAINT never calls BeginPaint and never draws,
                             // which is indistinguishable from one that received
                             // it and ignored it.
+                            super::pump_profile::note_retrieval();
                             klog::write_raw(b"[WINDOWS-GETMESSAGE] hwnd=");
                             klog::write_hex_u64(found.hwnd.map(|w| w.raw() as u64).unwrap_or(0));
                             klog::write_raw(b" msg=");

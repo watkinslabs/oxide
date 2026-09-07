@@ -6,7 +6,7 @@ impl Queue {
     fn enqueue(&mut self, opcode: Opcode, hwnd: u64, payload: alloc::vec::Vec<u8>) -> Result<u64, TransportError> {
         if self.is_dead() { return Err(TransportError::Disconnected); }
         let mut prepared = Some(super::queue::Prepared::new(opcode, hwnd, payload)?);
-        self.enqueue_prepared(&mut prepared)
+        self.enqueue_prepared(&mut prepared, true)
     }
 }
 
@@ -122,9 +122,9 @@ fn rejected_prepared_record_stays_with_caller_for_drop_after_unlock() {
     let mut queue = Queue::try_new().unwrap();
     for _ in 0..wire::MAX_QUEUED_RECORDS { queue.enqueue(Opcode::Destroy, 1, vec![]).unwrap(); }
     let mut prepared = Some(super::queue::Prepared::new(Opcode::Title, 1, b"owned".to_vec()).unwrap());
-    assert_eq!(queue.enqueue_prepared(&mut prepared), Err(TransportError::Full)); assert!(prepared.is_some());
+    assert_eq!(queue.enqueue_prepared(&mut prepared, true), Err(TransportError::Full)); assert!(prepared.is_some());
     queue.take_send(); queue.sent().unwrap(); queue.acknowledge(1, 1, 0).unwrap(); queue.take_completion(1).unwrap();
-    assert!(queue.enqueue_prepared(&mut prepared).is_ok()); assert!(prepared.is_none());
+    assert!(queue.enqueue_prepared(&mut prepared, true).is_ok()); assert!(prepared.is_none());
 }
 
 #[test]
@@ -185,4 +185,40 @@ fn desktop_snapshot_requires_real_valid_geometry() {
     assert!(Record::new(Opcode::Monitors, 2, 0, p).is_err());
     assert!(Record::new(Opcode::Monitors, 2, 0, 0u32.to_le_bytes().to_vec()).unwrap().monitors().unwrap().is_empty());
     assert!(wire::Rect { x: i32::MAX, y: 0, width: 1, height: 1 }.encode().is_err());
+}
+
+#[test]
+fn a_record_nobody_waits_for_releases_its_slot_when_it_settles() {
+    let mut queue = Queue::new();
+    let mut prepared = Some(super::queue::Prepared::new(Opcode::Destroy, 3, vec![]).unwrap());
+    let ticket = queue.enqueue_prepared(&mut prepared, false).unwrap();
+    let _ = queue.take_send().unwrap();
+    queue.acknowledge(ticket, 3, 0).unwrap();
+    queue.sent().unwrap();
+    // Settled and gone: no completion is owed, so the slot and its bytes are
+    // back without anyone calling take_completion.
+    assert_eq!(queue.take_completion(ticket), Err(TransportError::Unknown));
+    assert!(!queue.has_send());
+}
+
+#[test]
+fn an_awaited_record_still_keeps_its_completion_until_it_is_taken() {
+    let mut queue = Queue::new();
+    let ticket = queue.enqueue(Opcode::Destroy, 3, vec![]).unwrap();
+    let _ = queue.take_send().unwrap();
+    queue.acknowledge(ticket, 3, 0).unwrap();
+    queue.sent().unwrap();
+    assert_eq!(queue.take_completion(ticket), Ok(Completion::Presented));
+}
+
+#[test]
+fn unwaited_records_do_not_exhaust_the_queue() {
+    let mut queue = Queue::new();
+    for _ in 0..(wire::MAX_QUEUED_RECORDS * 2) {
+        let mut prepared = Some(super::queue::Prepared::new(Opcode::Destroy, 3, vec![]).unwrap());
+        let ticket = queue.enqueue_prepared(&mut prepared, false).expect("an unwaited record always finds a slot");
+        let _ = queue.take_send().unwrap();
+        queue.acknowledge(ticket, 3, 0).unwrap();
+        queue.sent().unwrap();
+    }
 }

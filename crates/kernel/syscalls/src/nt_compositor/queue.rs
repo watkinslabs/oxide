@@ -6,7 +6,7 @@ pub enum TransportError { Invalid, Full, Disconnected, Unknown, NoMemory, Busy, 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Completion { Pending, Presented, Failed(u32) }
 pub(super) struct Prepared { bytes: Vec<u8>, hwnd: u64 }
-struct Entry { sequence: u64, hwnd: u64, charge: usize, bytes: Option<Vec<u8>>, result: Completion, sent: bool, ack: Option<u32> }
+struct Entry { sequence: u64, hwnd: u64, charge: usize, bytes: Option<Vec<u8>>, result: Completion, sent: bool, ack: Option<u32>, awaited: bool }
 pub struct Queue { entries: VecDeque<Entry>, bytes: usize, next: u64, active: Option<u64>, dead: bool }
 
 impl Prepared {
@@ -27,8 +27,11 @@ impl Queue {
         queue.entries.try_reserve_exact(wire::MAX_QUEUED_RECORDS).map_err(|_| TransportError::NoMemory)?;
         Ok(queue)
     }
-    /// Payload copy and validation have already finished outside the queue lock. # C: O(1)
-    pub(super) fn enqueue_prepared(&mut self, prepared: &mut Option<Prepared>) -> Result<u64, TransportError> {
+    /// Payload copy and validation have already finished outside the queue lock.
+    /// `awaited` records whether a caller will consume this record's completion:
+    /// an unawaited one releases its slot the moment it settles, because no
+    /// `take_completion` will ever come for it. # C: O(1)
+    pub(super) fn enqueue_prepared(&mut self, prepared: &mut Option<Prepared>, awaited: bool) -> Result<u64, TransportError> {
         if self.dead { return Err(TransportError::Disconnected); }
         let charge = prepared.as_ref().ok_or(TransportError::Invalid)?.bytes.len();
         if self.entries.len() >= wire::MAX_QUEUED_RECORDS || charge > wire::MAX_QUEUED_BYTES.saturating_sub(self.bytes) { return Err(TransportError::Full); }
@@ -37,7 +40,7 @@ impl Queue {
         self.entries.try_reserve(1).map_err(|_| TransportError::NoMemory)?;
         let Prepared { mut bytes, hwnd } = prepared.take().ok_or(TransportError::Invalid)?;
         bytes[16..24].copy_from_slice(&sequence.to_le_bytes());
-        self.entries.push_back(Entry { sequence, hwnd, charge, bytes: Some(bytes), result: Completion::Pending, sent: false, ack: None });
+        self.entries.push_back(Entry { sequence, hwnd, charge, bytes: Some(bytes), result: Completion::Pending, sent: false, ack: None, awaited });
         self.bytes += charge; self.next = next; Ok(sequence)
     }
     /// One outstanding stream transaction bounds socket buffering and ACK ownership. # C: O(records)
@@ -53,8 +56,21 @@ impl Queue {
         let entry = self.entries.iter_mut().find(|e| e.sequence == sequence && e.hwnd == hwnd).ok_or(TransportError::Unknown)?;
         if entry.ack.is_some() { return Err(TransportError::Unknown); }
         entry.ack = Some(status);
-        if entry.sent { entry.result = if status == 0 { Completion::Presented } else { Completion::Failed(status) }; self.active = None; }
+        if !entry.sent { return Ok(()); }
+        let sequence = entry.sequence;
+        self.settle(sequence, status);
         Ok(())
+    }
+
+    /// Publish one record's terminal result and release the transaction. A
+    /// record nobody waits on releases its queue slot here rather than growing
+    /// the queue until the connection is torn down. # C: O(records)
+    fn settle(&mut self, sequence: u64, status: u32) {
+        let Some(index) = self.entries.iter().position(|e| e.sequence == sequence) else { return; };
+        self.entries[index].result = if status == 0 { Completion::Presented } else { Completion::Failed(status) };
+        self.active = None;
+        if self.entries[index].awaited { return; }
+        if let Some(entry) = self.entries.remove(index) { self.bytes -= entry.charge; }
     }
     /// ACK can race final socket return; completion needs both whole transfer and ACK. # C: O(records)
     pub fn sent(&mut self) -> Result<(), TransportError> {
@@ -62,9 +78,9 @@ impl Queue {
         let sequence = self.active.ok_or(TransportError::Unknown)?;
         let entry = self.entries.iter_mut().find(|e| e.sequence == sequence).ok_or(TransportError::Unknown)?;
         entry.sent = true;
-        if let Some(status) = entry.ack {
-            entry.result = if status == 0 { Completion::Presented } else { Completion::Failed(status) }; self.active = None;
-        } Ok(())
+        let status = entry.ack;
+        if let Some(status) = status { self.settle(sequence, status); }
+        Ok(())
     }
     /// Pending queries do not release queue capacity; completed queries consume it. # C: O(records)
     pub fn take_completion(&mut self, sequence: u64) -> Result<Completion, TransportError> {

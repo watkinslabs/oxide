@@ -234,7 +234,14 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
     // below, so its syscall-exit stop and — for a `SECCOMP_RET_TRAP` SIGSYS —
     // its signal delivery happen before the return to userspace instead of
     // waiting for the next timer tick.
+    // Charge every kernel entry of an NT task to the message-pump interval:
+    // an interval whose cost is hundreds of short entries is a different
+    // defect from one that waits inside a single call, and only the wall time
+    // measured around the dispatch can tell them apart without a per-call
+    // console line that would itself dominate the measurement.
+    let __pump_start = crate::nt_window::pump_profile::start();
     let rv = dispatch_routed_syscall(entry, nr, &args);
+    crate::nt_window::pump_profile::charge(__pump_start, nr);
     // rv is left un-normalized here (may still carry an internal restart
     // sentinel like -ERESTARTSYS) — the ignored-restart check below and
     // dispatch_pending() need the raw sentinel. normalize_user_return()

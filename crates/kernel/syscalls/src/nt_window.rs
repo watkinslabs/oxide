@@ -270,6 +270,17 @@ pub fn route_hardware_mouse(ev_type: u16, code: u16, value: i32) -> bool {
 // Module manifest: dispatch routes canonical GUI operations; menu owns menu adapters.
 #[path = "nt_window/dispatch.rs"]
 mod dispatch;
+// The pump profile is a diagnostic: `debug-winpump` selects the reporting
+// implementation, and its absence selects the empty one, so no call site
+// carries the feature test.
+#[path = "nt_window/pump_trace.rs"]
+pub(crate) mod pump_trace;
+#[path = "nt_window/pump_trace_off.rs"]
+pub(crate) mod pump_trace_off;
+#[cfg(feature = "debug-winpump")]
+pub(crate) use pump_trace as pump_profile;
+#[cfg(not(feature = "debug-winpump"))]
+pub(crate) use pump_trace_off as pump_profile;
 pub use dispatch::dispatch;
 
 #[cfg(target_os = "oxide-kernel")]
