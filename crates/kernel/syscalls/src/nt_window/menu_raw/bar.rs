@@ -208,10 +208,14 @@ fn beep() {
 /// window's own client hit test. # C: O(N_windows)
 pub(crate) fn hit_test_for_current(hwnd: u64, lparam: i64) -> Option<i16> {
     let window = WindowId::from_raw(u32::try_from(hwnd).ok()?)?;
+    // The point a nonclient hit test carries and the rectangles it is compared
+    // against are in the same space the window rectangle is kept in, so the
+    // client rectangle here is the unnormalised one: its top is where the
+    // bar's band ends, and normalising that to zero leaves no band at all.
     let (client, has_menu) = with_entry(|entry| {
         let record = entry.state.get(window)?;
         let has_menu = ipc::win32_window::nonclient_menu::window_has_menu_bar(record.style, record.ex_style, entry.state.menu(window));
-        Some((entry.state.client_rect(window)?, has_menu))
+        Some((entry.state.client_rect_raw(window)?, has_menu))
     }).flatten()?;
     let x = (lparam as u64 as u16 as i16) as i32;
     let y = (((lparam as u64) >> 16) as u16 as i16) as i32;

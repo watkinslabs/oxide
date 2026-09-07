@@ -2,6 +2,9 @@
 
 use super::*;
 
+#[path = "create/nccalcsize.rs"]
+mod nccalcsize;
+
 const WM_NCCREATE: u64 = 0x0081;
 const WM_CREATE: u64 = 0x0001;
 const WM_NCDESTROY: u64 = 0x0082;
@@ -54,7 +57,7 @@ pub(crate) fn begin_create_lifecycle_for_current(hwnd: u64, params: CreateStruct
         }
         let token = entries[index].next_create;
         entries[index].next_create = token.checked_add(1).filter(|value| *value != 0).unwrap_or(1);
-        entries[index].pending_creates.push(PendingCreate { token, hwnd, wndproc: record.wndproc, params, convention });
+        entries[index].pending_creates.push(PendingCreate { token, hwnd, wndproc: record.wndproc, params, convention, nccalc: 0 });
         (token, record.wndproc)
     };
     // The compositor/backend HWND must exist before WM_NCCREATE: application
@@ -83,6 +86,22 @@ pub(crate) fn begin_create_lifecycle_for_current(hwnd: u64, params: CreateStruct
         klog::write_raw(b"\n");
         abort_create_for_current(token); convention.failure(STATUS_INVALID_PARAMETER)
     }
+}
+
+/// Record the user address the outstanding creation-time nonclient
+/// calculation is writing into. # C: O(processes + pending creates)
+fn set_pending_nccalc(token: u64, pointer: u64) {
+    let Some(cur) = sched::live::current() else { return; };
+    let mut entries = GUI.lock();
+    let Some(entry) = entries.iter_mut().find(|entry| entry.group.ptr_eq(&Arc::downgrade(&cur.thread_group))) else { return; };
+    if let Some(pending) = entry.pending_creates.iter_mut().find(|pending| pending.token == token) { pending.nccalc = pointer; }
+}
+
+/// Continue the create transaction at WM_CREATE. # C: O(processes + windows); # Sleeps: yes
+fn begin_create_message(pending: PendingCreate) -> u64 {
+    let next = crate::nt_rtl::begin_wndproc_create_callback(pending.hwnd, WM_CREATE, pending.wndproc, pending.params,
+        sched::nt_callback::Completion { kind: CALLBACK_CREATE, argument: pending.token });
+    if next == STATUS_PENDING { next } else { abort_create_for_current(pending.token); pending.convention.failure(STATUS_INVALID_PARAMETER) }
 }
 
 fn pending_create_for_current(token: u64) -> Option<PendingCreate> {
@@ -189,8 +208,21 @@ pub(crate) fn complete_callback(completion: sched::nt_callback::Completion, call
                 klog::write_raw(b"\n");
                 return reject_create(completion, pending);
             }
-            let next = crate::nt_rtl::begin_wndproc_create_callback(pending.hwnd, WM_CREATE, pending.wndproc, pending.params, sched::nt_callback::Completion { kind: CALLBACK_CREATE, argument: pending.token });
-            if next == STATUS_PENDING { next } else { abort_create_for_current(pending.token); pending.convention.failure(STATUS_INVALID_PARAMETER) }
+            // The reference computes the client area between WM_NCCREATE and
+            // WM_CREATE. A window that never runs it keeps a client rectangle
+            // equal to its window rectangle, so nothing the nonclient area
+            // owns - a menu bar first of all - ever reserves its band.
+            if let Some((status, pointer)) = nccalcsize::begin(pending.hwnd, pending.wndproc, pending.token) {
+                set_pending_nccalc(pending.token, pointer);
+                return status;
+            }
+            begin_create_message(pending)
+        }
+        CALLBACK_CREATE_NCCALCSIZE => {
+            let Some(pending) = pending_create_for_current(completion.argument) else { return STATUS_INVALID_PARAMETER; };
+            nccalcsize::apply_for_current(pending.hwnd, pending.nccalc);
+            set_pending_nccalc(pending.token, 0);
+            begin_create_message(pending)
         }
         CALLBACK_CREATE => {
             let Some(pending) = pending_create_for_current(completion.argument) else { return STATUS_INVALID_PARAMETER; };

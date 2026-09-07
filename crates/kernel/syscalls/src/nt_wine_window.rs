@@ -320,6 +320,14 @@ fn get_class_name(args: &[u64; 17]) -> u64 {
     copied as u64
 }
 
+/// The buffer pointer of one counted string, or zero. # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+fn unicode_string_buffer(pointer: u64) -> u64 {
+    const UNICODE_STRING_BUFFER: u64 = 8;
+    if pointer == 0 { return 0; }
+    pointer.checked_add(UNICODE_STRING_BUFFER).and_then(|address| uaccess::get_user_u64(address).ok()).unwrap_or(0)
+}
+
 #[cfg(target_os = "oxide-kernel")]
 fn get_class_info_ex(args: &[u64; 17]) -> u64 {
     let info = if args[1] <= u16::MAX as u64 {
@@ -328,15 +336,23 @@ fn get_class_info_ex(args: &[u64; 17]) -> u64 {
         let Some(name) = read_unicode_string(args[1]) else { return 0; };
         crate::nt_window::class_info_for_current(&name)
     };
-    let Some((_, wndproc, _, extra)) = info else { return 0; };
-    if args[2] == 0 { return 0; }
-    let mut bytes = [0u8; 80];
-    bytes[0..4].copy_from_slice(&80u32.to_le_bytes());
-    bytes[8..16].copy_from_slice(&wndproc.to_le_bytes());
-    bytes[20..24].copy_from_slice(&extra.to_le_bytes());
-    bytes[32..40].copy_from_slice(&args[0].to_le_bytes());
-    if uaccess::copy_to_user(args[2], &bytes).is_err() { return 0; }
-    1
+    let Some((atom, wndproc, _, extra)) = info else { return 0; };
+    let Some(class) = crate::nt_window::class_description_by_atom_for_current(atom) else { return 0; };
+    if args[2] != 0 {
+        let reply = ipc::win32_window::class_info_abi::ClassInfoReply { wndproc, cb_wnd_extra: extra,
+            instance: args[0], class_name: unicode_string_buffer(args[1]), ansi: args[4] != 0 };
+        if uaccess::copy_to_user(args[2], &ipc::win32_window::class_info_abi::encode(&class, &reply)).is_err() { return 0; }
+    }
+    // The caller's own menu-name record, which it frees; a class with no menu
+    // name reports three null pointers rather than stale ones.
+    if args[3] != 0 {
+        let record = [class.menu_name.ansi, class.menu_name.wide, class.menu_name.unicode_string];
+        for (slot, value) in record.iter().enumerate() {
+            let Some(address) = args[3].checked_add(slot as u64 * 8) else { return 0; };
+            if uaccess::put_user_u64(address, *value).is_err() { return 0; }
+        }
+    }
+    atom as u64
 }
 
 

@@ -30,6 +30,12 @@ pub(crate) fn class_background_for_current(hwnd: u64) -> Option<(u64, u32, Optio
     Some((entry.state.class_background(id)?, entry.state.position_class_style(id).unwrap_or(0), entry.state.client_rect(id)))
 }
 
+/// WNDCLASSEXW-shaped description of one registered class atom, for the
+/// class-information query. # C: O(processes + classes)
+pub(crate) fn class_description_by_atom_for_current(atom: u16) -> Option<ipc::win32_window::ClassDescription> {
+    with_entry(|entry| entry.state.class_description_by_atom(atom)).flatten()
+}
+
 fn with_entry<T>(f: impl FnOnce(&mut GuiEntry) -> T) -> Option<T> {
     let cur = sched::live::current().filter(|task| task.is_nt_personality())?;
     let group = Arc::clone(&cur.thread_group);

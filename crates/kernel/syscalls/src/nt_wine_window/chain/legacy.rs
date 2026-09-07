@@ -21,7 +21,9 @@ pub(super) fn route(ordinal: u64, a: &Args) -> Option<u64> {
             klog::write_hex_u64(result); klog::write_raw(b" instance=");
             klog::write_hex_u64(a[0]); klog::write_raw(b" name=");
             klog::write_hex_u64(a[1]); klog::write_raw(b" out=");
-            klog::write_hex_u64(a[2]); klog::write_raw(b"\n");
+            klog::write_hex_u64(a[2]); klog::write_raw(b" menu-name=");
+            klog::write_hex_u64(if a[2] == 0 { 0 } else { uaccess::get_user_u64(a[2] + 56).unwrap_or(u64::MAX) });
+            klog::write_raw(b"\n");
             result
         }
         WINE_REGISTER_CLASS_EX => raw_class::register_class(registers),

@@ -108,6 +108,18 @@ impl WindowManager {
         let rect = self.get(id)?.client_rect.or_else(|| self.rect(id))?;
         Some(WindowRect { left: 0, top: 0, right: rect.right.checked_sub(rect.left)?, bottom: rect.bottom.checked_sub(rect.top)? })
     }
+    /// The client rectangle in the same coordinates the window rectangle uses,
+    /// before the origin normalisation `client_rect` applies. # C: O(N_windows)
+    pub fn client_rect_raw(&self, id: WindowId) -> Option<WindowRect> {
+        let record = self.get(id)?;
+        record.client_rect.or_else(|| self.rect(id))
+    }
+    /// Adopt the client rectangle one nonclient size calculation produced.
+    /// # C: O(N_windows)
+    pub fn set_client_rect(&mut self, id: WindowId, rect: WindowRect) -> Result<(), WindowError> {
+        let record = self.windows.iter_mut().find(|(window, _)| *window == id).ok_or(WindowError::NoSuchWindow)?;
+        record.1.client_rect = Some(rect); Ok(())
+    }
     /// Read the UTF-16 title/control text owned by one window. # C: O(N_windows)
     pub fn text(&self, id: WindowId) -> Option<&[u16]> { self.texts.iter().find(|(window, _)| *window == id).map(|(_, text)| text.as_slice()) }
     /// Replace the UTF-16 title/control text owned by one window. # C: O(N_windows + N_text)
