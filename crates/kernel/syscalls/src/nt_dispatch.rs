@@ -949,6 +949,18 @@ pub fn dispatch(call: NtCall) -> u64 {
     if let Some(result) = crate::nt_heap_lock::dispatch(call) { return result; }
     if let Some(result) = crate::nt_object_query::dispatch(call) { return result; }
     if let Some(result) = crate::nt_sync::dispatch(call) { return result; }
+    if let Some(result) = crate::nt_srw::dispatch(call) { return result; }
+    if let Some(result) = crate::nt_crc32::dispatch(call) { return result; }
+    if let Some(result) = crate::nt_counted_string::dispatch(call) { return result; }
+    if let Some(result) = crate::nt_function_table::dispatch(call) { return result; }
+    if call.service == nt::NtService::RtlIsCurrentProcess {
+        let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+        if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+        // The pseudo handle names this process by definition; any other handle
+        // does only when it resolves to the same object.
+        return (call.args.a0 == CURRENT_PROCESS
+            || compare_objects(&cur, call.args.a0, CURRENT_PROCESS) == STATUS_SUCCESS) as u64;
+    }
     if let Some(result) = crate::nt_mutant::dispatch(call) { return result; }
     if let Some(result) = crate::nt_semaphore::dispatch(call) { return result; }
     if let Ok(file_call) = nt::decode_file(call) {

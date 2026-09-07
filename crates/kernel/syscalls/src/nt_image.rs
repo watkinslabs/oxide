@@ -10,6 +10,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::LdrAccessResource { return Some(access_resource(call)); }
     if call.service == NtService::RtlImageDirectoryEntryToData { return Some(directory_entry(call)); }
     if call.service == NtService::RtlImageRvaToVa { return Some(rva_to_va(call)); }
+    if call.service == NtService::RtlImageRvaToSection { return Some(rva_to_section(call.args.a0, call.args.a2 as u32)); }
     if call.service != NtService::RtlImageNtHeader { return None; }
     let base = call.args.a0;
     if base == 0 { return Some(0); }
@@ -135,6 +136,12 @@ const OPTIONAL_HEADER_MAGIC_OFFSET: u64 = 0;
 const OPTIONAL_HEADER_NUMBER_DIRECTORIES_OFFSET: u64 = 108;
 const DIRECTORY_BYTES: u64 = 8;
 const SECTION_HEADER_BYTES: u64 = 40;
+/// Section headers a walk will read before treating the count as corrupt.
+const SECTION_COUNT_LIMIT: u32 = 96;
+/// Offset of a section header's image-relative address.
+const SECTION_VIRTUAL_ADDRESS_OFFSET: u64 = 12;
+/// Offset of a section header's on-disk size, which is what bounds its range.
+const SECTION_RAW_SIZE_OFFSET: u64 = 16;
 
 fn read_u32(address: u64) -> Option<u32> { uaccess::get_user_u32(address).ok() }
 
@@ -175,6 +182,26 @@ fn directory_entry(call: NtCall) -> u64 {
         if let Some(section_end) = virtual_address.checked_add(span) {
             if rva >= virtual_address && rva < section_end { return 0; }
         }
+    }
+    0
+}
+
+/// Locate the section header covering one image-relative address: the first
+/// header whose address range holds it, walked in table order. A miss answers
+/// with no header rather than a status, which is the export's only channel.
+/// # C: O(N_sections) plus bounded user reads
+fn rva_to_section(nt: u64, rva: u32) -> u64 {
+    if nt == 0 || read_u32(nt) != Some(PE_MAGIC) { return 0; }
+    let Some(section_count) = read_u32_at(nt, 6).map(|value| value.min(SECTION_COUNT_LIMIT)) else { return 0; };
+    let Some(optional_size) = read_u32_at(nt, OPTIONAL_HEADER_SIZE_OFFSET).map(|value| value as u64) else { return 0; };
+    let Some(sections) = nt.checked_add(24).and_then(|value| value.checked_add(optional_size)) else { return 0; };
+    for index in 0..section_count {
+        let Some(section) = sections.checked_add((index as u64) * SECTION_HEADER_BYTES) else { return 0; };
+        let Some(virtual_address) = read_u32_at(section, SECTION_VIRTUAL_ADDRESS_OFFSET) else { return 0; };
+        let Some(raw_size) = read_u32_at(section, SECTION_RAW_SIZE_OFFSET) else { return 0; };
+        if virtual_address > rva { continue; }
+        let Some(end) = virtual_address.checked_add(raw_size) else { continue; };
+        if end > rva { return section; }
     }
     0
 }

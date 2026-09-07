@@ -3,6 +3,10 @@ pub const X64_UNARY_STUB_BYTES: usize = 18;
 pub const X64_ZERO_ARG_STUB_BYTES: usize = 13;
 pub const X64_SIX_ARG_STUB_BYTES: usize = 39;
 pub const X64_BREAKPOINT_STUB_BYTES: usize = 2;
+/// Length of the x86-64 stack-probe entry: the shipped runtime module exports
+/// it as a single `ret`, so the routine touches no page and preserves every
+/// register the compiler-emitted probe sequence relies on.
+pub const X64_RET_STUB_BYTES: usize = 1;
 pub const X64_RELAY_STUB_BYTES: usize = 233;
 const STATUS_PROCEDURE_NOT_FOUND: u32 = 0xc000_007a;
 
@@ -353,6 +357,14 @@ pub fn encode_x64_apc_continuation() -> Vec<u8> {
     code.extend_from_slice(&[0x41, 0xff, 0xe3]); // jmp r11
     code
 }
+
+/// Encode the x86-64 stack-probe entry. The compiler-emitted probe sequence
+/// loads the frame size into RAX and calls this routine, then subtracts RAX
+/// from RSP itself; the routine must therefore return with RAX, every other
+/// register, the flags and the stack unchanged. A demand-paged stack needs no
+/// guard-page walk, so returning immediately is the whole contract, which is
+/// what the shipped runtime module's own export contains.
+pub fn encode_x64_ret_stub() -> [u8; X64_RET_STUB_BYTES] { [0xc3] }
 
 /// Encode Wine's x86-64 debugger breakpoint entry. The trap is intentional:
 /// Windows exception dispatch, rather than the NT syscall adapter, owns the

@@ -91,9 +91,15 @@ fn lookup_function_entry(pc: u64, base: u64) -> u64 {
     if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
     if uaccess::put_user_u64(base, 0).is_err() { return STATUS_INVALID_PARAMETER; }
     let Some(mm) = cur.clone_mm() else { return 0; };
-    let Some(module) = pe_modules::find(mm.root_pa(), pc) else { return 0; };
-    if uaccess::put_user_u64(base, module.base).is_err() { return STATUS_INVALID_PARAMETER; }
-    pe_modules::find_exception(mm.root_pa(), pc).unwrap_or(0)
+    if let Some(module) = pe_modules::find(mm.root_pa(), pc) {
+        if uaccess::put_user_u64(base, module.base).is_err() { return STATUS_INVALID_PARAMETER; }
+        if let Some(entry) = pe_modules::find_exception(mm.root_pa(), pc) { return entry; }
+    }
+    // Generated code belongs to no image, so its producer's registration is
+    // the only place an entry for it can come from.
+    let Some((entry, dynamic_base)) = crate::nt_function_table::lookup(pc) else { return 0; };
+    if uaccess::put_user_u64(base, dynamic_base).is_err() { return STATUS_INVALID_PARAMETER; }
+    entry
 }
 
 fn pc_to_file_header(pc: u64, address: u64) -> u64 {

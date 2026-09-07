@@ -451,7 +451,9 @@ fn append_punycode(label: &[u32], output: &mut alloc::vec::Vec<u16>) -> bool {
 
 fn copy_wide(target: u64, values: &[u16]) -> Result<(), ()> { let mut bytes = alloc::vec::Vec::with_capacity(values.len() * 2); for value in values { bytes.extend_from_slice(&value.to_le_bytes()); } uaccess::copy_to_user(target, &bytes).map_err(|_| ()) }
 
-fn compare(first: u64, first_len: u64, second: u64, second_len: u64, ignore_case: bool) -> i64 {
+/// Order two UTF-16 runs by content then length, folding ASCII case when asked.
+/// # C: O(min(N_first, N_second)) plus bounded user reads
+pub(crate) fn compare(first: u64, first_len: u64, second: u64, second_len: u64, ignore_case: bool) -> i64 {
     let length = core::cmp::min(first_len, second_len);
     for index in 0..length {
         let Some(first_unit) = read_unit(first, index) else { return 0; };
