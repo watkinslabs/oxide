@@ -5,8 +5,8 @@ use syscall::nt_compositor::{self as wire, Opcode, Record};
 pub enum TransportError { Invalid, Full, Disconnected, Unknown, NoMemory, Busy, Timeout }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Completion { Pending, Presented, Failed(u32) }
-pub(super) struct Prepared { bytes: Vec<u8>, hwnd: u64 }
-struct Entry { sequence: u64, hwnd: u64, charge: usize, bytes: Option<Vec<u8>>, result: Completion, sent: bool, ack: Option<u32>, awaited: bool }
+pub(super) struct Prepared { bytes: Vec<u8>, hwnd: u64, opcode: Opcode }
+struct Entry { sequence: u64, hwnd: u64, opcode: Opcode, charge: usize, bytes: Option<Vec<u8>>, result: Completion, sent: bool, ack: Option<u32>, awaited: bool }
 pub struct Queue { entries: VecDeque<Entry>, bytes: usize, next: u64, active: Option<u64>, dead: bool }
 
 impl Prepared {
@@ -14,7 +14,7 @@ impl Prepared {
         if opcode.from_backend() { return Err(TransportError::Invalid); }
         let bytes = Record::new(opcode, 1, hwnd, payload).and_then(|r| r.encode())
             .map_err(|error| if error == wire::Error::Allocation { TransportError::NoMemory } else { TransportError::Invalid })?;
-        Ok(Self { bytes, hwnd })
+        Ok(Self { bytes, hwnd, opcode })
     }
 }
 
@@ -38,9 +38,9 @@ impl Queue {
         let sequence = self.next;
         let next = sequence.checked_add(1).ok_or(TransportError::Full)?;
         self.entries.try_reserve(1).map_err(|_| TransportError::NoMemory)?;
-        let Prepared { mut bytes, hwnd } = prepared.take().ok_or(TransportError::Invalid)?;
+        let Prepared { mut bytes, hwnd, opcode } = prepared.take().ok_or(TransportError::Invalid)?;
         bytes[16..24].copy_from_slice(&sequence.to_le_bytes());
-        self.entries.push_back(Entry { sequence, hwnd, charge, bytes: Some(bytes), result: Completion::Pending, sent: false, ack: None, awaited });
+        self.entries.push_back(Entry { sequence, hwnd, opcode, charge, bytes: Some(bytes), result: Completion::Pending, sent: false, ack: None, awaited });
         self.bytes += charge; self.next = next; Ok(sequence)
     }
     /// One outstanding stream transaction bounds socket buffering and ACK ownership. # C: O(records)
@@ -50,16 +50,20 @@ impl Queue {
         self.active = Some(entry.sequence); entry.bytes.take()
     }
     /// # C: O(records)
-    pub fn acknowledge(&mut self, sequence: u64, hwnd: u64, status: u32) -> Result<(), TransportError> {
+    /// Answers whether the acknowledgement settled a presented frame, which
+    /// is the desktop confirming pixels it was handed rather than a control
+    /// request it carried out. # C: O(records)
+    pub fn acknowledge(&mut self, sequence: u64, hwnd: u64, status: u32) -> Result<bool, TransportError> {
         if self.dead { return Err(TransportError::Disconnected); }
         if self.active != Some(sequence) { return Err(TransportError::Unknown); }
         let entry = self.entries.iter_mut().find(|e| e.sequence == sequence && e.hwnd == hwnd).ok_or(TransportError::Unknown)?;
         if entry.ack.is_some() { return Err(TransportError::Unknown); }
         entry.ack = Some(status);
-        if !entry.sent { return Ok(()); }
+        let frame = entry.opcode == Opcode::Frame && status == 0;
+        if !entry.sent { return Ok(false); }
         let sequence = entry.sequence;
         self.settle(sequence, status);
-        Ok(())
+        Ok(frame)
     }
 
     /// Publish one record's terminal result and release the transaction. A
