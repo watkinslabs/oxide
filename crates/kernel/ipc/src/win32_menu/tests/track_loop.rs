@@ -1,7 +1,7 @@
 use super::*;
-use crate::win32_menu::popup::PopupHit;
-use crate::win32_menu::track::{MF_MOUSESELECT, WM_COMMAND, WM_INITMENUPOPUP};
-use crate::win32_menu::{MenuItem, MF_HILITE, MF_SEPARATOR};
+use crate::win32_menu::popup::{PopupHit, TPM_BUTTONDOWN};
+use crate::win32_menu::track::{MF_MOUSESELECT, TrackEffect, WM_COMMAND, WM_INITMENUPOPUP};
+use crate::win32_menu::{MenuId, MenuItem, MF_HILITE, MF_SEPARATOR};
 use alloc::vec;
 
 const OWNER: u32 = 7;
@@ -248,4 +248,95 @@ fn the_mouse_opening_a_submenu_queues_the_show_effect() {
     assert!(steps.contains(&LoopStep::Effect(TrackEffect::ShowSubPopup { menu: bar, select_first: false })));
     let _ = popup;
     assert!(menus.item(MenuId::from_raw(bar).unwrap(), 0, crate::win32_menu::MF_BYPOSITION).unwrap().state & MF_MOUSESELECT == 0);
+}
+
+/// A bar carrying File and Edit, each with a popup of its own.
+fn bar_chain() -> (MenuManager, u32, u32, u32) {
+    let mut menus = MenuManager::new();
+    let bar = menus.create().unwrap();
+    let file = menus.create_popup().unwrap();
+    let edit = menus.create_popup().unwrap();
+    menus.insert(bar, 0, MenuItem { id: 0, state: 0, text: text("&File"), submenu: Some(file.raw()) }).unwrap();
+    menus.insert(bar, 1, MenuItem { id: 0, state: 0, text: text("&Edit"), submenu: Some(edit.raw()) }).unwrap();
+    menus.insert(file, 0, MenuItem { id: 100, state: 0, text: text("&New"), submenu: None }).unwrap();
+    menus.insert(edit, 0, MenuItem { id: 200, state: 0, text: text("&Copy"), submenu: None }).unwrap();
+    (menus, bar.raw(), file.raw(), edit.raw())
+}
+
+/// One pointer event naming a bar item.
+fn on_bar(bar: u32, hit: PopupHit) -> PointerEvent {
+    PointerEvent { pt: (40, 4), menu: Some(bar), hit, menu_is_bar: true, right_button: false }
+}
+
+fn queued(state: &mut TrackLoop, menus: &mut MenuManager) -> Vec<LoopStep> {
+    let mut steps = Vec::new();
+    loop {
+        let step = state.next(menus);
+        let done = matches!(step, LoopStep::NextMessage | LoopStep::Done(_));
+        steps.push(step);
+        if done { return steps; }
+    }
+}
+
+#[test]
+fn a_press_entering_bar_tracking_is_applied_before_the_first_message() {
+    let (mut menus, bar, _, _) = bar_chain();
+    let mut state = TrackLoop::new(TPM_BUTTONDOWN | TPM_NONOTIFY, OWNER, bar, (40, 4));
+    state.begin();
+    assert_eq!(drain(&mut state, &mut menus, 3), vec![
+        LoopStep::Send(ProcCall { hwnd: OWNER as u64, message: WM_SETCURSOR, wparam: OWNER as u64, lparam: HTCAPTION }),
+        LoopStep::ShowTop,
+        LoopStep::PressAt { point: (40, 4) },
+    ]);
+    state.press(&mut menus, &on_bar(bar, PopupHit::Item(1)));
+    assert_eq!(menus.focused_item(MenuId::from_raw(bar).unwrap()), 1);
+    let steps = queued(&mut state, &mut menus);
+    assert!(steps.contains(&LoopStep::Effect(TrackEffect::ShowSubPopup { menu: bar, select_first: false })));
+    assert_eq!(*steps.last().unwrap(), LoopStep::NextMessage);
+}
+
+#[test]
+fn tracking_entered_without_a_press_takes_a_message_first() {
+    let (mut menus, bar, _, _) = bar_chain();
+    let mut state = TrackLoop::new(TPM_NONOTIFY, OWNER, bar, (0, 0));
+    state.begin();
+    assert_eq!(drain(&mut state, &mut menus, 2).last().unwrap(), &LoopStep::ShowTop);
+    assert_eq!(state.next(&mut menus), LoopStep::NextMessage);
+}
+
+#[test]
+fn a_press_naming_no_menu_ends_tracking_before_the_loop_runs() {
+    let (mut menus, bar, _, _) = bar_chain();
+    let mut state = TrackLoop::new(TPM_BUTTONDOWN | TPM_NONOTIFY, OWNER, bar, (40, 4));
+    state.begin();
+    let _ = drain(&mut state, &mut menus, 3);
+    state.press(&mut menus, &PointerEvent { pt: (40, 4), menu: None, hit: PopupHit::Nowhere, menu_is_bar: false, right_button: false });
+    assert!(matches!(queued(&mut state, &mut menus).last().unwrap(), LoopStep::Done(_)));
+}
+
+#[test]
+fn moving_along_the_bar_closes_one_popup_and_opens_the_next() {
+    let (mut menus, bar, _, _) = bar_chain();
+    let mut state = TrackLoop::new(TPM_NONOTIFY, OWNER, bar, (0, 0));
+    state.set_current(bar, 0);
+    menus.set_focused_item(MenuId::from_raw(bar).unwrap(), 0).unwrap();
+    state.message(&mut menus, message(WM_MOUSEMOVE, 0, 0), Some(on_bar(bar, PopupHit::Item(1))));
+    let steps = queued(&mut state, &mut menus);
+    assert_eq!(steps.iter().filter_map(|step| match step { LoopStep::Effect(effect) => Some(effect.clone()), _ => None }).collect::<Vec<_>>(),
+        vec![TrackEffect::HideSubPopups { menu: bar }, TrackEffect::Repaint { menu: bar },
+             TrackEffect::ShowSubPopup { menu: bar, select_first: false }]);
+    assert_eq!(menus.focused_item(MenuId::from_raw(bar).unwrap()), 1);
+}
+
+#[test]
+fn button_up_on_the_bar_item_that_opened_the_popup_keeps_it_open() {
+    let (mut menus, bar, _, _) = bar_chain();
+    let mut state = TrackLoop::new(TPM_NONOTIFY, OWNER, bar, (40, 4));
+    state.set_current(bar, 0);
+    menus.set_focused_item(MenuId::from_raw(bar).unwrap(), 0).unwrap();
+    state.message(&mut menus, message(WM_LBUTTONUP, 0, 0), Some(on_bar(bar, PopupHit::Item(0))));
+    assert_eq!(*queued(&mut state, &mut menus).last().unwrap(), LoopStep::NextMessage);
+    // The second release on the same item is the one that closes the menu.
+    state.message(&mut menus, message(WM_LBUTTONUP, 0, 0), Some(on_bar(bar, PopupHit::Item(0))));
+    assert!(matches!(queued(&mut state, &mut menus).last().unwrap(), LoopStep::Done(_)));
 }

@@ -8,10 +8,13 @@
 //! the message queue belong to the driver — every decision here is pure.
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
-use super::popup::{NO_SELECTED_ITEM, TF_ENDMENU, TPM_NONOTIFY, TPM_POPUPMENU, TPM_RETURNCMD};
-use super::track::{PointerEvent, TrackEffect, Tracker, EXEC_NOTHING, EXEC_POPUP_SHOWN, ITEM_NEXT, ITEM_PREV,
+use super::popup::{NO_SELECTED_ITEM, TF_ENDMENU, TPM_BUTTONDOWN, TPM_NONOTIFY, TPM_POPUPMENU, TPM_RETURNCMD};
+use super::track::{PointerEvent, TrackEffect, Tracker, EXEC_NOTHING, EXEC_POPUP_SHOWN,
     WM_CANCELMODE, WM_MENUSELECT, WM_UNINITMENUPOPUP};
-use super::{MenuId, MenuManager};
+use super::MenuManager;
+
+#[path = "track_keys.rs"]
+mod keys;
 
 pub const WM_SETCURSOR: u32 = 0x0020;
 pub const WM_TIMER: u32 = 0x0113;
@@ -45,6 +48,7 @@ pub const VK_UP: u32 = 0x26;
 pub const VK_RIGHT: u32 = 0x27;
 pub const VK_DOWN: u32 = 0x28;
 pub const VK_F10: u32 = 0x79;
+pub const VK_RETURN: u32 = 0x0d;
 
 /// The `WM_ENTERIDLE` code naming a menu rather than a dialog.
 pub const MSGF_MENU: u64 = 2;
@@ -121,6 +125,9 @@ pub enum LoopStep {
     ShowSub { menu: u32, position: u32, submenu: u32, select_first: bool },
     /// Retire the window showing one menu.
     Close { menu: u32 },
+    /// Resolve the press that entered tracking against the tracked menus and
+    /// apply it, the way the reference performs it at the entry point.
+    PressAt { point: (i32, i32) },
     /// Take the next message off the queue, waiting when it is empty.
     NextMessage,
     /// Tracking is over; report this command.
@@ -178,6 +185,17 @@ impl TrackLoop {
             if self.popup { self.send(owner, super::track::WM_INITMENUPOPUP, self.tracker.top_menu as u64, 0); }
         }
         self.steps.push_back(LoopStep::ShowTop);
+        // Tracking entered by a press acts on that press before it ever takes
+        // a message, so the item under it is selected and its popup opened.
+        if self.flags & TPM_BUTTONDOWN != 0 { self.steps.push_back(LoopStep::PressAt { point: self.tracker.pt }); }
+    }
+
+    /// Apply the press that entered tracking. A press that names no menu ends
+    /// tracking before the loop takes its first message. # C: O(N_items)
+    pub fn press(&mut self, menus: &mut MenuManager, event: &PointerEvent) {
+        let mut effects: Vec<TrackEffect> = Vec::new();
+        if !self.tracker.button_down(menus, event, &mut effects) { self.tracker.exit = true; }
+        self.queue_effects(effects);
     }
 
     /// A popup carrying no item is never tracked: the reference abandons the
@@ -322,34 +340,6 @@ impl TrackLoop {
     fn exit_steps(&mut self) {
         let (owner, popup) = (self.owner(), self.popup);
         self.send(owner, WM_EXITMENULOOP, popup as u64, 0);
-    }
-
-    /// Virtual keys the tracking loop acts on itself. # C: O(N_items)
-    fn key_down(&mut self, menus: &mut MenuManager, vk: u32, effects: &mut Vec<TrackEffect>) {
-        let current = self.tracker.current_menu;
-        let top = self.tracker.top_menu;
-        match vk {
-            VK_MENU | VK_F10 | VK_ESCAPE => self.tracker.exit = true,
-            VK_HOME | VK_END => {
-                self.tracker.select_item(menus, effects, current, NO_SELECTED_ITEM, false, 0);
-                self.tracker.move_selection(menus, effects, current, if vk == VK_HOME { ITEM_NEXT } else { ITEM_PREV });
-            }
-            VK_UP | VK_DOWN => {
-                let popup = MenuId::from_raw(current).and_then(|id| menus.is_popup(id).ok()).unwrap_or(false);
-                if popup { self.tracker.move_selection(menus, effects, current, if vk == VK_UP { ITEM_PREV } else { ITEM_NEXT }); }
-                else { effects.push(TrackEffect::ShowSubPopup { menu: current, select_first: true }); }
-            }
-            VK_LEFT => self.tracker.move_selection(menus, effects, top, ITEM_PREV),
-            VK_RIGHT => {
-                let has_submenu = MenuId::from_raw(current).is_some_and(|id| {
-                    let focused = menus.focused_item(id);
-                    focused != NO_SELECTED_ITEM && menus.is_submenu_item(id, focused)
-                });
-                if has_submenu { effects.push(TrackEffect::ShowSubPopup { menu: current, select_first: true }); }
-                else { self.tracker.move_selection(menus, effects, top, ITEM_NEXT); }
-            }
-            _ => {}
-        }
     }
 }
 

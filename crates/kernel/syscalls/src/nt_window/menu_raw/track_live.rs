@@ -12,16 +12,20 @@ use super::track_effects;
 use crate::nt_window::send::{self, Continuation, SendOutcome};
 use crate::nt_window::STATUS_PENDING;
 use alloc::sync::Arc;
+use ipc::win32_menu::bar_hit::{bar_hit_test, BarMetrics};
 use ipc::win32_menu::popup::{hit_test, PopupHit, TPM_POPUPMENU};
 use ipc::win32_menu::track::PointerEvent;
 use ipc::win32_menu::track_loop::{classify, LoopAction, LoopStep, ProcCall, RetrievedMessage, TrackLoop};
-use ipc::win32_menu::MenuId;
+use ipc::win32_menu::{MenuId, MenuRect};
 use ipc::win32_window::{MessageFilter, WindowId};
 
 /// Every message of every window of the calling thread.
 const ANY_MESSAGE: MessageFilter = MessageFilter { hwnd: None, first: 0, last: 0 };
 /// Capture claimed for menu tracking rather than an application drag.
 const CAPTURE_MENU: u32 = ipc::win32_window::CAPTURE_MENU;
+/// The cell metrics one menu bar is measured, drawn and hit-tested with.
+const BAR_METRICS: BarMetrics = BarMetrics { char_width: ipc::win32_gdi::MENU_CHAR_WIDTH,
+    char_height: ipc::win32_gdi::MENU_CHAR_HEIGHT, bar_height: ipc::win32_gdi::MENU_BAR_HEIGHT };
 
 /// Take the calling thread's parked loop out of the process record; exactly
 /// one driver owns it at a time. # C: O(N_process_gui_states)
@@ -55,29 +59,47 @@ fn cancelled() -> bool { with_entry(|entry| entry.menu_tracking.as_ref().is_some
 
 /// Which menu of the tracked chain a screen point falls on, and where in it.
 /// The innermost popup wins, as the reference walks the chain from the open
-/// submenu outwards. # C: O(N_open * N_items)
-fn menu_from_point(session: &MenuSession, point: (i32, i32)) -> (Option<u32>, PopupHit) {
+/// submenu outwards; only once no open popup claims the point does the top
+/// menu get its turn, as a bar drawn on the owner's own window.
+/// # C: O(N_open * N_items)
+fn menu_from_point(session: &MenuSession, top: u32, point: (i32, i32)) -> (Option<u32>, PopupHit) {
     for (menu, hwnd) in session.innermost_first() {
         let (Some(rect), Some(layout)) = (window_rect(hwnd), layout_of(menu)) else { continue; };
         let hit = hit_test(&layout, rect, point);
         if hit != PopupHit::Nowhere { return (Some(menu), hit); }
     }
-    (None, PopupHit::Nowhere)
+    bar_from_point(session.owner, top, point)
+}
+
+/// The top menu resolved as a menu bar: it opens no window of its own, so the
+/// point is tested against its owner's window rectangle and the item
+/// rectangles the bar is drawn with. A popup top menu owns no bar and claims
+/// nothing here. # C: O(N_items^2)
+fn bar_from_point(owner: u64, top: u32, point: (i32, i32)) -> (Option<u32>, PopupHit) {
+    let Some(menu) = MenuId::from_raw(top) else { return (None, PopupHit::Nowhere); };
+    let Some(window) = u32::try_from(owner).ok().and_then(WindowId::from_raw) else { return (None, PopupHit::Nowhere); };
+    let hit = with_entry(|entry| {
+        if entry.menus.is_popup(menu).unwrap_or(true) { return PopupHit::Nowhere; }
+        let Some(rect) = entry.state.rect(window) else { return PopupHit::Nowhere; };
+        let bounds = MenuRect { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
+        bar_hit_test(&entry.menus, menu, bounds, point, BAR_METRICS)
+    }).unwrap_or(PopupHit::Nowhere);
+    if hit == PopupHit::Nowhere { (None, hit) } else { (Some(top), hit) }
 }
 
 /// One pointer event resolved against the open chain. # C: O(N_open * N_items)
-fn pointer_event(session: &MenuSession, point: (i32, i32), right: bool) -> PointerEvent {
-    let (menu, hit) = menu_from_point(session, point);
+fn pointer_event(session: &MenuSession, top: u32, point: (i32, i32), right: bool) -> PointerEvent {
+    let (menu, hit) = menu_from_point(session, top, point);
     let menu_is_bar = menu.and_then(MenuId::from_raw).and_then(|id| with_entry(|entry| entry.menus.is_popup(id).unwrap_or(true))).is_some_and(|popup| !popup);
     PointerEvent { pt: point, menu, hit, menu_is_bar, right_button: right }
 }
 
 /// The chain resolution one retrieved message needs, absent for a message that
 /// names no point. # C: O(N_open * N_items)
-fn resolve_pointer(session: &MenuSession, msg: RetrievedMessage) -> Option<PointerEvent> {
+fn resolve_pointer(session: &MenuSession, top: u32, msg: RetrievedMessage) -> Option<PointerEvent> {
     match classify(msg.message, msg.wparam, msg.lparam) {
-        LoopAction::ButtonDown { point, right } | LoopAction::ButtonUp { point, right } => Some(pointer_event(session, point, right)),
-        LoopAction::Move { point } => Some(pointer_event(session, point, false)),
+        LoopAction::ButtonDown { point, right } | LoopAction::ButtonUp { point, right } => Some(pointer_event(session, top, point, right)),
+        LoopAction::Move { point } => Some(pointer_event(session, top, point, false)),
         _ => None,
     }
 }
@@ -119,7 +141,8 @@ fn drive() -> u64 {
             LoopStep::Effect(effect) => { track_effects::apply(&mut track, effect); put(track); }
             LoopStep::ShowTop => { show_top(&mut track); put(track); }
             LoopStep::ShowSub { menu, position, submenu, select_first } => { track_effects::show_sub(&mut track, menu, position, submenu, select_first); put(track); }
-            LoopStep::Close { menu } => { popup_window::close_popup(&mut track.session, menu); put(track); }
+            LoopStep::Close { menu } => { close_and_follow(&mut track, menu); put(track); }
+            LoopStep::PressAt { point } => { initial_press(&mut track, point); put(track); }
             LoopStep::NextMessage => { if !next_message(&mut track) { track.state.cancel(); } put(track); }
         }
     }
@@ -174,6 +197,22 @@ fn show_top(track: &mut PendingTrack) {
     if empty && flags & TPM_POPUPMENU != 0 { track.state.abandon(); }
 }
 
+/// Retire one popup window and keep the window the loop is following in step
+/// with the menu it now tracks. # C: O(N_open)
+fn close_and_follow(track: &mut PendingTrack, menu: u32) {
+    popup_window::close_popup(&mut track.session, menu);
+    let current = track.state.current();
+    let window = track.session.window_of(current).unwrap_or(0);
+    track.state.set_current(current, window);
+}
+
+/// Apply the press that entered tracking, resolved against the bar the press
+/// landed on. # C: O(N_items^2)
+fn initial_press(track: &mut PendingTrack, point: (i32, i32)) {
+    let event = pointer_event(&track.session, track.state.top(), point, false);
+    let _ = with_entry(|entry| track.state.press(&mut entry.menus, &event));
+}
+
 /// Take the next message the loop must act on. A message the loop consumes is
 /// removed from the queue; one that ends tracking without being consumed stays
 /// for the application, as the reference leaves it. Reports whether tracking
@@ -191,7 +230,7 @@ fn next_message(track: &mut PendingTrack) -> bool {
     };
     let retrieved = RetrievedMessage { hwnd: message.hwnd.map_or(0, |window| window.raw() as u64),
         message: message.message, wparam: message.wparam, lparam: message.lparam };
-    let event = resolve_pointer(&track.session, retrieved);
+    let event = resolve_pointer(&track.session, track.state.top(), retrieved);
     let remove = with_entry(|entry| track.state.message(&mut entry.menus, retrieved, event)).unwrap_or(true);
     if remove {
         let filter = MessageFilter { hwnd: message.hwnd, first: message.message, last: message.message };
