@@ -169,11 +169,18 @@ def wait_for_rendered_desktop(conn, deadline):
     die("GNOME session marker appeared without a rendered desktop frame")
 
 
-def wait_marker(reader, marker, deadline):
+def wait_marker(reader, marker, deadline, guest=None):
     """The console is drained by UartReader throughout the run, so this only
     inspects what has already arrived. A wait that also owned the reading left
-    the console unread whenever no wait was outstanding."""
+    the console unread whenever no wait was outstanding.
+
+    `guest` is the QEMU process when the caller has one: a marker cannot
+    arrive from a guest that has exited, so waiting out the whole run deadline
+    to report a missing marker hides which of the two happened.
+    """
     while time.monotonic() < deadline:
+        if guest is not None and guest.poll() is not None:
+            die(f"QEMU exited (status {guest.returncode}) while waiting for {marker}")
         text = reader.text()
         if FAULT.search(text):
             # The oops is still being written when its first line matches.
@@ -220,9 +227,9 @@ def type_token(conn):
         keys(conn, "minus" if char == "-" else char)
 
 
-def launch_on_desktop(uart, reader, qmp_sock, deadline):
-    wait_marker(reader, "sh-5.2#", deadline)
-    wait_marker(reader, "Entering running state", deadline)
+def launch_on_desktop(uart, reader, qmp_sock, deadline, guest=None):
+    wait_marker(reader, "sh-5.2#", deadline, guest)
+    wait_marker(reader, "Entering running state", deadline, guest)
     wait_for_rendered_desktop(qmp_sock, deadline)
     leave_overview(qmp_sock, deadline, "launch")
     screenshot(qmp_sock, "gnome-before-notepad")
@@ -383,11 +390,11 @@ def run_uart_audit():
 
 
 
-def run_desktop_checks(uart, reader, qmp_sock, deadline):
+def run_desktop_checks(uart, reader, qmp_sock, deadline, guest=None):
     """Drive the desktop checks; the caller owns the reader and the log."""
-    launch_on_desktop(uart, reader, qmp_sock, deadline)
+    launch_on_desktop(uart, reader, qmp_sock, deadline, guest)
     for marker in MILESTONES:
-        wait_marker(reader, marker, deadline)
+        wait_marker(reader, marker, deadline, guest)
     # The kernel has reported the window shown; confirm it is also the
     # active window on screen (not just present in a thumbnail behind a
     # reopened overview) before any input is typed into it (KI-0472).
@@ -403,6 +410,8 @@ def run_desktop_checks(uart, reader, qmp_sock, deadline):
     found, rect, after_path, after = False, None, None, before
     token_deadline = min(deadline, time.monotonic() + TOKEN_SECONDS)
     while True:
+        if guest is not None and guest.poll() is not None:
+            die(f"QEMU exited (status {guest.returncode}) while waiting for the token")
         time.sleep(1)
         after_path, after = screenshot(qmp_sock, "after-token")
         found, rect = token_in_notepad_window(after_path, TOKEN, crop_path=Path(f"{SCREEN}-after-token-notepad-crop.png"))
@@ -426,7 +435,7 @@ def run_desktop_checks(uart, reader, qmp_sock, deadline):
     if cleared == after or TOKEN in ocr(cleared_path):
         die("scratch token did not clear before close")
     keys(qmp_sock, "alt", "f4")
-    wait_marker(reader, "[WINDOWS-NOTEPAD] runtime-exit status=", deadline)
+    wait_marker(reader, "[WINDOWS-NOTEPAD] runtime-exit status=", deadline, guest)
     if "[WINDOWS-NOTEPAD] runtime-exit status=0" not in reader.text():
         die("Notepad runtime exited without status 0")
     print("windows-notepad-acceptance: A4/A5 PASS (close, exit, wrapper cleanup)")
@@ -468,7 +477,7 @@ def main():
     with UART_LOG.open("ab", buffering=0) as log:
         reader = UartReader(uart, log)
         try:
-            run_desktop_checks(uart, reader, qmp_sock, deadline)
+            run_desktop_checks(uart, reader, qmp_sock, deadline, qemu)
         finally:
             # The reader writes the log; it must stop before the file closes,
             # on the failure path as well as the success path.
