@@ -499,3 +499,38 @@ fn concurrent_readers_via_find_vma() {
     }
     for h in handles { h.join().unwrap(); }
 }
+
+// ---------------------------------------------------------------------------
+// A stashed-bytes image mapping is split by the per-section reprotection that
+// follows it, and a fault record names the offset inside the image by adding
+// the mapping's own offset to the distance from its start. That arithmetic is
+// only true if a split rebases the offset onto each piece.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn splitting_a_stashed_image_rebases_each_piece_onto_its_own_offset() {
+    let as_ = AddressSpace::new(0).unwrap();
+    let base = UserVirtAddr::new(0x4000_0000).unwrap();
+    let pages = 4usize;
+    let arc: alloc::sync::Arc<[u8]> =
+        alloc::sync::Arc::from(alloc::vec![0u8; PAGE * pages].into_boxed_slice());
+    as_.mmap(Some(base), PAGE * pages, r_w(), priv_anon(),
+        VmaBacking::KernelBytes { data: alloc::sync::Arc::clone(&arc), off: 0 }, false).unwrap();
+    // Reprotect one interior page, as a section reprotection does.
+    let middle = UserVirtAddr::new(base.as_u64() + PAGE as u64 * 2).unwrap();
+    as_.mprotect(middle, PAGE, VmaProt::READ).unwrap();
+    // Every piece must report the offset of its own start within the image, so
+    // that offset + (address - piece start) is the image offset of any address.
+    for page in 0..pages {
+        let at = UserVirtAddr::new(base.as_u64() + (PAGE * page) as u64).unwrap();
+        let vma = as_.find_vma(at).expect("mapped");
+        let off = match &vma.backing {
+            VmaBacking::KernelBytes { off, .. } => *off as u64,
+            other => panic!("page {page} lost its stashed backing: {other:?}"),
+        };
+        let image_off = off + (at.as_u64() - vma.start.as_u64());
+        assert_eq!(image_off, (PAGE * page) as u64,
+            "page {page}: mapping start {:#x} carries offset {off:#x}", vma.start.as_u64());
+    }
+    as_.audit().unwrap();
+}
