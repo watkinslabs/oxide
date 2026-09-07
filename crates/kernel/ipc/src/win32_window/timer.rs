@@ -85,12 +85,13 @@ impl WindowManager {
     /// # C: O(N_timers + N_queues)
     pub fn expire_timers(&mut self, now_ns: u64) -> usize {
         let mut fired = 0;
+        let pos = self.queue_pos_default();
         for index in 0..self.timers.len() {
             let timer = self.timers[index];
             if now_ns < timer.due_ns { continue; }
             let owner = timer.hwnd.and_then(|window| self.get(window)).map_or(timer.owner_tid, |record| record.owner_tid);
             let Some(queue) = self.queues.iter_mut().find(|(tid, _)| *tid == owner).map(|(_, queue)| queue) else { continue; };
-            if queue.post_with_bits(WinMessage { hwnd: timer.hwnd, message: timer.message, wparam: timer.id, lparam: timer.proc as i64 }, QS_TIMER).is_ok() { fired += 1; }
+            if queue.post_with_bits(WinMessage { hwnd: timer.hwnd, message: timer.message, wparam: timer.id, lparam: timer.proc as i64 }, QS_TIMER, pos).is_ok() { fired += 1; }
             self.timers[index].due_ns = now_ns.saturating_add(timer.period_ns);
         }
         fired

@@ -100,6 +100,8 @@ pub(crate) mod nt_wine_draw_icon_contract;
 pub(crate) mod nt_wine_keyboard_contract;
 #[path = "nt_wine_window/rawinput_raw.rs"]
 pub(crate) mod nt_wine_rawinput_contract;
+#[path = "nt_wine_window/pointer_raw.rs"]
+pub(crate) mod nt_wine_pointer_contract;
 #[path = "nt_wine_window/clip_raw.rs"]
 pub(crate) mod nt_wine_clip_contract;
 #[path = "nt_window/rect_query/policy.rs"]

@@ -206,3 +206,19 @@ pub(crate) fn report_last_error(error: u32) {
 }
 
 const TEB_LAST_ERROR_OFFSET: u64 = 0x68;
+
+/// Give one window the builtin control identity it belongs to. The class the
+/// identity names must be registered in the calling process, as the identity
+/// is the class's own; a window keeps the first identity it is given.
+/// # C: O(N_processes + N_windows + N_classes)
+pub(crate) fn set_window_fnid_for_current(hwnd: u64, fnid: u16) -> bool {
+    let Some(window) = id(hwnd) else { return false; };
+    let Some(index) = ipc::win32_window::fnid_proc_index(fnid) else { return false; };
+    let Some(builtin) = crate::nt_wine_window::builtin_classes::BUILTINS.iter().find(|entry| entry.proc_index == index) else { return false; };
+    let name: Vec<u16> = builtin.name.encode_utf16().collect();
+    access::with_state_mut(|state| {
+        if state.window_fnid(window) == Some(fnid) { return true; }
+        if state.find_class(&name, 0).is_none() { return false; }
+        state.set_window_fnid(window, fnid).is_ok()
+    }).unwrap_or(false)
+}

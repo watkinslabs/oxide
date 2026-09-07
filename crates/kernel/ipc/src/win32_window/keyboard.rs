@@ -26,7 +26,10 @@ pub(super) struct KeyTransition { key: u8, pressed: bool }
 #[derive(Clone, Copy)]
 pub(super) struct QueuedMessage { pub message: WinMessage, pub key: Option<KeyTransition>, pub bits: u32,
     /// Tick count at which the message was queued, which its retrieval reports.
-    pub time: u32 }
+    pub time: u32,
+    /// Packed desktop cursor position at which the message was queued, which
+    /// its retrieval reports.
+    pub pos: u32 }
 
 fn generic(key: u8) -> u8 {
     match key { VK_LSHIFT | VK_RSHIFT => VK_SHIFT, VK_LCONTROL | VK_RCONTROL => VK_CONTROL,
@@ -59,12 +62,16 @@ impl KeyboardState {
 impl MessageQueue {
     pub(super) fn read_entry(&mut self, index: usize, remove: bool) -> Option<WinMessage> {
         if !remove {
-            let (message, time) = self.messages.get(index).map(|entry| (entry.message, entry.time))?;
+            let (message, time, pos) = self.messages.get(index).map(|entry| (entry.message, entry.time, entry.pos))?;
             self.note_message_time(time);
+            self.note_message_pos(pos);
+            self.note_message_extra(0);
             return Some(message);
         }
         let entry = self.messages.remove(index)?;
         self.note_message_time(entry.time);
+        self.note_message_pos(entry.pos);
+        self.note_message_extra(0);
         if let Some(transition) = entry.key { self.keyboard.apply(transition, false); }
         Some(entry.message)
     }
@@ -79,12 +86,13 @@ impl WindowManager {
         let raw = u8::try_from(message.wparam).ok().filter(|key| *key != 0).ok_or(WindowError::InvalidParent)?;
         if message.hwnd != Some(id) { return Err(WindowError::InvalidParent); }
         self.check_message_capacity(id, 1)?;
+        let pos = self.queue_pos_default();
         let owner = self.get(id).ok_or(WindowError::NoSuchWindow)?.owner_tid;
         let queue = self.queues.iter_mut().find(|(tid, _)| *tid == owner).map(|(_, queue)| queue).ok_or(WindowError::NoSuchWindow)?;
         let transition = KeyTransition { key: sided(raw, message.lparam), pressed };
         message.wparam = generic(raw) as u64;
         queue.changed |= super::queue_status::QS_KEY;
-        queue.messages.push_back(QueuedMessage { message, key: Some(transition), bits: super::queue_status::QS_KEY, time: super::msg_time::tick_ms() });
+        queue.messages.push_back(QueuedMessage { message, key: Some(transition), bits: super::queue_status::QS_KEY, time: super::msg_time::tick_ms(), pos });
 
         self.keyboard.apply(transition, true);
         Ok(())

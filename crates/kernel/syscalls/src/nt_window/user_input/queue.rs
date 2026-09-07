@@ -10,10 +10,8 @@ pub(crate) fn queue_status_for_current(flags: u32) -> Option<u32> {
 }
 
 /// Answer one thread-state class. The default IME window class answers zero
-/// because no thread owns one until an IME window is created; the extra-info
-/// class answers zero because no message this owner queues carries hardware
-/// extra information; the foreground class answers zero, as an unsupported
-/// class does. # C: O(N_nt_processes)
+/// because no thread owns one until an IME window is created; the foreground
+/// class answers zero, as an unsupported class does. # C: O(N_nt_processes)
 pub(crate) fn thread_state_for_current(class: ThreadState) -> u64 {
     let Some(tid) = current_tid() else { return 0; };
     match class {
@@ -29,6 +27,7 @@ pub(crate) fn thread_state_for_current(class: ThreadState) -> u64 {
             ThreadState::InputState => state.input_state(tid) as u64,
             ThreadState::Cursor => state.current_cursor(),
             ThreadState::MessageTime => state.message_time(tid) as u64,
+            ThreadState::ExtraInfo => state.message_extra(tid) as u64,
             _ => 0,
         }).unwrap_or(0),
     }
@@ -90,3 +89,28 @@ pub(crate) fn inject_key_for_current(vkey: u16, pressed: bool) -> bool {
 
 /// Window handle validation shared with the raw entry. # C: O(1)
 pub(crate) fn window_id(hwnd: u64) -> Option<ipc::win32_window::WindowId> { super::super::valid_window(hwnd) }
+
+/// Packed position of the message the calling thread last read. # C: O(N_nt_processes + N_queues)
+pub(crate) fn message_pos_for_current() -> u32 {
+    let Some(tid) = current_tid() else { return 0; };
+    with_state(|state| state.message_pos(tid)).unwrap_or(0)
+}
+
+/// Replace the calling thread's message extra information and report what it
+/// replaced. # C: O(N_nt_processes + N_queues)
+pub(crate) fn set_message_extra_for_current(extra: i64) -> i64 {
+    let Some(tid) = current_tid() else { return 0; };
+    with_state_mut(|state| state.set_message_extra(tid, extra)).unwrap_or(0)
+}
+
+/// Type of one pointer the calling thread has seen. # C: O(N_nt_processes + N_queues + N_pointers)
+pub(crate) fn pointer_type_for_current(id: u32) -> Option<u32> {
+    let tid = current_tid()?;
+    with_state(|state| state.pointer_type(tid, id))?
+}
+
+/// Record of one pointer the calling thread has seen. # C: O(N_nt_processes + N_queues + N_pointers)
+pub(crate) fn pointer_info_for_current(id: u32) -> Option<ipc::win32_window::PointerInfo> {
+    let tid = current_tid()?;
+    with_state(|state| state.pointer_info(tid, id))?
+}

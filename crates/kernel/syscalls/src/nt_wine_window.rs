@@ -29,6 +29,7 @@ pub(crate) mod drag_raw;
 pub(crate) mod draw_icon_raw;
 mod keyboard_raw;
 mod rawinput_raw;
+mod pointer_raw;
 #[cfg(target_os = "oxide-kernel")]
 mod message_send;
 pub(crate) mod placement;

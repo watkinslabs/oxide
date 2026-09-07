@@ -24,10 +24,10 @@ use alloc::vec;
     #[test]
     fn queue_filters_without_reordering_unmatched_messages() {
         let mut queue = MessageQueue::default();
-        queue.post(message(None, 1)).unwrap();
+        queue.post(message(None, 1), 0).unwrap();
         let window = WindowId(7);
-        queue.post(message(Some(window), 2)).unwrap();
-        queue.post(message(None, 3)).unwrap();
+        queue.post(message(Some(window), 2), 0).unwrap();
+        queue.post(message(None, 3), 0).unwrap();
         let filter = MessageFilter { hwnd: Some(window), first: 2, last: 2 };
         assert_eq!(queue.peek(filter, false), Some(message(Some(window), 2)));
         assert_eq!(queue.peek(filter, true), Some(message(Some(window), 2)));
@@ -38,8 +38,8 @@ use alloc::vec;
     #[test]
     fn zero_message_bounds_select_the_entire_queue() {
         let mut queue = MessageQueue::default();
-        queue.post(message(None, 0x0042)).unwrap();
-        queue.post(message(None, WM_PAINT)).unwrap();
+        queue.post(message(None, 0x0042), 0).unwrap();
+        queue.post(message(None, WM_PAINT), 0).unwrap();
         let filter = MessageFilter { hwnd: None, first: 0, last: 0 };
         assert_eq!(queue.peek(filter, true).map(|value| value.message), Some(0x0042));
         assert_eq!(queue.peek(filter, true).map(|value| value.message), Some(WM_PAINT));

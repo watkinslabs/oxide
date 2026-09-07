@@ -79,6 +79,7 @@ fn binding(family: Family) -> Route {
         Family::InputRaw => (|o, a: &Args| input_raw::kernel::route(o, a)) as Route,
         Family::KeyboardRaw => (|o, a: &Args| keyboard_raw::kernel::route(o, a)) as Route,
         Family::RawInputRaw => (|o, a: &Args| rawinput_raw::kernel::route(o, a)) as Route,
+        Family::PointerRaw => (|o, a: &Args| pointer_raw::kernel::route(o, a)) as Route,
         Family::HwndParam => hwnd_param_route as Route,
         Family::GdiRoute => (|o, a: &Args| gdi_route::descriptor(o, a)) as Route,
         Family::ObjectRaw => (|o, a: &Args| object_raw::decode(o, a).map(object_raw::kernel::dispatch)) as Route,

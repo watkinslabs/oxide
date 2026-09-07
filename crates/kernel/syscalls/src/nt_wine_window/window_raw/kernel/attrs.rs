@@ -9,6 +9,7 @@ pub(super) fn route(ordinal: u64, args: &[u64]) -> Option<u64> {
         ALTER_WINDOW_STYLE => win_bool(owner::alter_style_for_current(args[0], args[1] as u32, args[2] as u32)),
         ENABLE_WINDOW => enable(args[0], args[1] != 0),
         GET_WINDOW_CONTEXT_HELP_ID => owner::help_context_for_current(args[0]) as u64,
+        SET_WINDOW_FNID => win_bool(owner::set_window_fnid_for_current(args[0], args[1] as u16)),
         SET_WINDOW_CONTEXT_HELP_ID => win_bool(owner::set_help_context_for_current(args[0], args[1] as u32)),
         GET_WINDOW_DISPLAY_AFFINITY => display_affinity(args[0], args[1]),
         GET_LAYERED_ATTRIBUTES => layered(args[0], args[1], args[2], args[3]),
