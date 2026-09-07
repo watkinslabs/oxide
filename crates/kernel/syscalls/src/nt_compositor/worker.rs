@@ -22,6 +22,16 @@ pub(super) fn spawn(binding: &Arc<Binding>) -> Result<(), TransportError> {
 /// Name why a transport worker gave up. Every exit below tears the bridge down
 /// and the peer only observes a closed socket, so a connection that dies for
 /// one of these reasons is otherwise indistinguishable from any other.
+/// One line per inbound desktop record and the GUI owner's verdict, so a
+/// click or key that never becomes a message can be placed at this boundary.
+fn trace_event(opcode: Opcode, hwnd: u64, accepted: bool) {
+    klog::write_raw(b"[WINDOWS-BRIDGE-EVENT] op=");
+    klog::write_hex_u64(opcode as u16 as u64);
+    klog::write_raw(b" hwnd=");
+    klog::write_hex_u64(hwnd);
+    klog::write_raw(if accepted { b" accepted=1\n" } else { b" accepted=0\n" });
+}
+
 fn teardown(reason: &'static [u8], sequence: u64, hwnd: u64) {
     klog::write_raw(b"[WINDOWS-BRIDGE-DOWN] reason=");
     klog::write_raw(reason);
@@ -71,7 +81,8 @@ extern "C" fn reader(arg: usize) -> ! {
                     Err(_) => { teardown(b"rx-monitors-decode", sequence, hwnd); break } }
             } else if let Some(group) = binding.group.upgrade() {
                 // GUI owner alone decides whether an event names a live HWND.
-                binding::deliver(&group, &record);
+                let accepted = binding::deliver(&group, &record);
+                trace_event(opcode, hwnd, accepted);
             } else { teardown(b"rx-owner-gone", sequence, hwnd); break; }
         }
         binding.wait.wake_all();

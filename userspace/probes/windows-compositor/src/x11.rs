@@ -218,6 +218,10 @@ impl Backend {
     }
 
     fn send_event<T: NativeTransport>(&self, transport: &mut T, event: BridgeEvent) -> Result<(), BackendError> {
+        // Every non-acknowledgement record the bridge sends, on stderr, which
+        // the launcher streams to the console: the other half of the kernel's
+        // inbound trace.
+        if !matches!(event, BridgeEvent::Ack { .. }) { eprintln!("windows-compositor: event {event:?}"); }
         transport.send(event).map_err(BackendError::Transport)
     }
 
