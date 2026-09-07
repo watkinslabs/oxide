@@ -4,8 +4,8 @@
 use super::*;
 use alloc::vec::Vec;
 use ipc::win32_gdi::{TextAttributes, TextState};
-use ipc::win32_menu::draw::MenuDrawOp;
-use ipc::win32_menu::mnemonic::display_text;
+use ipc::win32_menu::draw::{MenuDrawOp, MenuTextAlign};
+use ipc::win32_menu::mnemonic::label_halves;
 use ipc::win32_menu::{MenuItem, MenuManager, MenuRect};
 
 /// The cells the nonclient profile's menu font measures this bar with. The
@@ -53,7 +53,7 @@ fn runs() -> Vec<(MenuRect, usize, TextRequest)> {
     plan.iter().filter_map(|op| match op {
         MenuDrawOp::Text { rect, position, .. } => {
             let count = LABELS[*position as usize].len();
-            Some((*rect, count, request(BAND_DC, *rect, count, true, cells().char_width, MENU_TEXT, &state, glyph_height())))
+            Some((*rect, count, request(BAND_DC, *rect, count, MenuTextAlign::Center, cells().char_width, MENU_TEXT, &state, glyph_height())))
         }
         _ => None,
     }).collect()
@@ -113,20 +113,20 @@ fn every_notepad_label_draws_without_its_prefix_and_rules_the_marked_character()
     let marked: [usize; 5] = [0, 0, 1, 0, 0];
     let mut seen = 0;
     for op in &plan {
-        let MenuDrawOp::Text { rect, position, centered, .. } = op else { continue; };
+        let MenuDrawOp::Text { rect, position, align, .. } = op else { continue; };
         let item = menus.item(menu, *position, ipc::win32_menu::MF_BYPOSITION).unwrap();
-        let drawn = display_text(&item.text);
+        let drawn = label_halves(&item.text).name;
         let expected = LABELS[*position as usize];
         assert_eq!(drawn.units, expected.iter().map(|unit| *unit as u16).collect::<Vec<u16>>());
         assert_eq!(drawn.mnemonic, Some(marked[*position as usize]));
         // The run is measured from the drawn units, so it still fits the cell
         // the prefix-free measurement produced.
-        let request = request(BAND_DC, *rect, drawn.units.len(), *centered, cells().char_width, MENU_TEXT, &stock_state(), glyph_height());
+        let request = request(BAND_DC, *rect, drawn.units.len(), *align, cells().char_width, MENU_TEXT, &stock_state(), glyph_height());
         assert_eq!(request.count as usize, expected.len());
         assert!(request.x >= rect.left && request.x + run_width(drawn.units.len(), cells().char_width) <= rect.right);
         // The rule sits under the marked character's own cell, below the
         // baseline, inside the item.
-        let rule = underline(*rect, drawn.units.len(), drawn.mnemonic.unwrap(), *centered, cells().char_width, glyph_height(), ascent());
+        let rule = underline(*rect, drawn.units.len(), drawn.mnemonic.unwrap(), *align, cells().char_width, glyph_height(), ascent());
         assert_eq!(rule.left, request.x + cells().char_width * marked[*position as usize] as i32);
         assert_eq!(rule.right, rule.left + cells().char_width - 1);
         assert_eq!(rule.bottom - rule.top, UNDERLINE_RULE);
@@ -140,9 +140,19 @@ fn every_notepad_label_draws_without_its_prefix_and_rules_the_marked_character()
 fn a_popup_run_starts_at_the_left_edge_and_a_bar_run_is_centred() {
     let (advance, height) = (cells().char_width, glyph_height());
     let rect = MenuRect { left: 10, top: 4, right: 10 + advance * 6, bottom: 4 + 18 };
-    assert_eq!(origin(rect, 4, false, advance, height).0, 10);
+    assert_eq!(origin(rect, 4, MenuTextAlign::Left, advance, height).0, 10);
     // Two of the six columns are free, so the centred run gives one to each side.
-    assert_eq!(origin(rect, 4, true, advance, height).0, 10 + advance);
+    assert_eq!(origin(rect, 4, MenuTextAlign::Center, advance, height).0, 10 + advance);
     // The glyphs sit on the face's own cell, centred in the item's rows.
-    assert_eq!(origin(rect, 4, true, advance, height).1, 4 + (18 - height) / 2);
+    assert_eq!(origin(rect, 4, MenuTextAlign::Center, advance, height).1, 4 + (18 - height) / 2);
+}
+
+#[test]
+fn a_flush_right_run_ends_at_the_right_edge_and_never_starts_left_of_the_rectangle() {
+    let (advance, height) = (cells().char_width, glyph_height());
+    let rect = MenuRect { left: 10, top: 4, right: 10 + advance * 6, bottom: 4 + 18 };
+    assert_eq!(origin(rect, 4, MenuTextAlign::Right, advance, height).0, rect.right - advance * 4);
+    // A run wider than its rectangle is clamped to the left edge rather than
+    // drawn outside the item.
+    assert_eq!(origin(rect, 9, MenuTextAlign::Right, advance, height).0, rect.left);
 }

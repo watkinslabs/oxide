@@ -1,6 +1,6 @@
 //! Per-process accelerator tables and the translate decision's window facts.
 use super::*;
-use crate::nt_wine_window::accel_raw::{MenuPlacement, Target};
+use crate::nt_wine_window::accel_raw::{locate, MenuOwner, MenuPlacement, Target};
 use ipc::win32_accel::{Accel, AccelError};
 
 fn with_entry<T>(f: impl FnOnce(&mut GuiEntry) -> T) -> Option<T> {
@@ -26,19 +26,9 @@ pub(crate) fn accel_destroy_for_current(handle: u32) -> Result<(), AccelError> {
     with_entry(|entry| entry.accelerators.destroy(handle)).unwrap_or(Err(AccelError::NoSuchTable))
 }
 
-fn locate(menus: &ipc::win32_menu::MenuManager, bar: Option<u32>, cmd: u32) -> Option<(MenuPlacement, u32)> {
-    let bar_id = ipc::win32_menu::MenuId::from_raw(bar?)?;
-    if let Ok(item) = menus.item(bar_id, cmd, 0) { return Some((MenuPlacement::InBar, item.state)); }
-    let count = menus.count(bar_id).ok()?;
-    for position in 0..count {
-        let Ok(top) = menus.item(bar_id, position as u32, ipc::win32_menu::MF_BYPOSITION) else { continue; };
-        let Some(sub) = top.submenu.and_then(ipc::win32_menu::MenuId::from_raw) else { continue; };
-        if let Ok(item) = menus.item(sub, cmd, 0) { return Some((MenuPlacement::InPopup { submenu: sub.raw(), position: position as u32 }, item.state)); }
-    }
-    None
-}
-
 /// Window style, capture and the command's menu placement for the send plan.
+/// The window's system menu is searched ahead of its own menu, the way the
+/// reference resolves a command that both could carry.
 /// # C: O(processes + windows + menu items)
 pub(crate) fn accel_target_for_current(hwnd: u64, cmd: u16) -> Option<Target> {
     let cur = sched::live::current().filter(|task| task.is_nt_personality())?;
@@ -49,6 +39,9 @@ pub(crate) fn accel_target_for_current(hwnd: u64, cmd: u16) -> Option<Target> {
     // A child owns a control identifier in the shared slot, not a menu, so it
     // never names a command position in the menu owner.
     let menu = ipc::win32_window::menu_of(record.style, record.id_menu);
-    let (placement, item_state) = locate(&entry.menus, menu, u32::from(cmd)).unwrap_or((MenuPlacement::NotInMenu, 0));
-    Some(Target { style: record.style, captured: entry.state.captured().is_some(), menu: menu.unwrap_or(0), placement, item_state })
+    let (placement, item_state) = locate(&entry.menus, record.sys_menu, u32::from(cmd), MenuOwner::System)
+        .or_else(|| locate(&entry.menus, menu, u32::from(cmd), MenuOwner::Client))
+        .unwrap_or((MenuPlacement::NotInMenu, 0));
+    Some(Target { style: record.style, captured: entry.state.captured().is_some(), menu: menu.unwrap_or(0),
+        sys_menu: record.sys_menu.unwrap_or(0), placement, item_state })
 }

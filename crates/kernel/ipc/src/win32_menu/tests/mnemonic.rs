@@ -67,3 +67,34 @@ fn a_label_stops_at_its_terminator() {
     assert_eq!(stored_len(&[]), 0);
     assert_eq!(drawn(b""), (Vec::new(), None));
 }
+
+#[test]
+fn a_label_splits_at_its_first_tab_and_each_half_keeps_its_own_prefix_rules() {
+    let halves = label_halves(&wide(b"&Save\tCtrl+S"));
+    assert_eq!(halves.name, DisplayText { units: wide(b"Save")[..4].to_vec(), mnemonic: Some(0) });
+    let (align, accel) = halves.accel.unwrap();
+    assert_eq!(align, AccelAlign::Tab);
+    assert_eq!(accel.units, wide(b"Ctrl+S")[..6].to_vec());
+}
+
+#[test]
+fn a_flush_right_unit_splits_the_label_the_same_way_a_tab_does() {
+    let halves = label_halves(&wide(b"Help\x08F1"));
+    assert_eq!(halves.accel.unwrap().0, AccelAlign::FlushRight);
+    assert_eq!(halves.name.units, wide(b"Help")[..4].to_vec());
+}
+
+#[test]
+fn a_label_with_no_split_unit_is_all_name() {
+    let halves = label_halves(&wide(b"&Undo"));
+    assert_eq!(halves.name, display_text(&wide(b"&Undo")));
+    assert_eq!(halves.accel, None);
+}
+
+#[test]
+fn the_mnemonic_of_a_split_label_is_looked_for_in_its_name_half_only() {
+    // The prefix in the accelerator half marks nothing: the key that selects
+    // the item is the one its name advertises.
+    assert_eq!(mnemonic_char(&wide(b"Save\tCtrl+&S")), None);
+    assert_eq!(mnemonic_char(&wide(b"&Save\tCtrl+S")), Some(b'S' as u16));
+}

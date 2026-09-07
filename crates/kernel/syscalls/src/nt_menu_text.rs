@@ -3,6 +3,7 @@
 //! with. Ungated, so the placement and the record are checked without the
 //! Task binding the run itself needs (`53§2`).
 use ipc::win32_gdi::{Font, TextState};
+use ipc::win32_menu::draw::MenuTextAlign;
 use ipc::win32_menu::MenuRect;
 use syscall::nt_native_gdi::{TextRequest, TRANSPARENT, VERSION};
 
@@ -16,11 +17,17 @@ const UNDERLINE_DROP: i32 = 1;
 /// produced the item rectangles measured with. # C: O(1)
 pub(crate) fn run_width(units: usize, advance: i32) -> i32 { (units as i32).saturating_mul(advance) }
 
-/// Where one run's glyphs start inside `rect`: a bar item centres its text,
-/// a popup item starts at the left edge, and both centre it vertically on the
-/// glyph height the device context reports. # C: O(1)
-pub(crate) fn origin(rect: MenuRect, units: usize, centered: bool, advance: i32, glyph_height: i32) -> (i32, i32) {
-    let x = if centered { rect.left + ((rect.right - rect.left) - run_width(units, advance)).max(0) / 2 } else { rect.left };
+/// Where one run's glyphs start inside `rect`: a bar item centres its text, a
+/// popup name starts at the left edge, an accelerator half flushed right ends
+/// at the right edge, and every run is centred vertically on the glyph height
+/// the device context reports. # C: O(1)
+pub(crate) fn origin(rect: MenuRect, units: usize, align: MenuTextAlign, advance: i32, glyph_height: i32) -> (i32, i32) {
+    let width = run_width(units, advance);
+    let x = match align {
+        MenuTextAlign::Left => rect.left,
+        MenuTextAlign::Center => rect.left + ((rect.right - rect.left) - width).max(0) / 2,
+        MenuTextAlign::Right => rect.right.saturating_sub(width).max(rect.left),
+    };
     let y = rect.top + ((rect.bottom - rect.top) - glyph_height).max(0) / 2;
     (x, y)
 }
@@ -28,8 +35,8 @@ pub(crate) fn origin(rect: MenuRect, units: usize, centered: bool, advance: i32,
 /// The rule drawn under the mnemonic character of one run: it spans that
 /// character's own cell less its last pixel column, one row below the
 /// baseline the ascent names. # C: O(1)
-pub(crate) fn underline(rect: MenuRect, units: usize, mnemonic: usize, centered: bool, advance: i32, glyph_height: i32, ascent: i32) -> MenuRect {
-    let (x, y) = origin(rect, units, centered, advance, glyph_height);
+pub(crate) fn underline(rect: MenuRect, units: usize, mnemonic: usize, align: MenuTextAlign, advance: i32, glyph_height: i32, ascent: i32) -> MenuRect {
+    let (x, y) = origin(rect, units, align, advance, glyph_height);
     let left = x.saturating_add(run_width(mnemonic, advance));
     let top = y.saturating_add(ascent).saturating_add(UNDERLINE_DROP);
     MenuRect { left, top, right: left.saturating_add(advance).saturating_sub(1), bottom: top.saturating_add(UNDERLINE_RULE) }
@@ -49,10 +56,10 @@ fn face(font: Option<Font>, glyph_height: i32) -> (i32, i32, i32, u32) {
 /// callback payload, which is placed after the record is built, so this
 /// record is admitted by `kernel_payload_bytes` and not by the user-facing
 /// `valid`. # C: O(1)
-pub(crate) fn request(dc: u64, rect: MenuRect, units: usize, centered: bool, advance: i32, foreground: u32,
+pub(crate) fn request(dc: u64, rect: MenuRect, units: usize, align: MenuTextAlign, advance: i32, foreground: u32,
     state: &TextState, glyph_height: i32) -> TextRequest {
     let (height, width, weight, italic) = face(state.font, glyph_height);
-    let (x, y) = origin(rect, units, centered, advance, glyph_height);
+    let (x, y) = origin(rect, units, align, advance, glyph_height);
     TextRequest { version: VERSION, size: core::mem::size_of::<TextRequest>() as u32,
         dc, x, y, flags: 0, count: units as u32, text: 0, advances: 0, rect: [0; 4],
         height, width, weight, italic, foreground, background: state.attributes.background,

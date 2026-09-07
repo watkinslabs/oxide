@@ -2,8 +2,8 @@
 //! are written into the backing surface here, and every text run is handed to
 //! the font backend the same way any other kernel-owned text run is.
 use alloc::vec::Vec;
-use ipc::win32_menu::draw::MenuDrawOp;
-use ipc::win32_menu::mnemonic::{display_text, DisplayText};
+use ipc::win32_menu::draw::{MenuDrawOp, MenuTextAlign, MenuTextHalf};
+use ipc::win32_menu::mnemonic::{label_halves, DisplayText};
 use ipc::win32_menu::{MenuId, MenuRect, MF_BYPOSITION};
 use ipc::win32_gdi::SystemColor;
 
@@ -36,7 +36,7 @@ fn fill(dc: u64, rect: MenuRect, color: SystemColor) {
 /// the same cell metrics the layout was built from. `Some` is the redirect
 /// status the syscall this pass runs under must return, so the backend enters
 /// its callback with the payload the launch placed. # C: O(text units)
-fn text(dc: u64, rect: MenuRect, drawn: &DisplayText, color: SystemColor, centered: bool) -> Option<u64> {
+fn text(dc: u64, rect: MenuRect, drawn: &DisplayText, color: SystemColor, align: MenuTextAlign) -> Option<u64> {
     let units = &drawn.units[..];
     if units.is_empty() { return None; }
     let state = crate::nt_gdi::text_snapshot_for_current(dc).ok()?;
@@ -45,13 +45,13 @@ fn text(dc: u64, rect: MenuRect, drawn: &DisplayText, color: SystemColor, center
     let metrics = crate::nt_gdi::text_metrics_for_current(dc).ok()?;
     let advance = metrics.character_width;
     if let Some(mnemonic) = drawn.mnemonic {
-        let rule = crate::nt_menu_text::underline(rect, units.len(), mnemonic, centered, advance, metrics.height, metrics.ascent);
+        let rule = crate::nt_menu_text::underline(rect, units.len(), mnemonic, align, advance, metrics.height, metrics.ascent);
         fill(dc, rule, color);
     }
     let foreground = crate::nt_gdi::system_color_value(color);
     let saved = crate::nt_gdi::set_text_attribute_for_current(dc, ipc::win32_gdi::TextAttribute::Foreground, foreground).ok();
     let saved_mode = crate::nt_gdi::set_text_attribute_for_current(dc, ipc::win32_gdi::TextAttribute::BackgroundMode, TRANSPARENT).ok();
-    let request = crate::nt_menu_text::request(dc, rect, units.len(), centered, advance, foreground, &state, metrics.height);
+    let request = crate::nt_menu_text::request(dc, rect, units.len(), align, advance, foreground, &state, metrics.height);
     // The run does not rasterize inside this call: it enters the font backend
     // after the syscall returns, so it goes through the thread's ordered
     // queue, which also holds this paint's present until it lands.
@@ -72,12 +72,17 @@ fn text(dc: u64, rect: MenuRect, drawn: &DisplayText, color: SystemColor, center
     status
 }
 
-/// The displayed text of one item of one menu, under the prefix rules its
-/// stored label carries. # C: O(N_items + text units)
-fn item_text(menu: MenuId, position: u32) -> Option<DisplayText> {
+/// One run of one item's label: the item name, or the accelerator half behind
+/// the label's split unit, each under the prefix rules its own half carries.
+/// # C: O(N_items + text units)
+fn item_text(menu: MenuId, position: u32, half: MenuTextHalf) -> Option<DisplayText> {
     super::menu_raw::with_entry(|entry| {
         let item = entry.menus.item(menu, position, MF_BYPOSITION).ok()?;
-        Some(display_text(&item.text))
+        let halves = label_halves(&item.text);
+        match half {
+            MenuTextHalf::Name => Some(halves.name),
+            MenuTextHalf::Accelerator => halves.accel.map(|(_, drawn)| drawn),
+        }
     }).flatten()
 }
 
@@ -113,9 +118,9 @@ fn draw(dc: u64, menu: MenuId, ops: &[MenuDrawOp], origin: (i32, i32)) -> Option
                 for point in points.iter().take(*count) { run.push((point.0 + origin.0, point.1 + origin.1)); }
                 let _ = crate::nt_gdi::fill_polygon_for_current(dc, &run, crate::nt_gdi::system_color_value(*color));
             }
-            MenuDrawOp::Text { rect, position, color, centered, .. } => {
-                let Some(drawn) = item_text(menu, *position) else { continue; };
-                let status = text(dc, shifted(*rect, origin), &drawn, *color, *centered);
+            MenuDrawOp::Text { rect, position, half, color, align, .. } => {
+                let Some(drawn) = item_text(menu, *position, *half) else { continue; };
+                let status = text(dc, shifted(*rect, origin), &drawn, *color, *align);
                 if launched.is_none() { launched = status; }
             }
         }

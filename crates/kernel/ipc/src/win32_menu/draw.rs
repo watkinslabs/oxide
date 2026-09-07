@@ -4,6 +4,7 @@
 //! the drawing contract; the pixels are written by the caller that walks the
 //! plan against a device context.
 use alloc::vec::Vec;
+use super::mnemonic::{label_halves, AccelAlign};
 use super::popup::{PopupLayout, ARROW_WIDTH, CHECK_WIDTH};
 use super::{MenuError, MenuId, MenuManager, MenuRect, MF_BYPOSITION, MF_CHECKED, MF_GRAYED, MF_HILITE, MF_SEPARATOR};
 use crate::win32_gdi::SystemColor;
@@ -32,14 +33,26 @@ pub const TEXT_GAP: i32 = 4;
 /// Height of the etched rule a separator draws.
 pub const SEPARATOR_RULE: i32 = 1;
 
+/// Which run of an item's label a text step draws: the item name, or the
+/// accelerator half behind the label's split unit.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum MenuTextHalf { Name, Accelerator }
+
+/// How one run sits in the rectangle it is given.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum MenuTextAlign { Left, Center, Right }
+
 /// One drawing step of a menu.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum MenuDrawOp {
     /// Solid fill of one rectangle in a system colour.
     Fill { rect: MenuRect, color: SystemColor },
-    /// One item's text, drawn inside this rectangle. A bar item centres its
-    /// text; a popup item starts at the left edge. The default item is bold.
-    Text { rect: MenuRect, position: u32, color: SystemColor, centered: bool, bold: bool },
+    /// One run of one item's label, drawn inside this rectangle. A bar item
+    /// centres its name; a popup item starts at the left edge and its
+    /// accelerator half is placed against the menu's tab column, from it
+    /// rightwards after a tab and against it after a flush-right unit. The
+    /// default item is bold.
+    Text { rect: MenuRect, position: u32, half: MenuTextHalf, color: SystemColor, align: MenuTextAlign, bold: bool },
     /// A filled glyph: the check mark and the submenu arrow.
     Glyph { points: [(i32, i32); GLYPH_POINTS], count: usize, color: SystemColor },
 }
@@ -126,7 +139,7 @@ impl MenuManager {
     pub fn popup_draw_plan(&self, menu: MenuId, layout: &PopupLayout) -> Result<Vec<MenuDrawOp>, MenuError> {
         let client = MenuRect { left: 0, top: 0, right: layout.width, bottom: layout.height };
         let mut ops = Vec::new();
-        ops.try_reserve(self.count(menu)? * 4 + 8).map_err(|_| MenuError::NoSuchMenu)?;
+        ops.try_reserve(self.count(menu)? * 5 + 8).map_err(|_| MenuError::NoSuchMenu)?;
         ops.push(MenuDrawOp::Fill { rect: client, color: SystemColor::Menu });
         rect_edge(client, EDGE_RAISED, BF_RECT, 1, &mut ops);
         for (position, rect) in layout.items.iter().enumerate() {
@@ -150,8 +163,19 @@ impl MenuManager {
                 let top = rect.top + ((rect.bottom - rect.top) - side) / 2;
                 ops.push(arrow_glyph(MenuRect { left: rect.right - side - 1, top, right: rect.right - 1, bottom: top + side }, color));
             }
+            let bold = item.state & super::MF_DEFAULT != 0;
             let text = MenuRect { left: rect.left + TEXT_GAP + CHECK_WIDTH, top: rect.top, right: rect.right - ARROW_WIDTH, bottom: rect.bottom };
-            ops.push(MenuDrawOp::Text { rect: text, position: position as u32, color, centered: false, bold: item.state & super::MF_DEFAULT != 0 });
+            ops.push(MenuDrawOp::Text { rect: text, position: position as u32, half: MenuTextHalf::Name, color, align: MenuTextAlign::Left, bold });
+            // The accelerator half is drawn as its own run against the column
+            // the whole menu was measured to share.
+            if let Some((align, _)) = label_halves(&item.text).accel {
+                let column = rect.left + TEXT_GAP + layout.tab;
+                let (accel, align) = match align {
+                    AccelAlign::Tab => (MenuRect { left: column, ..text }, MenuTextAlign::Left),
+                    AccelAlign::FlushRight => (MenuRect { right: column, ..text }, MenuTextAlign::Right),
+                };
+                ops.push(MenuDrawOp::Text { rect: accel, position: position as u32, half: MenuTextHalf::Accelerator, color, align, bold });
+            }
         }
         Ok(ops)
     }
@@ -174,8 +198,8 @@ impl MenuManager {
             if item.state & MF_HILITE != 0 { rect_edge(rect, BDR_SUNKENOUTER, BF_RECT, 1, &mut ops); }
             else { ops.push(MenuDrawOp::Fill { rect, color: SystemColor::Menu }); }
             let text = MenuRect { left: rect.left + char_width, top: rect.top, right: rect.right - char_width, bottom: rect.bottom };
-            ops.push(MenuDrawOp::Text { rect: text, position: position as u32, color: item_text_color(item.state, true), centered: true,
-                bold: item.state & super::MF_DEFAULT != 0 });
+            ops.push(MenuDrawOp::Text { rect: text, position: position as u32, half: MenuTextHalf::Name, color: item_text_color(item.state, true),
+                align: MenuTextAlign::Center, bold: item.state & super::MF_DEFAULT != 0 });
         }
         Ok(ops)
     }

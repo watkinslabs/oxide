@@ -16,6 +16,11 @@ pub const ALPHA_PREFIX: u16 = 30;
 /// Legacy katakana prefix: the prefix and the access key behind it are both
 /// dropped from the drawn label and neither is marked.
 pub const KANA_PREFIX: u16 = 31;
+/// A label splits here into the item name and the accelerator behind it: the
+/// half behind a tab is drawn from the menu's tab column rightwards, the half
+/// behind a flush-right unit ends at that column.
+pub const TAB_SPLIT: u16 = 9;
+pub const FLUSH_SPLIT: u16 = 8;
 
 /// One label as it is drawn: the units left after the prefix rules, and the
 /// index into those units of the character the underline sits under.
@@ -49,12 +54,33 @@ pub fn display_text(text: &[u16]) -> DisplayText {
     out
 }
 
+/// Where the second half of a split label sits against the tab column.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum AccelAlign { Tab, FlushRight }
+
+/// One label as the runs it draws as: the item name, and the accelerator half
+/// behind the split unit when the label carries one. The split is looked for
+/// in the stored units, ahead of the prefix rules, so a prefix cannot hide it
+/// and each half carries its own mnemonic.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct LabelHalves { pub name: DisplayText, pub accel: Option<(AccelAlign, DisplayText)> }
+
+/// Split one label at its first tab or flush-right unit and resolve each half.
+/// # C: O(len)
+pub fn label_halves(text: &[u16]) -> LabelHalves {
+    let end = stored_len(text);
+    let split = text[..end].iter().position(|unit| *unit == TAB_SPLIT || *unit == FLUSH_SPLIT);
+    let Some(index) = split else { return LabelHalves { name: display_text(&text[..end]), accel: None }; };
+    let align = if text[index] == TAB_SPLIT { AccelAlign::Tab } else { AccelAlign::FlushRight };
+    LabelHalves { name: display_text(&text[..index]), accel: Some((align, display_text(&text[index + 1..end]))) }
+}
+
 /// Width of one label in characters, as it is drawn. # C: O(len)
 pub fn display_len(text: &[u16]) -> usize { display_text(text).units.len() }
 
 /// The character one label's mnemonic selects, if it marks one. # C: O(len)
 pub fn mnemonic_char(text: &[u16]) -> Option<u16> {
-    let drawn = display_text(text);
+    let drawn = label_halves(text).name;
     drawn.mnemonic.and_then(|index| drawn.units.get(index).copied())
 }
 
