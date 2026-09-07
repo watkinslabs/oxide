@@ -92,3 +92,37 @@ fn text_length_stops_at_the_terminator() {
     assert_eq!(crate::win32_menu::mnemonic::stored_len(&[65, 66]), 2);
     assert_eq!(crate::win32_menu::mnemonic::stored_len(&[]), 0);
 }
+
+#[test]
+fn a_label_splits_at_its_tab_and_the_two_halves_are_measured_apart() {
+    let (menus, menu) = menu_of(&[("Save\tCtrl+S", 0)]);
+    let layout = menus.popup_layout(menu, metrics(), i32::MAX).unwrap();
+    // "Save" is the name column, "Ctrl+S" the accelerator column, and one
+    // cell separates them.
+    assert_eq!(layout.tab, CHECK_WIDTH + 4 * 8);
+    assert_eq!(layout.width, CHECK_WIDTH + 4 * 8 + 8 + 6 * 8 + ARROW_WIDTH + POPUP_BORDER * 2);
+}
+
+#[test]
+fn the_tab_column_is_the_widest_name_of_the_menu_and_the_width_holds_the_widest_accelerator() {
+    let (menus, menu) = menu_of(&[("New\tCtrl+N", 0), ("Page Setup...\tF5", 0), ("Print\tCtrl+Shift+P", 0)]);
+    let layout = menus.popup_layout(menu, metrics(), i32::MAX).unwrap();
+    assert_eq!(layout.tab, CHECK_WIDTH + "Page Setup...".len() as i32 * 8);
+    assert_eq!(layout.width, layout.tab + 8 + "Ctrl+Shift+P".len() as i32 * 8 + ARROW_WIDTH + POPUP_BORDER * 2);
+}
+
+#[test]
+fn a_menu_with_no_tab_in_any_label_is_measured_exactly_as_before() {
+    let (menus, menu) = menu_of(&[("Undo", 0), ("Select All", 0)]);
+    let layout = menus.popup_layout(menu, metrics(), i32::MAX).unwrap();
+    assert_eq!(layout.tab, CHECK_WIDTH + 10 * 8);
+    assert_eq!(layout.width, CHECK_WIDTH + 10 * 8 + ARROW_WIDTH + POPUP_BORDER * 2);
+}
+
+#[test]
+fn a_flush_right_label_is_measured_the_same_way_a_tab_is() {
+    let (menus, menu) = menu_of(&[("Help\u{8}F1", 0)]);
+    let layout = menus.popup_layout(menu, metrics(), i32::MAX).unwrap();
+    assert_eq!(layout.tab, CHECK_WIDTH + 4 * 8);
+    assert_eq!(layout.width, layout.tab + 8 + 2 * 8 + ARROW_WIDTH + POPUP_BORDER * 2);
+}

@@ -1,7 +1,7 @@
 //! The drawing contract: which colour every item state paints in, what the
 //! borders and separators fill, and where an item's text starts.
 use super::*;
-use crate::win32_menu::popup::PopupMetrics;
+use crate::win32_menu::popup::{PopupMetrics, POPUP_BORDER};
 use crate::win32_menu::{MenuItem, MF_CHECKED, MF_DISABLED};
 use alloc::vec;
 
@@ -21,7 +21,7 @@ fn fills(ops: &[MenuDrawOp]) -> Vec<(MenuRect, SystemColor)> {
 }
 
 fn texts(ops: &[MenuDrawOp]) -> Vec<(u32, MenuRect, SystemColor, bool)> {
-    ops.iter().filter_map(|op| match op { MenuDrawOp::Text { rect, position, color, centered, .. } => Some((*position, *rect, *color, *centered)), _ => None }).collect()
+    ops.iter().filter_map(|op| match op { MenuDrawOp::Text { rect, position, color, align, .. } => Some((*position, *rect, *color, *align == MenuTextAlign::Center)), _ => None }).collect()
 }
 
 #[test]
@@ -174,4 +174,57 @@ fn a_bar_separator_paints_nothing_at_all() {
     let ops = menus.bar_draw_plan(menu, origin, 8, 16, 19).unwrap();
     assert_eq!(texts(&ops).len(), 1);
     assert_eq!(vec![0], texts(&ops).iter().map(|entry| entry.0).collect::<Vec<_>>());
+}
+
+/// Every text run of a popup plan, with the half and the alignment it draws.
+fn runs(ops: &[MenuDrawOp]) -> Vec<(u32, MenuTextHalf, MenuTextAlign, MenuRect)> {
+    ops.iter().filter_map(|op| match op {
+        MenuDrawOp::Text { rect, position, half, align, .. } => Some((*position, *half, *align, *rect)),
+        _ => None,
+    }).collect()
+}
+
+#[test]
+fn a_label_with_a_tab_draws_two_runs_and_the_second_starts_at_the_tab_column() {
+    let (menus, menu) = menu_with(&[(1, 0, b"Save\tCtrl+S", None)]);
+    let layout = menus.popup_layout(menu, PopupMetrics { char_width: 8, char_height: 16 }, i32::MAX).unwrap();
+    let drawn = runs(&menus.popup_draw_plan(menu, &layout).unwrap());
+    assert_eq!(drawn.len(), 2);
+    assert_eq!((drawn[0].1, drawn[0].2), (MenuTextHalf::Name, MenuTextAlign::Left));
+    assert_eq!(drawn[0].3.left, POPUP_BORDER + TEXT_GAP + CHECK_WIDTH);
+    assert_eq!((drawn[1].1, drawn[1].2), (MenuTextHalf::Accelerator, MenuTextAlign::Left));
+    assert_eq!(drawn[1].3.left, POPUP_BORDER + TEXT_GAP + layout.tab);
+    assert_eq!(drawn[1].3.right, drawn[0].3.right);
+}
+
+#[test]
+fn a_flush_right_label_draws_its_accelerator_right_aligned_against_the_column() {
+    let (menus, menu) = menu_with(&[(1, 0, b"Help\x08F1", None)]);
+    let layout = menus.popup_layout(menu, PopupMetrics { char_width: 8, char_height: 16 }, i32::MAX).unwrap();
+    let drawn = runs(&menus.popup_draw_plan(menu, &layout).unwrap());
+    assert_eq!(drawn.len(), 2);
+    assert_eq!((drawn[1].1, drawn[1].2), (MenuTextHalf::Accelerator, MenuTextAlign::Right));
+    assert_eq!(drawn[1].3.right, POPUP_BORDER + TEXT_GAP + layout.tab);
+    assert_eq!(drawn[1].3.left, drawn[0].3.left);
+}
+
+#[test]
+fn every_accelerator_of_a_menu_starts_in_the_same_column() {
+    let (menus, menu) = menu_with(&[(1, 0, b"New\tCtrl+N", None), (2, 0, b"Page Setup...\tF5", None), (3, 0, b"About", None)]);
+    let layout = menus.popup_layout(menu, PopupMetrics { char_width: 8, char_height: 16 }, i32::MAX).unwrap();
+    let drawn = runs(&menus.popup_draw_plan(menu, &layout).unwrap());
+    let accels: Vec<i32> = drawn.iter().filter(|run| run.1 == MenuTextHalf::Accelerator).map(|run| run.3.left).collect();
+    assert_eq!(accels.len(), 2);
+    assert!(accels.iter().all(|left| *left == accels[0]));
+    // The item with no tab draws one run and nothing in the column.
+    assert_eq!(drawn.iter().filter(|run| run.0 == 2).count(), 1);
+}
+
+#[test]
+fn a_label_with_no_tab_still_draws_one_left_aligned_run() {
+    let (menus, menu) = menu_with(&[(1, 0, b"Undo", None)]);
+    let layout = menus.popup_layout(menu, PopupMetrics { char_width: 8, char_height: 16 }, i32::MAX).unwrap();
+    let drawn = runs(&menus.popup_draw_plan(menu, &layout).unwrap());
+    assert_eq!(drawn.len(), 1);
+    assert_eq!((drawn[0].1, drawn[0].2), (MenuTextHalf::Name, MenuTextAlign::Left));
 }

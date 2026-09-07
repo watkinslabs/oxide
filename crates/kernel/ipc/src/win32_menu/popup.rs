@@ -2,7 +2,7 @@
 //! window, the popup's own size, where that popup lands against the work
 //! area, and which item a screen point names.
 use alloc::vec::Vec;
-use super::mnemonic::display_len;
+use super::mnemonic::label_halves;
 use super::{MenuError, MenuId, MenuManager, MenuRect, MF_BYPOSITION, MF_SEPARATOR};
 
 /// Track-popup flags. `TPM_LEFTALIGN`, `TPM_TOPALIGN` and `TPM_LEFTBUTTON`
@@ -49,9 +49,11 @@ impl PopupMetrics {
     }
 }
 
-/// Where every item sits inside the popup window, and the window's own size.
+/// Where every item sits inside the popup window, the window's own size, and
+/// the column every accelerator half is placed against, as an offset from an
+/// item rectangle's left edge.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct PopupLayout { pub width: i32, pub height: i32, pub items: Vec<MenuRect> }
+pub struct PopupLayout { pub width: i32, pub height: i32, pub tab: i32, pub items: Vec<MenuRect> }
 
 /// What a point inside the popup window names.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -60,11 +62,14 @@ pub enum PopupHit { Nowhere, Border, Item(u32) }
 impl MenuManager {
     /// Measure one popup: a single column of items, each a text line except a
     /// separator, clipped to `max_height` rows. The check and arrow columns
-    /// are always reserved so the text of every item starts in one place.
+    /// are always reserved so the text of every item starts in one place. The
+    /// name half and the accelerator half of every label are measured apart
+    /// and the widest of each kept, so the popup is as wide as the widest name
+    /// plus the widest accelerator and every accelerator starts in one column.
     /// # C: O(N_items)
     pub fn popup_layout(&self, menu: MenuId, metrics: PopupMetrics, max_height: i32) -> Result<PopupLayout, MenuError> {
         let count = self.count(menu)?;
-        let mut widest = 0;
+        let (mut widest_name, mut widest_accel) = (0, 0);
         let mut items = Vec::new();
         items.try_reserve(count).map_err(|_| MenuError::NoSuchMenu)?;
         let mut y = POPUP_BORDER;
@@ -72,15 +77,24 @@ impl MenuManager {
             let item = self.item(menu, position as u32, MF_BYPOSITION)?;
             let separator = item.state & MF_SEPARATOR != 0;
             let height = if separator { SEPARATOR_HEIGHT } else { metrics.char_height };
-            let width = CHECK_WIDTH.saturating_add((display_len(&item.text) as i32).saturating_mul(metrics.char_width)).saturating_add(ARROW_WIDTH);
-            if width > widest { widest = width; }
+            let halves = label_halves(&item.text);
+            let cells = |units: usize| (units as i32).saturating_mul(metrics.char_width);
+            let name = CHECK_WIDTH.saturating_add(cells(halves.name.units.len()));
+            // The accelerator half is set off from the name by one cell, the
+            // gap the reference leaves for the tab itself.
+            let accel = match &halves.accel {
+                Some((_, drawn)) => metrics.char_width.saturating_add(cells(drawn.units.len())).saturating_add(ARROW_WIDTH),
+                None => ARROW_WIDTH,
+            };
+            if name > widest_name { widest_name = name; }
+            if accel > widest_accel { widest_accel = accel; }
             items.push(MenuRect { left: POPUP_BORDER, top: y, right: POPUP_BORDER, bottom: y.saturating_add(height) });
             y = y.saturating_add(height);
         }
         let height = y.saturating_add(POPUP_BORDER).min(max_height.max(POPUP_BORDER * 2));
-        let width = widest.saturating_add(POPUP_BORDER * 2);
+        let width = widest_name.saturating_add(widest_accel).saturating_add(POPUP_BORDER * 2);
         for rect in &mut items { rect.right = width.saturating_sub(POPUP_BORDER); }
-        Ok(PopupLayout { width, height, items })
+        Ok(PopupLayout { width, height, tab: widest_name, items })
     }
 }
 
