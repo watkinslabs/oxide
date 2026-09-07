@@ -1,7 +1,7 @@
 # Native Windows compositor bridge
 
 Status: FROZEN
-Date: 2026-09-06
+Date: 2026-09-07
 Depends on: 25, 31ab, 31fj, 31fk, 31fl, 52, 53
 
 ## Contract
@@ -33,9 +33,17 @@ Backpressure must not silently acknowledge an unpresented frame as success.
 The syscalls compositor module owns transport lifetime, bounded immutable
 outbound records, monitor snapshots and event delivery through the existing GUI
 owner. No GUI, GDI or scheduler spinlock may be held across socket I/O. The
-initial protocol may carry owned pixel bytes; it never transports raw kernel or
-userspace pointers. Later shared-buffer optimization is not required for this
-first correct path. Pixel format and row layout are explicit on the wire.
+protocol carries owned pixel bytes; it never transports raw kernel or userspace
+pointers. Pixel format and row layout are explicit on the wire.
+
+A frame carries the pixels it changed, not the surface. Its payload states the
+surface extent, the stride of the sub-image it carries and the rectangle that
+sub-image covers; admission requires the rectangle inside the surface, a stride
+at least its own row, and a byte count equal to that stride times the
+rectangle's height. The backend retains the surface and applies each sub-image
+at its own origin, so a repaint neither re-expands a whole surface nor copies
+one: a caret composites into the tile as it is assembled. A first paint whose
+damage is the whole window is the whole window, and costs what it covers.
 
 The userspace windows-compositor owns only HWND-to-XID presentation mappings,
 X11 connections, images and event translation. It does not duplicate class,
@@ -61,8 +69,8 @@ to 256 KiB. Hidden records contain no mask. No pointers or bitmap handles cross
 the wire. The canonical GDI/caret owner resolves bitmap pixels, client mapping,
 visibility and blink phase; each phase publishes a snapshot outside GUI locks.
 
-The backend retains only a presentation snapshot per existing HWND/XID mapping.
-It composites RGB XOR against pristine window pixels for every repaint/frame,
+The backend retains a surface and a presentation snapshot per existing HWND/XID
+mapping. It composites RGB XOR against pristine window pixels for every repaint,
 preserving alpha and row padding. Hide/move restores the old footprint from
 those pristine pixels. Older generations are ignored; equal-generation ordered
 erase/paint updates remain valid. Destruction removes the presentation snapshot.
