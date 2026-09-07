@@ -46,7 +46,6 @@ pub(super) fn route(ordinal: u64, a: &Args) -> Option<u64> {
         WINE_SHOW_WINDOW => placement::show(a[0], a[1]),
         WINE_SET_WINDOW_PLACEMENT => placement::set(a[0], a[1]),
         WINE_GET_WINDOW_PLACEMENT => placement::get(a[0], a[1]),
-        WINE_INVALIDATE_RECT => win_bool(native(NtService::InvalidateWindow, SyscallArgs { a0: a[0], a1: a[1], a2: a[2], a3: 0, a4: 0, a5: 0 })),
         WINE_SET_WINDOW_POS => position::set(&[a[0], a[1], a[2], a[3], a[4], a[5], a[6]]),
         WINE_MOVE_WINDOW => position::set(&position::move_window_args(&[a[0], a[1], a[2], a[3], a[4], a[5]])),
         WINE_BEGIN_PAINT => begin_paint(a, native, gdi),

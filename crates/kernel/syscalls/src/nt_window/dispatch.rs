@@ -156,7 +156,13 @@ pub(super) fn dispatch_mode(call: NtCall, raw: bool) -> Option<u64> {
                             if copy_message(message, ipc::win32_window::WinMessage { hwnd: None, message: ipc::win32_window::WM_QUIT, wparam: code as u64, lparam: 0 }).is_err() { return Some(STATUS_INVALID_PARAMETER); }
                             (Some(0), None, None)
                         }
-                        ipc::win32_window::QueueResult::Empty => (None, None, Some((wait, filter))),
+                        ipc::win32_window::QueueResult::Empty => {
+                            // A drained queue that still owes a paint means the
+                            // damage exists but the paint selection rejected it,
+                            // which no other trace can tell from no damage at all.
+                            trace_idle(state, cur.tid as u64);
+                            (None, None, Some((wait, filter)))
+                        }
                     }
                 }
                 NtWindowCall::PostQuit { code } => {
@@ -373,4 +379,20 @@ pub(super) fn dispatch_mode(call: NtCall, raw: bool) -> Option<u64> {
         if outcome == sched::task::WaitOutcome::TimedOut { continue; }
         if outcome != sched::task::WaitOutcome::Ready { return Some(STATUS_ALERTED); }
     }
+}
+
+/// Damage still owed when a retrieval finds nothing to hand over, bounded so a
+/// running system stays quiet. # C: O(N_dirty * N_windows)
+fn trace_idle(state: &ipc::win32_window::WindowManager, tid: u64) {
+    use core::sync::atomic::{AtomicU32, Ordering};
+    static BUDGET: AtomicU32 = AtomicU32::new(0);
+    let dirty = state.dirty_windows();
+    if dirty.is_empty() || BUDGET.fetch_add(1, Ordering::Relaxed) >= 100 { return; }
+    klog::write_raw(b"[WINDOWS-IDLE-DAMAGE] tid="); klog::write_hex_u64(tid);
+    for window in dirty {
+        klog::write_raw(b" hwnd="); klog::write_hex_u64(window.raw() as u64);
+        klog::write_raw(b"/owner="); klog::write_hex_u64(state.get(window).map(|record| record.owner_tid).unwrap_or(0));
+        klog::write_raw(b"/visible="); klog::write_hex_u64(state.get(window).is_some_and(|record| record.visible) as u64);
+    }
+    klog::write_raw(b"\n");
 }

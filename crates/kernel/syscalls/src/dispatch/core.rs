@@ -92,10 +92,13 @@ fn dispatch_routed_syscall(entry: (Option<u64>, u64), nr: u64, args: &SyscallArg
     // Armed by the first GetMessage return rather than process start: window
     // creation alone issues more than four hundred calls, and the previous
     // run's budget was gone before the loop it exists to show had begun.
+    // The budget spans the whole interactive phase: a four-hundred-call budget
+    // expired a second before the first typed character, so the calls the
+    // control makes while handling input were never in the trace at all.
     if crate::nt_milestone::message_loop_reached() && sched::live::current().is_some_and(|task| task.is_nt_personality()) {
         use core::sync::atomic::{AtomicU32, Ordering};
         static LOOP_TRACE: AtomicU32 = AtomicU32::new(0);
-        if LOOP_TRACE.fetch_add(1, Ordering::Relaxed) < 400 {
+        if LOOP_TRACE.fetch_add(1, Ordering::Relaxed) < 6000 {
             klog::write_raw(b"[WINDOWS-RAW] ordinal=");
             klog::write_hex_u64(nr);
             klog::write_raw(b" a0=");
