@@ -111,6 +111,8 @@ pub struct ThreadGroup {
     pub nt_heap: Spinlock<Option<ntheap::Heap>, TaskListClass>,
     /// Process-owned native callback registrations and their typed schedules.
     pub nt_callbacks: Spinlock<Vec<crate::nt_callback::Registration>, TaskListClass>,
+    /// Unwind function tables registered for dynamically generated code.
+    pub nt_function_tables: Spinlock<Vec<crate::nt_function_table::Entry>, TaskListClass>,
     pub nt_wait_next: AtomicU64,
     pub nt_io_completion: Spinlock<Option<Arc<crate::nt_object::NtCompletionPort>>, TaskListClass>,
     pub nt_search_path_mode: AtomicU32,
@@ -300,7 +302,7 @@ impl ThreadGroup {
             nt_atoms: Spinlock::new(Vec::new()), nt_atom_table: Spinlock::new(false),
             nt_heap_lock: Spinlock::new(None),
             nt_heap: Spinlock::new(None),
-            nt_callbacks: Spinlock::new(Vec::new()), nt_wait_next: AtomicU64::new(1),
+            nt_callbacks: Spinlock::new(Vec::new()), nt_function_tables: Spinlock::new(Vec::new()), nt_wait_next: AtomicU64::new(1),
             nt_io_completion: Spinlock::new(None),
             nt_search_path_mode: AtomicU32::new(0),
             nt_default_dll_search_flags: AtomicU32::new(0),

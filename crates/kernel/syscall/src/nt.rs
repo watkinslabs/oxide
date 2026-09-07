@@ -384,6 +384,38 @@ pub enum NtService {
     Md4Update = 571,
     /// Pad the held block and publish the MD4 digest.
     Md4Final = 572,
+    /// Take the caller's slim reader/writer lock for writing, blocking until no owner remains.
+    RtlAcquireSRWLockExclusive = 573,
+    /// Take the caller's slim reader/writer lock for reading, blocking while a writer waits.
+    RtlAcquireSRWLockShared = 574,
+    /// Drop one exclusive slim reader/writer claim and wake the next waiter.
+    RtlReleaseSRWLockExclusive = 575,
+    /// Drop one shared slim reader/writer claim and wake a writer when the last reader leaves.
+    RtlReleaseSRWLockShared = 576,
+    /// Take the caller's slim reader/writer lock for writing without blocking.
+    RtlTryAcquireSRWLockExclusive = 577,
+    /// Bump one condition variable's sequence word and release a single sleeper.
+    RtlWakeConditionVariable = 578,
+    /// Register a static unwind function table for one dynamically generated code range.
+    RtlAddFunctionTable = 579,
+    /// Remove the dynamic unwind registration whose table is the caller's.
+    RtlDeleteFunctionTable = 580,
+    /// Register a callback that supplies unwind entries for one code range on demand.
+    RtlInstallFunctionTableCallback = 581,
+    /// Order two counted byte strings, optionally case-folded.
+    RtlCompareString = 582,
+    /// Copy one counted UTF-16 string into a caller-owned buffer, truncating to its capacity.
+    RtlCopyUnicodeString = 583,
+    /// Report whether two counted UTF-16 strings hold the same text.
+    RtlEqualUnicodeString = 584,
+    /// Accumulate the CRC-32 of one byte run onto a caller-supplied residue.
+    RtlComputeCrc32 = 585,
+    /// Locate the section header covering one image-relative address.
+    RtlImageRvaToSection = 586,
+    /// Report whether one process handle names the calling process.
+    RtlIsCurrentProcess = 587,
+    /// Lower-case the ASCII letters of one NUL-terminated UTF-16 string in place.
+    Wcslwr = 588,
 }
 impl NtService {
     /// Return the tagged entry selector emitted by an NTDLL syscall stub.
@@ -1054,6 +1086,22 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 570 { return Some(NtCall { service: NtService::Md4Init, args }); }
     if service == 571 { return Some(NtCall { service: NtService::Md4Update, args }); }
     if service == 572 { return Some(NtCall { service: NtService::Md4Final, args }); }
+    if service == 573 { return Some(NtCall { service: NtService::RtlAcquireSRWLockExclusive, args }); }
+    if service == 574 { return Some(NtCall { service: NtService::RtlAcquireSRWLockShared, args }); }
+    if service == 575 { return Some(NtCall { service: NtService::RtlReleaseSRWLockExclusive, args }); }
+    if service == 576 { return Some(NtCall { service: NtService::RtlReleaseSRWLockShared, args }); }
+    if service == 577 { return Some(NtCall { service: NtService::RtlTryAcquireSRWLockExclusive, args }); }
+    if service == 578 { return Some(NtCall { service: NtService::RtlWakeConditionVariable, args }); }
+    if service == 579 { return Some(NtCall { service: NtService::RtlAddFunctionTable, args }); }
+    if service == 580 { return Some(NtCall { service: NtService::RtlDeleteFunctionTable, args }); }
+    if service == 581 { return Some(NtCall { service: NtService::RtlInstallFunctionTableCallback, args }); }
+    if service == 582 { return Some(NtCall { service: NtService::RtlCompareString, args }); }
+    if service == 583 { return Some(NtCall { service: NtService::RtlCopyUnicodeString, args }); }
+    if service == 584 { return Some(NtCall { service: NtService::RtlEqualUnicodeString, args }); }
+    if service == 585 { return Some(NtCall { service: NtService::RtlComputeCrc32, args }); }
+    if service == 586 { return Some(NtCall { service: NtService::RtlImageRvaToSection, args }); }
+    if service == 587 { return Some(NtCall { service: NtService::RtlIsCurrentProcess, args }); }
+    if service == 588 { return Some(NtCall { service: NtService::Wcslwr, args }); }
     let service = match service {
         0 => NtService::AllocateVirtualMemory,
         1 => NtService::FreeVirtualMemory,
@@ -1247,6 +1295,7 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
         NtService::RtlAddAccessDeniedObjectAce => Err(Errno::Enosys),
         NtService::RtlAddAuditAccessObjectAce => Err(Errno::Enosys),
         NtService::RtlAddMandatoryAce => Err(Errno::Enosys),
+        NtService::RtlAcquireSRWLockExclusive | NtService::RtlAcquireSRWLockShared | NtService::RtlReleaseSRWLockExclusive | NtService::RtlReleaseSRWLockShared | NtService::RtlTryAcquireSRWLockExclusive | NtService::RtlWakeConditionVariable | NtService::RtlAddFunctionTable | NtService::RtlDeleteFunctionTable | NtService::RtlInstallFunctionTableCallback | NtService::RtlCompareString | NtService::RtlCopyUnicodeString | NtService::RtlEqualUnicodeString | NtService::RtlComputeCrc32 | NtService::RtlImageRvaToSection | NtService::RtlIsCurrentProcess | NtService::Wcslwr => Err(Errno::Enosys),
         NtService::RtlAddRefActivationContext => Err(Errno::Enosys),
         NtService::RtlAllocateAndInitializeSid => Err(Errno::Enosys),
         NtService::RtlAreAllAccessesGranted => Err(Errno::Enosys),

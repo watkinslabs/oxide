@@ -62,7 +62,5 @@ const _: () = assert!(THREAD_TLS_OFF + THREAD_TLS_BYTES <= NT_DEBUG_INFO_OFFSET 
 const _: () = assert!(NT_DEBUG_INFO_OFFSET as usize + 8 + 1020 <= THREAD_SYSCALL_FRAME_OFF);
 const _: () = assert!(MOD_OFF + MAX_MODULES * MOD_STRIDE <= STR_OFF);
 const _: () = assert!(ENV_OFF + ENV_BYTES <= API_SET_OFF);
-#[cfg(target_os = "oxide-kernel")]
-pub(super) const USER_SHARED_DATA_BASE: u64 = 0x7ffe_0000;
-#[cfg(target_os = "oxide-kernel")]
-pub(super) const USER_SHARED_DATA_BYTES: usize = 0x1000;
+// The shared page carries its own layout in `user_shared_data`, which builds
+// the bytes ungated so the syscall-entry flag can be tested off-target.

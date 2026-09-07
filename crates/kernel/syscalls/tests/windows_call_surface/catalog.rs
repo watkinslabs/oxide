@@ -3,7 +3,11 @@
 
 use std::path::{Path, PathBuf};
 
-const ROOTS: [&str; 2] = ["/usr/lib64/wine/x86_64-windows", "/usr/lib/wine/x86_64-windows"];
+/// The audited catalog is the one the image stages: the Wine tree this repo
+/// builds (`tools/build-wine-runtime.sh`) and packages as `oxide-wine`. A host
+/// Wine installation is never read — auditing a different Wine than the guest
+/// runs would report a surface no boot can reach.
+const CATALOG: &str = "target/artifacts/wine/x86_64/x86_64-windows";
 /// The single image the Notepad campaign runs.
 pub const ROOT_MODULE: &str = "notepad.exe";
 /// Kernel-published synthetic module. Never read from the Wine catalog: the
@@ -15,8 +19,11 @@ pub const RUNTIME_MODULE: &str = "ntdll.dll";
 pub const RUNTIME_LOADED: [(&str, &[&str]); 1] =
     [("user32.dll", &["imm32.dll", "uxtheme.dll", "comctl32.dll"])];
 
-/// # C: O(number of catalog roots)
-pub fn root() -> Option<PathBuf> { ROOTS.iter().map(PathBuf::from).find(|root| root.join(ROOT_MODULE).is_file()) }
+/// # C: O(1)
+pub fn root() -> Option<PathBuf> {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..").join(CATALOG);
+    if root.join(ROOT_MODULE).is_file() { Some(root) } else { None }
+}
 
 /// # C: O(module bytes)
 pub fn read(root: &Path, name: &str) -> Option<Vec<u8>> {

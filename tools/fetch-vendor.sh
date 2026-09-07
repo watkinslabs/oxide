@@ -110,6 +110,25 @@ fetch "$OVMF_AA64_URL"  "$VENDOR/firmware/ovmf-aarch64.fd" "$OVMF_AA64_SHA256" "
 echo "grub arm64-efi:"
 sh "$(dirname "$0")/fetch-grub.sh"
 
+# ---------------------------------------------------------------------------
+# Wine source + the mingw-w64 CRT headers its PE side compiles against. The
+# guest's Windows runtime is built from these by tools/build-wine-runtime.sh
+# and shipped as the `oxide-wine` package: no Windows module is ever taken
+# from an installed host Wine. The release is pinned by tools/wine-version.
+# ---------------------------------------------------------------------------
+WINE_VERSION="$(tr -d "[:space:]" < "$REPO_ROOT/tools/wine-version")"
+WINE_SERIES="${WINE_VERSION%%.*}.x"
+WINE_URL="https://dl.winehq.org/wine/source/$WINE_SERIES/wine-$WINE_VERSION.tar.xz"
+WINE_SHA256="c66e2090343dcd727f7f7fd2f87ee0bfb0b118790c1d745ab7b8a4c3a4197f2f"
+MINGW_HEADERS_URL="https://kojipkgs.fedoraproject.org/packages/mingw-headers/12.0.0/4.fc42/noarch/mingw64-headers-12.0.0-4.fc42.noarch.rpm"
+MINGW_HEADERS_SHA256="0ff2507b47eb2bb4387d9c8ed6198d8c623488b7dfca92db04c73ada505c06cf"
+
+mkdir -p "$VENDOR/wine"
+echo "wine $WINE_VERSION source:"
+fetch "$WINE_URL" "$VENDOR/wine/wine-$WINE_VERSION.tar.xz" "$WINE_SHA256" "wine-$WINE_VERSION.tar.xz"
+echo "mingw64 headers:"
+fetch "$MINGW_HEADERS_URL" "$VENDOR/wine/mingw64-headers-12.0.0-4.fc42.noarch.rpm" "$MINGW_HEADERS_SHA256" "mingw64-headers-12.0.0-4.fc42.noarch.rpm"
+
 if [ -n "$FAILED" ]; then
     echo "fetch-vendor: FAILED —${FAILED}" >&2
     exit 1

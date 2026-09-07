@@ -162,4 +162,9 @@ mod nt_wine_object_contract;
 mod nt_milestone;
 mod nt_ip_string;
 mod nt_md4;
+mod nt_crc32;
+mod nt_srw;
+mod nt_counted_string;
+#[cfg(target_os = "oxide-kernel")]
+mod nt_function_table;
 pub(crate) mod nt_status_dos;

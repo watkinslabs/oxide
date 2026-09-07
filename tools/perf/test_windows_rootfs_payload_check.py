@@ -10,6 +10,11 @@ SPEC = importlib.util.spec_from_file_location("windows_rootfs_payload_check", RO
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
+# The packaged Windows runtime this tree builds; the fixture is made from it,
+# never from a Wine the build host happens to have installed.
+WINE_TREE = ROOT.parent / "target/artifacts/wine/x86_64"
+WINE_VERSION = (ROOT / "wine-version").read_text().strip()
+
 
 class RootfsPayloadContractTests(unittest.TestCase):
     def test_complete_manifest_is_accepted(self):
@@ -34,9 +39,11 @@ class RootfsPayloadContractTests(unittest.TestCase):
         self.assertIn("$(XTASK) grub --arch x86_64", section)
 
 
+@unittest.skipUnless((WINE_TREE / "wine-version").is_file(),
+                     "packaged Wine tree absent; run tools/build-wine-runtime.sh")
 class Ext4ValidatorTests(unittest.TestCase):
-    NTDLL = Path("target/lanes/wine-10.20-build/dlls/ntdll/ntdll.so")
-    WIN32U = Path("target/lanes/wine-10.20-build/dlls/win32u/win32u.so")
+    NTDLL = WINE_TREE / "x86_64-unix/ntdll.so"
+    WIN32U = WINE_TREE / "x86_64-unix/win32u.so"
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="oxide-rootfs-fixture-")
@@ -63,10 +70,13 @@ class Ext4ValidatorTests(unittest.TestCase):
         self.write("/usr/local/bin/registryd", b"registry")
         self.write("/usr/local/bin/windows-notepad-smoke", b"wrapper")
         self.write("/usr/local/lib/oxide/windows/x86_64-windows/notepad.exe",
-                   Path("/usr/lib/wine/x86_64-windows/notepad.exe").read_bytes())
+                   (WINE_TREE / "x86_64-windows/notepad.exe").read_bytes())
         self.write_native("/usr/local/lib/oxide/windows/x86_64-unix/ntdll.so", self.NTDLL)
         self.write_native("/usr/local/lib/oxide/windows/x86_64-unix/win32u.so", self.WIN32U)
-        self.write("/usr/local/lib/oxide/windows/x86_64-windows/kernel32.dll", b"dll")
+        for name in MODULE.VERSIONED_MODULES:
+            self.write(f"/usr/local/lib/oxide/windows/x86_64-windows/{name}",
+                       (WINE_TREE / "x86_64-windows" / name).read_bytes())
+        self.write("/usr/local/lib/oxide/windows/wine-version", f"{WINE_VERSION}\n".encode())
         self.write("/usr/local/lib/oxide/windows/x86_64-windows/imm32.dll", b"dll")
         self.write("/usr/local/lib/oxide/windows/x86_64-unix/kernel32.so", b"so")
         self.write("/usr/local/share/oxide/windows/nls/locale.nls", b"nls")
@@ -98,22 +108,32 @@ class Ext4ValidatorTests(unittest.TestCase):
         self.assertTrue(source.is_file(), source)
         self.debugfs(f"write {source} {guest}")
 
-    def run_validator(self, expected=True, expected_ntdll=None, expected_win32u=None):
-        if expected:
-            expected_ntdll = self.NTDLL if expected_ntdll is None else expected_ntdll
-            expected_win32u = self.WIN32U if expected_win32u is None else expected_win32u
-        return MODULE.check_image(self.image, expected_ntdll, expected_win32u)
+    def run_validator(self, expected_version=WINE_VERSION):
+        return MODULE.check_image(self.image, expected_version)
 
     def test_real_ext4_fixture_passes_complete_validator(self):
         self.assertEqual(self.run_validator(), "payload: PASS")
 
-    def test_real_ext4_fixture_rejects_wrong_native_pair_bytes(self):
-        with self.assertRaisesRegex(MODULE.Failure, "differs from expected"):
-            self.run_validator(expected_win32u=self.NTDLL)
+    def test_real_ext4_fixture_rejects_a_wine_the_tree_does_not_build(self):
+        with self.assertRaisesRegex(MODULE.Failure, "expected"):
+            self.run_validator(expected_version="10.20")
 
-    def test_native_provenance_requires_both_expected_artifacts(self):
-        with self.assertRaisesRegex(MODULE.Failure, "both ntdll and win32u"):
-            self.run_validator(expected=False, expected_win32u=self.WIN32U, expected_ntdll=None)
+    def test_real_ext4_fixture_rejects_a_catalog_blended_from_two_builds(self):
+        name = MODULE.VERSIONED_MODULES[0]
+        blob = (WINE_TREE / "x86_64-windows" / name).read_bytes()
+        older = blob.replace(f"Wine {WINE_VERSION}".encode("utf-16-le"),
+                             "Wine 10.20".encode("utf-16-le").ljust(len(f"Wine {WINE_VERSION}".encode("utf-16-le")), b"\0"))
+        self.assertNotEqual(older, blob)
+        self.debugfs(f"rm /usr/local/lib/oxide/windows/x86_64-windows/{name}")
+        self.write(f"/usr/local/lib/oxide/windows/x86_64-windows/{name}", older)
+        with self.assertRaisesRegex(MODULE.Failure, "blended"):
+            self.run_validator()
+
+    def test_real_ext4_fixture_rejects_a_stamp_no_module_backs(self):
+        for name in MODULE.VERSIONED_MODULES:
+            self.debugfs(f"rm /usr/local/lib/oxide/windows/x86_64-windows/{name}")
+        with self.assertRaisesRegex(MODULE.Failure, "unbacked"):
+            self.run_validator()
 
     def test_real_ext4_fixture_rejects_missing_compositor(self):
         self.debugfs("unlink /usr/local/bin/windows-compositor")
@@ -140,6 +160,14 @@ class Ext4ValidatorTests(unittest.TestCase):
     def test_real_ext4_fixture_rejects_a_system_directory_without_runtime_modules(self):
         self.debugfs("unlink /usr/local/lib/oxide/windows/x86_64-windows/imm32.dll")
         with self.assertRaisesRegex(MODULE.Failure, "imm32.dll"):
+            self.run_validator()
+
+    def test_real_ext4_fixture_rejects_a_guest_catalog_carrying_the_held_back_runtime(self):
+        # The kernel publishes the NT runtime module's exports itself, so a
+        # real image of the same name in the guest catalog is a second source
+        # for them. The image holds it back; this is what notices if it stops.
+        self.write("/usr/local/lib/oxide/windows/x86_64-windows/ntdll.dll", b"MZ")
+        with self.assertRaisesRegex(MODULE.Failure, "ntdll.dll"):
             self.run_validator()
 
     def test_real_ext4_fixture_rejects_non_elf_native_copy(self):

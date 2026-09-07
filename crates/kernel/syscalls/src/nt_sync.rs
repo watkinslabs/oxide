@@ -15,9 +15,6 @@ const SEMAPHORE_MODIFY_STATE: u32 = 0x0002;
 const STATUS_TIMEOUT: u64 = 0x0000_0102;
 const STATUS_ACCESS_VIOLATION: u64 = 0xc000_0005;
 const STATUS_NOT_OWNER: u64 = 0xc000_005a;
-const SRW_SHARED: u32 = 0x0001;
-const SRW_EXCLUSIVE_HELD: u32 = 0x0001;
-const SRW_OWNERS_SHIFT: u32 = 16;
 const FUTEX_WAIT_CMD: u32 = 0;
 const FUTEX_WAKE_CMD: u32 = 1;
 
@@ -178,53 +175,16 @@ fn sleep_condition_variable_srw(call: NtCall) -> u64 {
     let deadline = match crate::nt_dispatch::wait_deadline(timeout) {
         Ok(value) => value, Err(status) => return status,
     };
-    let shared = flags & SRW_SHARED != 0;
-    if !release_srw(lock, shared) { return STATUS_NOT_OWNER; }
+    let shared = flags & crate::nt_srw::state::CONDITION_VARIABLE_LOCKMODE_SHARED != 0;
+    if !crate::nt_srw::release(lock, shared) { return STATUS_NOT_OWNER; }
     let wait = futex::dispatch_timed(variable, FUTEX_WAIT_CMD | futex::FUTEX_PRIVATE_FLAG,
         expected, futex::FUTEX_BITSET_MATCH_ANY, deadline);
-    if !acquire_srw(lock, shared) { return STATUS_INVALID_PARAMETER; }
+    if !crate::nt_srw::acquire(lock, shared) { return STATUS_INVALID_PARAMETER; }
     if wait == 0 || wait == -(syscall::errno::Errno::Eagain.as_i32() as i64) {
         STATUS_SUCCESS
     } else if wait == -(syscall::errno::Errno::Etimedout.as_i32() as i64) {
         STATUS_TIMEOUT
     } else {
         STATUS_INVALID_PARAMETER
-    }
-}
-
-fn release_srw(lock: u64, shared: bool) -> bool {
-    loop {
-        let Ok(old) = uaccess::get_user_u32(lock) else { return false; };
-        let owners = old >> SRW_OWNERS_SHIFT;
-        let new = if shared {
-            if old & SRW_EXCLUSIVE_HELD != 0 || owners == 0 { return false; }
-            old - (1 << SRW_OWNERS_SHIFT)
-        } else {
-            if old & SRW_EXCLUSIVE_HELD == 0 || owners != 1 { return false; }
-            old & !((1 << SRW_OWNERS_SHIFT) - 1 | SRW_EXCLUSIVE_HELD)
-        };
-        if uaccess::cmpxchg_user_u32(lock, old, new).ok() == Some(old) {
-            let _ = futex::dispatch_timed(lock, FUTEX_WAKE_CMD | futex::FUTEX_PRIVATE_FLAG,
-                u32::MAX, futex::FUTEX_BITSET_MATCH_ANY, 0);
-            return true;
-        }
-    }
-}
-
-fn acquire_srw(lock: u64, shared: bool) -> bool {
-    loop {
-        let Ok(old) = uaccess::get_user_u32(lock) else { return false; };
-        let owners = old >> SRW_OWNERS_SHIFT;
-        let can_take = if shared { old & SRW_EXCLUSIVE_HELD == 0 } else { old == 0 };
-        if can_take {
-            let new = if shared { old + (1 << SRW_OWNERS_SHIFT) }
-                else { SRW_EXCLUSIVE_HELD | (1 << SRW_OWNERS_SHIFT) };
-            if uaccess::cmpxchg_user_u32(lock, old, new).ok() == Some(old) { return true; }
-        } else {
-            let wait = futex::dispatch_timed(lock, FUTEX_WAIT_CMD | futex::FUTEX_PRIVATE_FLAG,
-                old, futex::FUTEX_BITSET_MATCH_ANY, 0);
-            if wait != 0 && wait != -(syscall::errno::Errno::Eagain.as_i32() as i64) { return false; }
-        }
-        if owners == u32::MAX { return false; }
     }
 }

@@ -23,9 +23,9 @@ pub struct NtRuntime {
     pub wine_dispatcher: u64,
     pub wine_unix_dispatcher: u64,
     pub wine_unixlib_handle: u64,
-    addresses: [u64; 533],
+    addresses: [u64; 552],
 }
-const NTDLL_EXPORTS: [&[u8]; 533] = [
+const NTDLL_EXPORTS: [&[u8]; 552] = [
     b"NtAllocateVirtualMemory", b"NtFreeVirtualMemory", b"NtProtectVirtualMemory", b"NtQueryVirtualMemory",
     b"NtTerminateProcess", b"NtCreateEvent", b"NtClose", b"NtSetEvent", b"NtResetEvent", b"NtWaitForSingleObject",
     b"NtCreateFile", b"NtOpenFile", b"NtReadFile", b"NtWriteFile", b"NtQueryInformationFile", b"NtSetInformationFile", b"NtQueryDirectoryFile", b"NtWaitForMultipleObjects",
@@ -288,10 +288,30 @@ const NTDLL_EXPORTS: [&[u8]; 533] = [
     b"RtlFindExportedRoutineByName",
     b"NtTestAlert", b"NtContinue", b"NtMakePermanentObject", b"RtlDeNormalizeProcessParams", b"TpPostWork", b"TpReleaseWork", b"TpReleaseTimer", b"TpSetTimer",
     b"RtlIpv4AddressToStringA", b"RtlIpv4AddressToStringW", b"RtlIpv4AddressToStringExA", b"RtlIpv4AddressToStringExW", b"RtlIpv4StringToAddressA", b"RtlIpv4StringToAddressW", b"RtlIpv4StringToAddressExA", b"RtlIpv4StringToAddressExW", b"RtlIpv6AddressToStringA", b"RtlIpv6AddressToStringW", b"RtlIpv6AddressToStringExA", b"RtlIpv6AddressToStringExW", b"RtlIpv6StringToAddressA", b"RtlIpv6StringToAddressW", b"RtlIpv6StringToAddressExA", b"RtlIpv6StringToAddressExW", b"RtlNtStatusToDosErrorNoTeb", b"MD4Init", b"MD4Update", b"MD4Final",
+    b"RtlAcquireSRWLockExclusive", b"RtlAcquireSRWLockShared", b"RtlReleaseSRWLockExclusive", b"RtlReleaseSRWLockShared", b"RtlTryAcquireSRWLockExclusive", b"RtlWakeConditionVariable",
+    b"RtlAddFunctionTable", b"RtlDeleteFunctionTable", b"RtlInstallFunctionTableCallback",
+    b"RtlCompareString", b"RtlCopyUnicodeString", b"RtlEqualUnicodeString", b"RtlComputeCrc32", b"RtlImageRvaToSection", b"RtlIsCurrentProcess", b"_wcslwr",
+    // The counted-string initializer the runtime publishes under two names:
+    // the byte-string entry is the ANSI one, so both reach one service.
+    b"RtlInitString",
+    // Compiler-emitted stack probe: not a service, a single `ret` on the page.
+    b"__chkstk",
+    // Language-specific handler for compiler-generated structured exception
+    // handling: user-mode control flow over user-mode data that enters
+    // user-mode filters, so it is machine code on the page rather than a trap.
+    b"__C_specific_handler",
 ];
+/// Index of the stack probe, whose entry is machine code rather than a trap.
+const CHKSTK_INDEX: usize = 550;
+/// Index of the language-specific handler, likewise machine code.
+const C_SPECIFIC_HANDLER_INDEX: usize = 551;
+/// Index of the unwind entry the language-specific handler tail-calls.
+const RTL_UNWIND_EX_INDEX: usize = 201;
 const WINE_SYSCALL_DISPATCHER: &[u8] = b"__wine_syscall_dispatcher";
 fn runtime_stub_bytes(index: usize) -> usize {
-    if index == 505 { pe::nt_stub::X64_ZERO_ARG_STUB_BYTES }
+    if index == CHKSTK_INDEX { pe::nt_stub::X64_RET_STUB_BYTES }
+    else if index == C_SPECIFIC_HANDLER_INDEX { pe::nt_stub::X64_C_SPECIFIC_HANDLER_BYTES }
+    else if index == 505 { pe::nt_stub::X64_ZERO_ARG_STUB_BYTES }
     else if matches!(index, 6 | 242 | 435 | 436 | 437 | 483 | 507 | 509 | 510 | 511) { pe::nt_stub::X64_UNARY_STUB_BYTES } else { pe::nt_stub::X64_SIX_ARG_STUB_BYTES }
 }
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -486,7 +506,7 @@ pub fn map_nt_runtime(as_: &AddressSpace) -> Result<NtRuntime, pe::Error> {
     let arena = as_.get_unmapped_area(mapped_bytes).map_err(|_| pe::Error::Einval)?.as_u64();
     let base_address = UserVirtAddr::new(arena).ok_or(pe::Error::Einval)?;
     let mut code = alloc::vec![0u8; mapped_bytes];
-    let mut addresses = [0u64; 533];
+    let mut addresses = [0u64; 552];
     let mut offset = 0usize;
     for index in 0..NTDLL_EXPORTS.len() {
         // Keep the debug exports tied to their actual catalog indexes. This
@@ -978,9 +998,35 @@ pub fn map_nt_runtime(as_: &AddressSpace) -> Result<NtRuntime, pe::Error> {
             530 => syscall::nt::NtService::Md4Init,
             531 => syscall::nt::NtService::Md4Update,
             532 => syscall::nt::NtService::Md4Final,
+            533 => syscall::nt::NtService::RtlAcquireSRWLockExclusive,
+            534 => syscall::nt::NtService::RtlAcquireSRWLockShared,
+            535 => syscall::nt::NtService::RtlReleaseSRWLockExclusive,
+            536 => syscall::nt::NtService::RtlReleaseSRWLockShared,
+            537 => syscall::nt::NtService::RtlTryAcquireSRWLockExclusive,
+            538 => syscall::nt::NtService::RtlWakeConditionVariable,
+            539 => syscall::nt::NtService::RtlAddFunctionTable,
+            540 => syscall::nt::NtService::RtlDeleteFunctionTable,
+            541 => syscall::nt::NtService::RtlInstallFunctionTableCallback,
+            542 => syscall::nt::NtService::RtlCompareString,
+            543 => syscall::nt::NtService::RtlCopyUnicodeString,
+            544 => syscall::nt::NtService::RtlEqualUnicodeString,
+            545 => syscall::nt::NtService::RtlComputeCrc32,
+            546 => syscall::nt::NtService::RtlImageRvaToSection,
+            547 => syscall::nt::NtService::RtlIsCurrentProcess,
+            548 => syscall::nt::NtService::Wcslwr,
+            549 => syscall::nt::NtService::RtlInitAnsiString,
+            // Neither machine-code entry traps; their selectors are never encoded.
+            CHKSTK_INDEX | C_SPECIFIC_HANDLER_INDEX => syscall::nt::NtService::FreeHeap,
             _ => syscall::nt::NtService::FreeHeap,
         };
-        let bytes = if index == 505 { pe::nt_stub::encode_x64_zero_arg_stub(selector.entry()).to_vec() }
+        let bytes = if index == CHKSTK_INDEX { pe::nt_stub::encode_x64_ret_stub().to_vec() }
+            else if index == C_SPECIFIC_HANDLER_INDEX {
+                // The handler enters the unwind entry, which precedes it on
+                // the page, so its address is already assigned.
+                let unwind = arena.checked_add(addresses[RTL_UNWIND_EX_INDEX]).ok_or(pe::Error::Einval)?;
+                pe::nt_stub::encode_x64_c_specific_handler(unwind).to_vec()
+            }
+            else if index == 505 { pe::nt_stub::encode_x64_zero_arg_stub(selector.entry()).to_vec() }
             else if matches!(index, 6 | 242 | 435 | 436 | 437 | 483 | 507 | 509 | 510 | 511) { pe::nt_stub::encode_x64_unary_stub(selector.entry()).to_vec() }
             else { pe::nt_stub::encode_x64_six_arg_stub(selector.entry()).to_vec() };
         if offset.checked_add(bytes.len()).filter(|&end| end <= code.len()).is_none() { return Err(pe::Error::Einval); }
