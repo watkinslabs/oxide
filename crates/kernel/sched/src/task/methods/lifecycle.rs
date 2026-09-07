@@ -252,6 +252,7 @@ impl Task {
             nt_activation_stack: Spinlock::new(crate::nt_activation::Stack::new()),
             nt_thread_info: crate::nt_thread_info::State::new(),
             nt_exception: crate::nt_exception::State::new(),
+            nt_alert: crate::nt_alert::NtAlert::new(),
             nt_termination: crate::nt_termination::NtTermination::new(),
             kernel_stack: AtomicPtr::new(core::ptr::null_mut()),
             kernel_stack_memcg: AtomicU64::new(cgroup::NO_MEMCG),

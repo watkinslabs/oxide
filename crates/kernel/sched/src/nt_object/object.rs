@@ -32,6 +32,7 @@ pub enum NtObjectType {
     ActivationContext,
     WindowStation,
     Desktop,
+    KeyedEvent,
 }
 /// Stable identity and type of one native object.
 pub struct NtObject {
@@ -40,6 +41,7 @@ pub struct NtObject {
     pub(super) handle_refs: core::sync::atomic::AtomicU32,
     pub(super) desktop: Option<Arc<super::NtDesktop>>,
     pub(super) event: Option<Arc<NtEvent>>,
+    pub(super) keyed_event: Option<Arc<super::NtKeyedEvent>>,
     pub(super) semaphore: Option<Arc<NtSemaphore>>,
     pub(super) mutant: Option<Arc<NtMutant>>,
     pub(super) timer: Option<Arc<NtTimer>>,
@@ -161,28 +163,33 @@ fn image_protection(image: &pe::ImageSection) -> vmm::VmaProt {
 impl NtObject {
     /// Create one immutable native object identity. # C: O(1)
     pub fn new(kind: NtObjectType, id: u64) -> Arc<Self> {
-        Arc::new(Self { kind, id, event: None, semaphore: None, mutant: None, timer: None, completion: None, activation: None, token: None, job: None, pipe: None, pipe_endpoint: None, file: None, file_info: None, section: None, symbolic_link: None, task: None, file_share: None, delete_on_close: None, desktop: None, handle_refs: core::sync::atomic::AtomicU32::new(0), file_completion: Spinlock::new(None) })
+        Arc::new(Self { kind, id, event: None, semaphore: None, mutant: None, timer: None, completion: None, activation: None, token: None, job: None, pipe: None, pipe_endpoint: None, file: None, file_info: None, section: None, symbolic_link: None, task: None, file_share: None, delete_on_close: None, desktop: None, keyed_event: None, handle_refs: core::sync::atomic::AtomicU32::new(0), file_completion: Spinlock::new(None) })
     }
     /// Create an event-backed native object. # C: O(1)
     pub fn new_event(id: u64, manual_reset: bool, initial_state: bool) -> Arc<Self> {
         Arc::new(Self { kind: NtObjectType::Event, id,
-            event: Some(Arc::new(NtEvent::new(manual_reset, initial_state))), semaphore: None, mutant: None, timer: None, completion: None, activation: None, token: None, job: None, pipe: None, pipe_endpoint: None, file: None, file_info: None, section: None, symbolic_link: None, task: None, file_share: None, delete_on_close: None, desktop: None, handle_refs: core::sync::atomic::AtomicU32::new(0), file_completion: Spinlock::new(None) })
+            event: Some(Arc::new(NtEvent::new(manual_reset, initial_state))), semaphore: None, mutant: None, timer: None, completion: None, activation: None, token: None, job: None, pipe: None, pipe_endpoint: None, file: None, file_info: None, section: None, symbolic_link: None, task: None, file_share: None, delete_on_close: None, desktop: None, keyed_event: None, handle_refs: core::sync::atomic::AtomicU32::new(0), file_completion: Spinlock::new(None) })
     }
     /// Create a counting semaphore object. # C: O(1)
     pub fn new_semaphore(id: u64, initial: i64, maximum: i64) -> Arc<Self> {
         Arc::new(Self { kind: NtObjectType::Semaphore, id, event: None,
-            semaphore: Some(Arc::new(NtSemaphore::new(initial as u32, maximum as u32))), mutant: None, timer: None, completion: None, activation: None, token: None, job: None, pipe: None, pipe_endpoint: None, file: None, file_info: None, section: None, symbolic_link: None, task: None, file_share: None, delete_on_close: None, desktop: None, handle_refs: core::sync::atomic::AtomicU32::new(0), file_completion: Spinlock::new(None) })
+            semaphore: Some(Arc::new(NtSemaphore::new(initial as u32, maximum as u32))), mutant: None, timer: None, completion: None, activation: None, token: None, job: None, pipe: None, pipe_endpoint: None, file: None, file_info: None, section: None, symbolic_link: None, task: None, file_share: None, delete_on_close: None, desktop: None, keyed_event: None, handle_refs: core::sync::atomic::AtomicU32::new(0), file_completion: Spinlock::new(None) })
+    }
+    /// Create a keyed-event rendezvous object. # C: O(1)
+    pub fn new_keyed_event(id: u64) -> Arc<Self> {
+        Arc::new(Self { kind: NtObjectType::KeyedEvent, id, event: None,
+            semaphore: None, mutant: None, timer: None, completion: None, activation: None, token: None, job: None, pipe: None, pipe_endpoint: None, file: None, file_info: None, section: None, symbolic_link: None, task: None, file_share: None, delete_on_close: None, desktop: None, keyed_event: Some(Arc::new(super::NtKeyedEvent::new())), handle_refs: core::sync::atomic::AtomicU32::new(0), file_completion: Spinlock::new(None) })
     }
     /// Create a thread-owned NT mutant. # C: O(1)
     pub fn new_mutant(id: u64, owner: Option<u64>) -> Arc<Self> {
         Arc::new(Self { kind: NtObjectType::Mutant, id, event: None, semaphore: None,
-            mutant: Some(Arc::new(NtMutant::new(owner))), timer: None, completion: None, activation: None, token: None, job: None, pipe: None, pipe_endpoint: None, file: None, file_info: None, section: None, symbolic_link: None, task: None, file_share: None, delete_on_close: None, desktop: None, handle_refs: core::sync::atomic::AtomicU32::new(0), file_completion: Spinlock::new(None) })
+            mutant: Some(Arc::new(NtMutant::new(owner))), timer: None, completion: None, activation: None, token: None, job: None, pipe: None, pipe_endpoint: None, file: None, file_info: None, section: None, symbolic_link: None, task: None, file_share: None, delete_on_close: None, desktop: None, keyed_event: None, handle_refs: core::sync::atomic::AtomicU32::new(0), file_completion: Spinlock::new(None) })
     }
     /// Create a waitable NT timer object. # C: O(1)
     pub fn new_timer(id: u64, manual_reset: bool) -> Arc<Self> {
         Arc::new(Self { kind: NtObjectType::Timer, id, event: None, semaphore: None,
             mutant: None, timer: Some(Arc::new(NtTimer::new(manual_reset))), completion: None, activation: None, token: None, file: None,
-            section: None, symbolic_link: None, task: None, job: None, pipe: None, pipe_endpoint: None, file_info: None, file_share: None, delete_on_close: None, desktop: None, handle_refs: core::sync::atomic::AtomicU32::new(0), file_completion: Spinlock::new(None) })
+            section: None, symbolic_link: None, task: None, job: None, pipe: None, pipe_endpoint: None, file_info: None, file_share: None, delete_on_close: None, desktop: None, keyed_event: None, handle_refs: core::sync::atomic::AtomicU32::new(0), file_completion: Spinlock::new(None) })
     }
     /// Create a file object retaining the canonical VFS open description. # C: O(1)
     pub fn new_file(id: u64, file: Arc<vfs::File>) -> Arc<Self> {
@@ -198,25 +205,25 @@ impl NtObject {
     /// Create a file object while retaining its complete Windows descriptor metadata. # C: O(1)
     pub fn new_file_with_share_and_info(id: u64, file: Arc<vfs::File>, info: NtFileInfo,
                                         file_share: Option<Arc<NtFileShare>>, delete_on_close: Option<Arc<NtDeleteOnClose>>) -> Arc<Self> {
-        Arc::new(Self { kind: NtObjectType::File, id, event: None, semaphore: None, mutant: None, timer: None, completion: None, activation: None, token: None, job: None, pipe: None, pipe_endpoint: None, file: Some(file), file_info: Some(info), section: None, symbolic_link: None, task: None, file_share, delete_on_close, desktop: None, handle_refs: core::sync::atomic::AtomicU32::new(0), file_completion: Spinlock::new(None) })
+        Arc::new(Self { kind: NtObjectType::File, id, event: None, semaphore: None, mutant: None, timer: None, completion: None, activation: None, token: None, job: None, pipe: None, pipe_endpoint: None, file: Some(file), file_info: Some(info), section: None, symbolic_link: None, task: None, file_share, delete_on_close, desktop: None, keyed_event: None, handle_refs: core::sync::atomic::AtomicU32::new(0), file_completion: Spinlock::new(None) })
     }
     /// Create an anonymous section object. # C: O(1)
     pub fn new_section(id: u64, section: Arc<NtSection>) -> Arc<Self> {
-        Arc::new(Self { kind: NtObjectType::Section, id, event: None, semaphore: None, mutant: None, timer: None, completion: None, activation: None, token: None, job: None, pipe: None, pipe_endpoint: None, file: None, file_info: None, section: Some(section), symbolic_link: None, task: None, file_share: None, delete_on_close: None, desktop: None, handle_refs: core::sync::atomic::AtomicU32::new(0), file_completion: Spinlock::new(None) })
+        Arc::new(Self { kind: NtObjectType::Section, id, event: None, semaphore: None, mutant: None, timer: None, completion: None, activation: None, token: None, job: None, pipe: None, pipe_endpoint: None, file: None, file_info: None, section: Some(section), symbolic_link: None, task: None, file_share: None, delete_on_close: None, desktop: None, keyed_event: None, handle_refs: core::sync::atomic::AtomicU32::new(0), file_completion: Spinlock::new(None) })
     }
     /// Create one symbolic-link object identity. # C: O(1)
     pub fn new_symbolic_link(id: u64, target: String) -> Arc<Self> {
         Arc::new(Self { kind: NtObjectType::SymbolicLink, id, event: None, semaphore: None, mutant: None, timer: None,
             completion: None, activation: None, token: None, job: None, pipe: None, pipe_endpoint: None, file: None, file_info: None, section: None, symbolic_link: Some(NtSymbolicLink::new(target)),
-            task: None, file_share: None, delete_on_close: None, desktop: None, handle_refs: core::sync::atomic::AtomicU32::new(0), file_completion: Spinlock::new(None) })
+            task: None, file_share: None, delete_on_close: None, desktop: None, keyed_event: None, handle_refs: core::sync::atomic::AtomicU32::new(0), file_completion: Spinlock::new(None) })
     }
     /// Create a process object backed by the canonical scheduler task. # C: O(1)
     pub fn new_process(id: u64, task: Arc<Task>) -> Arc<Self> {
-        Arc::new(Self { kind: NtObjectType::Process, id, event: None, semaphore: None, mutant: None, timer: None, completion: None, activation: None, token: None, job: None, pipe: None, pipe_endpoint: None, file: None, file_info: None, section: None, symbolic_link: None, task: Some(task), file_share: None, delete_on_close: None, desktop: None, handle_refs: core::sync::atomic::AtomicU32::new(0), file_completion: Spinlock::new(None) })
+        Arc::new(Self { kind: NtObjectType::Process, id, event: None, semaphore: None, mutant: None, timer: None, completion: None, activation: None, token: None, job: None, pipe: None, pipe_endpoint: None, file: None, file_info: None, section: None, symbolic_link: None, task: Some(task), file_share: None, delete_on_close: None, desktop: None, keyed_event: None, handle_refs: core::sync::atomic::AtomicU32::new(0), file_completion: Spinlock::new(None) })
     }
     /// Create a thread object backed by the canonical scheduler task. # C: O(1)
     pub fn new_thread(id: u64, task: Arc<Task>) -> Arc<Self> {
-        Arc::new(Self { kind: NtObjectType::Thread, id, event: None, semaphore: None, mutant: None, timer: None, completion: None, activation: None, token: None, job: None, pipe: None, pipe_endpoint: None, file: None, file_info: None, section: None, symbolic_link: None, task: Some(task), file_share: None, delete_on_close: None, desktop: None, handle_refs: core::sync::atomic::AtomicU32::new(0), file_completion: Spinlock::new(None) })
+        Arc::new(Self { kind: NtObjectType::Thread, id, event: None, semaphore: None, mutant: None, timer: None, completion: None, activation: None, token: None, job: None, pipe: None, pipe_endpoint: None, file: None, file_info: None, section: None, symbolic_link: None, task: Some(task), file_share: None, delete_on_close: None, desktop: None, keyed_event: None, handle_refs: core::sync::atomic::AtomicU32::new(0), file_completion: Spinlock::new(None) })
     }
     /// Return the object's NT type. # C: O(1)
     pub fn kind(&self) -> NtObjectType { self.kind }
@@ -226,6 +233,8 @@ impl NtObject {
     pub fn event(&self) -> Option<Arc<NtEvent>> { self.event.clone() }
     /// Return the semaphore primitive carried by a semaphore object. # C: O(1)
     pub fn semaphore(&self) -> Option<Arc<NtSemaphore>> { self.semaphore.clone() }
+    /// Return the rendezvous point carried by a keyed-event object. # C: O(1)
+    pub fn keyed_event(&self) -> Option<Arc<super::NtKeyedEvent>> { self.keyed_event.clone() }
 
     /// Return the thread-owned mutant primitive. # C: O(1)
     pub fn mutant(&self) -> Option<Arc<NtMutant>> { self.mutant.clone() }
@@ -261,19 +270,19 @@ impl NtObject {
             mutant: None, timer: None, completion: None, activation: Some(NtActivationContext::new()),
             token: None, job: None, pipe: None, pipe_endpoint: None, file: None, file_info: None, section: None,
             symbolic_link: None, task: None, file_share: None, delete_on_close: None,
-            desktop: None, handle_refs: core::sync::atomic::AtomicU32::new(0), file_completion: Spinlock::new(None) })
+            desktop: None, keyed_event: None, handle_refs: core::sync::atomic::AtomicU32::new(0), file_completion: Spinlock::new(None) })
     }
     pub fn activation_context(&self) -> Option<Arc<NtActivationContext>> { self.activation.clone() }
     pub fn new_token(id: u64, uid: u32, gid: u32) -> Arc<Self> {
         Arc::new(Self { kind: NtObjectType::Token, id, event: None, semaphore: None, mutant: None,
             timer: None, completion: None, activation: None, token: Some(Arc::new(NtToken::new(uid, gid))), job: None, pipe: None, pipe_endpoint: None, file: None, file_info: None,
-            section: None, symbolic_link: None, task: None, file_share: None, delete_on_close: None, desktop: None, handle_refs: core::sync::atomic::AtomicU32::new(0), file_completion: Spinlock::new(None) })
+            section: None, symbolic_link: None, task: None, file_share: None, delete_on_close: None, desktop: None, keyed_event: None, handle_refs: core::sync::atomic::AtomicU32::new(0), file_completion: Spinlock::new(None) })
     }
     pub fn token(&self) -> Option<Arc<NtToken>> { self.token.clone() }
     pub fn duplicate_token(id: u64, token: Arc<NtToken>) -> Arc<Self> {
         Arc::new(Self { kind: NtObjectType::Token, id, event: None, semaphore: None, mutant: None,
             timer: None, completion: None, activation: None, token: Some(token), job: None, pipe: None, pipe_endpoint: None, file: None, section: None, symbolic_link: None,
-            task: None, file_info: None, file_share: None, delete_on_close: None, desktop: None, handle_refs: core::sync::atomic::AtomicU32::new(0), file_completion: Spinlock::new(None) })
+            task: None, file_info: None, file_share: None, delete_on_close: None, desktop: None, keyed_event: None, handle_refs: core::sync::atomic::AtomicU32::new(0), file_completion: Spinlock::new(None) })
     }
 
     /// Return the next armed timer deadline, or `None` for non-timers/disarmed timers. # C: O(1)

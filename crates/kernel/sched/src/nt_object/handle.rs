@@ -94,6 +94,12 @@ impl NtHandleTable {
         NtObject::new_semaphore(id, initial, maximum)
     }
 
+    /// Allocate a keyed-event rendezvous point with a stable identity. # C: O(1)
+    pub fn new_keyed_event(&self) -> Arc<NtObject> {
+        let id = self.next_object_id.fetch_add(1, Ordering::Relaxed);
+        NtObject::new_keyed_event(id)
+    }
+
     /// Allocate a thread-owned or unowned mutant with a stable identity. # C: O(1)
     pub fn new_mutant(&self, owner: Option<u64>) -> Arc<NtObject> {
         let id = self.next_object_id.fetch_add(1, Ordering::Relaxed);
@@ -106,7 +112,7 @@ impl NtHandleTable {
         Arc::new(NtObject { kind: NtObjectType::Job, id, event: None, semaphore: None, mutant: None,
             timer: None, completion: None, activation: None, token: None, job: Some(Arc::new(NtJob::new())), pipe: None, pipe_endpoint: None, file: None, file_info: None,
             section: None, symbolic_link: None, task: None, file_share: None, delete_on_close: None,
-            desktop: None, handle_refs: core::sync::atomic::AtomicU32::new(0), file_completion: Spinlock::new(None) })
+            desktop: None, keyed_event: None, handle_refs: core::sync::atomic::AtomicU32::new(0), file_completion: Spinlock::new(None) })
     }
 
     /// Allocate one named-pipe object with scheduler-owned configuration. # C: O(1)
@@ -116,7 +122,7 @@ impl NtHandleTable {
             mutant: None, timer: None, completion: None, activation: None, token: None, job: None,
             pipe: Some(Arc::new(NtPipe::new(config))), pipe_endpoint: None, file: None, file_info: None, section: None,
             symbolic_link: None, task: None, file_share: None, delete_on_close: None,
-            desktop: None, handle_refs: core::sync::atomic::AtomicU32::new(0), file_completion: Spinlock::new(None) })
+            desktop: None, keyed_event: None, handle_refs: core::sync::atomic::AtomicU32::new(0), file_completion: Spinlock::new(None) })
     }
 
     pub fn new_named_pipe_endpoint(&self, pipe: Arc<NtPipe>, side: NtPipeSide) -> Arc<NtObject> {
@@ -126,7 +132,7 @@ impl NtHandleTable {
             mutant: None, timer: None, completion: None, activation: None, token: None, job: None,
             pipe: Some(pipe), pipe_endpoint: Some(endpoint), file: None, file_info: None, section: None,
             symbolic_link: None, task: None, file_share: None, delete_on_close: None,
-            desktop: None, handle_refs: core::sync::atomic::AtomicU32::new(0), file_completion: Spinlock::new(None) })
+            desktop: None, keyed_event: None, handle_refs: core::sync::atomic::AtomicU32::new(0), file_completion: Spinlock::new(None) })
     }
 
     /// Allocate a waitable NT timer with a stable identity. # C: O(1)
@@ -139,7 +145,7 @@ impl NtHandleTable {
         let id = self.next_object_id.fetch_add(1, Ordering::Relaxed);
         Arc::new(NtObject { kind: NtObjectType::CompletionPort, id, event: None, semaphore: None,
             mutant: None, timer: None, completion: Some(Arc::new(NtCompletionPort::new(concurrency))), activation: None, token: None, job: None,
-            file: None, file_info: None, section: None, symbolic_link: None, task: None, pipe: None, pipe_endpoint: None, file_share: None, delete_on_close: None, desktop: None, handle_refs: core::sync::atomic::AtomicU32::new(0), file_completion: Spinlock::new(None) })
+            file: None, file_info: None, section: None, symbolic_link: None, task: None, pipe: None, pipe_endpoint: None, file_share: None, delete_on_close: None, desktop: None, keyed_event: None, handle_refs: core::sync::atomic::AtomicU32::new(0), file_completion: Spinlock::new(None) })
     }
 
     pub fn new_token(&self, uid: u32, gid: u32) -> Arc<NtObject> {

@@ -968,6 +968,10 @@ pub fn dispatch(call: NtCall) -> u64 {
         return (call.args.a0 == CURRENT_PROCESS
             || compare_objects(&cur, call.args.a0, CURRENT_PROCESS) == STATUS_SUCCESS) as u64;
     }
+    if let Some(result) = crate::nt_alert::dispatch(call) { return result; }
+    if let Some(result) = crate::nt_keyed_event::dispatch(call) { return result; }
+    if let Some(result) = crate::nt_processor::dispatch(call) { return result; }
+    if let Some(result) = crate::nt_mapped_files::dispatch(call) { return result; }
     if let Some(result) = crate::nt_mutant::dispatch(call) { return result; }
     if let Some(result) = crate::nt_semaphore::dispatch(call) { return result; }
     if let Ok(file_call) = nt::decode_file(call) {

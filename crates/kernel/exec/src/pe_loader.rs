@@ -26,7 +26,7 @@ pub struct NtRuntime {
     pub wine_dispatcher: u64,
     pub wine_unix_dispatcher: u64,
     pub wine_unixlib_handle: u64,
-    addresses: [u64; 552],
+    addresses: [u64; NTDLL_EXPORTS.len()],
 }
 /// Index of the stack probe, whose entry is machine code rather than a trap.
 const CHKSTK_INDEX: usize = 550;
@@ -241,7 +241,7 @@ pub fn map_nt_runtime(as_: &AddressSpace) -> Result<NtRuntime, pe::Error> {
     let arena = as_.get_unmapped_area(mapped_bytes).map_err(|_| pe::Error::Einval)?.as_u64();
     let base_address = UserVirtAddr::new(arena).ok_or(pe::Error::Einval)?;
     let mut code = alloc::vec![0u8; mapped_bytes];
-    let mut addresses = [0u64; 552];
+    let mut addresses = [0u64; NTDLL_EXPORTS.len()];
     let mut offset = 0usize;
     for index in 0..NTDLL_EXPORTS.len() {
         // Keep the debug exports tied to their actual catalog indexes. This

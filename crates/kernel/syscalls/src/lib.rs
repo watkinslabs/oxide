@@ -41,6 +41,7 @@ mod nt_wine_unix;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_wine_memory;
 mod nt_wine_unwind;
+mod nt_continue_policy;
 #[cfg(any(test, target_arch = "x86_64"))]
 mod nt_unwind_policy;
 #[cfg(target_os = "oxide-kernel")]
@@ -127,6 +128,10 @@ mod nt_wine_timeout;
 mod nt_object_query;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_sync;
+mod nt_alert;
+mod nt_keyed_event;
+mod nt_mapped_files;
+mod nt_processor;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_mutant;
 mod nt_semaphore;
