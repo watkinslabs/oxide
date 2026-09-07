@@ -1,7 +1,6 @@
 # Windows NT process heaps
 
-Status: FROZEN
-Date: 2026-08-31
+FROZEN 2026-09-07. Dep:`31r`.
 
 `RtlGetProcessHeaps` reports the canonical process heap and writes handle `1`
 when the caller supplies capacity. A zero-capacity query reports the required

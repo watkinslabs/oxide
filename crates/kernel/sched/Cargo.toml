@@ -21,6 +21,9 @@ cgroup = { path = "../cgroup" }
 timer = { path = "../timer" }
 softirq = { path = "../softirq" }
 vmm  = { path = "../../kernel/mm-vmm" }
+# The NT process heap object lives with the thread group that owns it; the
+# allocator itself is a leaf crate with no scheduler dependency.
+nt-heap = { path = "../nt-heap" }
 syscall = { path = "../syscall" }
 uaccess = { path = "../uaccess" }
 network-namespace = { path = "../network-namespace" }

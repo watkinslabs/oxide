@@ -1,9 +1,9 @@
 # Windows NT heap user information
 
-Status: FROZEN
-Date: 2026-08-31
+FROZEN 2026-09-07. Dep:`31r`,`31cs`.
 
-`RtlGetUserInfoHeap` validates a pointer against the canonical VMM-backed heap
-and returns zero user metadata because allocation user-info storage is not yet
-part of the heap record. Invalid heap, output, or allocation pointers return
-failure without accepting arbitrary memory.
+`RtlGetUserInfoHeap` validates a pointer against the process heap and writes
+the stored user value and user flags of that allocation (`31cs`). An allocation
+made without `HEAP_ADD_USER_INFO` has no record and reports failure. Invalid
+heap, output, or allocation pointers return failure without accepting arbitrary
+memory.

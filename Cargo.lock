@@ -1894,6 +1894,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "nt-heap"
+version = "0.1.0"
+
+[[package]]
 name = "ntfs3"
 version = "0.1.0"
 dependencies = [
@@ -2385,6 +2389,7 @@ dependencies = [
  "loom",
  "namespace-identity",
  "network-namespace",
+ "nt-heap",
  "pe",
  "selinux",
  "selinux-runtime",
@@ -2791,6 +2796,7 @@ dependencies = [
  "network-namespace",
  "ninep",
  "nscg",
+ "nt-heap",
  "ntfs3",
  "overlayfs",
  "pci",

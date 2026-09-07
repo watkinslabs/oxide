@@ -1,0 +1,12 @@
+[package]
+name = "nt-heap"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "ntheap"
+path = "src/lib.rs"
+
+[lints]
+workspace = true
