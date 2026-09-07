@@ -3,40 +3,62 @@
 //! hosted-testable; the hardware save/restore around it is the kernel owner's.
 use sched::nt_callback::FP_BYTES;
 
+#[cfg(any(test, target_arch = "x86_64"))]
 /// x87 control word offset inside the FXSAVE/XSAVE legacy region.
 pub const X86_FCW_OFF: usize = 0;
+#[cfg(any(test, target_arch = "x86_64"))]
 /// MXCSR offset inside the legacy region.
 pub const X86_MXCSR_OFF: usize = 24;
+#[cfg(any(test, target_arch = "x86_64"))]
 /// xmm0 offset inside the legacy region; xmm`n` follows at 16-byte stride.
 pub const X86_XMM_OFF: usize = 160;
+#[cfg(any(test, target_arch = "x86_64"))]
 /// First callee-saved xmm register in the Windows x64 ABI.
 pub const X86_FIRST_CALLEE_XMM: usize = 6;
+#[cfg(any(test, target_arch = "x86_64"))]
 /// Callee-saved xmm registers: xmm6..=xmm15.
 pub const X86_CALLEE_XMM_COUNT: usize = 10;
+#[cfg(any(test, target_arch = "x86_64"))]
 /// XSAVE header offset; bit 0 = x87, bit 1 = SSE in `XSTATE_BV`.
 pub const X86_XSTATE_BV_OFF: usize = 512;
+#[cfg(any(test, target_arch = "x86_64"))]
 pub const X86_XSTATE_BV_X87_SSE: u64 = 0b11;
+#[cfg(any(test, target_arch = "x86_64"))]
 const X86_XMM_BYTES: usize = X86_CALLEE_XMM_COUNT * 16;
+#[cfg(any(test, target_arch = "x86_64"))]
 const X86_SAVED_MXCSR: usize = X86_XMM_BYTES;
+#[cfg(any(test, target_arch = "x86_64"))]
 const X86_SAVED_FCW: usize = X86_SAVED_MXCSR + 4;
+#[cfg(any(test, target_arch = "x86_64"))]
 /// Legacy region bytes the x86 extract reads and patch writes.
 pub const X86_IMAGE_BYTES: usize = X86_XMM_OFF + 16 * 16;
 
+#[cfg(any(test, target_arch = "aarch64"))]
 /// First callee-saved SIMD register in the AArch64 PCS (low 64 bits).
 pub const ARM_FIRST_CALLEE_V: usize = 8;
+#[cfg(any(test, target_arch = "aarch64"))]
 /// Callee-saved SIMD registers: v8..=v15.
 pub const ARM_CALLEE_V_COUNT: usize = 8;
+#[cfg(any(test, target_arch = "aarch64"))]
 pub const ARM_FPCR_OFF: usize = 0x200;
+#[cfg(any(test, target_arch = "aarch64"))]
 pub const ARM_FPSR_OFF: usize = 0x204;
+#[cfg(any(test, target_arch = "aarch64"))]
 const ARM_V_BYTES: usize = ARM_CALLEE_V_COUNT * 16;
+#[cfg(any(test, target_arch = "aarch64"))]
 const ARM_SAVED_FPCR: usize = ARM_V_BYTES;
+#[cfg(any(test, target_arch = "aarch64"))]
 const ARM_SAVED_FPSR: usize = ARM_SAVED_FPCR + 4;
+#[cfg(any(test, target_arch = "aarch64"))]
 /// Image bytes the AArch64 extract reads and patch writes.
 pub const ARM_IMAGE_BYTES: usize = ARM_FPSR_OFF + 4;
 
+#[cfg(any(test, target_arch = "x86_64"))]
 const _: () = assert!(X86_SAVED_FCW + 2 <= FP_BYTES);
+#[cfg(any(test, target_arch = "aarch64"))]
 const _: () = assert!(ARM_SAVED_FPSR + 4 <= FP_BYTES);
 
+#[cfg(any(test, target_arch = "x86_64"))]
 /// Copy the x86-64 callee-saved FP set out of a saved image. # C: O(1)
 pub fn x86_extract(image: &[u8], out: &mut [u8; FP_BYTES]) -> bool {
     if image.len() < X86_IMAGE_BYTES { return false; }
@@ -47,6 +69,7 @@ pub fn x86_extract(image: &[u8], out: &mut [u8; FP_BYTES]) -> bool {
     true
 }
 
+#[cfg(any(test, target_arch = "x86_64"))]
 /// Write the x86-64 callee-saved FP set back into a freshly saved image,
 /// marking x87+SSE present in the XSAVE header when the image carries one so
 /// the restore loads the legacy area instead of re-initialising it. # C: O(1)
@@ -63,6 +86,7 @@ pub fn x86_patch(image: &mut [u8], saved: &[u8; FP_BYTES], xsave: bool) -> bool 
     true
 }
 
+#[cfg(any(test, target_arch = "aarch64"))]
 /// Copy the AArch64 callee-saved FP set out of a saved image. # C: O(1)
 pub fn arm_extract(image: &[u8], out: &mut [u8; FP_BYTES]) -> bool {
     if image.len() < ARM_IMAGE_BYTES { return false; }
@@ -73,6 +97,7 @@ pub fn arm_extract(image: &[u8], out: &mut [u8; FP_BYTES]) -> bool {
     true
 }
 
+#[cfg(any(test, target_arch = "aarch64"))]
 /// Write the AArch64 callee-saved FP set back into a freshly saved image. # C: O(1)
 pub fn arm_patch(image: &mut [u8], saved: &[u8; FP_BYTES]) -> bool {
     if image.len() < ARM_IMAGE_BYTES { return false; }

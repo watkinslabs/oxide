@@ -67,6 +67,7 @@ pub(crate) fn dispose_for_current(completion:Completion){
 }
 /// Foreign destruction never frees preparation resources still used by an active WndProc.
 /// # C: O(processes * preparations); no GUI lock across resource cleanup
+#[allow(dead_code)] // KI-0707: not yet called from DestroyWindow
 pub(crate) fn cancel_window_current(hwnd:u64){
     let Some(cur)=sched::live::current()else{return;};
     loop{

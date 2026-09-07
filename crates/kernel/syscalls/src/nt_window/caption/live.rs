@@ -1,5 +1,4 @@
 //! Live caption drawing: background fill, then the caption text.
-use super::super::*;
 use super::raw::{background_color, draws_text, text_color, ORDINAL};
 use ipc::win32_gdi::{SystemColor, TextAttribute};
 

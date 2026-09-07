@@ -44,6 +44,7 @@ impl Queue {
 
     pub(crate) fn cancel_tid(&mut self, tid: u64) { self.entries.retain(|pending| pending.tid != tid); }
     pub(crate) fn cancel_root(&mut self, root: u64) { self.entries.retain(|pending| pending.root != root); }
+    #[cfg(test)]
     pub(crate) fn len(&self) -> usize { self.entries.len() }
 }
 

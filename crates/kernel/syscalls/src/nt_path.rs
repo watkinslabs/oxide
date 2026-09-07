@@ -123,6 +123,9 @@ pub fn render_windows_path(path: &str) -> Option<String> {
 /// units whose high byte is zero, so one byte is one code point; the DOS drive
 /// mapping itself stays owned by `normalize_path`.
 /// # C: O(path length)
+// Sole production caller (dynamic.rs::FilesystemCatalog::probe) is
+// x86-64-only; kept hosted-testable on every host arch.
+#[cfg(any(test, target_arch = "x86_64"))]
 pub fn normalize_narrow_path(raw: &[u8]) -> Option<alloc::vec::Vec<u8>> {
     let mut text = String::with_capacity(raw.len());
     for byte in raw { text.push(*byte as char); }

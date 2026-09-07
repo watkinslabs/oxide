@@ -13,13 +13,16 @@ pub(crate) const GET_TEXT_METRICS_W: u64 = 0x1229;
 pub(crate) const HFONT_CREATE: u64 = 0x1233;
 pub(crate) const MOVE_TO: u64 = 0x1243;
 pub(crate) const SELECT_FONT: u64 = 0x126e;
+#[allow(dead_code)] // KI-0710
 pub(crate) const TEXT_METRIC_W_BYTES: usize = 60;
 
 pub(crate) const SET_BK_COLOR: u32 = 100;
 pub(crate) const SET_BK_MODE: u32 = 101;
 pub(crate) const SET_TEXT_COLOR: u32 = 102;
 pub(crate) const SET_TEXT_ALIGN: u32 = 107;
+#[allow(dead_code)] // KI-0710
 pub(crate) const OPAQUE: u32 = 2;
+#[allow(dead_code)] // KI-0710
 pub(crate) const TA_LEFT_TOP: u32 = 0;
 #[path = "gdi_raw/text_output.rs"]
 pub(crate) mod text_output;
@@ -33,6 +36,7 @@ pub(crate) mod kernel;
 pub(crate) mod text_trace;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(dead_code)] // KI-0710
 pub(crate) struct TextMetricW {
     pub height: i32,
     pub ascent: i32,
@@ -82,6 +86,7 @@ pub(crate) fn colorref_to_xrgb(value: u32) -> u32 {
 /// Encode the real 60-byte TEXTMETRICW ABI. The native owner supplies every
 /// field; this adapter does not invent a 24-byte facade or silently truncate
 /// the output structure.
+#[allow(dead_code)] // KI-0710
 pub(crate) fn encode_text_metric_w(value: TextMetricW) -> [u8; TEXT_METRIC_W_BYTES] {
     let mut bytes = [0u8; TEXT_METRIC_W_BYTES];
     for (offset, field) in [
@@ -117,6 +122,7 @@ pub(crate) fn decode(ordinal: u64, args: &[u64; 9]) -> Option<Operation> {
 /// Collect the tail of a raw x86-64 call before typed decoding. The first six
 /// values are already normalized by the raw entry router; only stack slots
 /// six through eight are needed by the longest Notepad GDI operation.
+#[allow(dead_code)] // KI-0710
 pub(crate) fn collect_raw(first: [u64; 6], mut stack: impl FnMut(usize) -> Option<u64>) -> Option<[u64; 9]> {
     let mut args = [0u64; 9];
     args[..6].copy_from_slice(&first);

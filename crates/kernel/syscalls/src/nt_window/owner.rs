@@ -18,7 +18,7 @@ pub(super) fn new_entry(group: &Arc<sched::thread_group::ThreadGroup>) -> GuiEnt
 /// run close to the guard page.
 /// # C: O(N_nt_processes)
 #[inline(never)]
-pub(crate) fn entry_index(entries: &mut Vec<GuiEntry>, group: &Arc<sched::thread_group::ThreadGroup>) -> usize {
+pub(in crate::nt_window) fn entry_index(entries: &mut Vec<GuiEntry>, group: &Arc<sched::thread_group::ThreadGroup>) -> usize {
     entries.retain(|entry| entry.group.upgrade().is_some());
     if let Some(index) = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, group))) { return index; }
     entries.push(new_entry(group));
@@ -29,7 +29,7 @@ pub(crate) fn entry_index(entries: &mut Vec<GuiEntry>, group: &Arc<sched::thread
 /// creating it on first use. State that lives beside the window manager on the
 /// record — the input contexts, the send queue — is reached through this.
 /// # C: O(N_nt_processes)
-pub(crate) fn with_entry<T>(f: impl FnOnce(&mut GuiEntry) -> T) -> Option<T> {
+pub(in crate::nt_window) fn with_entry<T>(f: impl FnOnce(&mut GuiEntry) -> T) -> Option<T> {
     let cur = sched::live::current().filter(|task| task.is_nt_personality())?;
     let group = Arc::clone(&cur.thread_group);
     let mut entries = GUI.lock();

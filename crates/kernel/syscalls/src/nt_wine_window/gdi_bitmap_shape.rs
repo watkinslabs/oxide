@@ -41,7 +41,8 @@ pub const UPDATE_COLORS: u64 = 0x129a;
 pub const REALIZE_PALETTE: u64 = 0x14e4;
 pub const SELECT_PALETTE: u64 = 0x152c;
 
-/// Widest logical signature in this family.
+/// Widest logical signature in this family; test-only bound (gdi_bitmap_raw/tests.rs).
+#[cfg(test)]
 pub const MAX_ARGUMENTS: usize = 16;
 
 /// Ordinal and its logical parameter count, sorted for binary search.

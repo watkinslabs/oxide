@@ -2,7 +2,6 @@
 
 #[path = "sys_colors/raw.rs"]
 mod raw;
-pub(crate) use raw::ORDINAL;
 
 #[cfg(target_os = "oxide-kernel")]
 #[path = "sys_colors/live.rs"]

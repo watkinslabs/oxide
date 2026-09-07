@@ -11,8 +11,8 @@ pub(crate) const GET_WINDOW_LONG_PTR_A: u32 = 11;
 pub(crate) const GET_WINDOW_LONG_PTR_W: u32 = 12;
 pub(crate) const GET_WINDOW_RECTS: u32 = 13;
 pub(crate) const PARAM_BYTES: usize = 16;
-pub(crate) const WS_CHILD: u32 = 0x4000_0000;
-pub(crate) const WS_POPUP: u32 = 0x8000_0000;
+#[cfg(test)]
+use ipc::win32_window::styles::{WS_CHILD, WS_POPUP};
 
 /// Method decoding only. The LongPtr getter is deliberately not backed by a
 /// second window table; the dispatcher passes its offset to Bernoulli's
@@ -46,6 +46,7 @@ impl GetWindowRectsParams {
         Self { rect: u64_at(0), client: u32_at(8), dpi: u32_at(12) }
     }
 
+    #[cfg(test)]
     pub(crate) fn encode(self) -> [u8; PARAM_BYTES] {
         let mut bytes = [0u8; PARAM_BYTES];
         bytes[0..8].copy_from_slice(&self.rect.to_le_bytes());

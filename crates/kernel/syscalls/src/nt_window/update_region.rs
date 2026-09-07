@@ -3,7 +3,6 @@
 
 #[path = "update_region/raw.rs"]
 mod raw;
-pub(crate) use raw::{decode, Request};
 
 #[cfg(target_os = "oxide-kernel")]
 #[path = "update_region/live.rs"]

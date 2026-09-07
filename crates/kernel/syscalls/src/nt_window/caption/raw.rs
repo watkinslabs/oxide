@@ -5,11 +5,15 @@ use ipc::win32_gdi::SystemColor;
 pub(crate) const ORDINAL: u64 = 0x1399;
 
 pub(crate) const DC_ACTIVE: u32 = 0x0001;
+#[allow(dead_code)] // KI-0531: DrawCaptionTemp does not yet draw icon/smallcap
 pub(crate) const DC_SMALLCAP: u32 = 0x0002;
+#[allow(dead_code)] // KI-0531
 pub(crate) const DC_ICON: u32 = 0x0004;
 pub(crate) const DC_TEXT: u32 = 0x0008;
 pub(crate) const DC_INBUTTON: u32 = 0x0010;
+#[allow(dead_code)] // KI-0531: DrawCaptionTemp does not yet draw gradient
 pub(crate) const DC_GRADIENT: u32 = 0x0020;
+#[allow(dead_code)] // KI-0531: DrawCaptionTemp does not yet draw buttons
 pub(crate) const DC_BUTTONS: u32 = 0x1000;
 
 /// A caption drawn inside a button takes the dialog face; otherwise it takes

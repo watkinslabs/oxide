@@ -15,7 +15,7 @@ mod objects;
 pub use objects::create_object_for_current;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum LifecycleError<E> { Gate, Client(ClientError), Canonical(E), Rollback(E) }
+pub enum LifecycleError<E> { Client(ClientError), Canonical(E), Rollback(E) }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InitialObject {

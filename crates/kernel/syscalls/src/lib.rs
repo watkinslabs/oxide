@@ -48,6 +48,7 @@ mod nt_loader_dir;
 mod nt_loader_proc;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_delay_load;
+#[cfg(target_arch = "x86_64")]
 mod nt_delay_load_policy;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_directory;

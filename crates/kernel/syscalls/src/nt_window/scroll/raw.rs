@@ -25,6 +25,7 @@ impl GetScrollInfoParams {
         Self { bar: i32::from_le_bytes(bytes[0..4].try_into().unwrap()), info: u64::from_le_bytes(bytes[8..16].try_into().unwrap()) }
     }
 
+    #[cfg(test)]
     pub(crate) fn encode(self) -> [u8; GET_PARAMS_BYTES] {
         let mut bytes = [0; GET_PARAMS_BYTES];
         bytes[0..4].copy_from_slice(&self.bar.to_le_bytes());

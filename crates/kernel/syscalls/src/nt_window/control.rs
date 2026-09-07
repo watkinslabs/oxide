@@ -17,6 +17,7 @@ pub(crate) fn set_window_long_with_encoding_for_current(hwnd: u64, offset: i32, 
 /// Query the current process's canonical extra bytes and scalar fields.
 /// # C: O(N_process_gui_states + N_windows)
 /// # Lk: GUI; # Ctx: task; # Sleeps: no
+#[allow(dead_code)] // KI-0706: no dispatch caller yet
 pub(crate) fn get_window_long_ptr_for_current(hwnd: u64, offset: i32) -> Result<u64, LongPtrError> {
     get_window_long_for_current(hwnd, offset, 8)
 }
@@ -33,11 +34,13 @@ pub(crate) fn get_window_long_for_current(hwnd: u64, offset: i32, width: usize) 
 /// Store local state after the caller resolves any A/W procedure value.
 /// # C: O(N_process_gui_states + N_windows)
 /// # Lk: GUI; # Ctx: task; # Sleeps: no
+#[allow(dead_code)] // KI-0706: no dispatch caller yet
 pub(crate) fn set_window_long_ptr_for_current(hwnd: u64, offset: i32, value: u64) -> Result<u64, LongPtrError> {
     set_window_long_for_current(hwnd, offset, 8, value)
 }
 
 /// Replace a width-admitted field; previous zero remains successful. # C: O(N_process_gui_states + N_windows)
+#[allow(dead_code)] // KI-0706: no dispatch caller yet
 pub(crate) fn set_window_long_for_current(hwnd: u64, offset: i32, width: usize, value: u64) -> Result<u64, LongPtrError> {
     let current = sched::live::current().filter(|task| task.is_nt_personality()).ok_or(LongPtrError::InvalidWindow)?;
     let window = valid_window(hwnd).ok_or(LongPtrError::InvalidWindow)?;
@@ -61,6 +64,7 @@ pub(crate) fn set_control_id_for_current(hwnd: u64, value: u64) -> Result<u64, (
 /// Read the current process's child ID without conflating zero with failure.
 /// # C: O(N_process_gui_states + N_windows)
 /// # Lk: GUI; # Ctx: task; # Sleeps: no
+#[allow(dead_code)] // KI-0706: no dispatch caller yet
 pub(crate) fn control_id_for_current(hwnd: u64) -> Option<u64> {
     let current = sched::live::current().filter(|task| task.is_nt_personality())?;
     let window = valid_window(hwnd)?;

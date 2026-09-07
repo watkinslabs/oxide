@@ -2,11 +2,13 @@
 //! The Windows client ABI passes the argument block and its length; the
 //! callback answers through NtCallbackReturn, which restores this frame.
 use super::*;
+#[cfg(target_arch = "x86_64")]
 use crate::nt_user_callback::{entry_pointer, peb_pointer, table_pointer};
 
 /// Resolve one callback entry of the calling process. Zero when user32 has
 /// published no table, or the entry itself is null.
 /// # C: O(1) plus bounded usercopy
+#[cfg(target_arch = "x86_64")]
 pub(crate) fn routine_for_current(index: u32) -> Option<u64> {
     let task = sched::live::current().filter(|task| task.is_nt_personality())?;
     let peb = uaccess::get_user_u64(peb_pointer(task.nt_teb())?).ok()?;

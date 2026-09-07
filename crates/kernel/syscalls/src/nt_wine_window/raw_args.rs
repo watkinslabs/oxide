@@ -1,6 +1,10 @@
 //! Existing raw win32u admission and x86-64 register conversion. 31d§1, 54§2.
 
 // Logical parameter counts; stack parameters beyond index 5 remain handler-owned.
+// x86-64 only: dispatch.rs's non-x86_64 `normalize` passes the Linux snapshot
+// through directly and never calls this table (54§2 - no win32u register ABI
+// defined for other architectures).
+#[cfg(any(test, target_arch = "x86_64"))]
 const RAW_CALLS: &[(u64, usize)] = &[
     (0x10a2, 4), // NtGdiCombineRgn
     (0x10a7, 5), // NtGdiCreateBitmap
@@ -306,6 +310,7 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x15ff, 2), // NtUserWindowFromPoint
 ];
 
+#[cfg(any(test, target_arch = "x86_64"))]
 /// # C: O(log(number of admitted ordinals))
 pub(crate) fn argument_count(ordinal: u64) -> Option<usize> {
     if let Some(count) = crate::nt_wine_font_query_contract::argument_count(ordinal) { return Some(count); }
@@ -325,7 +330,11 @@ pub(crate) fn argument_count(ordinal: u64) -> Option<usize> {
 /// Widest Windows argument list any admitted ordinal carries.
 pub(crate) const MAX_ARGS: usize = 17;
 
+// `Unclaimed`/`StackFault` are constructed only by `normalize` below
+// (x86-64 only); kept ungated so dispatch.rs's shared match stays exhaustive
+// on every architecture.
 #[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
 pub(crate) enum Normalized {
     Unclaimed,
     StackFault(usize),
@@ -340,6 +349,7 @@ pub(crate) enum Normalized {
 /// word fails the call rather than routing a partial list. No tagged selector
 /// is admitted or converted.
 /// # C: O(log(number of admitted ordinals)) plus at most thirteen stack reads
+#[cfg(any(test, target_arch = "x86_64"))]
 pub(crate) fn normalize(ordinal: u64, linux: [u64; 6], mut stack: impl FnMut(usize) -> Option<u64>) -> Normalized {
     let Some(count) = argument_count(ordinal) else { return Normalized::Unclaimed; };
     let mut args = [0u64; MAX_ARGS];

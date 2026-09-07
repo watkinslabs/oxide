@@ -7,6 +7,7 @@ const WM_ERASEBKGND: u32 = 0x0014;
 /// It must also release resources on Err; no callback executes after sender teardown.
 #[derive(Clone, Copy)]
 pub(crate) enum Completion {
+    #[allow(dead_code)] // KI-0707: exhaustiveness-only, nothing constructs this variant yet
     Callback { token:u64, finish:fn(u64,Result<bool,()>)->u64 },
     Paint(super::super::paint_prepare::Prepared),
     /// Default WM_PAINT: the kernel ends the paint itself once preparation completes.

@@ -15,7 +15,6 @@ pub(crate) const SYSTEM_PARAMETERS_INFO_FOR_DPI: u64 = 0x15cc;
 pub(crate) const GET_PROCESS_DEFAULT_LAYOUT: u64 = 0x1434;
 pub(crate) const SET_PROCESS_DEFAULT_LAYOUT: u64 = 0x1576;
 
-pub(crate) const ERROR_ACCESS_DENIED: u32 = 5;
 pub(crate) const ERROR_BAD_ARGUMENTS: u32 = 160;
 pub(crate) const ERROR_INVALID_ADDRESS: u32 = 487;
 pub(crate) const ERROR_INVALID_PARAMETER: u32 = 87;
@@ -29,6 +28,7 @@ pub(crate) const DISP_CHANGE_SUCCESSFUL: u64 = 0;
 pub(crate) const DISP_CHANGE_BADMODE: u64 = 0xffff_ffff_ffff_ffff;
 pub(crate) const DISP_CHANGE_BADPARAM: u64 = 0xffff_ffff_ffff_fffb;
 /// `CDS_TEST` and `CDS_NORESET` ask whether a mode is possible without applying it.
+#[allow(dead_code)] // KI-0530: ChangeDisplaySettings does not yet persist CDS_UPDATEREGISTRY
 pub(crate) const CDS_UPDATEREGISTRY: u32 = 0x0000_0001;
 pub(crate) const CDS_TEST: u32 = 0x0000_0002;
 pub(crate) const CDS_NORESET: u32 = 0x0001_0000;

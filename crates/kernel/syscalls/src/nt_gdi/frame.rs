@@ -7,6 +7,7 @@ use syscall::nt_compositor::{self as wire, Damage, Error, Opcode, Record};
 /// merged into. The coverage a paint admits is in client coordinates and the
 /// surface the display is given is the whole window, so the offset between
 /// them is the client origin inside that window. # C: O(1)
+#[allow(dead_code)] // KI-0708: unwired capture/publish pipeline
 pub(crate) fn client_damage(bounds: ipc::win32_window::WindowRect, client: ipc::win32_gdi::Rect) -> Option<Damage> {
     Some(Damage { left: bounds.left.checked_add(client.left)?, top: bounds.top.checked_add(client.top)?,
         right: bounds.right.checked_add(client.left)?, bottom: bounds.bottom.checked_add(client.top)? })
