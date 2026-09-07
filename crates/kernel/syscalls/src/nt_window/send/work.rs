@@ -32,6 +32,12 @@ impl Queue {
         let reply=Arc::new(Reply::with_continuation(continuation));let token=self.next;self.next=next;
         self.work.push(Work{token,sender,target,message,reply:reply.clone(),resume:None,cancelled:false});Some((token,reply))
     }
+    /// The send this thread is currently receiving, as the in-send-message
+    /// thread-state class describes it. # C: O(sends)
+    pub(crate) fn received_send(&self,tid:u64)->Option<ipc::win32_window::ReceivedSend>{
+        self.work.iter().find(|w|w.target==tid&&w.resume.is_some()).map(|w|ipc::win32_window::ReceivedSend{
+            inter_thread:w.sender!=w.target,replied:matches!(w.reply.outcome(),Some(Ok(_)))})
+    }
     /// The reply of the message this thread is currently receiving. # C: O(sends)
     #[cfg(target_os = "oxide-kernel")]
     pub(crate) fn active_reply(&self,tid:u64)->Option<Arc<Reply>>{

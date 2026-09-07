@@ -53,3 +53,33 @@ fn nested_wait_continuation_survives_reply_completion(){
     q.start(1,Resume::Wait(outer.clone()),None);
     match q.finish(1,token,Some(u64::MAX)).unwrap().0{Resume::Wait(r)=>assert!(Arc::ptr_eq(&r,&outer)),_=>unreachable!()}
 }
+#[test]
+fn a_thread_with_no_started_work_is_receiving_no_send(){
+    let mut q=Queue::new();assert_eq!(q.received_send(2),None);
+    let _=q.admit(1,2,message(7)).unwrap();
+    // Admitted but not started: the recipient is not inside the procedure yet.
+    assert_eq!(q.received_send(2),None);
+}
+#[test]
+fn a_started_inter_thread_send_is_reported_until_it_is_answered(){
+    let mut q=Queue::new();let (token,reply)=q.admit(1,2,message(7)).unwrap();
+    q.start(2,Resume::Direct,None).unwrap();
+    assert_eq!(q.received_send(2),Some(ipc::win32_window::ReceivedSend{inter_thread:true,replied:false}));
+    reply.complete(5);
+    assert_eq!(q.received_send(2),Some(ipc::win32_window::ReceivedSend{inter_thread:true,replied:true}));
+    q.finish(2,token,Some(5)).unwrap();
+    assert_eq!(q.received_send(2),None);
+}
+#[test]
+fn a_send_a_thread_made_to_itself_is_not_an_inter_thread_send(){
+    let mut q=Queue::new();let _=q.admit(2,2,message(7)).unwrap();
+    q.start(2,Resume::Direct,None).unwrap();
+    assert_eq!(q.received_send(2),Some(ipc::win32_window::ReceivedSend{inter_thread:false,replied:false}));
+    assert_eq!(ipc::win32_window::receive_flags(q.received_send(2)),ipc::win32_window::ISMEX_NOSEND);
+}
+#[test]
+fn a_cancelled_send_is_not_a_replied_one(){
+    let mut q=Queue::new();let (_,reply)=q.admit(1,2,message(7)).unwrap();
+    q.start(2,Resume::Direct,None).unwrap();reply.cancel();
+    assert_eq!(q.received_send(2),Some(ipc::win32_window::ReceivedSend{inter_thread:true,replied:false}));
+}

@@ -10,7 +10,7 @@ use alloc::vec::Vec;
 use sync::{Spinlock, TaskList as GuiLockClass};
 use syscall::nt::{self, NtCall, NtWindowCall, NtWindowMessage};
 #[path = "nt_window/owner.rs"]
-mod owner;
+pub(crate) mod owner;
 #[path = "nt_window/class_background.rs"]
 mod class_background;
 pub(crate) use class_background::{register_class_with_background_for_current, register_class_desc_for_current, class_background_for_current, dpi_context_for_current, set_dpi_context_for_current};
