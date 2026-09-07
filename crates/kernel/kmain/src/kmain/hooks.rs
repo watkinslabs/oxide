@@ -25,6 +25,16 @@ pub unsafe fn tick_poll_combined(_from_user: bool) {
         // IRQ can self-deadlock the CPU when the tick preempts a reader (`06§3.1`).
     }
     fbcon::kernel::tick_drain();
+    // Console transmit-stall recovery (Linux's 8250 backup timer). The 8250
+    // transmit-empty source is retired by reading the interrupt-identity
+    // register and is only reproduced by a holding-register-empty transition,
+    // so a service pass that reads that register and then declines to write the
+    // transmitter strands an armed, loaded, idle queue with nothing left to
+    // move it — the console stops mid-run while the machine keeps going. This
+    // re-derives the owed source from the port's own state and services it. One
+    // uncontended lock and one ring check while the queue is empty, and no port
+    // I/O at all on a console that has no transmit queue.
+    drv_serial::poll_tx_stall();
     // B1344: `reap_orphans` (B14 zombie subreap) and `tick_wake_expired`
     // (F169/B20 SO_*TIMEO + alarm/itimer deadline walker) moved OFF this
     // hard-IRQ tick into the ktimers process-context kthread

@@ -18,21 +18,26 @@ unsafe fn outb(port: u16, v: u8) {
     unsafe { core::arch::asm!("out dx, al", in("dx") port, in("al") v, options(nomem, nostack, preserves_flags)); }
 }
 
-// 8250 register offsets from the port base.
-const RBR: u16 = 0; // THR on write
-const IER: u16 = 1;
-const IIR: u16 = 2; // FCR on write
-const FCR: u16 = 2;
-const LCR: u16 = 3; // line control; bit7 = DLAB (selects DLL/DLM at base+0/+1)
-const MCR: u16 = 4;
-const LSR: u16 = 5; // bit0 = RX data ready, bit5 = THR empty
-const SCR: u16 = 7; // scratch
 use super::pm::{FCR_ENABLE, FCR_RX_TRIGGER_8};
-const FCR_CLEAR_RX: u8 = 0x02;
-const FCR_CLEAR_TX: u8 = 0x04;
-const IIR_NO_INTERRUPT: u8 = 1 << 0;
-const LSR_DATA_READY: u8 = 1 << 0;
-const LSR_THR_EMPTY: u8 = 1 << 5;
+use super::regs::{FCR, FCR_CLEAR_RX, FCR_CLEAR_TX, IER, IIR, IIR_NO_INTERRUPT, LCR, LCR_DLAB,
+    LSR, LSR_DATA_READY, LSR_THR_EMPTY, MCR, MCR_AFE, RBR, SCR};
+use super::seq::{self, PortIo};
+
+/// The detected COM port's register window as the sequencer's port I/O.
+struct Com(u16);
+
+impl PortIo for Com {
+    /// # C: O(1)
+    fn read(&self, off: u16) -> u8 {
+        // SAFETY: `inb` on the detected console UART's own register window at CPL 0; the base was published by `init` after a scratch probe confirmed a live port, and every offset is a byte register of that window.
+        unsafe { inb(self.0 + off) }
+    }
+    /// # C: O(1)
+    fn write(&self, off: u16, v: u8) {
+        // SAFETY: `outb` on the detected console UART's own register window at CPL 0; callers hold the port lock, which owns the aliased register window and the IER shadow/register pair.
+        unsafe { outb(self.0 + off, v) }
+    }
+}
 
 /// Steady 16550 FIFO configuration after the startup clear. # C: O(1)
 pub(super) const fn fifo_mode() -> u8 { FCR_ENABLE | FCR_RX_TRIGGER_8 }
@@ -82,17 +87,35 @@ pub fn emit(bytes: &[u8]) {
     if b == 0 { return; }
     let mut port = PORT.lock_irqsave::<hal_x86_64::X86IrqGate>();
     if port.runtime() {
-        let transition = port.enqueue(bytes);
-        if transition.ier_changed {
-            // SAFETY: the port lock owns the IER shadow/register pair.
-            unsafe { outb(b + IER, port.ier()); }
-        }
+        seq::start_tx(&mut port, &Com(b), bytes);
         return;
     }
     for &byte in bytes {
         poll_byte(b, byte);
     }
 }
+
+/// Service a transmit-empty interrupt the port consumed without delivering.
+///
+/// Reading IIR retires the transmit-empty source, so a pass that reads it and
+/// then declines to write the holding register leaves an armed, loaded, idle
+/// queue that nothing will ever drain — a console that stops mid-run on a
+/// machine that keeps going. Called from the timer tick; while the queue is
+/// empty it costs one lock and one ring check and touches no port register.
+/// # C: O(1) port reads; O(TX_FIFO_DEPTH) writes
+pub fn poll_tx_stall() {
+    let b = base();
+    if b == 0 { return; }
+    let mut port = PORT.lock_irqsave::<hal_x86_64::X86IrqGate>();
+    if seq::poll_lost_tx(&mut port, &Com(b)) {
+        LOST_TX_EDGES.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Transmit-empty interrupts the port owed and never delivered, recovered by
+/// `poll_tx_stall`. Nonzero means this port loses transmit edges.
+/// # C: O(1)
+pub fn lost_tx_edges() -> u64 { LOST_TX_EDGES.load(Ordering::Relaxed) }
 
 /// Reprogram the line baud (TCSETS `c_ospeed`). Standard PC 16550 base
 /// clock is 1.8432 MHz, so the 16-bit divisor = 115200 / baud. Toggle DLAB
@@ -107,10 +130,10 @@ pub fn set_baud(baud: u32) {
     // COM base; DLL/DLM alias base+0/+1 only while DLAB=1, restored after.
     unsafe {
         let lcr = inb(b + LCR);
-        outb(b + LCR, lcr | 0x80);            // DLAB=1
+        outb(b + LCR, lcr | LCR_DLAB);         // DLAB=1
         outb(b + RBR, (divisor & 0xff) as u8);  // DLL
         outb(b + IER, (divisor >> 8) as u8);    // DLM
-        outb(b + LCR, lcr & !0x80);           // DLAB=0: restore data regs + line ctl
+        outb(b + LCR, lcr & !LCR_DLAB);        // DLAB=0: restore data regs + line ctl
     }
 }
 
@@ -123,12 +146,12 @@ pub fn set_line(baud: u32, parity: u8, bits: u8, flow: bool) {
     // SAFETY: one serialized DLAB/LCR/MCR transaction on the detected UART.
     unsafe {
         let old_lcr = inb(b + LCR);
-        outb(b + LCR, old_lcr | 0x80);
+        outb(b + LCR, old_lcr | LCR_DLAB);
         outb(b + RBR, divisor as u8);
         outb(b + IER, (divisor >> 8) as u8);
         outb(b + LCR, super::line_control_bits(parity, bits));
         let mcr = inb(b + MCR);
-        outb(b + MCR, (mcr & !(1 << 5)) | super::modem_control_bits(flow));
+        outb(b + MCR, (mcr & !MCR_AFE) | super::modem_control_bits(flow));
     }
 }
 
@@ -160,18 +183,7 @@ fn rx_isr_claimed(dlv: fn(u8)) -> bool {
                 status = unsafe { inb(b + LSR) };
             }
         }
-        if status & LSR_THR_EMPTY != 0 && port.ier() & tx::IER_TX_EMPTY != 0 {
-            let mut fifo = [0u8; tx::TX_FIFO_DEPTH];
-            let transition = port.take_fifo(&mut fifo);
-            for &byte in &fifo[..transition.count] {
-                // SAFETY: one THRE service may fill the enabled 16-byte FIFO.
-                unsafe { outb(b + RBR, byte); }
-            }
-            if transition.ier_changed {
-                // SAFETY: the port lock owns the IER shadow/register pair.
-                unsafe { outb(b + IER, port.ier()); }
-            }
-        }
+        seq::irq_tx(&mut port, &Com(b), status);
     }
     for &byte in &received[..rx_count] {
         dlv(byte);

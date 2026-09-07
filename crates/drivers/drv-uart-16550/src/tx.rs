@@ -113,6 +113,9 @@ impl<const N: usize> TxEngine<N> {
     pub(crate) fn discard(&mut self) { self.ring.clear(); }
     /// Whether ordinary writes use the interrupt-driven queue. # C: O(1)
     pub(crate) const fn runtime(&self) -> bool { self.runtime }
+    /// Whether the xmit ring still holds bytes the port owes an interrupt for.
+    /// # C: O(1)
+    pub(crate) const fn queued(&self) -> bool { self.ring.len != 0 }
     /// Current authoritative interrupt-enable register shadow. # C: O(1)
     pub(crate) const fn ier(&self) -> u8 { self.ier }
 

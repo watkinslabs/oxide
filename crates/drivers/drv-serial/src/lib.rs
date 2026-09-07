@@ -70,6 +70,23 @@ pub fn present() -> bool { uart::present() }
 /// # C: O(len(bytes))
 pub fn emit(bytes: &[u8]) { uart::emit(bytes); }
 
+/// Service a transmit-empty interrupt the console UART owed and never
+/// delivered, so a queued console can never be stranded by a lost edge.
+///
+/// A UART whose transmit source is retired by reading the interrupt-identity
+/// register goes permanently silent if any service pass reads that register
+/// and then declines to write the transmitter: the queue stays armed, loaded
+/// and idle with nothing left to move it, on a machine that is otherwise
+/// running normally. Driven from the timer tick; a console with no queue, or
+/// one whose queue is empty, does no port I/O at all.
+/// # C: O(1) typical
+pub fn poll_tx_stall() { uart::poll_tx_stall(); }
+
+/// Transmit-empty interrupts the console UART owed and never delivered,
+/// recovered by `poll_tx_stall`. Nonzero means this port loses transmit edges.
+/// # C: O(1)
+pub fn lost_tx_edges() -> u64 { uart::lost_tx_edges() }
+
 /// Take the console off any interrupt-driven transmit queue and put it on the
 /// synchronous one, flushing what the queue already holds.
 ///
