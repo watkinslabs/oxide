@@ -25,6 +25,8 @@ pub struct Screen { pub root: Window, pub default_colormap: u32, pub white_pixel
 #[repr(C)] pub struct VoidCookie { pub sequence: c_uint }
 #[repr(C)] pub struct QueryTreeCookie { pub sequence: c_uint }
 #[repr(C)] pub struct QueryTreeReply { pub response_type: u8, pub pad0: u8, pub sequence: u16, pub length: u32, pub root: Window, pub parent: Window, pub children_len: u16, pub pad1: [u8; 14] }
+#[repr(C)] pub struct TranslateCoordinatesCookie { pub sequence: c_uint }
+#[repr(C)] pub struct TranslateCoordinatesReply { pub response_type: u8, pub same_screen: u8, pub sequence: u16, pub length: u32, pub child: Window, pub dst_x: i16, pub dst_y: i16 }
 #[repr(C)] pub struct GenericError { pub response_type: u8, pub error_code: u8, pub sequence: u16, pub resource_id: u32, pub minor_code: u16, pub major_code: u8, pub pad0: u8, pub pad: [u8; 20] }
 
 pub const KEY_PRESS: u8 = 2; pub const KEY_RELEASE: u8 = 3; pub const BUTTON_PRESS: u8 = 4; pub const BUTTON_RELEASE: u8 = 5; pub const MOTION_NOTIFY: u8 = 6; pub const FOCUS_IN: u8 = 9; pub const FOCUS_OUT: u8 = 10; pub const EXPOSE: u8 = 12; pub const CONFIGURE_NOTIFY: u8 = 22; pub const PROPERTY_NOTIFY: u8 = 28; pub const CLIENT_MESSAGE: u8 = 33;
@@ -90,6 +92,9 @@ extern "C" {
     pub fn xcb_get_image_reply(c: *mut Connection, cookie: GetImageCookie, error: *mut *mut c_void) -> *mut GetImageReply;
     pub fn xcb_get_image_data(reply: *const GetImageReply) -> *mut u8;
     pub fn xcb_get_image_data_length(reply: *const GetImageReply) -> c_int;
+    pub fn xcb_translate_coordinates(c: *mut Connection, src_window: Window, dst_window: Window, src_x: i16, src_y: i16) -> TranslateCoordinatesCookie;
+    pub fn xcb_translate_coordinates_reply(c: *mut Connection, cookie: TranslateCoordinatesCookie, error: *mut *mut c_void) -> *mut TranslateCoordinatesReply;
+    pub fn xcb_reparent_window(c: *mut Connection, window: Window, parent: Window, x: i16, y: i16) -> VoidCookie;
     pub fn xcb_query_tree(c: *mut Connection, window: Window) -> QueryTreeCookie;
     pub fn xcb_query_tree_reply(c: *mut Connection, cookie: QueryTreeCookie, error: *mut *mut c_void) -> *mut QueryTreeReply;
     pub fn xcb_query_tree_children(reply: *const QueryTreeReply) -> *mut Window;

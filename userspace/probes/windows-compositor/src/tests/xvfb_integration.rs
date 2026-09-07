@@ -209,3 +209,33 @@ fn xvfb_desktop_input_events_carry_the_hwnd_not_the_x_window() {
     for _ in 0..50 { assert_eq!(backend.poll_event(), None, "an event naming a foreign X window must not become a window event"); std::thread::sleep(Duration::from_millis(1)); }
     unsafe { ffi::xcb_disconnect(conn); }
 }
+
+// 31gd geometry under a decorating window manager: the desktop reparents a
+// top-level window into a frame, after which a real ConfigureNotify reports a
+// position inside that frame rather than a position on the screen.
+#[test]
+fn xvfb_configure_under_a_reparenting_window_manager_reports_screen_position() {
+    let server = xvfb();
+    let mut backend = Backend::connect(Some(&server.display)).unwrap();
+    let hwnd = 0xa1u32;
+    backend.handle_command(BridgeCommand::Create { hwnd, title: Vec::new(), rect: Rect { left: 0, top: 0, right: 60, bottom: 40 }, parent: 0, style: 0x1000_0000, ex_style: 0 }).unwrap();
+    let xid = backend.xid_for(hwnd).unwrap();
+    let (conn, root) = unsafe { connect(&server.display) };
+    let frame = unsafe { ffi::xcb_generate_id(conn) };
+    unsafe {
+        ffi::xcb_create_window(conn, 0, frame, root, 40, 50, 100, 80, 0, ffi::WINDOW_CLASS_INPUT_OUTPUT, 0, 0, ptr::null());
+        ffi::xcb_map_window(conn, frame);
+        ffi::xcb_reparent_window(conn, xid, frame, 0, 0);
+        let values = [3u32, 4];
+        ffi::xcb_configure_window(conn, xid, ffi::CONFIGURE_X | ffi::CONFIGURE_Y, values.as_ptr());
+        ffi::xcb_flush(conn);
+    }
+    let mut configure = None;
+    for _ in 0..500 {
+        while let Some(event) = backend.poll_event() { if let BridgeEvent::Configure { hwnd: id, rect } = event { assert_eq!(id, hwnd); configure = Some(rect); } }
+        if configure.is_some_and(|rect: Rect| rect.left != 0 || rect.top != 0) { break; }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(configure, Some(Rect { left: 43, top: 54, right: 103, bottom: 94 }), "a reparented window's configure must name its screen position");
+    unsafe { ffi::xcb_disconnect(conn); }
+}

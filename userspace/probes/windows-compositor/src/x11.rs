@@ -167,6 +167,7 @@ impl Backend {
         let raw = unsafe { ffi::xcb_poll_for_event(self.conn) };
         if raw.is_null() { return None; }
         let bytes = unsafe { std::slice::from_raw_parts(raw as *const u8, 32) };
+        let synthetic = bytes[0] & 0x80 != 0;
         let expose = if bytes[0] & 0x7f == ffi::EXPOSE { Some((u32::from_ne_bytes(bytes[4..8].try_into().ok()?), Rect { left: u16::from_ne_bytes([bytes[8], bytes[9]]) as i32, top: u16::from_ne_bytes([bytes[10], bytes[11]]) as i32, right: u16::from_ne_bytes([bytes[8], bytes[9]]) as i32 + u16::from_ne_bytes([bytes[12], bytes[13]]) as i32, bottom: u16::from_ne_bytes([bytes[10], bytes[11]]) as i32 + u16::from_ne_bytes([bytes[14], bytes[15]]) as i32 })) } else { None };
         let event = if bytes[0] & 0x7f == ffi::CLIENT_MESSAGE {
             let type_atom = u32::from_ne_bytes(bytes[8..12].try_into().ok()?);
@@ -183,7 +184,16 @@ impl Backend {
             Some(BridgeEvent::Configure { hwnd: xid, rect }) => {
                 let hwnd = self.xid_to_hwnd.get(&xid).copied()?;
                 let window = self.windows.get_mut(&hwnd)?;
-                if window.suppress_backing_configure && rect.right - rect.left <= 1 && rect.bottom - rect.top <= 1 { window.suppress_backing_configure = false; None } else { Some(BridgeEvent::Configure { hwnd, rect }) }
+                if window.suppress_backing_configure && rect.right - rect.left <= 1 && rect.bottom - rect.top <= 1 { window.suppress_backing_configure = false; return None; }
+                let xid = window.xid;
+                // A real ConfigureNotify reports a position in the parent's
+                // coordinates. A window manager that decorates a top-level
+                // window reparents it into a frame, so that position is an
+                // offset inside the frame and not where the window is; only
+                // the synthetic notification a window manager sends is
+                // already root-relative.
+                let rect = if synthetic { rect } else { self.root_position(xid).map_or(rect, |(left, top)| Rect { left, top, right: left + (rect.right - rect.left), bottom: top + (rect.bottom - rect.top) }) };
+                Some(BridgeEvent::Configure { hwnd, rect })
             }
             Some(BridgeEvent::Input(input)) => { let input = self.retarget_input(input)?; self.map_input(input) }
             Some(BridgeEvent::WorkArea(_)) => self.snapshot_event(),
@@ -262,6 +272,18 @@ impl Backend {
     /// An event on a window this bridge does not own is not a window event at
     /// all and is dropped, which is the same answer the translation gives for
     /// a window destroyed between the server's dispatch and this poll.
+    /// Where a window sits on the screen, which is not what a real
+    /// ConfigureNotify reports once a window manager has reparented it.
+    fn root_position(&self, xid: Xid) -> Option<(i32, i32)> {
+        let cookie = unsafe { ffi::xcb_translate_coordinates(self.conn, xid, self.root, 0, 0) };
+        let mut error = ptr::null_mut();
+        let reply = unsafe { ffi::xcb_translate_coordinates_reply(self.conn, cookie, &mut error) };
+        if reply.is_null() { return None; }
+        let position = unsafe { ((*reply).dst_x as i32, (*reply).dst_y as i32) };
+        // SAFETY: xcb hands the reply to the caller to release exactly once.
+        unsafe { libc::free(reply as *mut _); }
+        Some(position)
+    }
     fn retarget_input(&self, input: InputEvent) -> Option<InputEvent> {
         let xid = match input { InputEvent::Key { hwnd, .. } | InputEvent::Text { hwnd, .. } | InputEvent::Button { hwnd, .. } | InputEvent::Motion { hwnd, .. } | InputEvent::Focus { hwnd, .. } => hwnd };
         let hwnd = self.xid_to_hwnd.get(&xid).copied()?;
