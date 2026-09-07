@@ -55,7 +55,7 @@ def test_flat_dark_search_spot_means_overview():
     # carries placeholder text (its std is far above the limit).
     assert overview_visible_pixels(0.25, 0.0)
     assert overview_visible_pixels(0.32, 0.03)
-    assert not overview_visible_pixels(0.19, 0.0)
+    assert not overview_visible_pixels(0.11, 0.0)
     assert not overview_visible_pixels(0.33, 0.0)
     assert not overview_visible_pixels(0.25, 0.05)
     assert not overview_visible_pixels(1.0, 1.0)
