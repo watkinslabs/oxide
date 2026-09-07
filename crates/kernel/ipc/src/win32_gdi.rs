@@ -24,6 +24,17 @@ mod visibility;
 pub use visibility::rect_visible_in_clip;
 #[path = "win32_gdi/blend.rs"]
 mod blend;
+#[path = "win32_gdi/xform.rs"]
+mod xform;
+pub use xform::{Xform, Point, Size, gdi_round, muldiv, XFORM_BYTES};
+#[path = "win32_gdi/dc_attr.rs"]
+mod dc_attr;
+pub use dc_attr::{DcAttr, DeviceGeometry, add_bounds_rect, empty_bounds, rect_is_empty,
+    MM_TEXT, MM_LOMETRIC, MM_HIMETRIC, MM_LOENGLISH, MM_HIENGLISH, MM_TWIPS, MM_ISOTROPIC, MM_ANISOTROPIC,
+    MWT_IDENTITY, MWT_LEFTMULTIPLY, MWT_RIGHTMULTIPLY, MWT_SET,
+    XFORM_WORLD_TO_PAGE, XFORM_PAGE_TO_DEVICE, XFORM_WORLD_TO_DEVICE, XFORM_DEVICE_TO_WORLD,
+    LP_TO_DP, DP_TO_LP, LAYOUT_RTL, GM_COMPATIBLE, GM_ADVANCED, AD_COUNTERCLOCKWISE, AD_CLOCKWISE,
+    DEFAULT_MITER_LIMIT};
 #[path = "win32_gdi/handles.rs"]
 mod handles;
 #[path = "win32_gdi/projection.rs"]
@@ -64,7 +75,6 @@ pub use pen::{Pen, PenRasterState, TYPE_PEN, DEFAULT_DC_PEN_HANDLE};
 pub use handles::{FIRST_DYNAMIC_SLOT, SLOT_LIMIT, SLOT_MASK, TYPE_DC, TYPE_FONT};
 pub use text_state::{TextAttribute, TextAttributes, TextState};
 
-pub const MM_TEXT: u32 = 1;
 const DEFAULT_HEIGHT: i32 = 16;
 const DEFAULT_DESCENT: i32 = 4;
 const DEFAULT_WIDTH: i32 = 8;
@@ -103,6 +113,9 @@ impl Default for PathState {
 
 #[derive(Debug, Eq, PartialEq)]
 struct DeviceContext { width: i32, height: i32, map_mode: u32, font: Option<u32>, brush: Option<u32>, dc_brush_color: u32, pen: u32, dc_pen_color: u32, text: TextAttributes, clip: Option<crate::win32_window::PaintRegion>, meta_clip: Option<crate::win32_window::PaintRegion>, paths: PathState, paint_clip: Option<crate::win32_window::PaintRegion>, pixels: Vec<u32>, lease: Option<DcLease>, pending_output: PendingOutput }
+
+#[derive(Debug, PartialEq)]
+struct DeviceContext { width: i32, height: i32, attr: DcAttr, font: Option<u32>, brush: Option<u32>, dc_brush_color: u32, pen: u32, dc_pen_color: u32, text: TextAttributes, clip: Option<Rect>, paint_clip: Option<crate::win32_window::PaintRegion>, pixels: Vec<u32>, lease: Option<DcLease>, pending_output: PendingOutput }
 
 pub struct GdiManager { next: u32, dcs: Vec<(u32, DeviceContext)>, fonts: Vec<(u32, FontRecord)>, brushes: Vec<(u32, Brush)>, bitmaps: Vec<(u32, Bitmap)>, pens: Vec<(u32, Pen)>, system_brushes: SystemBrushes, window_dcs: Vec<(u32, u32)>, regions: Vec<(u32, crate::win32_window::PaintRegion)> }
 

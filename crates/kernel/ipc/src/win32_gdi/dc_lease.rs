@@ -1,5 +1,5 @@
 //! Canonical DCE identities reference one window backing; 31fk§7.
-use super::{DeviceContext, GdiError, GdiManager, Rect, TextAttributes, DEFAULT_DC_FONT_HANDLE, MM_TEXT, TYPE_DC};
+use super::{DcAttr, DeviceContext, GdiError, GdiManager, Rect, TextAttributes, DEFAULT_DC_FONT_HANDLE, TYPE_DC};
 use crate::win32_window::{PaintRegion, WindowRect};
 use alloc::vec::Vec;
 #[path = "dc_lease/raster.rs"]
@@ -92,7 +92,8 @@ impl GdiManager {
         let (handle, index) = if let Some(index) = reuse { (self.dcs[index].0, index) } else {
             self.dcs.try_reserve(1).map_err(|_| GdiError::HandleLimit)?;
             let handle = self.allocate(TYPE_DC)?;
-            self.dcs.push((handle, DeviceContext { width: request.width, height: request.height, map_mode: MM_TEXT,
+            let mut attr = DcAttr::new(); attr.set_vis_rect(request.width, request.height);
+            self.dcs.push((handle, DeviceContext { width: request.width, height: request.height, attr,
                 font: Some(DEFAULT_DC_FONT_HANDLE), brush: None, dc_brush_color: 0xffffff, pen: super::DEFAULT_DC_PEN_HANDLE, dc_pen_color: 0, text: TextAttributes::default(),
                 clip: None, meta_clip: None, paths: Default::default(), paint_clip: None, pixels: Vec::new(), lease: None, pending_output:Default::default() }));
             (handle, self.dcs.len() - 1)
@@ -101,6 +102,7 @@ impl GdiManager {
         if let Some(old) = old_clip.filter(|old| Some(*old) != clip_handle) { let _ = self.delete_region(old); }
         let state = &mut self.dcs[index].1;
         state.width = request.width; state.height = request.height;
+        state.attr.set_vis_rect(request.width, request.height);
         state.lease = Some(DcLease { hwnd: request.hwnd, backing: request.backing, origin: request.origin,
             visible: request.visible, flags: request.flags, owner, active: true, clip_handle });
         Ok(handle)
@@ -121,7 +123,7 @@ impl GdiManager {
         if lease.owner != LeaseOwner::Cached { return self.text_state(dc); }
         let clip = lease.clip_handle.take();
         if lease.flags & DCX_NORESETATTRS == 0 {
-            state.map_mode = MM_TEXT; state.font = Some(DEFAULT_DC_FONT_HANDLE); state.brush = None;
+            state.attr.reset(); state.font = Some(DEFAULT_DC_FONT_HANDLE); state.brush = None;
             state.pen = super::DEFAULT_DC_PEN_HANDLE; state.dc_pen_color = 0;
             state.dc_brush_color = 0xffffff; state.text = TextAttributes::default(); state.clip = None; state.paint_clip = None;
         }
