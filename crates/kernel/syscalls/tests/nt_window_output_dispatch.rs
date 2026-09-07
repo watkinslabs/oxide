@@ -1,4 +1,7 @@
 //! Execute the production Get/Peek dispatcher with hosted task, wait and publication seams.
+// Scenario scaffolding beyond Disconnected/Full/Presented/GuiBeforeAck has no
+// driving #[test] yet (KI-0672); allowed rather than deleted.
+#![allow(dead_code, unused_imports)]
 extern crate alloc;
 #[path="../src/nt_gdi/frame.rs"]
 mod nt_gdi_frame;

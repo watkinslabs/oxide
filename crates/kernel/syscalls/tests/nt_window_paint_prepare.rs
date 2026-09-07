@@ -1,3 +1,6 @@
+// Compile-only fixture: no #[test] fn calls anything here, so dead-code
+// would flag the whole included surface.
+#![allow(dead_code, unused_imports)]
 extern crate alloc;
 extern crate self as sched;
 extern crate self as uaccess;

@@ -97,6 +97,7 @@ pub(crate) fn destroy_cursor_for_current(handle: u64) -> bool {
 pub(crate) fn icon_param_for_current(handle: u64) -> u64 { with_state(|state| state.icon_param(handle)).unwrap_or(0) }
 
 /// # C: O(N_nt_processes + N_cursor_objects)
+#[allow(dead_code)] // KI-0673
 pub(crate) fn set_icon_param_for_current(handle: u64, param: u64) -> u64 {
     with_state_mut(|state| state.set_icon_param(handle, param)).unwrap_or(0)
 }
@@ -117,6 +118,7 @@ pub(crate) fn window_icon_for_current(hwnd: u64, kind: u64) -> Option<u64> {
 /// Install one window icon, answering the replaced one. The derived small
 /// icon the reference keeps beside a large icon is recorded so a later small
 /// request can answer it. # C: O(N_nt_processes + N_windows)
+#[allow(dead_code)] // KI-0673
 pub(crate) fn set_window_icon_for_current(hwnd: u64, kind: u64, icon: u64) -> Option<u64> {
     let id = valid_window(hwnd)?;
     with_state_mut(|state| {

@@ -1,5 +1,4 @@
 //! Bitmaps shaped after a device context.
-use super::*;
 use super::super::{GdiManager, GdiError, DibHeader, DIB_RGB_COLORS, BI_RGB, Rgb};
 
 fn info_header(width: i32, height: i32, bit_count: u16) -> [u8; 40] {

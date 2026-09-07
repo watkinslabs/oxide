@@ -23,6 +23,7 @@ pub(crate) fn keyboard_layout_list_for_current() -> Vec<u64> {
 
 /// Message-time key state of the calling thread, which the character
 /// translation reads. # C: O(N_nt_processes + N_queues)
+#[allow(dead_code)] // KI-0673
 pub(crate) fn keyboard_state_snapshot_for_current() -> Option<[u8; 256]> {
     let tid = current_tid()?;
     with_state(|state| state.keyboard_state(tid))

@@ -1,5 +1,4 @@
 //! Caller bit transfers at the 16-bit-aligned stride, and assigned dimensions.
-use super::*;
 use super::super::{GdiManager, GdiError};
 
 #[test]

@@ -1,4 +1,8 @@
 //! Hosted boundary fixture compiles the production paint module unchanged.
+// Five #[test] fns exercise a narrow slice of the production surface pulled
+// in through paint/paint_prepare/paint_callbacks; the rest is real code with
+// no caller in this compile unit specifically.
+#![allow(dead_code, unused_imports)]
 extern crate alloc;
 use std::sync::{LazyLock, Mutex};
 use ipc::win32_gdi::{GdiManager, Rect};
@@ -115,6 +119,9 @@ mod uaccess {
         Ok(u64::from_le_bytes(STATE.lock().unwrap().ps[..8].try_into().unwrap()))
     }
 }
+
+#[path = "../../../nt_wine_window/paint_open.rs"]
+mod nt_wine_paint_open;
 
 #[path = "../../../nt_wine_window/paint.rs"]
 mod production;

@@ -1,4 +1,8 @@
 //! Production preparation/callback ordering; simulated recipient execution only at Send.
+// Two #[test] fns exercise a narrow slice of the production surface pulled
+// in through paint_prepare/paint/erase/send/gdi; the rest is real code with
+// no caller in this compile unit specifically.
+#![allow(dead_code, unused_imports)]
 extern crate alloc;
 extern crate self as sched;
 extern crate self as uaccess;

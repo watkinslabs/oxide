@@ -1,5 +1,8 @@
 //! Hosted boundary executes production metric routing and canonical immutable settings.
-use ipc::win32_gdi::{stock_object, StockDescription, FontRecord, GdiError};
+// A narrow #[test] set exercises a slice of the production surface pulled in
+// through nonclient.rs/metrics.rs; the rest is real code with no caller here.
+#![allow(dead_code, unused_imports)]
+use ipc::win32_gdi::{stock_object, Font, StockDescription, FontRecord, GdiError};
 #[path = "../../ipc/src/win32_gdi/nonclient.rs"]
 mod owner;
 #[path = "../src/nt_wine_window/metrics.rs"]

@@ -25,6 +25,17 @@ pub mod win32_window {
     #[derive(Clone,Copy)]pub struct Record {pub owner_tid:u64,pub wndproc:u64}
     pub struct Manager(pub Vec<(WindowId,Record)>);
     impl Manager {pub fn get(&self,id:WindowId)->Option<Record>{self.0.iter().find(|r|r.0==id).map(|r|r.1)}}
+    // In-send-message thread-state class (1884d8a50); mirrors ipc::win32_window::in_send.
+    pub const ISMEX_NOSEND:u32=0x0000_0000;
+    pub const ISMEX_SEND:u32=0x0000_0001;
+    pub const ISMEX_REPLIED:u32=0x0000_0008;
+    #[derive(Clone,Copy,Debug,Eq,PartialEq)]
+    pub struct ReceivedSend {pub inter_thread:bool,pub replied:bool}
+    pub const fn receive_flags(received:Option<ReceivedSend>)->u32{
+        let Some(received)=received else {return ISMEX_NOSEND;};
+        if !received.inter_thread {return ISMEX_NOSEND;}
+        ISMEX_SEND|if received.replied {ISMEX_REPLIED} else {0}
+    }
 }
 static CALLS:Mutex<Vec<(u64,u64,u64,u64,u64)>>=Mutex::new(Vec::new());
 mod nt_rtl {

@@ -120,6 +120,7 @@ pub(crate) const MOUSE_DATA: u64 = 16;
 pub(crate) const MOUSE_FLAGS: u64 = 20;
 /// `KEYBDINPUT` field offsets inside an `INPUT` record.
 pub(crate) const KEY_VK: u64 = 8;
+#[allow(dead_code)] // KI-0673
 pub(crate) const KEY_SCAN: u64 = 10;
 pub(crate) const KEY_FLAGS: u64 = 12;
 
@@ -135,6 +136,7 @@ pub(crate) const MOUSEEVENTF_ABSOLUTE: u32 = 0x8000;
 pub(crate) const KEYEVENTF_KEYUP: u32 = 0x0002;
 /// Absolute coordinates are normalized over this range before mapping onto
 /// the screen rectangle.
+#[allow(dead_code)] // KI-0673
 pub(crate) const ABSOLUTE_RANGE: i64 = 1 << 16;
 
 /// One injected input transition, in the order the caller's record produces it.
