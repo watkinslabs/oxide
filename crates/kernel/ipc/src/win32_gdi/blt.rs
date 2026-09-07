@@ -44,10 +44,23 @@ impl GdiManager {
         if dst_rect.width == 0 || dst_rect.height == 0 || src_rect.width == 0 || src_rect.height == 0 {
             return Err(GdiError::InvalidDimensions);
         }
+        let (source_width, source_height, source) = self.dc_pixel_snapshot(src).ok_or(GdiError::NoSuchObject)?;
+        self.blt_raster(dst, dst_rect, src_rect, &source, source_width, source_height, code, colors, mode)
+    }
+
+    /// Combine one immutable XRGB raster with the destination through a
+    /// ternary raster operation. Context-to-context copies and caller-supplied
+    /// device-independent images both land here, so the sampling, clipping and
+    /// truth-table application have one owner.
+    /// # C: O(DCs + clipped pixels)
+    pub fn blt_raster(&mut self, dst: u32, dst_rect: BltCoords, src_rect: BltCoords, source: &[u32],
+        source_width: i32, source_height: i32, code: u32, colors: SharedDcColors, mode: StretchMode) -> Result<(), GdiError> {
+        if dst_rect.width == 0 || dst_rect.height == 0 || src_rect.width == 0 || src_rect.height == 0 {
+            return Err(GdiError::InvalidDimensions);
+        }
         let table = (code >> 16) as u8;
         let fill = self.realized_brush_fill(dst, colors)?;
-        let (source_width, source_height, source) = self.dc_pixel_snapshot(src).ok_or(GdiError::NoSuchObject)?;
-        let sample = rop::Sampler { pixels: &source, width: source_width, height: source_height, mode };
+        let sample = rop::Sampler { pixels: source, width: source_width, height: source_height, mode };
         let mut target = self.raster_dc(dst)?;
         let clip = target.bounds();
         let (left, right) = rop::signed_span(dst_rect.x, dst_rect.width, clip.left, clip.right);

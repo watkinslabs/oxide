@@ -111,6 +111,13 @@ impl GdiManager {
         self.brushes.retain(|(id, brush)| !brush.deleted || dcs.iter().any(|(_, dc)| dc.brush == Some(*id)));
     }
 
+    /// The DC_BRUSH colour this context resolves the stock brush with. # C: O(DCs)
+    pub fn dc_brush_color(&self, dc: u32) -> Result<u32, GdiError> {
+        let state = &self.dcs.iter().find(|(id, _)| *id == dc).ok_or(GdiError::NoSuchObject)?.1;
+        state.ensure_active()?;
+        Ok(state.dc_brush_color)
+    }
+
     /// DC_BRUSH color belongs to the DC, not to the immutable stock object. # C: O(DCs)
     pub fn set_dc_brush_color(&mut self, dc: u32, color: u32) -> Result<u32, GdiError> {
         let state = &mut self.dcs.iter_mut().find(|(id, _)| *id == dc).ok_or(GdiError::NoSuchObject)?.1;

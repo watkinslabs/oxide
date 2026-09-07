@@ -25,6 +25,8 @@ mod nt_wine_gdi_shape { pub(crate) use super::gdi_shape_ordinals as ordinals; }
 #[path = "../src/nt_wine_window/xform_raw.rs"] mod nt_xform_raw;
 #[path = "../src/nt_wine_window/draw_raw.rs"] mod nt_draw_raw;
 #[path = "../src/nt_wine_window/print_raw.rs"] mod nt_print_raw;
+
+#[path = "../src/nt_wine_window/gdi_bitmap_shape.rs"] mod nt_gdi_bitmap_shape;
 #[path = "../src/nt_wine_window/raw_args.rs"] mod raw_args;
 #[path = "windows_call_surface/baseline.rs"] mod baseline;
 #[path = "windows_call_surface/catalog.rs"] mod catalog;

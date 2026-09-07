@@ -17,6 +17,13 @@ use owner::new_entry;
 #[path = "nt_gdi/bitmap.rs"]
 mod bitmap;
 pub(crate) use bitmap::{create_bitmap_for_current, create_pattern_brush_for_current, create_display_dc_for_current, copy_bitmap_for_current};
+
+pub(crate) use bitmap::{create_bitmap_for_current, create_pattern_brush_for_current, create_display_dc_for_current};
+#[path = "nt_gdi/raster.rs"]
+mod raster;
+pub(crate) use raster::{with_gdi, colors_for, create_compatible_bitmap_for_current, create_dib_section_for_current,
+    create_hatch_brush_for_current, create_palette_for_current, create_halftone_palette_for_current,
+    select_bitmap_for_current};
 #[path = "nt_gdi/brush.rs"]
 mod brush;
 #[path = "nt_gdi/object_query.rs"]

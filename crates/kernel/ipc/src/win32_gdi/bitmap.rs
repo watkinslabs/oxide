@@ -3,7 +3,8 @@
 //! resolution; `bits.rs` owns the caller bit transfers and the assigned
 //! dimension; `dib.rs` owns DIB sections and their colour tables;
 //! `select.rs` owns binding one bitmap to a memory device context;
-//! `compatible.rs` owns bitmaps shaped after a device context.
+//! `compatible.rs` owns bitmaps shaped after a device context;
+//! `transfer.rs` owns device-independent image transfers.
 use alloc::vec::Vec;
 use super::{GdiError, GdiManager, MAX_SURFACE_PIXELS};
 #[path = "bitmap/pixels.rs"]
@@ -16,6 +17,9 @@ mod dib;
 mod select;
 #[path = "bitmap/compatible.rs"]
 mod compatible;
+#[path = "bitmap/transfer.rs"]
+mod transfer;
+pub use transfer::{DibImage, transfer_band};
 pub use dib::{DibHeader, BI_RGB, BI_RLE8, BI_RLE4, BI_BITFIELDS, DIB_RGB_COLORS, DIB_PAL_COLORS, DIB_PAL_INDICES,
     CORE_HEADER_BYTES, INFO_HEADER_BYTES, RGBQUAD_BYTES, RGBTRIPLE_BYTES, BITFIELD_BYTES};
 pub use pixels::Rgb;

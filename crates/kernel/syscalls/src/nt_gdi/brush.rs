@@ -2,11 +2,11 @@
 use super::*;
 use ipc::win32_gdi::{GdiError, GdiManager};
 #[path = "brush/shared.rs"]
-mod shared;
+pub(super) mod shared;
 #[path = "brush/publication.rs"]
 mod publication;
 
-fn with_owner<R>(action: impl FnOnce(&mut GdiManager) -> Result<R, GdiError>) -> Result<R, u64> {
+pub(super) fn with_owner<R>(action: impl FnOnce(&mut GdiManager) -> Result<R, GdiError>) -> Result<R, u64> {
     let cur = sched::live::current().ok_or(STATUS_INVALID_HANDLE)?;
     if !cur.is_nt_personality() { return Err(STATUS_INVALID_HANDLE); }
     let group = Arc::downgrade(&cur.thread_group);

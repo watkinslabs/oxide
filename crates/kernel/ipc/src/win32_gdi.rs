@@ -68,7 +68,7 @@ mod stock;
 mod bitmap;
 pub use bitmap::{Bitmap, BitmapPattern, MAX_BITMAP_BYTES, TYPE_BITMAP, bitmap_stride, dib_stride, normalize_bpp,
     default_masks, DibHeader, Rgb, BI_RGB, BI_RLE8, BI_RLE4, BI_BITFIELDS, DIB_RGB_COLORS, DIB_PAL_COLORS,
-    DIB_PAL_INDICES, CORE_HEADER_BYTES, INFO_HEADER_BYTES, RGBQUAD_BYTES, RGBTRIPLE_BYTES, BITFIELD_BYTES};
+    DibImage, transfer_band, DIB_PAL_INDICES, CORE_HEADER_BYTES, INFO_HEADER_BYTES, RGBQUAD_BYTES, RGBTRIPLE_BYTES, BITFIELD_BYTES};
 #[path = "win32_gdi/palette.rs"]
 mod palette;
 pub use palette::{Palette, PaletteEntry, TYPE_PALETTE, CLR_INVALID, PC_RESERVED, PALETTE_VERSION,
