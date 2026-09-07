@@ -65,6 +65,7 @@ fn the_thread_state_classes_decode_in_order() {
     assert_eq!(thread_state(11), None);
 }
 
+#[test]
 fn a_hardware_message_maps_to_its_own_input_class() {
     assert_eq!(hardware_bit(0x0200), QS_MOUSEMOVE);
     assert_eq!(hardware_bit(0x00a0), QS_MOUSEMOVE);

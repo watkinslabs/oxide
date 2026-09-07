@@ -34,13 +34,6 @@ pub(crate) fn add_update_util_hook(cpu: usize, policy: &Arc<Policy>) {
     HOOK[cpu].store(Arc::as_ptr(policy) as *mut Policy, Ordering::Release);
 }
 
-/// Withdraw `cpu`'s published policy. The hook stops observing it before the
-/// registry may drop its reference. # C: O(1)
-pub(crate) fn remove_update_util_hook(cpu: usize) {
-    if cpu >= cpu::MAX_CPUS { return; }
-    HOOK[cpu].store(ptr::null_mut(), Ordering::Release);
-}
-
 /// The policy governing `cpu`, read without taking any lock.
 ///
 /// This is the whole of what the scheduler's hook needs from the registry, and
@@ -51,12 +44,14 @@ pub fn hook_policy(cpu: usize) -> Option<&'static Policy> {
     let raw = HOOK[cpu].load(Ordering::Acquire);
     if raw.is_null() { return None; }
     // SAFETY: add_update_util_hook publishes only a pointer into an Arc the
-    // policy registry holds, and remove_update_util_hook clears the slot
-    // before that reference may be dropped, so the target outlives this read.
+    // policy registry holds for the life of the kernel (nothing withdraws a
+    // registered policy), and clear_hooks nulls every slot before the test
+    // registry is emptied, so the target outlives this read.
     Some(unsafe { &*raw })
 }
 
-/// Withdraw every published policy. # C: O(MAX_CPUS)
+/// Withdraw every published policy between tests. # C: O(MAX_CPUS)
+#[cfg(test)]
 pub(crate) fn clear_hooks() {
     for slot in HOOK.iter() { slot.store(ptr::null_mut(), Ordering::Release); }
 }
@@ -83,7 +78,7 @@ mod tests {
         let seen = hook_policy(0).expect("published policy");
         assert!(core::ptr::eq(seen, Arc::as_ptr(&p)));
         drop(held);
-        remove_update_util_hook(0);
+        clear_hooks();
         assert!(hook_policy(0).is_none());
     }
 

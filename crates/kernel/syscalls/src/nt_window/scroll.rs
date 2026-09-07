@@ -17,9 +17,9 @@ pub(crate) mod bar_live;
 mod kernel;
 #[cfg(target_os = "oxide-kernel")]
 pub(crate) use kernel::dispatch;
-pub(crate) use raw::{decode_scroll_info, encode_scroll_info, GetScrollInfoParams, SetScrollInfoArgs,
-    GET_PARAMS_BYTES, GET_SCROLL_INFO_METHOD, SBM_SETSCROLLINFO, SCROLLINFO_BYTES,
-    SET_SCROLL_INFO_ORDINAL};
+pub(crate) use raw::{decode_scroll_info, encode_scroll_info, GetScrollInfoParams, SetScrollInfoArgs, SBM_SETSCROLLINFO};
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) use raw::{GET_PARAMS_BYTES, GET_SCROLL_INFO_METHOD, SCROLLINFO_BYTES, SET_SCROLL_INFO_ORDINAL};
 
 pub trait ScrollActionSink {
     fn show_scrollbar(&mut self, hwnd: u64, bar: i32) -> bool;

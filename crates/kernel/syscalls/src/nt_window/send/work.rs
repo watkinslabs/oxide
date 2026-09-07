@@ -33,6 +33,7 @@ impl Queue {
         self.work.push(Work{token,sender,target,message,reply:reply.clone(),resume:None,cancelled:false});Some((token,reply))
     }
     /// The reply of the message this thread is currently receiving. # C: O(sends)
+    #[cfg(target_os = "oxide-kernel")]
     pub(crate) fn active_reply(&self,tid:u64)->Option<Arc<Reply>>{
         self.work.iter().find(|w|w.target==tid&&w.resume.is_some()).map(|w|Arc::clone(&w.reply))
     }
