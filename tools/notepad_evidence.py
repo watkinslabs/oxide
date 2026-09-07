@@ -163,3 +163,26 @@ def token_in_notepad_window(path, token, crop_path=None):
     target = Path(crop_path) if crop_path else Path(f"{path}.notepad-crop.png")
     crop_image(path, rect, target)
     return token in ocr_text(target), rect
+
+
+# A menu bar sits within this many pixels of the top of the window frame.
+MENU_BAND_DEPTH = 120
+
+
+def menu_bar_word(path, rect, word):
+    """The (left, top, width, height) of one menu-bar word inside `rect`.
+
+    The bar is the topmost band of the window, so the match closest to the
+    frame's top wins: a word of the same spelling in the document below it is
+    not the menu item.
+    """
+    left, top, right, _ = rect
+    best = None
+    for text, wl, wt, ww, wh, _ in _tsv_words(path):
+        if text.strip(".:").lower() != word.lower():
+            continue
+        if not (left <= wl and wl + ww <= right and top <= wt <= top + MENU_BAND_DEPTH):
+            continue
+        if best is None or wt < best[1]:
+            best = (wl, wt, ww, wh)
+    return best

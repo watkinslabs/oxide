@@ -18,6 +18,7 @@ const WS_POPUP: u32 = 0x8000_0000;
 fn metrics() -> PopupMetrics { PopupMetrics::menu() }
 
 /// The rectangle a popup may occupy. # C: O(1)
+#[inline(never)]
 pub(crate) fn work_area() -> MenuRect {
     let (width, height) = crate::nt_wine_window::metrics::screen_size(crate::nt_compositor::monitors_current).unwrap_or((0, 0));
     MenuRect { left: 0, top: 0, right: width, bottom: height }
@@ -26,6 +27,7 @@ pub(crate) fn work_area() -> MenuRect {
 /// Create the window one menu is shown in and retain the menu on it, the way
 /// the reference creates a popup-menu-class window naming the menu as its
 /// creation parameter. # C: O(N_classes + N_windows)
+#[inline(never)]
 pub(crate) fn create_popup_window(owner: u64, menu: u32) -> Option<u64> {
     let tid = current_tid()?;
     let hwnd = with_entry(|entry| {
@@ -47,6 +49,7 @@ pub(crate) fn create_popup_window(owner: u64, menu: u32) -> Option<u64> {
 /// Measure, place and show one popup, returning its window. `xanchor` and
 /// `yanchor` are the excluded item's size, which pushes a popup that will not
 /// fit past the item rather than over it. # C: O(N_items + N_windows)
+#[inline(never)]
 pub(crate) fn show_popup(session: &mut MenuSession, menu: u32, flags: u32, x: i32, y: i32, xanchor: i32, yanchor: i32) -> Option<u64> {
     let id = MenuId::from_raw(menu)?;
     let hwnd = match session.window_of(menu) { Some(hwnd) => hwnd, None => { let hwnd = create_popup_window(session.owner, menu)?; session.opened(menu, hwnd); hwnd } };
@@ -72,12 +75,14 @@ pub(crate) fn show_popup(session: &mut MenuSession, menu: u32, flags: u32, x: i3
 
 /// The layout of one open popup, for hit testing against its window.
 /// # C: O(N_items)
+#[inline(never)]
 pub(crate) fn layout_of(menu: u32) -> Option<PopupLayout> {
     let id = MenuId::from_raw(menu)?;
     with_entry(|entry| entry.menus.popup_layout(id, metrics(), i32::MAX).ok()).flatten()
 }
 
 /// Screen rectangle of one open popup window. # C: O(N_windows)
+#[inline(never)]
 pub(crate) fn window_rect(hwnd: u64) -> Option<MenuRect> {
     let window = WindowId::from_raw(u32::try_from(hwnd).ok()?)?;
     let rect = with_entry(|entry| entry.state.rect(window)).flatten()?;
@@ -87,6 +92,7 @@ pub(crate) fn window_rect(hwnd: u64) -> Option<MenuRect> {
 /// Retire the window showing one menu. The owner notification that goes with
 /// it is a step of its own, because it enters a window procedure.
 /// # C: O(N_windows)
+#[inline(never)]
 pub(crate) fn close_popup(session: &mut MenuSession, menu: u32) {
     let Some(hwnd) = session.closed(menu) else { return; };
     let Some(window) = u32::try_from(hwnd).ok().and_then(WindowId::from_raw) else { return; };
@@ -100,18 +106,21 @@ pub(crate) fn close_popup(session: &mut MenuSession, menu: u32) {
 /// The submenus open under one menu's focused item, innermost first, with
 /// their highlight and mouse-select state already cleared. The windows are
 /// retired by the `Close` step each one earns. # C: O(N_open * N_items)
+#[inline(never)]
 pub(crate) fn sub_popup_chain(session: &MenuSession, menu: u32) -> Vec<u32> {
     let depth = session.innermost_first().len();
     with_entry(|entry| chain::sub_popup_chain(&mut entry.menus, depth, menu)).unwrap_or_default()
 }
 
 /// The item of one menu whose submenu the loop is about to open. # C: O(N_items)
+#[inline(never)]
 pub(crate) fn submenu_target(menu: u32) -> Option<(u32, u32)> {
     with_entry(|entry| chain::submenu_target(&entry.menus, menu)).flatten()
 }
 
 /// Open one item's submenu beside the item, and report the menu tracking now
 /// follows. The owner has already been told to update it. # C: O(N_items + N_windows)
+#[inline(never)]
 pub(crate) fn open_sub_popup(session: &mut MenuSession, menu: u32, position: u32, submenu: u32, flags: u32) -> u32 {
     let Some(id) = MenuId::from_raw(menu) else { return menu; };
     let Some(hwnd) = session.window_of(menu) else { return menu; };
@@ -137,6 +146,7 @@ pub(crate) fn beep() {
 
 /// Highlight the first item a freshly opened submenu can select, the way the
 /// reference moves the selection into a keyboard-opened popup. # C: O(N_items)
+#[inline(never)]
 pub(crate) fn select_first_item(session: &mut MenuSession, menu: u32) {
     let Some(id) = MenuId::from_raw(menu) else { return; };
     let position = with_entry(|entry| {

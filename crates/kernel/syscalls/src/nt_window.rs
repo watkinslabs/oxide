@@ -150,7 +150,10 @@ struct GuiEntry { group: Weak<sched::thread_group::ThreadGroup>, state: ipc::win
     menu_tracking: Option<menu_raw::session::MenuCancel>,
     /// The resumable tracking loop of the thread running a modal menu, parked
     /// here while the window procedure one of its steps entered runs.
-    menu_track: Option<menu_raw::session::PendingTrack>,
+    /// Boxed: the parked loop is taken out and put back at every step, and a
+    /// by-value move of it would spill the whole thing onto the kernel stack
+    /// of a path that is already one of the deepest in the tree.
+    menu_track: Option<alloc::boxed::Box<menu_raw::session::PendingTrack>>,
     /// Alt and F10 open a menu bar on release, so the press is latched here
     /// until the release or the key that cancels it arrives.
     key_menu: ipc::win32_window::nonclient_menu::KeyMenuLatch,

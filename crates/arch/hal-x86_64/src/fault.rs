@@ -149,22 +149,22 @@ fn current_handler() -> FaultHandler {
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel", feature = "debug-watchdog"))]
 fn nmi_backtrace(f: &PtRegs) {
     use hal::CpuOps;
-    klog::write_raw(b"[NMI-BT] cpu=");
-    klog::write_hex_u64(crate::X86CpuOps::current_cpu() as u64);
-    klog::write_raw(b" rip=");
-    klog::write_hex_u64(f.rip);
-    klog::write_raw(b" rsp=");
-    klog::write_hex_u64(f.rsp);
-    klog::write_raw(b" rflags=");
-    klog::write_hex_u64(f.rflags);
-    klog::write_raw(b" cs=");
-    klog::write_hex_u64(f.cs);
-    klog::write_raw(b"\n[NMI-BT] rbp="); klog::write_hex_u64(f.rbp);
-    klog::write_raw(b" rbx=");           klog::write_hex_u64(f.rbx);
-    klog::write_raw(b" r12=");           klog::write_hex_u64(f.r12);
-    klog::write_raw(b" r13=");           klog::write_hex_u64(f.r13);
-    klog::write_raw(b" r14=");           klog::write_hex_u64(f.r14);
-    klog::write_raw(b" r15=");           klog::write_hex_u64(f.r15);
+    klog::write_primary_raw(b"[NMI-BT] cpu=");
+    klog::write_primary_hex_u64(crate::X86CpuOps::current_cpu() as u64);
+    klog::write_primary_raw(b" rip=");
+    klog::write_primary_hex_u64(f.rip);
+    klog::write_primary_raw(b" rsp=");
+    klog::write_primary_hex_u64(f.rsp);
+    klog::write_primary_raw(b" rflags=");
+    klog::write_primary_hex_u64(f.rflags);
+    klog::write_primary_raw(b" cs=");
+    klog::write_primary_hex_u64(f.cs);
+    klog::write_primary_raw(b"\n[NMI-BT] rbp="); klog::write_primary_hex_u64(f.rbp);
+    klog::write_primary_raw(b" rbx=");           klog::write_primary_hex_u64(f.rbx);
+    klog::write_primary_raw(b" r12=");           klog::write_primary_hex_u64(f.r12);
+    klog::write_primary_raw(b" r13=");           klog::write_primary_hex_u64(f.r13);
+    klog::write_primary_raw(b" r14=");           klog::write_primary_hex_u64(f.r14);
+    klog::write_primary_raw(b" r15=");           klog::write_primary_hex_u64(f.r15);
     // When the poke lands with the CPU already in the kernel, the interrupted
     // RIP only ever names the syscall entry path — true of any task that is
     // spinning on a syscall, which is exactly the case worth diagnosing. The
@@ -179,13 +179,13 @@ fn nmi_backtrace(f: &PtRegs) {
             // owns that stack until it returns to user mode.
             let u = unsafe { &*regs };
             if u.from_user() {
-                klog::write_raw(b"\n[NMI-BT] user rip="); klog::write_hex_u64(u.rip);
-                klog::write_raw(b" rsp=");                klog::write_hex_u64(u.rsp);
-                klog::write_raw(b" nr=");                 klog::write_hex_u64(u.rax);
+                klog::write_primary_raw(b"\n[NMI-BT] user rip="); klog::write_primary_hex_u64(u.rip);
+                klog::write_primary_raw(b" rsp=");                klog::write_primary_hex_u64(u.rsp);
+                klog::write_primary_raw(b" nr=");                 klog::write_primary_hex_u64(u.rax);
             }
         }
     }
-    klog::write_raw(b"\n");
+    klog::write_primary_raw(b"\n");
 }
 
 /// Snapshot the page-fault linear address while entry still masks IRQs.
@@ -214,17 +214,17 @@ unsafe extern "C" fn oxide_fault_print_rust(regs: *mut PtRegs, cr2: u64) -> bool
     let f = unsafe { &mut *regs };
     #[cfg(feature = "debug-faultdiag")]
     if f.from_user() && f.rip >= 0x180000000 && f.rip < 0x180100000 {
-        klog::write_raw(b"[WINDOWS-PE-FAULT-FRAME] rip=");
-        klog::write_hex_u64(f.rip);
-        klog::write_raw(b" cr2=");
-        klog::write_hex_u64(cr2);
-        klog::write_raw(b" rcx=");
-        klog::write_hex_u64(f.rcx);
-        klog::write_raw(b" rdx=");
-        klog::write_hex_u64(f.rdx);
-        klog::write_raw(b" rsp=");
-        klog::write_hex_u64(f.rsp);
-        klog::write_raw(b"\n");
+        klog::write_primary_raw(b"[WINDOWS-PE-FAULT-FRAME] rip=");
+        klog::write_primary_hex_u64(f.rip);
+        klog::write_primary_raw(b" cr2=");
+        klog::write_primary_hex_u64(cr2);
+        klog::write_primary_raw(b" rcx=");
+        klog::write_primary_hex_u64(f.rcx);
+        klog::write_primary_raw(b" rdx=");
+        klog::write_primary_hex_u64(f.rdx);
+        klog::write_primary_raw(b" rsp=");
+        klog::write_primary_hex_u64(f.rsp);
+        klog::write_primary_raw(b"\n");
     }
     // F158: publish the live frame so the kernel SIGSEGV delivery path
     // can rewrite it for catchable user signals.
@@ -263,19 +263,19 @@ unsafe extern "C" fn oxide_fault_print_rust(regs: *mut PtRegs, cr2: u64) -> bool
         let (dr0, dr1) = unsafe { crate::read_dr0_dr1() };
         // DR6 bits 0-3 (B0-B3) name which watchpoint matched.
         if dr6 & 0b1111 != 0 {
-            klog::write_raw(b"[HWWP] freed-block WRITE rip=");
-            klog::write_hex_u64(f.rip);
-            klog::write_raw(b" dr6=");
-            klog::write_hex_u64(dr6);
+            klog::write_primary_raw(b"[HWWP] freed-block WRITE rip=");
+            klog::write_primary_hex_u64(f.rip);
+            klog::write_primary_raw(b" dr6=");
+            klog::write_primary_hex_u64(dr6);
             if dr6 & 0b0001 != 0 {
-                klog::write_raw(b" hit=size@");
-                klog::write_hex_u64(dr0);
+                klog::write_primary_raw(b" hit=size@");
+                klog::write_primary_hex_u64(dr0);
             }
             if dr6 & 0b0010 != 0 {
-                klog::write_raw(b" hit=next@");
-                klog::write_hex_u64(dr1);
+                klog::write_primary_raw(b" hit=next@");
+                klog::write_primary_hex_u64(dr1);
             }
-            klog::write_raw(b"\n");
+            klog::write_primary_raw(b"\n");
             return true;
         }
     }
@@ -307,15 +307,15 @@ unsafe extern "C" fn oxide_fault_print_rust(regs: *mut PtRegs, cr2: u64) -> bool
         // line and a healthy boot emits none of it.
         #[cfg(any(feature = "debug-irq", feature = "debug-watchdog"))]
         {
-            klog::write_raw(b"[FAULT] BUG: runaway fault, same address re-entered on this stack - halting. vec=");
-            klog::write_hex_u64(f.vector);
-            klog::write_raw(b" rip=");
-            klog::write_hex_u64(f.rip);
-            klog::write_raw(b" cr2=");
-            klog::write_hex_u64(cr2);
-            klog::write_raw(b" rsp=");
-            klog::write_hex_u64(f.rsp);
-            klog::write_raw(b"\n");
+            klog::write_primary_raw(b"[FAULT] BUG: runaway fault, same address re-entered on this stack - halting. vec=");
+            klog::write_primary_hex_u64(f.vector);
+            klog::write_primary_raw(b" rip=");
+            klog::write_primary_hex_u64(f.rip);
+            klog::write_primary_raw(b" cr2=");
+            klog::write_primary_hex_u64(cr2);
+            klog::write_primary_raw(b" rsp=");
+            klog::write_primary_hex_u64(f.rsp);
+            klog::write_primary_raw(b"\n");
         }
         return false;
     }
@@ -339,28 +339,28 @@ unsafe extern "C" fn oxide_fault_print_rust(regs: *mut PtRegs, cr2: u64) -> bool
         // on a healthy boot since this only runs when handled==false.
         #[cfg(any(feature = "debug-irq", feature = "debug-watchdog"))]
         {
-            klog::write_raw(b"[FAULT] vec=");
-            klog::write_hex_u64(f.vector);
-            klog::write_raw(b" (");
-            klog::write_raw(labels::vector_label(f.vector));
-            klog::write_raw(b") err=");
-            klog::write_hex_u64(f.error);
-            klog::write_raw(b" rip=");
-            klog::write_hex_u64(f.rip);
-            klog::write_raw(b" rflags=");
-            klog::write_hex_u64(f.rflags);
+            klog::write_primary_raw(b"[FAULT] vec=");
+            klog::write_primary_hex_u64(f.vector);
+            klog::write_primary_raw(b" (");
+            klog::write_primary_raw(labels::vector_label(f.vector));
+            klog::write_primary_raw(b") err=");
+            klog::write_primary_hex_u64(f.error);
+            klog::write_primary_raw(b" rip=");
+            klog::write_primary_hex_u64(f.rip);
+            klog::write_primary_raw(b" rflags=");
+            klog::write_primary_hex_u64(f.rflags);
             if f.vector == 14 || f.vector == 8 {
                 // #DF too: the page fault that escalated set CR2, and on a
                 // guard-page hit that address IS the overflow. The reference
                 // reads it in its double-fault handler for exactly this.
-                klog::write_raw(b" cr2=");
-                klog::write_hex_u64(cr2);
+                klog::write_primary_raw(b" cr2=");
+                klog::write_primary_hex_u64(cr2);
                 if f.vector == 14 {
-                    klog::write_raw(b" pf=");
-                    klog::write_raw(labels::decode_pfec(f.error));
+                    klog::write_primary_raw(b" pf=");
+                    klog::write_primary_raw(labels::decode_pfec(f.error));
                 }
             }
-            klog::write_raw(b"\n");
+            klog::write_primary_raw(b"\n");
             // Name the stack. `rsp` first — on a guard-page hit it sits on the
             // slot boundary and is the reliable witness; CR2 is the byte that
             // was touched and can be below the guard page on a large frame.
@@ -370,27 +370,27 @@ unsafe extern "C" fn oxide_fault_print_rust(regs: *mut PtRegs, cr2: u64) -> bool
                 let hit = if hook(f.rsp, &mut o) { true }
                           else { (f.vector == 14 || f.vector == 8) && hook(cr2, &mut o) };
                 if hit {
-                    klog::write_raw(b"[FAULT] BUG: ");
-                    klog::write_raw(o.name);
-                    klog::write_raw(b" stack guard page was hit (stack is ");
-                    klog::write_hex_u64(o.stack_lo);
-                    klog::write_raw(b"..");
-                    klog::write_hex_u64(o.stack_hi);
-                    klog::write_raw(b", guard ");
-                    klog::write_hex_u64(o.guard_lo);
-                    klog::write_raw(b", rsp=");
-                    klog::write_hex_u64(f.rsp);
-                    klog::write_raw(b", headroom=");
-                    klog::write_dec_u64(if f.rsp >= o.stack_lo && f.rsp <= o.stack_hi
+                    klog::write_primary_raw(b"[FAULT] BUG: ");
+                    klog::write_primary_raw(o.name);
+                    klog::write_primary_raw(b" stack guard page was hit (stack is ");
+                    klog::write_primary_hex_u64(o.stack_lo);
+                    klog::write_primary_raw(b"..");
+                    klog::write_primary_hex_u64(o.stack_hi);
+                    klog::write_primary_raw(b", guard ");
+                    klog::write_primary_hex_u64(o.guard_lo);
+                    klog::write_primary_raw(b", rsp=");
+                    klog::write_primary_hex_u64(f.rsp);
+                    klog::write_primary_raw(b", headroom=");
+                    klog::write_primary_dec_u64(if f.rsp >= o.stack_lo && f.rsp <= o.stack_hi
                                         { f.rsp - o.stack_lo } else { 0 });
-                    klog::write_raw(b")\n");
+                    klog::write_primary_raw(b")\n");
                     // What filled it. One site repeating is unbounded nesting;
                     // many distinct sites is a genuinely deep chain.
-                    klog::write_raw(b"[FAULT] BUG: deepest repeated site ");
-                    klog::write_hex_u64(o.repeat_site);
-                    klog::write_raw(b" x");
-                    klog::write_dec_u64(o.repeat_count as u64);
-                    klog::write_raw(b"\n");
+                    klog::write_primary_raw(b"[FAULT] BUG: deepest repeated site ");
+                    klog::write_primary_hex_u64(o.repeat_site);
+                    klog::write_primary_raw(b" x");
+                    klog::write_primary_dec_u64(o.repeat_count as u64);
+                    klog::write_primary_raw(b"\n");
                 }
             }
             // B45: full GPR dump when we're about to halt. Helps name
@@ -399,23 +399,23 @@ unsafe extern "C" fn oxide_fault_print_rust(regs: *mut PtRegs, cr2: u64) -> bool
             // before the SIGSEGV terminator (which logs its own line).
             {
                 let g = &*f;
-                klog::write_raw(b"[FAULT] rax=");  klog::write_hex_u64(g.rax);
-                klog::write_raw(b" rbx=");          klog::write_hex_u64(g.rbx);
-                klog::write_raw(b" rcx=");          klog::write_hex_u64(g.rcx);
-                klog::write_raw(b" rdx=");          klog::write_hex_u64(g.rdx);
-                klog::write_raw(b"\n[FAULT] rsi="); klog::write_hex_u64(g.rsi);
-                klog::write_raw(b" rdi=");          klog::write_hex_u64(g.rdi);
-                klog::write_raw(b" rbp=");          klog::write_hex_u64(g.rbp);
-                klog::write_raw(b" rsp=");          klog::write_hex_u64(f.rsp);
-                klog::write_raw(b"\n[FAULT] r8=");  klog::write_hex_u64(g.r8);
-                klog::write_raw(b" r9=");           klog::write_hex_u64(g.r9);
-                klog::write_raw(b" r10=");          klog::write_hex_u64(g.r10);
-                klog::write_raw(b" r11=");          klog::write_hex_u64(g.r11);
-                klog::write_raw(b"\n[FAULT] r12="); klog::write_hex_u64(g.r12);
-                klog::write_raw(b" r13=");          klog::write_hex_u64(g.r13);
-                klog::write_raw(b" r14=");          klog::write_hex_u64(g.r14);
-                klog::write_raw(b" r15=");          klog::write_hex_u64(g.r15);
-                klog::write_raw(b"\n");
+                klog::write_primary_raw(b"[FAULT] rax=");  klog::write_primary_hex_u64(g.rax);
+                klog::write_primary_raw(b" rbx=");          klog::write_primary_hex_u64(g.rbx);
+                klog::write_primary_raw(b" rcx=");          klog::write_primary_hex_u64(g.rcx);
+                klog::write_primary_raw(b" rdx=");          klog::write_primary_hex_u64(g.rdx);
+                klog::write_primary_raw(b"\n[FAULT] rsi="); klog::write_primary_hex_u64(g.rsi);
+                klog::write_primary_raw(b" rdi=");          klog::write_primary_hex_u64(g.rdi);
+                klog::write_primary_raw(b" rbp=");          klog::write_primary_hex_u64(g.rbp);
+                klog::write_primary_raw(b" rsp=");          klog::write_primary_hex_u64(f.rsp);
+                klog::write_primary_raw(b"\n[FAULT] r8=");  klog::write_primary_hex_u64(g.r8);
+                klog::write_primary_raw(b" r9=");           klog::write_primary_hex_u64(g.r9);
+                klog::write_primary_raw(b" r10=");          klog::write_primary_hex_u64(g.r10);
+                klog::write_primary_raw(b" r11=");          klog::write_primary_hex_u64(g.r11);
+                klog::write_primary_raw(b"\n[FAULT] r12="); klog::write_primary_hex_u64(g.r12);
+                klog::write_primary_raw(b" r13=");          klog::write_primary_hex_u64(g.r13);
+                klog::write_primary_raw(b" r14=");          klog::write_primary_hex_u64(g.r14);
+                klog::write_primary_raw(b" r15=");          klog::write_primary_hex_u64(g.r15);
+                klog::write_primary_raw(b"\n");
                 // debug-heappoison: if any GPR points into a still-quarantined
                 // (freed+poisoned) block, this fault is a use-after-free. The
                 // block size names the victim type (ArcInner<File>/<Task>/dentry
@@ -428,14 +428,14 @@ unsafe extern "C" fn oxide_fault_print_rust(regs: *mut PtRegs, cr2: u64) -> bool
                 ];
                 for (name, v) in cands.iter() {
                     if let Some((base, size, free_ip)) = kalloc::uaf_lookup(*v) {
-                        klog::write_raw(b"[UAF] reg="); klog::write_raw(name);
-                        klog::write_raw(b" ptr="); klog::write_hex_u64(*v);
-                        klog::write_raw(b" IN FREED block base="); klog::write_hex_u64(base);
-                        klog::write_raw(b" size="); klog::write_dec_u64(size as u64);
-                        klog::write_raw(b" free_ip=");
-                        if free_ip == kalloc::UAF_FREE_IP_UNKNOWN { klog::write_raw(b"unknown"); }
-                        else { klog::write_raw(b"0x"); klog::write_hex_u64(free_ip); }
-                        klog::write_raw(b"\n");
+                        klog::write_primary_raw(b"[UAF] reg="); klog::write_primary_raw(name);
+                        klog::write_primary_raw(b" ptr="); klog::write_primary_hex_u64(*v);
+                        klog::write_primary_raw(b" IN FREED block base="); klog::write_primary_hex_u64(base);
+                        klog::write_primary_raw(b" size="); klog::write_primary_dec_u64(size as u64);
+                        klog::write_primary_raw(b" free_ip=");
+                        if free_ip == kalloc::UAF_FREE_IP_UNKNOWN { klog::write_primary_raw(b"unknown"); }
+                        else { klog::write_primary_raw(b"0x"); klog::write_primary_hex_u64(free_ip); }
+                        klog::write_primary_raw(b"\n");
                     }
                 }
                 // B1347: the offset-0/8 corruptor also manifests as a fault on a

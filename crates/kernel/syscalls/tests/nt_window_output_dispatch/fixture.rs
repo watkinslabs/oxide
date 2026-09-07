@@ -124,6 +124,13 @@ mod nt_window{
     static USER_ATOMS:Lock<Cleanup>=Lock::new(Cleanup);
     fn new_entry(group:&Arc<sched::thread_group::ThreadGroup>)->Entry{Entry{group:Arc::downgrade(group),state:WindowManager::new(),
         wait:Arc::new(Wait),foreground:false,redraw:Cleanup,scroll_pending:Cleanup,paint_callbacks:Cleanup,remote_positions:Vec::new(),sent:Cleanup}}
+    mod owner{use super::*;
+        /// The production entry lookup, which keeps the whole `GuiEntry`
+        /// temporary out of the dispatcher's own frame.
+        pub(super) fn entry_index(entries:&mut Vec<Entry>,group:&Arc<sched::thread_group::ThreadGroup>)->usize{
+            entries.retain(|entry|entry.group.upgrade().is_some());
+            if let Some(index)=entries.iter().position(|entry|entry.group.upgrade().is_some_and(|candidate|Arc::ptr_eq(&candidate,group))){return index;}
+            entries.push(new_entry(group));entries.len()-1}}
     fn route_hardware_key(){}fn route_hardware_rel(){}fn route_hardware_mouse(){}
     fn callback_argument(_:u64,_:usize)->u64{0}
     fn valid_window(hwnd:u64)->Option<WindowId>{u32::try_from(hwnd).ok().and_then(WindowId::from_raw)}

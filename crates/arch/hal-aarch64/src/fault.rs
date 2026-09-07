@@ -10,7 +10,7 @@
 //   x5 = x8        indirect branch target at the fault
 //   x6 = x26       dynamic-loader initializer-list base
 //
-// Emits a one-line summary via `klog::write_raw` then returns; the
+// Emits a one-line summary via the non-allocating primary console route then returns; the
 // asm caller halts via `wfi` after `bl`.
 
 // Abort exception classes. Ungated: the runaway guard keys every build's abort
@@ -162,15 +162,15 @@ pub unsafe extern "C" fn oxide_fault_print_rust(esr: u64, far: u64, elr: u64,
         // line and a healthy boot emits none of it.
         #[cfg(any(feature = "debug-irq", feature = "debug-watchdog"))]
         {
-            klog::write_raw(b"[FAULT] BUG: runaway abort, same address re-entered on this stack - halting. esr=");
-            klog::write_hex_u64(esr);
-            klog::write_raw(b" far=");
-            klog::write_hex_u64(far);
-            klog::write_raw(b" elr=");
-            klog::write_hex_u64(elr);
-            klog::write_raw(b" frame=");
-            klog::write_hex_u64(frame);
-            klog::write_raw(b"\n");
+            klog::write_primary_raw(b"[FAULT] BUG: runaway abort, same address re-entered on this stack - halting. esr=");
+            klog::write_primary_hex_u64(esr);
+            klog::write_primary_raw(b" far=");
+            klog::write_primary_hex_u64(far);
+            klog::write_primary_raw(b" elr=");
+            klog::write_primary_hex_u64(elr);
+            klog::write_primary_raw(b" frame=");
+            klog::write_primary_hex_u64(frame);
+            klog::write_primary_raw(b"\n");
         }
         return false;
     }
@@ -220,35 +220,35 @@ pub unsafe extern "C" fn oxide_fault_print_rust(esr: u64, far: u64, elr: u64,
         {
             let ec = ((esr >> 26) & 0x3f) as u32;        // ESR_EL1.EC bits 26..31
             let iss = esr & 0xff_ffff;                   // ESR_EL1.ISS bits 0..24
-            klog::write_raw(b"[FAULT] esr=");
-            klog::write_hex_u64(esr);
-            klog::write_raw(b" ec=");
-            klog::write_hex_u64(ec as u64);
-            klog::write_raw(b" (");
-            klog::write_raw(ec_label(ec));
-            klog::write_raw(b") far=");
-            klog::write_hex_u64(far);
-            klog::write_raw(b" elr=");
-            klog::write_hex_u64(elr);
-            klog::write_raw(b" lr=");
-            klog::write_hex_u64(x30);
-            klog::write_raw(b" sp=");
-            klog::write_hex_u64(sp_el0);
-            klog::write_raw(b" x8=");
-            klog::write_hex_u64(x8);
-            klog::write_raw(b" x26=");
-            klog::write_hex_u64(x26);
+            klog::write_primary_raw(b"[FAULT] esr=");
+            klog::write_primary_hex_u64(esr);
+            klog::write_primary_raw(b" ec=");
+            klog::write_primary_hex_u64(ec as u64);
+            klog::write_primary_raw(b" (");
+            klog::write_primary_raw(ec_label(ec));
+            klog::write_primary_raw(b") far=");
+            klog::write_primary_hex_u64(far);
+            klog::write_primary_raw(b" elr=");
+            klog::write_primary_hex_u64(elr);
+            klog::write_primary_raw(b" lr=");
+            klog::write_primary_hex_u64(x30);
+            klog::write_primary_raw(b" sp=");
+            klog::write_primary_hex_u64(sp_el0);
+            klog::write_primary_raw(b" x8=");
+            klog::write_primary_hex_u64(x8);
+            klog::write_primary_raw(b" x26=");
+            klog::write_primary_hex_u64(x26);
             // For data/instruction-abort EC values, decode the ISS DFSC
             // sub-field per ARM ARM D17.2.40 / D17.2.36.
             if matches!(ec, EC_INSN_ABORT_LOWER | EC_INSN_ABORT_SAME | EC_DATA_ABORT_LOWER | EC_DATA_ABORT_SAME) {
-                klog::write_raw(b" dfsc=");
-                klog::write_raw(decode_dfsc(iss as u64));
+                klog::write_primary_raw(b" dfsc=");
+                klog::write_primary_raw(decode_dfsc(iss as u64));
                 // WnR (bit 6 of ISS) only meaningful for data aborts.
                 if matches!(ec, EC_DATA_ABORT_LOWER | EC_DATA_ABORT_SAME) {
-                    klog::write_raw(if (iss & (1 << 6)) != 0 { b" W" } else { b" R" });
+                    klog::write_primary_raw(if (iss & (1 << 6)) != 0 { b" W" } else { b" R" });
                 }
             }
-            klog::write_raw(b"\n");
+            klog::write_primary_raw(b"\n");
             // Full register file + PE identity + free-IP provenance over every
             // GPR (`showregs`, Linux `show_regs` parity). Replaces a scan of
             // three hand-picked registers: the register carrying a wild pointer

@@ -30,7 +30,7 @@ fn bar_metrics() -> BarMetrics { BarMetrics::menu() }
 
 /// Take the calling thread's parked loop out of the process record; exactly
 /// one driver owns it at a time. # C: O(N_process_gui_states)
-fn take() -> Option<PendingTrack> {
+fn take() -> Option<alloc::boxed::Box<PendingTrack>> {
     let tid = current_tid()?;
     let track = with_entry(|entry| entry.menu_track.take()).flatten()?;
     if track.tid == tid { return Some(track); }
@@ -39,7 +39,7 @@ fn take() -> Option<PendingTrack> {
 }
 
 /// # C: O(N_process_gui_states)
-fn put(track: PendingTrack) { let _ = with_entry(|entry| entry.menu_track = Some(track)); }
+fn put(track: alloc::boxed::Box<PendingTrack>) { let _ = with_entry(|entry| entry.menu_track = Some(track)); }
 
 /// # C: O(N_process_gui_states)
 fn record(result: Result<u64, ()>) {
@@ -49,6 +49,7 @@ fn record(result: Result<u64, ()>) {
 }
 
 /// Claim or release the capture the tracked menu holds. # C: O(N_windows)
+#[inline(never)]
 fn set_capture(hwnd: Option<u64>) {
     let Some(tid) = current_tid() else { return; };
     let window = hwnd.and_then(|hwnd| u32::try_from(hwnd).ok()).and_then(WindowId::from_raw);
@@ -61,6 +62,7 @@ fn cancelled() -> bool { with_entry(|entry| entry.menu_tracking.as_ref().is_some
 /// The chain the tracked menus form right now: every open popup with its
 /// window rectangle and layout, innermost first, and the top menu as a bar on
 /// its owner's window when it is not a popup. # C: O(N_open * N_items)
+#[inline(never)]
 fn chain_of(session: &MenuSession, top: u32) -> (Vec<OpenMenu>, Option<BarChain>) {
     let mut open = Vec::new();
     for (menu, hwnd) in session.innermost_first() {
@@ -75,6 +77,7 @@ fn chain_of(session: &MenuSession, top: u32) -> (Vec<OpenMenu>, Option<BarChain>
 /// bar is drawn with, in the metrics the bar was measured with. A popup top
 /// menu owns no bar and is refused by the chain resolution itself.
 /// # C: O(N_windows)
+#[inline(never)]
 fn bar_chain(owner: u64, top: u32) -> Option<BarChain> {
     MenuId::from_raw(top)?;
     let window = u32::try_from(owner).ok().and_then(WindowId::from_raw)?;
@@ -88,12 +91,14 @@ fn bar_chain(owner: u64, top: u32) -> Option<BarChain> {
 /// submenu outwards; only once no open popup claims the point does the top
 /// menu get its turn, as a bar drawn on the owner's own window.
 /// # C: O(N_open * N_items)
+#[inline(never)]
 fn menu_from_point(session: &MenuSession, top: u32, point: (i32, i32)) -> (Option<u32>, PopupHit) {
     let (open, bar) = chain_of(session, top);
     with_entry(|entry| chain::menu_from_point(&entry.menus, &open, bar, point)).unwrap_or((None, PopupHit::Nowhere))
 }
 
 /// One pointer event resolved against the open chain. # C: O(N_open * N_items)
+#[inline(never)]
 fn pointer_event(session: &MenuSession, top: u32, point: (i32, i32), right: bool) -> PointerEvent {
     let (menu, hit) = menu_from_point(session, top, point);
     let menu_is_bar = menu.and_then(MenuId::from_raw).and_then(|id| with_entry(|entry| entry.menus.is_popup(id).unwrap_or(true))).is_some_and(|popup| !popup);
@@ -102,6 +107,7 @@ fn pointer_event(session: &MenuSession, top: u32, point: (i32, i32), right: bool
 
 /// The chain resolution one retrieved message needs, absent for a message that
 /// names no point. # C: O(N_open * N_items)
+#[inline(never)]
 fn resolve_pointer(session: &MenuSession, top: u32, msg: RetrievedMessage) -> Option<PointerEvent> {
     match classify(msg.message, msg.wparam, msg.lparam) {
         LoopAction::ButtonDown { point, right } | LoopAction::ButtonUp { point, right } => Some(pointer_event(session, top, point, right)),
@@ -119,7 +125,7 @@ pub(crate) fn track_popup_menu(owner: u64, menu: u32, flags: u32, x: i32, y: i32
     let flags = flags | TPM_POPUPMENU;
     let mut state = TrackLoop::new(flags, owner as u32, menu, (x, y));
     state.begin();
-    put(PendingTrack { tid, state, session: MenuSession::new(owner), origin: (x, y) });
+    put(alloc::boxed::Box::new(PendingTrack { tid, state, session: MenuSession::new(owner), origin: (x, y) }));
     drive()
 }
 
@@ -128,10 +134,12 @@ pub(crate) fn track_popup_menu(owner: u64, menu: u32, flags: u32, x: i32, y: i32
 /// The pending report has the same meaning as for a popup.
 /// # C: O(N_messages * N_items); # Sleeps: yes
 pub(crate) fn track_bar_menu(owner: u64, menu: u32, flags: u32, point: (i32, i32)) -> u64 {
+    super::bar::trace(b"bar-track-entered");
     let Some(tid) = current_tid() else { return 0; };
     let mut state = TrackLoop::new(flags & !TPM_POPUPMENU, owner as u32, menu, point);
     state.begin();
-    put(PendingTrack { tid, state, session: MenuSession::new(owner), origin: point });
+    super::bar::trace(b"bar-track-begun");
+    put(alloc::boxed::Box::new(PendingTrack { tid, state, session: MenuSession::new(owner), origin: point }));
     drive()
 }
 
@@ -142,14 +150,14 @@ fn drive() -> u64 {
         let Some(mut track) = take() else { return 0; };
         let Some(step) = with_entry(|entry| track.state.next(&mut entry.menus)) else { return 0; };
         match step {
-            LoopStep::Done(executed) => return finish(executed),
-            LoopStep::Send(call) | LoopStep::Dispatch(call) => { put(track); if let Some(pending) = call_window_proc(call) { return pending; } }
-            LoopStep::Effect(effect) => { track_effects::apply(&mut track, effect); put(track); }
-            LoopStep::ShowTop => { show_top(&mut track); put(track); }
-            LoopStep::ShowSub { menu, position, submenu, select_first } => { track_effects::show_sub(&mut track, menu, position, submenu, select_first); put(track); }
-            LoopStep::Close { menu } => { close_and_follow(&mut track, menu); put(track); }
-            LoopStep::PressAt { point } => { initial_press(&mut track, point); put(track); }
-            LoopStep::NextMessage => { if !next_message(&mut track) { track.state.cancel(); } put(track); }
+            LoopStep::Done(executed) => { super::bar::trace(b"step-done"); return finish(executed); }
+            LoopStep::Send(call) | LoopStep::Dispatch(call) => { super::bar::trace(b"step-send"); put(track); if let Some(pending) = call_window_proc(call) { return pending; } }
+            LoopStep::Effect(effect) => { super::bar::trace(b"step-effect"); track_effects::apply(&mut track, effect); put(track); }
+            LoopStep::ShowTop => { super::bar::trace(b"step-show-top"); show_top(&mut track); put(track); }
+            LoopStep::ShowSub { menu, position, submenu, select_first } => { super::bar::trace(b"step-show-sub"); track_effects::show_sub(&mut track, menu, position, submenu, select_first); put(track); }
+            LoopStep::Close { menu } => { super::bar::trace(b"step-close"); close_and_follow(&mut track, menu); put(track); }
+            LoopStep::PressAt { point } => { super::bar::trace(b"step-press"); initial_press(&mut track, point); put(track); }
+            LoopStep::NextMessage => { super::bar::trace(b"step-next-message"); if !next_message(&mut track) { track.state.cancel(); } put(track); }
         }
     }
 }
@@ -157,7 +165,9 @@ fn drive() -> u64 {
 /// Enter one window procedure. A same-thread target arms a client callback and
 /// suspends the loop; anything the send resolves immediately is recorded and
 /// the loop continues. # C: O(sends + windows); # Sleeps: yes
+#[inline(never)]
 fn call_window_proc(call: ProcCall) -> Option<u64> {
+    super::bar::trace(b"call-window-proc");
     let Some(tid) = current_tid() else { return Some(0); };
     match send::send_resumable_current(call.hwnd, call.message, call.wparam, call.lparam as u64, Continuation { token: tid, resume }) {
         SendOutcome::Pending => Some(STATUS_PENDING),
@@ -175,6 +185,7 @@ fn resume(token: u64, result: Result<u64, ()>) -> u64 {
 }
 
 /// Release the capture and report the chosen command. # C: O(N_windows)
+#[inline(never)]
 fn finish(executed: i32) -> u64 {
     set_capture(None);
     let _ = with_entry(|entry| { entry.menu_tracking = None; entry.menu_track = None; });
@@ -184,6 +195,7 @@ fn finish(executed: i32) -> u64 {
 
 /// Measure, place and show the top menu, and claim the capture tracking holds.
 /// A popup carrying no item is never tracked. # C: O(N_items + N_windows)
+#[inline(never)]
 fn show_top(track: &mut PendingTrack) {
     let flags = track.state.flags();
     let menu = track.state.top();
@@ -205,6 +217,7 @@ fn show_top(track: &mut PendingTrack) {
 
 /// Retire one popup window and keep the window the loop is following in step
 /// with the menu it now tracks. # C: O(N_open)
+#[inline(never)]
 fn close_and_follow(track: &mut PendingTrack, menu: u32) {
     popup_window::close_popup(&mut track.session, menu);
     let current = track.state.current();
@@ -214,6 +227,7 @@ fn close_and_follow(track: &mut PendingTrack, menu: u32) {
 
 /// Apply the press that entered tracking, resolved against the bar the press
 /// landed on. # C: O(N_items^2)
+#[inline(never)]
 fn initial_press(track: &mut PendingTrack, point: (i32, i32)) {
     let event = pointer_event(&track.session, track.state.top(), point, false);
     let _ = with_entry(|entry| track.state.press(&mut entry.menus, &event));
@@ -223,6 +237,7 @@ fn initial_press(track: &mut PendingTrack, point: (i32, i32)) {
 /// removed from the queue; one that ends tracking without being consumed stays
 /// for the application, as the reference leaves it. Reports whether tracking
 /// can continue. # C: O(N_queued); # Sleeps: yes
+#[inline(never)]
 fn next_message(track: &mut PendingTrack) -> bool {
     let Some(tid) = current_tid() else { return false; };
     if cancelled() { return false; }
@@ -246,6 +261,7 @@ fn next_message(track: &mut PendingTrack) -> bool {
 }
 
 /// Park until this thread's queue can answer. # C: O(N_process_gui_states); # Sleeps: yes
+#[inline(never)]
 fn wait_for_message(tid: u64) -> bool {
     let Some(wait) = with_entry(|entry| Arc::clone(&entry.wait)) else { return false; };
     let Some(group) = sched::live::current().map(|cur| Arc::clone(&cur.thread_group)) else { return false; };

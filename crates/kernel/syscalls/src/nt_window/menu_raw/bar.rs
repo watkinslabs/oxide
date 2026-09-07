@@ -22,6 +22,7 @@ fn metrics() -> (i32, i32, i32) {
 
 /// The menu one window shows on its bar, and the window's own rectangle.
 /// # C: O(N_windows)
+#[inline(never)]
 fn bar_of(hwnd: u64) -> Option<(MenuId, MenuRect)> {
     let window = WindowId::from_raw(u32::try_from(hwnd).ok()?)?;
     with_entry(|entry| {
@@ -39,6 +40,7 @@ fn bar_of(hwnd: u64) -> Option<(MenuId, MenuRect)> {
 /// The height one window's menu bar takes off the top of its client area, for
 /// the nonclient size calculation. Zero when the window shows no bar.
 /// # C: O(N_items)
+#[inline(never)]
 pub(crate) fn height_for_current(hwnd: u64, width: i32) -> i32 {
     let Some((menu, rect)) = bar_of(hwnd) else { return 0; };
     let (char_width, char_height, bar_height) = metrics();
@@ -49,6 +51,7 @@ pub(crate) fn height_for_current(hwnd: u64, width: i32) -> i32 {
 /// Draw one window's menu bar into `dc`, whose origin is `origin` in the
 /// window's own coordinates. Reports the height the bar drew and the redirect
 /// status of the run that entered the font backend. # C: O(N_items + pixels)
+#[inline(never)]
 pub(crate) fn draw_into(hwnd: u64, dc: u64, origin: MenuRect) -> (i32, Option<u64>) {
     let Some((menu, _)) = bar_of(hwnd) else { return (0, None); };
     let (char_width, char_height, bar_height) = metrics();
@@ -63,6 +66,7 @@ pub(crate) fn draw_into(hwnd: u64, dc: u64, origin: MenuRect) -> (i32, Option<u6
 /// the redirect status the nonclient message must return, so the font backend
 /// enters its callback with the payload the launch placed.
 /// # C: O(N_items + pixels)
+#[inline(never)]
 pub(crate) fn nc_paint_for_current(hwnd: u64) -> Option<u64> {
     let (_, rect) = bar_of(hwnd)?;
     let window = u32::try_from(hwnd).ok()?;
@@ -88,16 +92,28 @@ fn release_band_dc(hwnd: u64, dc: u64) {
     let _ = crate::nt_gdi::release_window_dc_for_current(window, handle);
 }
 
+/// One stage of the entry into menu tracking. The route is the
+/// non-allocating one: a stage that reports while the GUI owner is locked
+/// must not enter a console sink that allocates. # C: O(1)
+pub(crate) fn trace(stage: &'static [u8]) {
+    klog::write_primary_raw(b"[MENU-ENTRY] ");
+    klog::write_primary_raw(stage);
+    klog::write_primary_raw(b"\n");
+}
+
 /// Enter menu tracking for one window's bar. A press names the point it began
 /// at; a key names no point and lets the loop select the first item.
 /// # C: O(N_messages * N_items); # Sleeps: yes
+#[inline(never)]
 pub(crate) fn track_for_current(hwnd: u64, command: MenuCommand, point: (i32, i32)) -> Option<u64> {
+    trace(b"track-entered");
     let menu = match command {
         MenuCommand::Mouse { hit } if hit == HTSYSMENU => system_menu_of(hwnd),
         MenuCommand::Mouse { .. } => bar_of(hwnd).map(|(menu, _)| menu.raw()),
         MenuCommand::Keyboard { character } => keyboard_menu(hwnd, character),
     };
-    let Some(menu) = menu else { return None; };
+    let Some(menu) = menu else { trace(b"no-menu"); return None; };
+    trace(b"menu-resolved");
     let mut flags = TPM_LEFTALIGN_LEFTBUTTON;
     if matches!(command, MenuCommand::Mouse { .. }) { flags |= TPM_BUTTONDOWN; }
     if let MenuCommand::Keyboard { character } = command {
@@ -110,9 +126,11 @@ pub(crate) fn track_for_current(hwnd: u64, command: MenuCommand, point: (i32, i3
         }
     }
     let already = with_entry(|entry| entry.menu_tracking.is_some()).unwrap_or(true);
-    if already { return None; }
+    if already { trace(b"already-tracking"); return None; }
     let _ = with_entry(|entry| entry.menu_tracking = Some(super::session::MenuCancel { owner: hwnd, exit: false }));
+    trace(b"claimed");
     let _ = work_area();
+    trace(b"work-area");
     // The loop suspends in every window procedure it enters and reports from
     // the callback return that finishes it.
     Some(track_bar_menu(hwnd, menu, flags, point))
@@ -123,6 +141,7 @@ enum KeyboardEntry { NoItem, Named(u32), First(u32) }
 
 /// The item a typed character names, or the first item a bare Alt or F10
 /// selects. # C: O(N_items)
+#[inline(never)]
 fn keyboard_item(menu: u32, character: u32) -> KeyboardEntry {
     let Some(id) = MenuId::from_raw(menu) else { return KeyboardEntry::NoItem; };
     if character != 0 {
@@ -156,6 +175,7 @@ fn post_open(hwnd: u64) {
 }
 
 /// The window menu one press on the window-menu icon opens. # C: O(N_windows)
+#[inline(never)]
 fn system_menu_of(hwnd: u64) -> Option<u32> {
     let window = WindowId::from_raw(u32::try_from(hwnd).ok()?)?;
     with_entry(|entry| entry.state.get(window).and_then(|record| record.sys_menu)).flatten()
@@ -163,6 +183,7 @@ fn system_menu_of(hwnd: u64) -> Option<u32> {
 
 /// Which menu an Alt-key request opens: the window menu when the character is
 /// a space or the window carries no bar, otherwise the bar. # C: O(N_windows)
+#[inline(never)]
 fn keyboard_menu(hwnd: u64, character: u32) -> Option<u32> {
     const SPACE: u32 = b' ' as u32;
     if character == SPACE { return system_menu_of(hwnd); }
@@ -178,16 +199,21 @@ const KEYDATA_ALT: u64 = 0x2000_0000;
 /// Answer the nonclient messages a menu bar owns, ahead of the rest of the
 /// default window procedure. Absent means the message is not the bar's.
 /// # C: O(N_items + pixels); # Sleeps: yes
+#[inline(never)]
 pub(crate) fn default_proc_for_current(hwnd: u64, message: u32, wparam: u64, lparam: i64) -> Option<u64> {
     use ipc::win32_window::nonclient_menu as nc;
     match message {
         nc::WM_NCLBUTTONDOWN => {
+            trace(b"nc-button-down");
             let command = nc::nc_button_sys_command(wparam as u16 as i16)?;
+            trace(b"nc-button-command");
             let _ = crate::nt_window::send::send_for_current(hwnd, nc::WM_SYSCOMMAND, command as u64, lparam as u64);
             Some(0)
         }
         nc::WM_SYSCOMMAND => {
+            trace(b"syscommand");
             let command = nc::menu_sys_command(wparam as u32, lparam as u32)?;
+            trace(b"syscommand-decoded");
             let point = ((lparam as u64 as u16 as i16) as i32, (((lparam as u64) >> 16) as u16 as i16) as i32);
             Some(track_for_current(hwnd, command, point).unwrap_or(0))
         }
@@ -222,6 +248,7 @@ fn beep() {
 
 /// The hit-test code a point over one window's menu bar takes, ahead of the
 /// window's own client hit test. # C: O(N_windows)
+#[inline(never)]
 pub(crate) fn hit_test_for_current(hwnd: u64, lparam: i64) -> Option<i16> {
     let window = WindowId::from_raw(u32::try_from(hwnd).ok()?)?;
     // The point a nonclient hit test carries and the rectangles it is compared
@@ -240,6 +267,7 @@ pub(crate) fn hit_test_for_current(hwnd: u64, lparam: i64) -> Option<i16> {
 
 /// Take the menu bar's height off the top of the client rectangle one
 /// `WM_NCCALCSIZE` is computing. # C: O(N_items)
+#[inline(never)]
 pub(crate) fn nc_calc_size_for_current(hwnd: u64, lparam: u64) -> Option<u64> {
     if lparam == 0 { return None; }
     let mut bytes = [0u8; NCCALCSIZE_CLIENT_RECT];
