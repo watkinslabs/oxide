@@ -121,6 +121,7 @@ where G: Fn(NtService, SyscallArgs) -> u64 {
     let accepted = if present == STATUS_PENDING_OUTPUT { STATUS_SUCCESS } else { present };
     let status = win_bool(if result == STATUS_SUCCESS { accepted } else { result });
     trace_end(args[0], hdc, submitted, present, status);
-    if status != 0 && submitted && present == STATUS_SUCCESS { crate::nt_milestone::paint_present(); }
+    // The present milestone is recorded where the frame is handed to the
+    // desktop, which is the pump flush, not this paint.
     status
 }

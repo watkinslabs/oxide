@@ -32,6 +32,13 @@ pub(super) fn deliver_gui_event(state:&mut ipc::win32_window::WindowManager,hwnd
     let filter=MessageFilter{hwnd:WindowId::from_raw(hwnd),first:ipc::win32_window::WM_SIZE,last:ipc::win32_window::WM_SIZE};
     assert!(state.peek_for_thread(41,filter,false).is_some(),"Configure must queue GUI work without dispatching application paint");
 }
+/// Unawaited hand-over: the frame is queued and no completion is consumed.
+pub fn submit_current(opcode:Opcode,hwnd:u64,payload:Vec<u8>)->Result<u64,TransportError>{
+    assert!(nt_gdi::GDI.unlocked());assert!(nt_window::GUI.unlocked());
+    let ticket=enqueue_current(opcode,hwnd,payload)?;
+    QUEUE.with(|q|{let mut q=q.borrow_mut();let _=q.take_send();});
+    Ok(ticket)
+}
 pub fn enqueue_current(opcode:Opcode,hwnd:u64,payload:Vec<u8>)->Result<u64,TransportError>{
     assert!(nt_gdi::GDI.unlocked());assert!(nt_window::GUI.unlocked());
     QUEUE.with(|q|{let mut q=q.borrow_mut();
@@ -86,26 +93,46 @@ pub fn wait_completion_current(ticket:u64,timeout:u64)->Result<Completion,Transp
 }
 fn submit()->u64{let prepared=crate::presentation_fixture::capture_current();nt_gdi::output::kernel::submit_prepared_for_current(Ok(prepared))}
 
+/// A frame that could not be handed over leaves its pixels owed. Only the
+/// hand-over itself can fail now: the completion scenarios beyond it belong to
+/// the control opcodes, which still transact with the desktop.
 #[test]
-fn production_protocol_failures_never_ack_retained_backing_and_retry_later(){
+fn production_protocol_failures_never_settle_retained_backing_and_retry_later(){
     let _serial=SERIAL.lock().unwrap();
-    for scenario in [Scenario::Failed,Scenario::EarlyAckDisconnect,Scenario::CompletedThenDisconnect,Scenario::Disconnected,Scenario::Full,Scenario::Timeout,Scenario::WrongAck]{
+    for scenario in [Scenario::Disconnected,Scenario::Full]{
         setup();reset(scenario);assert_eq!(submit(),STATUS_PENDING);assert!(!nt_gdi::clean());
         assert!(!EVENTS.lock().unwrap().contains(&"ack"));
         reset(Scenario::Presented);nt_gdi::flush_pending_for_current(true);
-        assert!(nt_gdi::clean());assert_eq!(EVENTS.lock().unwrap().iter().filter(|e|**e=="ack").count(),1);
+        assert!(nt_gdi::clean());
+        assert!(!EVENTS.lock().unwrap().contains(&"ack"),"a frame consumes no completion");
     }
 }
+/// A frame submission hands the record over and returns. The reference does not
+/// stop a drawing thread on a display round trip, so there is no window in
+/// which anything else could be delayed by one: the scenario that would have
+/// interleaved a GUI delivery with the wait never runs, because there is no
+/// wait to interleave with.
 #[test]
-fn production_protocol_gui_delivery_precedes_ack_without_app_message_dispatch(){
+fn production_protocol_frame_submission_does_not_wait_for_the_desktop(){
     let _serial=SERIAL.lock().unwrap();setup();reset(Scenario::GuiBeforeAck);
-    assert_eq!(submit(),0);assert!(nt_gdi::clean());assert_eq!(*EVENTS.lock().unwrap(),["frame","gui-event","ack"]);
+    assert_eq!(submit(),0);
+    assert_eq!(*EVENTS.lock().unwrap(),["frame"],"a frame consumes no completion and waits for nothing");
+    assert!(nt_gdi::clean(),"handing the record over settles the pending output");
 }
+/// A backing already reserved for an in-flight record takes no second one; its
+/// demand survives and the next flush publishes it.
 #[test]
-fn production_protocol_reentrant_paint_is_pending_not_failed_or_recursively_submitted(){
-    let _serial=SERIAL.lock().unwrap();setup();reset(Scenario::Reentrant);
-    assert_eq!(submit(),0);assert!(!nt_gdi::clean(),"reentrant output demand survives old ACK");
-    reset(Scenario::Presented);nt_gdi::flush_pending_for_current(true);assert!(nt_gdi::clean());
+fn production_protocol_reserved_backing_is_pending_not_failed_or_submitted_twice(){
+    let _serial=SERIAL.lock().unwrap();setup();reset(Scenario::Presented);
+    let token={let mut entries=nt_gdi::GDI.lock();let state=&mut entries[0].state;
+        let token=state.pending_outputs().unwrap()[0];assert!(state.reserve_output(token));token};
+    assert_eq!(submit(),STATUS_PENDING,"a reserved backing cannot submit again");
+    assert!(EVENTS.lock().unwrap().is_empty(),"and nothing reached the transport");
+    assert!(!nt_gdi::clean(),"the output demand survives");
+    // The reservation is released; the newer demand raised by the refused
+    // submit is not acknowledged by this older record's completion.
+    assert!(!nt_gdi::GDI.lock()[0].state.finish_output(token,true),"an older record cannot settle newer pixels");
+    nt_gdi::flush_pending_for_current(true);assert!(nt_gdi::clean());
 }
 #[test]
 fn missing_current_and_dropped_capture_leave_no_reserved_slot(){

@@ -1,16 +1,17 @@
-//! Only a terminal protocol Presented completion is a desktop acknowledgement.
+//! A drawing submission is handed over, not transacted with the desktop.
 const STATUS_SUCCESS:u64=0;
 const STATUS_INVALID_PARAMETER:u64=0xc000000d;
-const ACK_TIMEOUT_NS:u64=5_000_000_000;
 
-/// # C: bounded queue lookup + acknowledged transport wait; # Sleeps: yes, no owner locks
+/// Hand one frame to the desktop and return. The reference resets a window
+/// surface's accumulated bounds when its driver accepts the flush, not when
+/// the display server answers for it: a paint that waits for that answer
+/// stops the application for a round trip it has no use for, and the answer
+/// arrives long after the pixels the next paint already wants to replace.
+/// # C: bounded queue lookup; # Sleeps: no
 pub(crate) fn submit_frame(frame:Result<syscall::nt_compositor::Record,u64>)->u64{
     let frame=match frame{Ok(frame)=>frame,Err(status)=>return status};
-    let ticket=match crate::nt_compositor::enqueue_current(frame.header.opcode,frame.header.hwnd,frame.payload){
-        Ok(ticket)=>ticket,Err(_)=>return STATUS_INVALID_PARAMETER,
-    };
-    match crate::nt_compositor::wait_completion_current(ticket,ACK_TIMEOUT_NS){
-        Ok(crate::nt_compositor::Completion::Presented)=>{crate::nt_milestone::desktop_ack();STATUS_SUCCESS}
-        _=>STATUS_INVALID_PARAMETER,
+    match crate::nt_compositor::submit_current(frame.header.opcode,frame.header.hwnd,frame.payload){
+        Ok(_)=>STATUS_SUCCESS,
+        Err(_)=>STATUS_INVALID_PARAMETER,
     }
 }

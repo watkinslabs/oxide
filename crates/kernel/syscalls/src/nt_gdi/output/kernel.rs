@@ -46,7 +46,13 @@ pub(crate) fn flush_pending_for_current(idle:bool){
             let Some(entry)=entries.iter_mut().find(|entry|entry.group.ptr_eq(&group))else{return Ok::<_,()>(None);};
             let Some(current)=entry.state.pending_output(candidate.hwnd,candidate.dc)else{return Ok(None);};
             reserve_snapshot(&mut entry.state,current)
-        },|frame|submit_frame(Ok(frame))==STATUS_SUCCESS,|token,presented|{
+        },|frame|{
+            let sent=submit_frame(Ok(frame))==STATUS_SUCCESS;
+            // Pixels reach the desktop from the flush, not from the paint that
+            // drew them: the milestone belongs where the frame is handed over.
+            if sent{crate::nt_milestone::paint_present();}
+            sent
+        },|token,presented|{
             let mut entries=GDI.lock();
             if let Some(entry)=entries.iter_mut().find(|entry|entry.group.ptr_eq(&group)){
                 entry.state.finish_output(token,presented);

@@ -141,11 +141,6 @@ pub fn submit_current(opcode: Opcode, hwnd: u64, payload: Vec<u8>) -> Result<u64
     let cur = sched::live::current().ok_or(TransportError::Disconnected)?;
     submit(&cur.thread_group, opcode, hwnd, payload, false)
 }
-/// # C: O(payload + bindings)
-pub fn enqueue_current(opcode: Opcode, hwnd: u64, payload: Vec<u8>) -> Result<u64, TransportError> {
-    let cur = sched::live::current().ok_or(TransportError::Disconnected)?;
-    enqueue(&cur.thread_group, opcode, hwnd, payload)
-}
 /// Wait outside GUI/GDI locks. Terminal completion is consumed for controls and frames alike.
 /// Timeout invalidates the connection: an abandoned transaction cannot later claim success.
 /// # C: O(bindings + records) + bounded wait; # Sleeps: yes

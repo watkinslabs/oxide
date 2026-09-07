@@ -48,7 +48,7 @@ fn actual_region_capture_preserves_holes_and_nonclient_pixels(){
         let paint=state.create_dc(3,1).unwrap();state.fill_rect(paint,Rect{left:0,top:0,right:3,bottom:1},0x445566).unwrap();
         let region=PaintRegion::from_rects(&[WindowRect{left:0,top:0,right:1,bottom:1},WindowRect{left:2,top:0,right:3,bottom:1}]).unwrap();
         let layout=PaintBacking{width:5,height:3,client:Rect{left:1,top:1,right:4,bottom:2}};
-        let prepared=production::capture_window_region(state,hwnd,paint,0,0,3,1,Some((layout,region))).unwrap();
+        let prepared={production::merge_window_region(state,hwnd,paint,0,0,3,1,Some((layout,region))).unwrap();crate::output::prepare_explicit(state,hwnd,state.window_dc(hwnd).unwrap()).unwrap()};
         assert_eq!(prepared.token.dc,backing);
         for index in 0..15{assert_eq!(pixel(&prepared.record,index),if index==6||index==8{0xff445566}else{0xff112233});}
         assert!(state.reserve_output(prepared.token));state.finish_output(prepared.token,false);prepared};
@@ -74,7 +74,7 @@ fn actual_capture_ack_preserves_concurrent_dirty_then_pump_retries(){
     assert_eq!(submit(prepared),0);assert!(!nt_gdi::clean(),"old ACK must not consume newer drawing");
     *nt_gdi::TRANSPORT.lock().unwrap()=Some(|frame|{assert_eq!(pixel(frame,3),0xff987654);0});
     nt_gdi::flush_pending_for_current(true);assert!(nt_gdi::clean());
-    assert_eq!(*EVENTS.lock().unwrap(),["frame","idle","frame"]);
+    assert_eq!(*EVENTS.lock().unwrap(),["frame","idle","frame","present"]);
 }
 
 #[test]
@@ -86,7 +86,7 @@ fn actual_capture_failed_ack_releases_reservation_and_later_pump_publishes(){
     assert_eq!(submit(prepared),0x103);assert!(!nt_gdi::clean());
     *nt_gdi::TRANSPORT.lock().unwrap()=Some(accept);
     nt_gdi::flush_pending_for_current(true);assert!(nt_gdi::clean());
-    assert_eq!(*EVENTS.lock().unwrap(),["frame","idle","frame"]);
+    assert_eq!(*EVENTS.lock().unwrap(),["frame","idle","frame","present"]);
 }
 
 #[test]
@@ -96,7 +96,7 @@ fn actual_capture_rejects_mismatched_region_before_storage_mutation(){
     let before=state.pending_outputs().unwrap();let pixels=state.pixels(dc).unwrap().to_vec();
     let region=PaintRegion::from_rect(WindowRect{left:0,top:0,right:1,bottom:1}).unwrap();
     let layout=PaintBacking{width:2,height:2,client:Rect{left:0,top:0,right:2,bottom:2}};
-    assert_eq!(production::capture_window_region(state,hwnd,dc,0,0,2,2,Some((layout,region))).err(),Some(STATUS_INVALID_PARAMETER));
+    assert_eq!(production::merge_window_region(state,hwnd,dc,0,0,2,2,Some((layout,region))).err(),Some(STATUS_INVALID_PARAMETER));
     assert_eq!(state.pending_outputs().unwrap(),before);assert_eq!(state.pixels(dc).unwrap(),pixels);
     assert!(state.reserve_output(before[0]));state.finish_output(before[0],false);
 }

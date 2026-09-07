@@ -43,9 +43,10 @@ mod uaccess{
 }
 mod nt_compositor{
     pub fn monitors_current()->Option<()>{Some(())}
-    pub use crate::protocol_fixture::{enqueue_current,wait_completion_current,Completion};
+    pub use crate::protocol_fixture::{enqueue_current,submit_current,wait_completion_current,Completion};
 }
-mod nt_milestone{pub fn desktop_ack(){crate::EVENTS.lock().unwrap().push("ack");}}
+mod nt_milestone{pub fn desktop_ack(){crate::EVENTS.lock().unwrap().push("ack");}
+    pub fn paint_present(){crate::EVENTS.lock().unwrap().push("present");}}
 mod nt_rtl{pub fn begin_wndproc_callback_with_completion(_:u64,_:u64,_:u64,_:u64,_:u64,_:crate::sched::nt_callback::Completion)->u64{panic!("unexpected callback")}}
 mod nt_gdi{
     use super::*;
@@ -81,6 +82,25 @@ mod nt_gdi{
         let dc=state.acquire_window_dc(hwnd,2,2).unwrap();state.write_dc_pixel(dc,0,0,0xabcdef).unwrap();
         let mut entries=GDI.lock();entries.clear();entries.push(Entry{group:Arc::downgrade(&task.thread_group),state,output_pump:Default::default()});}
     pub fn clean()->bool{GDI.lock()[0].state.pending_outputs().unwrap().is_empty()}
+    /// A window-sized paint DC and the coverage one paint of it claims.
+    pub fn paint_fixture()->(u32,ipc::win32_window::PaintRegion,ipc::win32_gdi::PaintBacking){
+        let mut entries=GDI.lock();let state=&mut entries[0].state;
+        let token=state.pending_outputs().unwrap()[0];
+        let rect=ipc::win32_gdi::Rect{left:0,top:0,right:2,bottom:2};
+        (token.hwnd,ipc::win32_window::PaintRegion::from_rect(ipc::win32_window::WindowRect{left:0,top:0,right:2,bottom:2}).unwrap(),
+            ipc::win32_gdi::PaintBacking{width:2,height:2,client:rect})
+    }
+    /// One paint: merge its coverage into the backing, then ask the pump for a
+    /// rate-limited flush, exactly as the paint end does.
+    pub fn merge_paint(hwnd:u32,region:&ipc::win32_window::PaintRegion,layout:ipc::win32_gdi::PaintBacking)->Result<(),u64>{
+        {
+            let mut entries=GDI.lock();let state=&mut entries[0].state;
+            let dc=state.create_dc(2,2).unwrap();
+            state.fill_rect(dc,ipc::win32_gdi::Rect{left:0,top:0,right:2,bottom:2},0xabcdef).unwrap();
+            crate::erase_fixture::paint_frame::merge_region(state,hwnd,dc,region,layout).map_err(|_|1u64)?;
+        }
+        flush_pending_for_current(false);Ok(())
+    }
     pub fn explicit_publish()->u64{
         let prepared={let mut entries=GDI.lock();let state=&mut entries[0].state;
             let token=state.pending_outputs().unwrap()[0];let(w,h,pixels)=state.surface(token.dc).unwrap();
@@ -169,19 +189,53 @@ fn call(service:nt::NtService)->NtCall{NtCall{service,args:syscall::SyscallArgs{
 fn actual_empty_peek_flushes_after_gui_unlock_before_return(){
     let _serial=SERIAL.lock().unwrap();setup();
     assert_eq!(nt_window::production::dispatch(call(nt::NtService::PeekMessage)),Some(nt_window::STATUS_NO_MORE_ENTRIES));
-    assert_eq!(*EVENTS.lock().unwrap(),["busy","idle","frame"]);
+    assert_eq!(*EVENTS.lock().unwrap(),["busy","idle","frame","present"]);
     assert!(nt_gdi::clean());
 }
 #[test]
 fn actual_empty_get_flushes_after_gui_unlock_before_wait(){
     let _serial=SERIAL.lock().unwrap();setup();
     assert_eq!(nt_window::production::dispatch(call(nt::NtService::GetMessage)),Some(nt_window::STATUS_ALERTED));
-    assert_eq!(*EVENTS.lock().unwrap(),["busy","idle","frame","wait"]);
+    assert_eq!(*EVENTS.lock().unwrap(),["busy","idle","frame","present","wait"]);
 }
 #[test]
 fn actual_explicit_submit_finishes_reserved_backing_outside_gui_and_gdi_locks(){
     let _serial=SERIAL.lock().unwrap();setup();assert_eq!(nt_gdi::explicit_publish(),0);
     assert_eq!(*EVENTS.lock().unwrap(),["frame"]);assert!(nt_gdi::clean());
+}
+
+/// A burst of paints reaches the desktop as one frame. The reference lets
+/// drawing accumulate a surface's damage bounds and leaves the flush to the
+/// message pump, so the number of frames a burst costs is set by the pump's
+/// schedule, not by how many times the application painted.
+#[test]
+fn actual_a_burst_of_paints_costs_one_frame_not_one_per_paint() {
+    let _serial = SERIAL.lock().unwrap(); setup();
+    let (hwnd, region, layout) = nt_gdi::paint_fixture();
+    for _ in 0..13 { assert_eq!(nt_gdi::merge_paint(hwnd, &region, layout), Ok(())); }
+    assert!(!EVENTS.lock().unwrap().iter().any(|event| *event == "frame"),
+        "a paint accumulates coverage; it does not hand a frame over");
+    assert!(!nt_gdi::clean(), "the burst is owed to the desktop");
+    nt_gdi::flush_pending_for_current(true);
+    assert_eq!(EVENTS.lock().unwrap().iter().filter(|event| **event == "frame").count(), 1,
+        "thirteen paints reach the desktop as one frame");
+    assert!(nt_gdi::clean());
+}
+
+/// The busy flush a paint asks for is refused inside the grace period after an
+/// idle one and allowed outside it, which is what keeps an application that
+/// never goes idle from paying a frame per paint while still reaching the
+/// screen.
+#[test]
+fn actual_the_busy_flush_grace_period_bounds_a_never_idle_application() {
+    let mut pump = crate::output::OutputPump::default();
+    const GRACE_NS: u64 = 50_000_000;
+    assert!(pump.allow(true, 1_000), "an idle point always flushes");
+    assert!(!pump.allow(false, 1_000 + GRACE_NS - 1), "inside the grace period a paint does not flush");
+    assert!(pump.allow(false, 1_000 + GRACE_NS), "outside it, a never-idle application still reaches the screen");
+    assert!(pump.allow(false, 1_000 + GRACE_NS * 4), "and keeps reaching it");
+    assert!(pump.allow(true, 1_000 + GRACE_NS * 4), "an idle point restarts the period");
+    assert!(!pump.allow(false, 1_000 + GRACE_NS * 4 + 1));
 }
 
 /// Whole-surface coverage, the damage a fixture with no narrower one sends.
