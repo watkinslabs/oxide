@@ -55,10 +55,9 @@ impl GetWindowRectsParams {
     }
 }
 
-/// POPUP wins over CHILD, matching the frozen effective-child rule.
-pub(crate) const fn is_effective_child(style: u32) -> bool {
-    style & WS_CHILD != 0 && style & WS_POPUP == 0
-}
+/// POPUP wins over CHILD, matching the frozen effective-child rule. The
+/// canonical window owner decides it; this is the shim's name for that call.
+pub(crate) const fn is_effective_child(style: u32) -> bool { ipc::win32_window::is_effective_child(style) }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CreateMenuValue {

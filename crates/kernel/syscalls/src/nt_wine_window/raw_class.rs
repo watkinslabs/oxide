@@ -1,13 +1,10 @@
 //! Raw Wine class and window entry points.
 
 use super::*;
-const WS_CHILD: u32 = 0x4000_0000;
-const WS_POPUP: u32 = 0x8000_0000;
 const CLASS_STYLE_OFFSET: u64 = 4;
 const CLASS_BACKGROUND_OFFSET: u64 = 48;
 
-#[path = "create_abi.rs"]
-mod create_abi;
+use super::create_abi;
 
 macro_rules! wine_window_diag {
     ($($body:tt)*) => {
@@ -65,7 +62,10 @@ pub(super) fn create_window_descriptor(values: &[u64; 17]) -> u64 {
     create_window_with(args, |index| values.get(index).copied().map(|value| create_abi::argument(index, value)))
 }
 
-fn create_window_with(args: SyscallArgs, read_arg: impl Fn(usize) -> Option<u64>) -> u64 {
+/// The whole creation decision, over an argument reader so a hosted harness
+/// can drive it with the same faulting slots the dispatcher sees.
+/// # C: O(N_process_gui_states + N_classes + N_windows) plus bounded usercopy
+pub(super) fn create_window_with(args: SyscallArgs, read_arg: impl Fn(usize) -> Option<u64>) -> u64 {
     // Creating a window resolves the desktop window first, and that is where
     // the reference registers the builtin classes; a control class named by
     // this very creation must already exist.
@@ -119,7 +119,7 @@ fn create_window_with(args: SyscallArgs, read_arg: impl Fn(usize) -> Option<u64>
         let Ok(buffer) = uaccess::get_user_u64(address) else { return 0; };
         buffer
     };
-    let child = style as u32 & (WS_CHILD | WS_POPUP) == WS_CHILD;
+    let child = super::hwnd_param::is_effective_child(style as u32);
     let child_parent = if child { parent } else { 0 };
     let hwnd = if args.a1 <= u16::MAX as u64 {
         crate::nt_window::create_class_window_by_atom_for_current(args.a1 as u16, child_parent)
@@ -149,10 +149,13 @@ fn create_window_with(args: SyscallArgs, read_arg: impl Fn(usize) -> Option<u64>
         klog::write_raw(b"\n");
         let _ = destroy_window(hwnd); return 0;
     }
-    let menu_failed = if child {
-        crate::nt_window::set_control_id_for_current(hwnd, menu).is_err()
-    } else {
-        menu > u32::MAX as u64 || (menu != 0 && crate::nt_window::set_window_menu_for_current(hwnd, Some(menu as u32)).is_err())
+    // The style, not the value, decides what this argument is: a child's is
+    // its control identifier and is never looked up as a menu handle.
+    let menu_failed = match super::hwnd_param::classify_create_menu(style as u32, menu) {
+        super::hwnd_param::CreateMenuValue::None => false,
+        super::hwnd_param::CreateMenuValue::ChildControlId(id) => crate::nt_window::set_control_id_for_current(hwnd, id).is_err(),
+        super::hwnd_param::CreateMenuValue::MenuHandle(handle) => u32::try_from(handle)
+            .map_or(true, |handle| crate::nt_window::set_window_menu_for_current(hwnd, Some(handle)).is_err()),
     };
     if menu_failed {
         let _ = destroy_window(hwnd);
@@ -184,7 +187,3 @@ fn create_window_with(args: SyscallArgs, read_arg: impl Fn(usize) -> Option<u64>
 fn destroy_window(hwnd: u64) -> u64 {
     crate::nt_window::dispatch(NtCall { service: NtService::DestroyWindow, args: SyscallArgs { a0: hwnd, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 } }).unwrap_or(STATUS_INVALID_PARAMETER)
 }
-
-#[cfg(test)]
-#[path = "tests/create_abi.rs"]
-mod tests;

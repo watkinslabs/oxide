@@ -31,6 +31,7 @@ struct State {
     registered_unicode: Option<bool>, instance: Option<u64>,
     class_style: u32, registered_style: Option<u32>, registered_background: Option<u64>,
     user_reads: Vec<u64>,
+    registered_menu_name: Option<ipc::win32_window::ClassMenuName>,
     ensured_builtins: usize,
 }
 thread_local! { static STATE: RefCell<State> = RefCell::new(State::default()); }
@@ -84,6 +85,18 @@ mod nt_window {
             result
         })
     }
+    /// The single canonical registration the production path calls; every
+    /// field the raw entry decoded is recorded where its test reads it.
+    pub fn register_class_desc_for_current(desc: ipc::win32_window::ClassRegistration<'_>) -> Option<u64> {
+        STATE.with(|s| { let mut s = s.borrow_mut();
+            s.registered = Some((desc.name.to_vec(), desc.wndproc, desc.cb_wnd_extra));
+            s.registered_unicode = Some(desc.unicode);
+            s.registered_style = Some(desc.style);
+            s.registered_background = Some(desc.background);
+            s.registered_menu_name = Some(desc.menu_name);
+        });
+        Some(21)
+    }
     pub fn register_class_with_extra_for_current(name: &[u16], wndproc: u64, extra: i32) -> Option<u64> {
         STATE.with(|s| s.borrow_mut().registered = Some((name.to_vec(), wndproc, extra)));
         Some(21)
@@ -131,7 +144,19 @@ mod nt_window {
         } })
     }
 }
+#[path = "../hwnd_param.rs"] mod hwnd_param;
 #[path = "../raw_class.rs"] mod raw_class;
+
+/// Drive the production creation decision the way the dispatcher does: the
+/// first six values from the syscall registers, the tail from the stack, any
+/// of which can fault.
+fn create_window(args: SyscallArgs) -> u64 {
+    raw_class::create_window_with(args, |index| match index {
+        0 => Some(args.a0), 1 => Some(args.a1), 2 => Some(args.a2),
+        3 => Some(args.a3), 4 => Some(args.a4), 5 => Some(args.a5),
+        _ => nt_dispatch::stack_argument(index),
+    })
+}
 #[path = "../create_abi.rs"] mod create_abi;
 
 fn input() -> SyscallArgs {
@@ -149,7 +174,7 @@ fn production_create_enters_lifecycle_with_windows_payload_and_preserves_pending
         s.stack[14] = 0x180000000; s.stack[15] = 0x140008840;
         s.lifecycle_result = Some(0x103);
     });
-    assert_eq!(raw_class::create_window(args), 0x103);
+    assert_eq!(create_window(args), 0x103);
     STATE.with(|s| {
         let s = s.borrow();
         let created = s.creation.expect("canonical create lifecycle must be called");
@@ -168,7 +193,7 @@ fn zero_child_status_bar_style_is_accepted_by_raw_create_path() {
     let mut args = input();
     args.a4 = 0x4000_0000; // WS_CHILD; zero coordinates are valid for the child path.
     STATE.with(|s| s.borrow_mut().stack[9] = 7);
-    assert_eq!(raw_class::create_window(args), 42);
+    assert_eq!(create_window(args), 42);
     STATE.with(|s| {
         let s = s.borrow();
         assert_eq!(s.class, Some((21, 7)));
@@ -181,7 +206,7 @@ fn zero_child_status_bar_style_is_accepted_by_raw_create_path() {
 fn raw_lifecycle_failure_returns_null_and_rolls_back_created_window() {
     let args = input();
     STATE.with(|s| s.borrow_mut().lifecycle_result = Some(0));
-    assert_eq!(raw_class::create_window(args), 0);
+    assert_eq!(create_window(args), 0);
     STATE.with(|s| {
         let s = s.borrow();
         assert_eq!(s.lifecycle_calls, 1);
@@ -194,7 +219,7 @@ fn raw_lifecycle_failure_returns_null_and_rolls_back_created_window() {
 fn negative_control_without_lifecycle_hook_is_not_an_accepted_create() {
     let args = input();
     STATE.with(|s| s.borrow_mut().lifecycle_enabled = false);
-    assert_eq!(raw_class::create_window(args), 42);
+    assert_eq!(create_window(args), 42);
     STATE.with(|s| {
         let s = s.borrow();
         assert_eq!(s.lifecycle_calls, 1);
@@ -206,7 +231,7 @@ fn negative_control_without_lifecycle_hook_is_not_an_accepted_create() {
 fn null_instance_uses_class_instance_for_create_callback() {
     let args = input();
     STATE.with(|s| s.borrow_mut().stack[11] = 0x140000000);
-    assert_eq!(raw_class::create_window(args), 42);
+    assert_eq!(create_window(args), 42);
     STATE.with(|s| assert_eq!(s.borrow().creation.unwrap().instance, 0x140000000));
 }
 
@@ -215,7 +240,7 @@ fn unreadable_create_payload_does_not_allocate_a_window() {
     for index in [11, 12, 14, 15] {
         let args = input();
         STATE.with(|s| s.borrow_mut().fault = Some(index));
-        assert_eq!(raw_class::create_window(args), 0);
+        assert_eq!(create_window(args), 0);
         STATE.with(|s| { let s = s.borrow(); assert!(s.class.is_none()); assert!(s.creation.is_none()); });
     }
 }
@@ -252,7 +277,7 @@ fn production_adapter_preserves_negative_coordinates_and_ignores_upper_padding()
     args.a5 = 0x7fa6fffffff6;
     args.a4 |= 0x7fa600000000;
     STATE.with(|s| { let mut s = s.borrow_mut(); for i in 6..=8 { s.stack[i] |= 0x7fa600000000; } });
-    assert_eq!(raw_class::create_window(args), 42);
+    assert_eq!(create_window(args), 42);
     STATE.with(|s| assert_eq!(s.borrow().rect, Some([-10, 20, 630, 500])));
 }
 
@@ -260,7 +285,7 @@ fn production_adapter_preserves_negative_coordinates_and_ignores_upper_padding()
 fn atom_and_full_width_parent_reach_the_canonical_owner() {
     let mut args = input(); args.a1 = 21;
     STATE.with(|s| s.borrow_mut().stack[9] = 0xffffffffffffffff);
-    assert_eq!(raw_class::create_window(args), 42);
+    assert_eq!(create_window(args), 42);
     STATE.with(|s| { let s = s.borrow();
         assert_eq!(s.class, Some((21, 0)));
         assert_eq!(s.metadata, Some((42, args.a4 as u32, 0, u64::MAX)));
@@ -271,7 +296,7 @@ fn atom_and_full_width_parent_reach_the_canonical_owner() {
 #[test]
 fn full_width_menu_is_not_silently_truncated() {
     let args = input(); STATE.with(|s| s.borrow_mut().stack[10] = 0x100000001);
-    assert_eq!(raw_class::create_window(args), 0);
+    assert_eq!(create_window(args), 0);
     STATE.with(|s| assert_eq!(s.borrow().destroyed, 1));
 }
 
@@ -282,7 +307,7 @@ fn backend_failures_return_null_and_destroy_only_created_windows() {
             0 => s.fail_class = true, 1 => s.fail_title = true,
             2 => { s.fail_menu = true; s.stack[10] = 1; }, _ => s.fail_rect = true,
         } });
-        assert_eq!(raw_class::create_window(args), 0, "phase {phase}");
+        assert_eq!(create_window(args), 0, "phase {phase}");
         STATE.with(|s| assert_eq!(s.borrow().destroyed, usize::from(phase != 0)));
     }
 }
@@ -291,7 +316,7 @@ fn backend_failures_return_null_and_destroy_only_created_windows() {
 fn required_stack_faults_return_null_before_window_creation() {
     for index in 6..=10 {
         let args = input(); STATE.with(|s| s.borrow_mut().fault = Some(index));
-        assert_eq!(raw_class::create_window(args), 0);
+        assert_eq!(create_window(args), 0);
         STATE.with(|s| assert!(s.borrow().class.is_none()));
     }
 }
@@ -299,14 +324,14 @@ fn required_stack_faults_return_null_before_window_creation() {
 #[test]
 fn malformed_title_returns_null_before_window_creation() {
     let mut args = input(); args.a3 = 0x100000001;
-    assert_eq!(raw_class::create_window(args), 0);
+    assert_eq!(create_window(args), 0);
     STATE.with(|s| assert!(s.borrow().class.is_none()));
 }
 
 #[test]
 fn canonical_u32_handle_is_not_reinterpreted_as_ntstatus() {
     let args = input(); STATE.with(|s| s.borrow_mut().hwnd = STATUS_INVALID_PARAMETER);
-    assert_eq!(raw_class::create_window(args), STATUS_INVALID_PARAMETER);
+    assert_eq!(create_window(args), STATUS_INVALID_PARAMETER);
     STATE.with(|s| assert_eq!(s.borrow().rect, Some([10, 20, 650, 500])));
 }
 
@@ -314,13 +339,13 @@ fn canonical_u32_handle_is_not_reinterpreted_as_ntstatus() {
 fn creating_a_window_registers_the_builtin_classes_first() {
     STATE.with(|s| s.borrow_mut().ensured_builtins = 0);
     let args = input();
-    assert_ne!(raw_class::create_window(args), 0);
+    assert_ne!(create_window(args), 0);
     STATE.with(|s| assert_eq!(s.borrow().ensured_builtins, 1));
     // A creation that answers NULL still resolved the desktop window, so the
     // classes are registered before anything can fail.
     let args = input();
     STATE.with(|s| s.borrow_mut().fail_class = true);
-    assert_eq!(raw_class::create_window(args), 0);
+    assert_eq!(create_window(args), 0);
     STATE.with(|s| assert_eq!(s.borrow().ensured_builtins, 1));
 }
 

@@ -29,17 +29,21 @@ fn control_effective_child_mask_not_parent_presence() {
     for style in [0, WS_POPUP, WS_CHILD | WS_POPUP, WS_CHILD, WS_CHILD | 0x1000_0000] {
         let window = manager.create(7, Some(parent), 0x2000).unwrap();
         manager.set_window_styles(window, style, 0).unwrap();
-        manager.set_menu(window, Some(8)).unwrap();
-        let before = manager.get(window).unwrap();
         if style & (WS_CHILD | WS_POPUP) == WS_CHILD {
+            assert_eq!(manager.set_menu(window, Some(8)), Err(WindowError::InvalidParent));
+            let before = manager.get(window).unwrap();
             assert_eq!(manager.set_control_id(window, 0xffff_ffff_8000_0042), Ok(0));
             assert_eq!(manager.control_id(window), Some(0xffff_ffff_8000_0042));
+            assert_eq!(manager.menu(window), None);
+            assert_eq!(manager.get(window).unwrap().style, before.style);
         } else {
+            assert_eq!(manager.set_menu(window, Some(8)), Ok(None));
+            let before = manager.get(window).unwrap();
             assert_eq!(manager.set_control_id(window, 42), Err(WindowError::InvalidParent));
             assert_eq!(manager.control_id(window), None);
             assert_eq!(manager.get(window), Some(before));
+            assert_eq!(manager.menu(window), Some(8));
         }
-        assert_eq!(manager.menu(window), Some(8));
     }
 }
 
@@ -82,4 +86,41 @@ fn control_class_creation_uses_same_record_and_process_namespace() {
     let alias = child(&mut other);
     assert_eq!(alias, window);
     assert_eq!(other.control_id(alias), Some(0));
+}
+
+#[test]
+fn control_identifier_slot_reads_back_as_the_window_long() {
+    let mut manager = WindowManager::new();
+    let window = child(&mut manager);
+    manager.set_control_id(window, 0x8000_0000_0000_0042).unwrap();
+    assert_eq!(manager.get_window_long_ptr(window, GWLP_ID), Ok(0x8000_0000_0000_0042));
+    let top = manager.create(7, None, 0x1000).unwrap();
+    manager.set_menu(top, Some(0x33)).unwrap();
+    assert_eq!(manager.get_window_long_ptr(top, GWLP_ID), Ok(0x33));
+    assert_eq!(manager.menu(top), Some(0x33));
+}
+
+#[test]
+fn control_menu_query_answers_only_for_a_non_child_style() {
+    let mut manager = WindowManager::new();
+    let parent = manager.create(7, None, 0x1000).unwrap();
+    for style in [0, WS_POPUP, WS_CHILD | WS_POPUP] {
+        let window = manager.create(7, Some(parent), 0x2000).unwrap();
+        manager.set_window_styles(window, style, 0).unwrap();
+        assert_eq!(manager.set_menu(window, Some(9)), Ok(None));
+        assert_eq!(manager.menu(window), Some(9));
+        assert_eq!(manager.set_menu(window, None), Ok(Some(9)));
+        assert_eq!(manager.menu(window), None);
+    }
+}
+
+#[test]
+fn control_menu_of_decides_by_style_alone() {
+    assert_eq!(menu_of(WS_CHILD, 0x42), None);
+    assert_eq!(menu_of(WS_CHILD | WS_POPUP, 0x42), Some(0x42));
+    assert_eq!(menu_of(WS_POPUP, 0x42), Some(0x42));
+    assert_eq!(menu_of(0, 0), None);
+    assert_eq!(menu_of(0, 0x1_0000_0001), None, "a handle that cannot be one is not aliased into the registry");
+    assert!(is_effective_child(WS_CHILD));
+    assert!(!is_effective_child(WS_CHILD | WS_POPUP));
 }

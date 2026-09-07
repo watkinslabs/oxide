@@ -46,6 +46,9 @@ pub(crate) fn accel_target_for_current(hwnd: u64, cmd: u16) -> Option<Target> {
     let entries = GUI.lock();
     let entry = entries.iter().find(|entry| entry.group.ptr_eq(&Arc::downgrade(&cur.thread_group)))?;
     let record = entry.state.get(id)?;
-    let (placement, item_state) = locate(&entry.menus, record.menu, u32::from(cmd)).unwrap_or((MenuPlacement::NotInMenu, 0));
-    Some(Target { style: record.style, captured: entry.state.captured().is_some(), menu: record.menu.unwrap_or(0), placement, item_state })
+    // A child owns a control identifier in the shared slot, not a menu, so it
+    // never names a command position in the menu owner.
+    let menu = ipc::win32_window::menu_of(record.style, record.id_menu);
+    let (placement, item_state) = locate(&entry.menus, menu, u32::from(cmd)).unwrap_or((MenuPlacement::NotInMenu, 0));
+    Some(Target { style: record.style, captured: entry.state.captured().is_some(), menu: menu.unwrap_or(0), placement, item_state })
 }
