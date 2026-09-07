@@ -351,6 +351,16 @@ mod imp {
 
 pub use imp::{console_to_polled, emit, rx_isr, set_baud, set_line};
 
+/// No interrupt-driven transmit queue exists on this console: every byte is
+/// polled out against the FIFO-full flag inside `emit`, so no transmit-empty
+/// interrupt can be owed and none can be lost. Present so the console core does
+/// not have to know which architecture it is on.
+/// # C: O(1)
+pub fn poll_tx_stall() {}
+
+/// Always zero: this console has no transmit edge to lose. # C: O(1)
+pub fn lost_tx_edges() -> u64 { 0 }
+
 // ------------------------------------------------ drv model
 /// The PL011 console as a drv model driver. Probe performs detection; a
 /// missing boot-published PL011 leaves platform/serial0 unbound.

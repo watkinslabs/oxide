@@ -15,6 +15,10 @@
 extern crate alloc;
 
 #[cfg(any(target_arch = "x86_64", test))]
+mod regs;
+#[cfg(any(target_arch = "x86_64", test))]
+mod seq;
+#[cfg(any(target_arch = "x86_64", test))]
 mod tx;
 /// Sleep callbacks (`32a§5` steps 6 and 8).
 pub mod pm;
@@ -48,6 +52,10 @@ static BSP_APIC: AtomicU64 = AtomicU64::new(0);
 static DEV_WINDOW_BASE: AtomicU64 = AtomicU64::new(0);
 /// SysRq arm deadline for this hardware port.
 static SYSRQ_ARMED_UNTIL_NS: AtomicU64 = AtomicU64::new(0);
+/// Transmit-empty interrupts this port owed and never delivered, recovered by
+/// the timer-tick poll. Nonzero means the port loses transmit edges.
+#[cfg(target_arch = "x86_64")]
+static LOST_TX_EDGES: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_arch = "x86_64")]
 static IRQ_VEC: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_arch = "x86_64")]
@@ -141,6 +149,12 @@ mod imp {
     /// No 16550 on non-x86 arches.
     /// # C: O(1)
     pub fn rx_isr() {}
+    /// No 16550 on non-x86 arches; no interrupt-driven transmit queue to
+    /// recover. # C: O(1)
+    pub fn poll_tx_stall() {}
+    /// No 16550 on non-x86 arches; no transmit queue, so no lost edges.
+    /// # C: O(1)
+    pub fn lost_tx_edges() -> u64 { 0 }
     /// No 16550 on non-x86 arches; detect fails.
     /// # SAFETY: shell; no side effects.
     /// # C: O(1)
@@ -160,7 +174,7 @@ mod imp {
     pub unsafe fn console_to_polled() {}
 }
 
-pub use imp::{console_to_polled, emit, rx_isr, set_baud, set_line};
+pub use imp::{console_to_polled, emit, lost_tx_edges, poll_tx_stall, rx_isr, set_baud, set_line};
 
 // ------------------------------------------------ drv model
 /// The 16550 console as a drv model driver. Probe performs detection and
@@ -214,3 +228,7 @@ pub static UART_DRIVER: &dyn drv::Driver = &Uart16550Drv;
 #[cfg(test)]
 #[path = "tests/uart.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/stall.rs"]
+mod stall_tests;
