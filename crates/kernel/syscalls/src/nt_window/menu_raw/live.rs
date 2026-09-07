@@ -1,8 +1,8 @@
 //! Live routing for the system menu, whole-menu properties, the default and
 //! highlighted items, hit testing, tracking and cancellation.
 use super::raw::*;
-use crate::nt_window::{send, GUI, new_entry};
-use alloc::sync::Arc;
+use super::entry::with_entry;
+
 use ipc::win32_menu::{MenuId, MenuRect, MENUINFO_BYTES, MF_BYPOSITION, MF_POPUP, MF_SYSMENU, NO_DEFAULT_ITEM};
 use ipc::win32_window::WindowId;
 
@@ -18,19 +18,9 @@ pub(crate) fn route(ordinal: u64, args: &[u64]) -> Option<u64> {
         SET_MENU_CONTEXT_HELP_ID => Some(set_context_help_id(arg(0), arg(1) as u32)),
         SET_MENU_DEFAULT_ITEM => Some(set_default_item(arg(0), arg(1) as u32, arg(2) != 0)),
         THUNKED_MENU_INFO => Some(thunked_menu_info(arg(0), arg(1))),
-        TRACK_POPUP_MENU_EX => Some(track_popup(arg(0), arg(1) as u32, arg(4))),
+        TRACK_POPUP_MENU_EX => Some(track_popup_at(arg(0), arg(1) as u32, arg(2) as i32, arg(3) as i32, arg(4))),
         _ => None,
     }
-}
-
-fn with_entry<R>(f: impl FnOnce(&mut crate::nt_window::GuiEntry) -> R) -> Option<R> {
-    let cur = sched::live::current().filter(|cur| cur.is_nt_personality())?;
-    let group = Arc::clone(&cur.thread_group);
-    let mut entries = GUI.lock();
-    entries.retain(|entry| entry.group.upgrade().is_some());
-    let index = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group)))
-        .unwrap_or_else(|| { entries.push(new_entry(&group)); entries.len() - 1 });
-    Some(f(&mut entries[index]))
 }
 
 fn menu_of(raw: u64) -> Option<MenuId> { u32::try_from(raw).ok().and_then(MenuId::from_raw) }
@@ -39,9 +29,18 @@ fn window_of(raw: u64) -> Option<WindowId> { u32::try_from(raw).ok().and_then(Wi
 /// Cancel any menu this thread is tracking, telling the tracking window to
 /// leave its modal loop. # C: O(N_windows); # Sleeps: yes
 fn end_menu() -> u64 {
-    let Some(tracking) = with_entry(|entry| entry.menu_tracking.take()).flatten() else { return 0; };
+    // The loop owns the session and unwinds it; cancellation only raises the
+    // flag and wakes the loop with a message it always consumes.
+    let Some(owner) = with_entry(|entry| {
+        let tracking = entry.menu_tracking.as_mut()?;
+        if tracking.exit { return None; }
+        tracking.exit = true;
+        Some(tracking.owner)
+    }).flatten() else { return 0; };
+    // The loop takes every message of its own thread, so waking it through
+    // the owner window reaches it as surely as through the popup.
     let _ = crate::nt_window::dispatch(syscall::nt::NtCall { service: syscall::nt::NtService::PostMessage,
-        args: syscall::SyscallArgs { a0: tracking, a1: WM_CANCELMODE as u64, a2: 0, a3: 0, a4: 0, a5: 0 } });
+        args: syscall::SyscallArgs { a0: owner, a1: WM_CANCELMODE as u64, a2: 0, a3: 0, a4: 0, a5: 0 } });
     1
 }
 
@@ -156,20 +155,19 @@ fn thunked_menu_info(raw: u64, record: u64) -> u64 {
     1
 }
 
-/// Begin tracking one popup for a window. Tracking ends when the window
-/// leaves its modal loop or the menu is cancelled. # C: O(N_menus); # Sleeps: yes
-fn track_popup(raw: u64, flags: u32, hwnd: u64) -> u64 {
+/// Show one popup for a window and run the modal loop that chooses a command
+/// from it. The chosen command is reported when the caller asked for it, and
+/// posted to the owner otherwise. # C: O(N_messages * N_items); # Sleeps: yes
+fn track_popup_at(raw: u64, flags: u32, x: i32, y: i32, hwnd: u64) -> u64 {
     let Some(menu) = menu_of(raw) else { crate::nt_rtl::set_last_win32_error(ERROR_INVALID_MENU_HANDLE as u64); return 0; };
     let known = with_entry(|entry| entry.menus.contains(menu)).unwrap_or(false);
     if !known { crate::nt_rtl::set_last_win32_error(ERROR_INVALID_MENU_HANDLE as u64); return 0; }
+    let Some(_) = window_of(hwnd) else { crate::nt_rtl::set_last_win32_error(ERROR_INVALID_WINDOW_HANDLE as u64); return 0; };
     let already = with_entry(|entry| entry.menu_tracking.is_some()).unwrap_or(false);
     if already { crate::nt_rtl::set_last_win32_error(ERROR_POPUP_ALREADY_ACTIVE as u64); return 0; }
-    let _ = with_entry(|entry| entry.menu_tracking = Some(hwnd));
-    if flags & TPM_NONOTIFY == 0 { let _ = send::send_for_current(hwnd, WM_INITMENUPOPUP, raw, 0); }
-    // The popup window and the modal loop that chooses a command are not
-    // built here, so tracking ends immediately with nothing chosen.
-    let ran = with_entry(|entry| entry.menu_tracking.take()).flatten().is_some();
-    if flags & TPM_NONOTIFY == 0 { let _ = send::send_for_current(hwnd, WM_UNINITMENUPOPUP, raw, 0); }
+    let _ = with_entry(|entry| entry.menu_tracking = Some(super::session::MenuCancel { owner: hwnd, exit: false }));
+    let chosen = super::track_live::track_popup_menu(hwnd, menu.raw(), flags, x, y);
+    let _ = with_entry(|entry| entry.menu_tracking = None);
     crate::nt_rtl::set_last_win32_error(0);
-    if flags & TPM_RETURNCMD != 0 { 0 } else { ran as u64 }
+    if chosen < 0 { 0 } else { chosen as u64 }
 }

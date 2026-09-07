@@ -69,6 +69,9 @@ pub(super) fn message_call(args: SyscallArgs) -> u64 {
     let lparam = args.a3;
     if let Some(result) = super::message_send::prepare_current(hwnd, message as u32, wparam, lparam, args.a4, ansi, callback_type) { return result; }
     if callback_type == crate::nt_message_params::SEND_MESSAGE { return crate::nt_window::send::send_for_current(hwnd, message as u32, wparam, lparam); }
+    if callback_type == WINE_POPUP_MENU_WND_PROC {
+        return crate::nt_window::menu_raw::popup_menu_window_proc(hwnd, message as u32, wparam, lparam);
+    }
     if callback_type == WINE_DEF_WINDOW_PROC {
         if message == WM_NCCREATE { return (lparam != 0) as u64; }
         if message == WM_NCDESTROY { return STATUS_SUCCESS; }

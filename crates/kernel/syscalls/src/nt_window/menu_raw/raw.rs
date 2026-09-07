@@ -22,16 +22,12 @@ pub(crate) const SC_RESTORE: u32 = 0xf120;
 pub(crate) const SC_SEPARATOR: u32 = 0;
 
 pub(crate) const WS_SYSMENU: u32 = 0x0008_0000;
-/// `TPM_NONOTIFY` suppresses the popup initialization messages.
-pub(crate) const TPM_NONOTIFY: u32 = 0x0080;
-/// `TPM_RETURNCMD` makes tracking report the chosen command rather than a flag.
-pub(crate) const TPM_RETURNCMD: u32 = 0x0100;
-pub(crate) const WM_INITMENUPOPUP: u32 = 0x0117;
-pub(crate) const WM_UNINITMENUPOPUP: u32 = 0x0125;
-pub(crate) const WM_CANCELMODE: u32 = 0x001f;
+pub(crate) use ipc::win32_menu::popup::TPM_NONOTIFY;
+pub(crate) use ipc::win32_menu::track::{WM_CANCELMODE, WM_INITMENUPOPUP, WM_UNINITMENUPOPUP};
 pub(crate) const ERROR_POPUP_ALREADY_ACTIVE: u32 = 1446;
 pub(crate) const ERROR_INVALID_MENU_HANDLE: u32 = 1401;
 pub(crate) const ERROR_NOACCESS: u32 = 998;
+pub(crate) const ERROR_INVALID_WINDOW_HANDLE: u32 = 1400;
 
 /// The window menu's commands, in the order a fresh system menu carries them.
 /// The text is what the caption menu shows for each command.
