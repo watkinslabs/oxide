@@ -166,8 +166,7 @@ fn track_popup_at(raw: u64, flags: u32, x: i32, y: i32, hwnd: u64) -> u64 {
     let already = with_entry(|entry| entry.menu_tracking.is_some()).unwrap_or(false);
     if already { crate::nt_rtl::set_last_win32_error(ERROR_POPUP_ALREADY_ACTIVE as u64); return 0; }
     let _ = with_entry(|entry| entry.menu_tracking = Some(super::session::MenuCancel { owner: hwnd, exit: false }));
-    let chosen = super::track_live::track_popup_menu(hwnd, menu.raw(), flags, x, y);
-    let _ = with_entry(|entry| entry.menu_tracking = None);
-    crate::nt_rtl::set_last_win32_error(0);
-    if chosen < 0 { 0 } else { chosen as u64 }
+    // The loop suspends in every window procedure it enters, so it reports the
+    // chosen command from the callback return that finishes it, not from here.
+    super::track_live::track_popup_menu(hwnd, menu.raw(), flags, x, y)
 }

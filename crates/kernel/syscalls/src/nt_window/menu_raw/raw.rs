@@ -22,8 +22,8 @@ pub(crate) const SC_RESTORE: u32 = 0xf120;
 pub(crate) const SC_SEPARATOR: u32 = 0;
 
 pub(crate) const WS_SYSMENU: u32 = 0x0008_0000;
-pub(crate) use ipc::win32_menu::popup::TPM_NONOTIFY;
-pub(crate) use ipc::win32_menu::track::{WM_CANCELMODE, WM_INITMENUPOPUP, WM_UNINITMENUPOPUP};
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) use ipc::win32_menu::track::WM_CANCELMODE;
 pub(crate) const ERROR_POPUP_ALREADY_ACTIVE: u32 = 1446;
 pub(crate) const ERROR_INVALID_MENU_HANDLE: u32 = 1401;
 pub(crate) const ERROR_NOACCESS: u32 = 998;

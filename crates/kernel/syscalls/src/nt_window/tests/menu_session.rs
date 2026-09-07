@@ -1,4 +1,6 @@
 use super::*;
+use ipc::win32_menu::track_loop::{classify, LoopAction, VK_ESCAPE, VK_F10, WM_CHAR, WM_KEYDOWN, WM_LBUTTONDOWN,
+    WM_LBUTTONUP, WM_MOUSEMOVE, WM_RBUTTONDBLCLK, WM_RBUTTONUP, WM_SYSCHAR, WM_SYSKEYDOWN};
 
 #[test]
 fn the_cancel_request_is_recognised_whatever_its_parameters() {

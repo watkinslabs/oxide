@@ -142,6 +142,9 @@ struct GuiEntry { group: Weak<sched::thread_group::ThreadGroup>, state: ipc::win
     startup_info_flags: u32, process_layout: u32,
     /// The menu-tracking session this thread is running, if any.
     menu_tracking: Option<menu_raw::session::MenuCancel>,
+    /// The resumable tracking loop of the thread running a modal menu, parked
+    /// here while the window procedure one of its steps entered runs.
+    menu_track: Option<menu_raw::session::PendingTrack>,
     /// Latched once any thread of this process has drained its input, which is
     /// what an input-idle wait on the process waits for. Nothing clears it.
     idle: bool }
