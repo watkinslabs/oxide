@@ -52,6 +52,7 @@ pub mod win32_window;
 pub mod win32_menu;
 /// Win32 accelerator tables used by the native NT GUI layer.
 pub mod win32_accel;
+pub mod win32_hook;
 /// Win32 GDI device-context and font state used by the native NT GUI layer.
 pub mod win32_gdi;
 /// Win32 input contexts (HIMC) used by the native NT GUI layer.

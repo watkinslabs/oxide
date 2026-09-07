@@ -43,6 +43,16 @@ pub(crate) mod nt_wine_accel_contract;
 pub(crate) mod nt_wine_dpi_context_contract;
 #[path = "nt_wine_window/builtin_classes.rs"]
 pub(crate) mod nt_wine_builtin_classes_contract;
+#[path = "nt_wine_window/clipboard_raw.rs"]
+pub(crate) mod nt_wine_clipboard_contract;
+#[path = "nt_wine_window/atom_raw.rs"]
+pub(crate) mod nt_wine_atom_contract;
+#[path = "nt_wine_window/hook_raw.rs"]
+pub(crate) mod nt_wine_hook_contract;
+#[path = "nt_wine_window/window_raw.rs"]
+pub(crate) mod nt_wine_window_family_contract;
+#[path = "nt_wine_window/station_raw.rs"]
+pub(crate) mod nt_wine_station_contract;
 #[path = "nt_wine_window/unclaimed.rs"]
 pub(crate) mod nt_wine_unclaimed_contract;
 #[path = "nt_wine_window/long_raw.rs"]

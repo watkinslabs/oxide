@@ -1,8 +1,7 @@
 //! Pointer-width child identifiers on the canonical HWND; never menu handles.
 use super::{WindowError, WindowId, WindowManager};
 
-const WS_CHILD: u32 = 0x4000_0000;
-const WS_POPUP: u32 = 0x8000_0000;
+use super::styles::{WS_CHILD, WS_POPUP};
 
 impl WindowManager {
     /// Replace an effective child's identifier without touching its menu association.

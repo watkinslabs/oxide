@@ -21,6 +21,10 @@ pub(crate) fn cleanup_thread_at_exit(task: &sched::Task) {
         (removed, atoms, paint_dcs)
     };
     { let mut owner = USER_ATOMS.lock(); for atom in atoms { owner.release_property_atom(atom); } }
+    // Every clipboard and hook reference the retiring thread and its windows
+    // hold has to go with them, or a later transaction names a dead window.
+    hook_forget_thread(task.tid as u64);
+    for window in &removed { clipboard_forget_window(*window); }
     for dc in paint_dcs { let _ = crate::nt_gdi::delete_paint_dc_current(dc); }
     // Revocation above prevents a concurrent sender from admitting new work for
     // the retiring owner between this cancellation and scheduler retirement.

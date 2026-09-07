@@ -107,6 +107,13 @@ impl GdiManager {
         Ok(handle)
     }
 
+    /// Window one active lease draws into; a DC with no live lease has none.
+    /// # C: O(N_dcs)
+    pub fn lease_window(&self, dc: u32) -> Option<u32> {
+        let (_, state) = self.dcs.iter().find(|(id, _)| *id == dc)?;
+        state.lease.as_ref().filter(|lease| lease.active).map(|lease| lease.hwnd)
+    }
+
     /// Release disables cached attributes, never the backing surface. HWND is intentionally not a lookup key.
     /// # C: O(DCs + regions + selected objects)
     pub fn release_dc_lease(&mut self, dc: u32) -> Result<(), GdiError> {

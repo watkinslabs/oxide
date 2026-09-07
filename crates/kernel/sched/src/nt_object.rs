@@ -17,7 +17,7 @@ mod file_share;
 mod handle;
 mod job;
 mod mutant;
-mod namespace;
+pub mod namespace;
 mod object;
 mod pipe;
 mod timer;

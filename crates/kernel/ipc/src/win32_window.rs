@@ -63,6 +63,27 @@ pub use extra::{OwnedWindow, WindowExtra, LongPtrError};
 #[path = "win32_window/class_long.rs"]
 mod class_long;
 pub use class_long::{GCL_MENUNAME, GCLP_HBRBACKGROUND, GCLP_HCURSOR, GCLP_HICON, GCLP_HMODULE, GCL_CBWNDEXTRA, GCL_CBCLSEXTRA, GCLP_WNDPROC, GCL_STYLE, GCW_ATOM, GCLP_HICONSM};
+#[path = "win32_window/styles.rs"]
+pub mod styles;
+#[path = "win32_window/tree.rs"]
+mod tree;
+pub use tree::{point_in_rect, HwndListFilter, CWP_ALL, CWP_SKIPDISABLED, CWP_SKIPINVISIBLE,
+    CWP_SKIPTRANSPARENT, GA_PARENT, GA_ROOT, GA_ROOTOWNER, HTCLIENT, HTERROR, HTNOWHERE, HTTRANSPARENT};
+#[path = "win32_window/defer.rs"]
+mod defer;
+pub use defer::{DeferBatches, DeferError, DeferredPosition, SWP_FRAMECHANGED, SWP_HIDEWINDOW,
+    SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOREDRAW, SWP_NOSIZE,
+    SWP_NOZORDER, SWP_SHOWWINDOW};
+#[path = "win32_window/attributes.rs"]
+mod attributes;
+pub use attributes::{title_bar_state, EnableOutcome, LayeredAttributes, WindowAttributes,
+    LWA_ALPHA, LWA_COLORKEY, STATE_SYSTEM_FOCUSABLE, STATE_SYSTEM_INVISIBLE, STATE_SYSTEM_UNAVAILABLE,
+    TITLE_BAR_ELEMENTS, ULW_ALPHA, ULW_COLORKEY, ULW_EX_NORESIZE, ULW_OPAQUE, WDA_NONE};
+#[path = "win32_window/clipboard.rs"]
+mod clipboard;
+pub use clipboard::{ClipboardError, ClipboardManager, ClipboardNotify, ClipFormat,
+    CF_BITMAP, CF_DIB, CF_DIBV5, CF_ENHMETAFILE, CF_LOCALE, CF_MAX, CF_METAFILEPICT,
+    CF_OEMTEXT, CF_PALETTE, CF_TEXT, CF_UNICODETEXT};
 #[path = "win32_window/cursor.rs"]
 mod cursor;
 #[path = "win32_window/window_icon.rs"]
@@ -135,8 +156,6 @@ pub const WM_TIMER: u32 = 0x0113;
 const KEY_REPEAT_COUNT_MASK: u32 = 0xffff;
 const KEY_PREVIOUS_STATE: u32 = 1 << 30;
 const KEY_TRANSITION_STATE: u32 = 1 << 31;
-pub const HTCLIENT: i64 = 1;
-pub const HTNOWHERE: i64 = 0;
 pub const SW_HIDE: u32 = 0;
 pub const WS_VISIBLE: u32 = 0x1000_0000;
 pub const EV_KEY: u16 = 0x01;
@@ -229,6 +248,13 @@ impl MessageQueue {
         self.messages.retain(|entry| entry.message.hwnd != Some(id));
         if self.caret.hwnd == Some(id) { self.caret.destroy(); self.caret_generation = self.caret_generation.saturating_add(1); }
     }
+    /// Window that owns the caret and the rectangle it occupies. # C: O(1)
+    pub fn caret_placement(&self) -> Option<(WindowId, WindowRect)> {
+        let hwnd = self.caret.hwnd?;
+        Some((hwnd, WindowRect { left: self.caret.x, top: self.caret.y,
+            right: self.caret.x.saturating_add(self.caret.width),
+            bottom: self.caret.y.saturating_add(self.caret.height) }))
+    }
     pub fn post_quit(&mut self, code: i32) { self.quit = Some(code); }
     fn quit_pending(&self) -> bool { self.quit.is_some() }
     fn quit_message(&mut self, filter: MessageFilter, remove: bool) -> Option<WinMessage> {
@@ -305,44 +331,20 @@ impl UserAtomTable {
         if index == self.names.len() { self.names.push(entry); } else { self.names[index] = entry; }
         USER_ATOM_BASE.checked_add(index as u16 + 1)
     }
+
+    /// Name of one string atom, absent when nothing holds that slot.
+    /// # C: O(1)
+    pub fn name(&self, atom: u16) -> Option<&[u16]> {
+        let index = atom.checked_sub(USER_ATOM_BASE)?.checked_sub(1)? as usize;
+        self.names.get(index)?.as_ref().map(|entry| entry.name.as_slice())
+    }
+
+    /// Whether one value can name a string atom at all. # C: O(1)
+    pub const fn is_string_atom(atom: u16) -> bool { atom > USER_ATOM_BASE }
 }
 
 impl Default for UserAtomTable { fn default() -> Self { Self::new() } }
 
-/// Shared clipboard admission state for one window station.
-///
-/// Clipboard data is intentionally not stored here yet; this owner records
-/// the server-side open transaction so later format operations cannot invent
-/// a second lock beside the canonical window-station state.
-pub struct ClipboardManager { open_thread: Option<u64>, open_window: Option<WindowId> }
-
-impl ClipboardManager {
-    /// Create an unopened clipboard state. # C: O(1)
-    pub const fn new() -> Self { Self { open_thread: None, open_window: None } }
-
-    /// Admit one `OpenClipboard` request using its window-station lock rule.
-    /// # C: O(1)
-    pub fn open(&mut self, thread: u64, window: Option<WindowId>) -> bool {
-        if self.open_thread.is_some() && self.open_window != window { return false; }
-        self.open_thread = Some(thread);
-        self.open_window = window;
-        true
-    }
-
-    /// Close the clipboard only from the thread that currently opened it.
-    /// # C: O(1)
-    pub fn close(&mut self, thread: u64) -> bool {
-        if self.open_thread != Some(thread) { return false; }
-        self.open_thread = None;
-        self.open_window = None;
-        true
-    }
-
-    /// Return whether this state has an active open transaction. # C: O(1)
-    pub const fn is_open(&self) -> bool { self.open_thread.is_some() }
-}
-
-impl Default for ClipboardManager { fn default() -> Self { Self::new() } }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct WindowRect { pub left: i32, pub top: i32, pub right: i32, pub bottom: i32 }
@@ -352,7 +354,7 @@ pub struct WindowRect { pub left: i32, pub top: i32, pub right: i32, pub bottom:
 pub struct WindowPresentRecord { pub window: WindowId, pub bounds: WindowRect, pub damage: Option<WindowRect> }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum WindowError { NoSuchWindow, NoMemory, InvalidParent, ClassInUse, WrongThread, NoFocus, QueueFull, PaintActive, PaintNotActive, NotVisible }
+pub enum WindowError { NoSuchWindow, NoMemory, InvalidParent, InvalidParameter, ClassInUse, WrongThread, NoFocus, QueueFull, PaintActive, PaintNotActive, NotVisible }
 
 pub struct WindowManager { next: u32, next_atom: u16, classes: Vec<WindowClass>, windows: Vec<(WindowId, OwnedWindow)>, rects: Vec<(WindowId, WindowRect)>, texts: Vec<(WindowId, Vec<u16>)>, dirty: Vec<(WindowId, PaintDamage)>, painting: Vec<(WindowId, PaintSession)>, queues: Vec<(u64, MessageQueue)>, timers: Vec<WindowTimer>, focus: Option<WindowId>, capture: Option<WindowId>, cursor: (i32, i32), buttons: u16, destroying: Vec<WindowId>, keyboard: KeyboardState, active: Option<WindowId>,
     /// Cursor and icon objects, the displayed cursor and its show-count.
@@ -363,7 +365,9 @@ pub struct WindowManager { next: u32, next_atom: u16, classes: Vec<WindowClass>,
     /// Menu and move/size roles the capture request also carries.
     menu_owner: Option<WindowId>, move_size: Option<WindowId>,
     hotkeys: hotkey::Hotkeys, inputs: thread_input::ThreadInputs, tracks: mouse_track::MouseTracks,
-    raw_input: rawinput::RawRegistrations, layouts: Vec<(u64, u64)>, icons: window_icon::WindowIconTable }
+    raw_input: rawinput::RawRegistrations, layouts: Vec<(u64, u64)>, icons: window_icon::WindowIconTable,
+    /// Per-window attributes only a few calls touch; absent means defaults.
+    attributes: Vec<(WindowId, attributes::WindowAttributes)> }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 struct WindowTimer { owner_tid: u64, hwnd: Option<WindowId>, id: u64, period_ns: u64, due_ns: u64, proc: u64 }
@@ -418,7 +422,7 @@ pub fn default_window_proc(message: u32) -> DefaultWindowResult {
         WM_NCCREATE => DefaultWindowResult::Return(1),
         WM_PAINT => DefaultWindowResult::ValidatePaint,
 
-        WM_NCHITTEST => DefaultWindowResult::Return(HTCLIENT),
+        WM_NCHITTEST => DefaultWindowResult::Return(HTCLIENT as i64),
         WM_NCACTIVATE => DefaultWindowResult::Return(1),
         _ => DefaultWindowResult::Return(0),
     }
@@ -431,7 +435,7 @@ pub fn default_window_proc_for_rect(message: u32, rect: WindowRect, lparam: i64)
     let x = (point as u16 as i16) as i32;
     let y = ((point >> 16) as u16 as i16) as i32;
     let inside = x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom;
-    DefaultWindowResult::Return(if inside { HTCLIENT } else { HTNOWHERE })
+    DefaultWindowResult::Return(if inside { HTCLIENT as i64 } else { HTNOWHERE as i64 })
 }
 
 #[cfg(test)]

@@ -89,7 +89,7 @@ use alloc::vec;
     #[test]
     fn default_window_proc_exposes_close_and_client_hit_test_policy() {
         assert_eq!(default_window_proc(WM_CLOSE), DefaultWindowResult::RequestDestroy);
-        assert_eq!(default_window_proc(WM_NCHITTEST), DefaultWindowResult::Return(HTCLIENT));
+        assert_eq!(default_window_proc(WM_NCHITTEST), DefaultWindowResult::Return(HTCLIENT as i64));
         assert_eq!(default_window_proc(WM_DESTROY), DefaultWindowResult::Return(0));
         assert_eq!(default_window_proc(WM_NCACTIVATE), DefaultWindowResult::Return(1));
     }
@@ -106,8 +106,8 @@ use alloc::vec;
         let rect = WindowRect { left: 10, top: 20, right: 110, bottom: 120 };
         let inside = ((40u16 as u64) | ((60u16 as u64) << 16)) as i64;
         let outside = ((9u16 as u64) | ((60u16 as u64) << 16)) as i64;
-        assert_eq!(default_window_proc_for_rect(WM_NCHITTEST, rect, inside), DefaultWindowResult::Return(HTCLIENT));
-        assert_eq!(default_window_proc_for_rect(WM_NCHITTEST, rect, outside), DefaultWindowResult::Return(HTNOWHERE));
+        assert_eq!(default_window_proc_for_rect(WM_NCHITTEST, rect, inside), DefaultWindowResult::Return(HTCLIENT as i64));
+        assert_eq!(default_window_proc_for_rect(WM_NCHITTEST, rect, outside), DefaultWindowResult::Return(HTNOWHERE as i64));
     }
 
     #[test]

@@ -4,13 +4,17 @@ const WM_ACTIVATE: u32 = 0x0006;
 const WM_ACTIVATEAPP: u32 = 0x001c;
 const WA_INACTIVE: u64 = 0;
 const WA_ACTIVE: u64 = 1;
-const WS_CHILD: u32 = 0x4000_0000;
-const WS_MINIMIZE: u32 = 0x2000_0000;
+use super::styles::{WS_CHILD, WS_MINIMIZE};
 const ACTIVATE_MINIMIZED: u64 = 0x0020_0000;
 
 impl WindowManager {
     /// # C: O(1)
     pub fn active_window(&self) -> Option<WindowId> { self.active }
+    /// Window that owns the caret, and where the caret sits.
+    /// # C: O(N_queues)
+    pub fn caret_placement(&self) -> Option<(WindowId, super::WindowRect)> {
+        self.queues.iter().find_map(|(_, queue)| queue.caret_placement())
+    }
 
     fn descendant_of(&self, id: WindowId, root: WindowId) -> bool {
         let mut cursor = Some(id);

@@ -19,6 +19,14 @@ mod client_procs;
 pub(crate) use client_procs::{publish_client_procs_for_current, claim_builtin_registration_for_current, claim_init_builtin_classes_callback_for_current};
 #[path = "nt_window/user_input.rs"]
 pub(crate) mod user_input;
+
+#[cfg(target_os = "oxide-kernel")]
+#[path = "nt_window/access.rs"]
+mod access;
+#[path = "nt_window/families.rs"]
+mod families;
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) use families::*;
 #[path = "nt_window/class_long.rs"]
 mod class_long_state;
 pub(crate) use class_long_state::{class_long_for_current, set_class_long_for_current, class_cursor_for_current, shared_oem_cursor_for_current, set_current_cursor_for_current, current_cursor_for_current};
@@ -45,8 +53,7 @@ mod nonclient;
 mod dc_lease;
 pub(crate) use dc_lease::dc_lease_context_for_current;
 pub(crate) use nonclient::nonclient_scroll_context_for_current;
-pub(crate) use control::{set_control_id_for_current, control_id_for_current};
-pub(crate) use control::{get_window_long_for_current, set_window_long_with_encoding_for_current};
+pub(crate) use control::{set_control_id_for_current, control_id_for_current, get_window_long_for_current, set_window_long_with_encoding_for_current};
 #[path = "nt_window/teardown.rs"]
 mod teardown;
 pub(crate) use teardown::cleanup_thread_at_exit;
@@ -85,10 +92,9 @@ pub(crate) use accel::{accel_create_for_current, accel_copy_for_current, accel_d
 pub(crate) use keyboard::{get_key_state_current, get_async_key_state_current,
     get_keyboard_state_current, set_keyboard_state_current};
 pub(crate) use bridge::handle_event as compositor_event;
-pub(crate) use create_lifecycle::{CreateReturnConvention, CreateStructArgs};
+pub(crate) use create_lifecycle::{CreateReturnConvention, CreateStructArgs, callback_layout, serialize_create_struct, CALLBACK_FRAME_BYTES};
 pub(crate) use create::begin_create_lifecycle_for_current;
 #[cfg(target_arch = "x86_64")]
-pub(crate) use create_lifecycle::{callback_layout, serialize_create_struct, CALLBACK_FRAME_BYTES};
 #[cfg(target_arch = "x86_64")]
 #[path = "nt_window/callbacks.rs"]
 mod callbacks;
@@ -127,7 +133,9 @@ struct GuiEntry { group: Weak<sched::thread_group::ThreadGroup>, state: ipc::win
     /// classes it names have already been registered for this process.
     client_procs_w: u64, builtins_registered: bool, init_callback_issued: bool,
     /// Input-context objects this process owns, one default per thread.
-    contexts: ipc::win32_imc::InputContexts }
+    contexts: ipc::win32_imc::InputContexts,
+    /// Open deferred window-position batches of this process.
+    defer: ipc::win32_window::DeferBatches }
 static GUI: Spinlock<Vec<GuiEntry>, GuiLockClass> = Spinlock::new(Vec::new());
 #[cfg(target_os = "oxide-kernel")]
 static USER_ATOMS: Spinlock<ipc::win32_window::UserAtomTable, GuiLockClass> = Spinlock::new(ipc::win32_window::UserAtomTable::new());
@@ -142,30 +150,6 @@ pub fn register_window_message_for_current(name: &[u16]) -> Option<u16> {
     let cur = sched::live::current()?;
     if !cur.is_nt_personality() { return None; }
     USER_ATOMS.lock().register(name)
-}
-
-/// Admit the raw Wine `OpenClipboard` operation against the shared
-/// window-station owner. # C: O(N_process_gui_states + N_windows)
-#[cfg(target_os = "oxide-kernel")]
-pub fn open_clipboard_for_current(hwnd: u64) -> bool {
-    let Some(cur) = sched::live::current() else { return false; };
-    if !cur.is_nt_personality() || hwnd > u32::MAX as u64 { return false; }
-    let window = if hwnd == 0 { None } else {
-        let Some(window) = ipc::win32_window::WindowId::from_raw(hwnd as u32) else { return false; };
-        let mut entries = GUI.lock();
-        entries.retain(|entry| entry.group.upgrade().is_some());
-        if !entries.iter().any(|entry| entry.state.get(window).is_some()) { return false; }
-        Some(window)
-    };
-    CLIPBOARD.lock().open(cur.tid as u64, window)
-}
-
-/// Release the shared clipboard lock from its opening thread. # C: O(1)
-#[cfg(target_os = "oxide-kernel")]
-pub fn close_clipboard_for_current() -> bool {
-    let Some(cur) = sched::live::current() else { return false; };
-    if !cur.is_nt_personality() { return false; }
-    CLIPBOARD.lock().close(cur.tid as u64)
 }
 
 /// Resolve a visible window rectangle from the current NT process's canonical HWND state. # C: O(N_process_gui_states + N_windows)
@@ -360,6 +344,18 @@ pub(crate) fn register_class_with_encoding_for_current(name: &[u16], wndproc: u6
 /// # C: O(processes + classes); raw class flags enter the canonical class owner.
 pub(crate) fn register_class_with_style_for_current(name: &[u16], wndproc: u64, extra: i32, unicode: bool, style: u32) -> Option<u64> {
     register_class_with_background_for_current(name, wndproc, extra, unicode, style, 0)
+}
+
+/// Name of one system-wide user atom, copied into `out`. # C: O(N_user_atoms)
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) fn user_atom_name(atom: u16, out: &mut Vec<u16>) -> Option<()> {
+    let cur = sched::live::current().filter(|task| task.is_nt_personality())?;
+    let _ = cur;
+    let atoms = USER_ATOMS.lock();
+    let name = atoms.name(atom)?;
+    out.try_reserve_exact(name.len()).ok()?;
+    out.extend_from_slice(name);
+    Some(())
 }
 
 /// Unregister one process-local Wine class through the canonical owner.
