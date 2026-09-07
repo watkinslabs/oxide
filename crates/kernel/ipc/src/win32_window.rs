@@ -65,10 +65,40 @@ mod class_long;
 pub use class_long::{GCL_MENUNAME, GCLP_HBRBACKGROUND, GCLP_HCURSOR, GCLP_HICON, GCLP_HMODULE, GCL_CBWNDEXTRA, GCL_CBCLSEXTRA, GCLP_WNDPROC, GCL_STYLE, GCW_ATOM, GCLP_HICONSM};
 #[path = "win32_window/cursor.rs"]
 mod cursor;
+#[path = "win32_window/cursor_object.rs"]
+pub mod cursor_object;
+pub use cursor_object::{CursorFrame, CursorIconDesc, CursorIcons, FrameInfo, IconInfo, LR_SHARED, MAX_ANI_STEPS, OEM_CURSOR_BASE};
+#[path = "win32_window/cursor_pos.rs"]
+pub mod cursor_pos;
+pub use cursor_pos::{clip_within, move_points_from, CursorPos, CURSOR_HISTORY};
+#[path = "win32_window/capture.rs"]
+pub mod capture;
+pub use capture::{CAPTURE_MENU, CAPTURE_MOVESIZE};
+#[path = "win32_window/hotkey.rs"]
+pub mod hotkey;
+pub use hotkey::{Hotkey, HotkeyError, Hotkeys, MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN};
+#[path = "win32_window/thread_input.rs"]
+pub mod thread_input;
+pub use thread_input::{AttachError, ThreadInputs};
+#[path = "win32_window/mouse_track.rs"]
+pub mod mouse_track;
+pub use mouse_track::{track_action, MouseTracking, MouseTracks, TrackAction, DEFAULT_HOVER_TIME, HOVER_DEFAULT, TME_CANCEL, TME_HOVER, TME_LEAVE, TME_NONCLIENT, TME_QUERY};
+#[path = "win32_window/rawinput.rs"]
+pub mod rawinput;
+#[path = "win32_window/queue_status.rs"]
+pub mod queue_status;
+pub use queue_status::{hardware_bit, queue_status_result, thread_state, ThreadState, QS_ALLINPUT, QS_ALLPOSTMESSAGE, QS_INPUT, QS_KEY, QS_MOUSEBUTTON, QS_PAINT, QS_POSTED, QS_SENDMESSAGE, QS_SMRESULT, QS_TIMER};
+#[path = "win32_window/kbd_tables.rs"]
+pub mod kbd_tables;
+#[path = "win32_window/kbd_layout.rs"]
+pub mod kbd_layout;
+#[path = "win32_window/kbd_state.rs"]
+pub mod kbd_state;
+pub use kbd_state::{activate_layout, layout_name, locale_layout, LayoutError, DEFAULT_LOCALE, KL_NAMELENGTH};
 #[path = "win32_window/set_cursor.rs"]
 mod set_cursor;
 pub use set_cursor::{SetCursorAction, SetCursorTarget, set_cursor_action, parent_gets_first_chance, split_lparam, WM_SETCURSOR};
-pub use cursor::{OEM_CURSOR_BASE, IDC_ARROW, IDC_IBEAM, IDC_SIZENWSE, IDC_SIZENESW, IDC_SIZEWE, IDC_SIZENS};
+pub use cursor::{IDC_ARROW, IDC_IBEAM, IDC_SIZENWSE, IDC_SIZENESW, IDC_SIZEWE, IDC_SIZENS};
 
 pub const WM_CLOSE: u32 = 0x0010;
 pub const WM_DESTROY: u32 = 0x0002;
@@ -167,12 +197,19 @@ const MESSAGE_QUEUE_LIMIT: usize = 10_000;
 #[derive(Default)]
 pub struct MessageQueue { messages: VecDeque<QueuedMessage>, quit: Option<i32>, keyboard: KeyboardState, caret: CaretState, caret_generation: u64, caret_blink: CaretBlink,
     /// Monotonic nanoseconds at which the owning thread last read this queue.
-    access_ns: u64 }
+    access_ns: u64,
+    /// Wake bits set since the last query that reported them.
+    changed: u32 }
 
 impl MessageQueue {
     pub fn post(&mut self, message: WinMessage) -> Result<(), QueueError> {
+        self.post_with_bits(message, queue_status::QS_POSTED)
+    }
+    /// Enqueue one message carrying the wake bits its origin sets. # C: O(1)
+    pub fn post_with_bits(&mut self, message: WinMessage, bits: u32) -> Result<(), QueueError> {
         if self.messages.len() >= MESSAGE_QUEUE_LIMIT { return Err(QueueError::Full); }
-        self.messages.push_back(QueuedMessage { message, key: None });
+        self.changed |= bits;
+        self.messages.push_back(QueuedMessage { message, key: None, bits });
         Ok(())
     }
     pub fn peek(&mut self, filter: MessageFilter, remove: bool) -> Option<WinMessage> {
@@ -315,8 +352,15 @@ pub struct WindowPresentRecord { pub window: WindowId, pub bounds: WindowRect, p
 pub enum WindowError { NoSuchWindow, NoMemory, InvalidParent, ClassInUse, WrongThread, NoFocus, QueueFull, PaintActive, PaintNotActive, NotVisible }
 
 pub struct WindowManager { next: u32, next_atom: u16, classes: Vec<WindowClass>, windows: Vec<(WindowId, OwnedWindow)>, rects: Vec<(WindowId, WindowRect)>, texts: Vec<(WindowId, Vec<u16>)>, dirty: Vec<(WindowId, PaintDamage)>, painting: Vec<(WindowId, PaintSession)>, queues: Vec<(u64, MessageQueue)>, timers: Vec<WindowTimer>, focus: Option<WindowId>, capture: Option<WindowId>, cursor: (i32, i32), buttons: u16, destroying: Vec<WindowId>, keyboard: KeyboardState, active: Option<WindowId>,
-    /// Shared OEM cursor cache and the cursor the pointer displays.
-    cursors: Vec<(u32, u64)>, current_cursor: u64 }
+    /// Cursor and icon objects, the displayed cursor and its show-count.
+    cursors: cursor_object::CursorIcons, current_cursor: u64, cursor_count: i32,
+    /// Cursor clip rectangle, its last-change tick, and the position history.
+    cursor_clip: Option<WindowRect>, cursor_change: u32,
+    cursor_history: [cursor_pos::CursorPos; cursor_pos::CURSOR_HISTORY], cursor_latest: usize,
+    /// Menu and move/size roles the capture request also carries.
+    menu_owner: Option<WindowId>, move_size: Option<WindowId>,
+    hotkeys: hotkey::Hotkeys, inputs: thread_input::ThreadInputs, tracks: mouse_track::MouseTracks,
+    raw_input: rawinput::RawRegistrations, layouts: Vec<(u64, u64)> }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 struct WindowTimer { owner_tid: u64, hwnd: Option<WindowId>, id: u64, period_ns: u64, due_ns: u64, proc: u64 }
