@@ -462,10 +462,16 @@ mod tests {
 
     #[test]
     fn wine_menuiteminfo_masks_match_win32_contract() {
-        assert_eq!(crate::nt_window::MENUITEMINFO_MASK_STATE, 0x0000_0001);
-        assert_eq!(crate::nt_window::MENUITEMINFO_MASK_ID, 0x0000_0002);
-        assert_eq!(crate::nt_window::MENUITEMINFO_MASK_SUBMENU, 0x0000_0004);
-        assert_eq!(crate::nt_window::MENUITEMINFO_MASK_STRING, 0x0000_0040);
+        use ipc::win32_menu::item_info;
+        assert_eq!(item_info::MIIM_STATE, 0x0000_0001);
+        assert_eq!(item_info::MIIM_ID, 0x0000_0002);
+        assert_eq!(item_info::MIIM_SUBMENU, 0x0000_0004);
+        assert_eq!(item_info::MIIM_TYPE, 0x0000_0010);
+        assert_eq!(item_info::MIIM_STRING, 0x0000_0040);
+        assert_eq!(item_info::MIIM_FTYPE, 0x0000_0100);
+        assert_eq!(item_info::MENUITEMINFO_BYTES, 80);
+        assert_eq!(item_info::MENUITEMINFO_TYPE_MASK, 0x0000_6f64);
+        assert_eq!(item_info::MENUITEMINFO_STATE_MASK & 0xffff, 0x0000_108b);
     }
 
     #[test]

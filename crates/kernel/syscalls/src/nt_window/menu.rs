@@ -187,7 +187,7 @@ pub(crate) fn draw_menu_bar_for_current(hwnd: u64) -> u64 {
 /// canonical process menu owner. # C: O(N_process_gui_states + N_items)
 #[cfg(target_os = "oxide-kernel")]
 pub(crate) fn thunked_menu_item_info(raw: u64, position: u64, flags: u64, method: u64, info: u64) -> u64 {
-    const MENUITEMINFO_BYTES: u32 = 80;
+    use ipc::win32_menu::item_info;
     const SET: u64 = 0;
     const INSERT: u64 = 1;
     const GET_ID: u64 = 5;
@@ -206,56 +206,52 @@ pub(crate) fn thunked_menu_item_info(raw: u64, position: u64, flags: u64, method
         let Ok(item) = entries[index].menus.item(menu, position, flags) else { return ipc::win32_menu::MENU_NOT_FOUND as u64; };
         return if method == GET_ID { if item.submenu.is_some() { u32::MAX as u64 } else { item.id as u64 } } else if method == GET_STATE { item.state as u64 } else { item.submenu.unwrap_or(0) as u64 };
     }
-    if info == 0 || uaccess::get_user_u32(info).ok() != Some(MENUITEMINFO_BYTES) { return 0; }
-    let Some(mask_address) = info.checked_add(4) else { return 0; };
-    let Some(state_address) = info.checked_add(12) else { return 0; };
-    let Some(id_address) = info.checked_add(16) else { return 0; };
-    let Some(submenu_address) = info.checked_add(24) else { return 0; };
-    let Some(text_pointer_address) = info.checked_add(56) else { return 0; };
-    let Some(text_count_address) = info.checked_add(64) else { return 0; };
-    let mask = uaccess::get_user_u32(mask_address).ok().unwrap_or(0);
-    let state = uaccess::get_user_u32(state_address).ok().unwrap_or(0);
-    let id = uaccess::get_user_u32(id_address).ok().unwrap_or(0);
-    let submenu = uaccess::get_user_u64(submenu_address).ok().and_then(|value| (value != 0).then_some(value as u32));
-    let text_pointer = uaccess::get_user_u64(text_pointer_address).ok().unwrap_or(0);
-    let text_count = uaccess::get_user_u32(text_count_address).ok().unwrap_or(0).min(4096);
+    let mut image = [0u8; item_info::MENUITEMINFO_BYTES];
+    if info == 0 || uaccess::copy_from_user(&mut image, info).is_err() { return 0; }
+    let Some(fields) = item_info::ItemInfo::decode(&image) else { return 0; };
+    let field = |offset: usize| info.checked_add(offset as u64);
     if method == GET_INFO_W {
         let Ok(item) = entries[index].menus.item(menu, position, flags) else { return 0; };
-        if mask & MENUITEMINFO_MASK_STATE != 0 && uaccess::copy_to_user(state_address, &item.state.to_le_bytes()).is_err() { return 0; }
-        if mask & MENUITEMINFO_MASK_ID != 0 && uaccess::copy_to_user(id_address, &item.id.to_le_bytes()).is_err() { return 0; }
-        if mask & MENUITEMINFO_MASK_SUBMENU != 0 && uaccess::copy_to_user(submenu_address, &item.submenu.unwrap_or(0).to_le_bytes()).is_err() { return 0; }
-        if mask & MENUITEMINFO_MASK_STRING != 0 {
-            let length = item.text.len();
-            if text_pointer != 0 && text_count != 0 {
-                let copied = length.min(text_count as usize - 1);
+        let store = |offset: usize, bytes: &[u8]| field(offset).is_some_and(|address| uaccess::copy_to_user(address, bytes).is_ok());
+        if fields.mask & item_info::MIIM_FTYPE != 0 && !store(item_info::OFFSET_TYPE, &(item.state & item_info::MENUITEMINFO_TYPE_MASK).to_le_bytes()) { return 0; }
+        if fields.mask & item_info::MIIM_STATE != 0 && !store(item_info::OFFSET_STATE, &(item.state & item_info::MENUITEMINFO_STATE_MASK).to_le_bytes()) { return 0; }
+        if fields.mask & item_info::MIIM_ID != 0 && !store(item_info::OFFSET_ID, &item.id.to_le_bytes()) { return 0; }
+        // The reference clears the submenu field of every query that did not
+        // ask for it, so a caller never reads a stale handle out of its own
+        // block.
+        if !store(item_info::OFFSET_SUBMENU, &u64::from(if fields.mask & item_info::MIIM_SUBMENU != 0 { item.submenu.unwrap_or(0) } else { 0 }).to_le_bytes()) { return 0; }
+        if fields.mask & (item_info::MIIM_STRING | item_info::MIIM_TYPE) != 0 {
+            let units = item.text.iter().position(|unit| *unit == 0).unwrap_or(item.text.len());
+            let has_buffer = fields.text != 0 && fields.count != 0;
+            let copied = item_info::query_text_units(units, fields.count, has_buffer);
+            if has_buffer {
                 for (offset, unit) in item.text.iter().take(copied).enumerate() {
-                    let Some(address) = text_pointer.checked_add(offset as u64 * 2) else { return 0; };
+                    let Some(address) = fields.text.checked_add(offset as u64 * 2) else { return 0; };
                     if uaccess::copy_to_user(address, &unit.to_le_bytes()).is_err() { return 0; }
                 }
-                let Some(terminator) = text_pointer.checked_add(copied as u64 * 2) else { return 0; };
-                if uaccess::copy_to_user(terminator, &[0, 0]).is_err() { return 0; }
-                if uaccess::copy_to_user(text_count_address, &(copied as u32).to_le_bytes()).is_err() { return 0; }
-            } else if uaccess::copy_to_user(text_count_address, &(length as u32).to_le_bytes()).is_err() { return 0; }
+                let Some(terminator) = fields.text.checked_add(copied as u64 * 2) else { return 0; };
+                if uaccess::copy_to_user(terminator, &0u16.to_le_bytes()).is_err() { return 0; }
+            }
+            if !store(item_info::OFFSET_COUNT, &(copied as u32).to_le_bytes()) { return 0; }
         }
         return 1;
     }
-    let text = if mask & MENUITEMINFO_MASK_STRING != 0 {
-        if text_pointer == 0 { return 0; }
-        let mut value = Vec::new();
-        for offset in 0..text_count { let Some(address) = text_pointer.checked_add(offset as u64 * 2) else { return 0; }; let mut bytes = [0u8; 2]; if uaccess::copy_from_user(&mut bytes, address).is_err() { return 0; } let unit = u16::from_le_bytes(bytes); if unit == 0 { break; } value.push(unit); }
-        Some(value)
-    } else { None };
-    let item = ipc::win32_menu::MenuItem { id, state, text: text.clone().unwrap_or_default(), submenu };
+    // A set or an insert carries its text as a NUL-terminated string at the
+    // pointer field: the character count belongs to a query, and the loader
+    // that appends a resource item leaves it zero.
+    let text = match fields.read_text(|address| { let mut bytes = [0u8; 2]; uaccess::copy_from_user(&mut bytes, address).ok()?; Some(u16::from_le_bytes(bytes)) }) {
+        Ok(text) => text,
+        Err(_) => return 0,
+    };
     if method == INSERT {
         let insert_position = if flags & BY_POSITION != 0 && position == u32::MAX { entries[index].menus.count(menu).ok().unwrap_or(usize::MAX) } else { position as usize };
+        let item = ipc::win32_menu::MenuItem { id: fields.id_value().unwrap_or(0), state: fields.insert_flags(),
+            text: text.unwrap_or_default(), submenu: fields.submenu_value().flatten() };
         if entries[index].menus.insert(menu, insert_position, item).is_err() { return 0; }
         return 1;
     }
     if method != SET { return 0; }
     let Ok(item_position) = entries[index].menus.position(menu, position, flags) else { return 0; };
-    let id_value = (mask & MENUITEMINFO_MASK_ID != 0).then_some(id);
-    let state_value = (mask & MENUITEMINFO_MASK_STATE != 0).then_some(state);
-    let submenu_value = (mask & MENUITEMINFO_MASK_SUBMENU != 0).then_some(submenu);
-    if entries[index].menus.set_item(menu, item_position, id_value, state_value, text, submenu_value).is_err() { return 0; }
+    if entries[index].menus.set_item(menu, item_position, fields.id_value(), fields.type_value(), fields.state_value(), text, fields.submenu_value()).is_err() { return 0; }
     1
 }

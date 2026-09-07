@@ -6,7 +6,6 @@ pub const MF_GRAYED: u32 = 0x0000_0001;
 pub const MF_DISABLED: u32 = 0x0000_0002;
 pub const MF_CHECKED: u32 = 0x0000_0008;
 pub const MF_BYPOSITION: u32 = 0x0000_0400;
-pub const MF_STATE_MASK: u32 = MF_GRAYED | MF_DISABLED | MF_CHECKED;
 pub const MENU_NOT_FOUND: u32 = u32::MAX;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -32,6 +31,8 @@ struct MenuRecord { popup: bool, items: Vec<MenuItem>, info: MenuInfo }
 pub mod bar_hit;
 #[path = "win32_menu/info.rs"]
 mod info;
+#[path = "win32_menu/item_info.rs"]
+pub mod item_info;
 #[path = "win32_menu/draw.rs"]
 pub mod draw;
 #[path = "win32_menu/popup.rs"]
@@ -120,10 +121,14 @@ impl MenuManager {
     pub fn item_mut_by_position(&mut self, menu: MenuId, position: usize) -> Result<&mut MenuItem, MenuError> {
         self.record_mut(menu).ok_or(MenuError::NoSuchMenu)?.items.get_mut(position).ok_or(MenuError::NoSuchItem)
     }
-    pub fn set_item(&mut self, menu: MenuId, position: usize, id: Option<u32>, state: Option<u32>, text: Option<Vec<u16>>, submenu: Option<Option<u32>>) -> Result<(), MenuError> {
+    /// Apply one MENUITEMINFOW transaction to an item. The type bits and the
+    /// state bits of its flag word are replaced independently, each only when
+    /// its own mask named it. # C: O(N_menus + N_items)
+    pub fn set_item(&mut self, menu: MenuId, position: usize, id: Option<u32>, item_type: Option<u32>, state: Option<u32>, text: Option<Vec<u16>>, submenu: Option<Option<u32>>) -> Result<(), MenuError> {
         let item = self.item_mut_by_position(menu, position)?;
         if let Some(id) = id { item.id = id; }
-        if let Some(state) = state { item.state = state & MF_STATE_MASK; }
+        if let Some(value) = item_type { item.state = (item.state & !item_info::MENUITEMINFO_TYPE_MASK) | (value & item_info::MENUITEMINFO_TYPE_MASK); }
+        if let Some(value) = state { item.state = (item.state & item_info::ITEM_TYPE_MASK) | (value & item_info::MENUITEMINFO_STATE_MASK); }
         if let Some(text) = text { item.text = text; }
         if let Some(submenu) = submenu { item.submenu = submenu; }
         Ok(())
@@ -228,10 +233,10 @@ mod tests {
         let menu = menus.create().unwrap();
         menus.insert(menu, 0, MenuItem { id: 3, state: 0, text: Vec::new(), submenu: None }).unwrap();
         assert_eq!(menus.count(menu), Ok(1));
-        menus.set_item(menu, 0, Some(9), Some(MF_CHECKED), Some(alloc::vec![65, 0]), Some(Some(2))).unwrap();
+        menus.set_item(menu, 0, Some(9), None, Some(MF_CHECKED), Some(alloc::vec![65, 0]), Some(Some(2))).unwrap();
         assert_eq!(menus.item(menu, 0, MF_BYPOSITION).unwrap().id, 9);
         assert_eq!(menus.item(menu, 9, 0).unwrap().submenu, Some(2));
-        assert_eq!(menus.set_item(menu, 4, Some(1), None, None, None), Err(MenuError::NoSuchItem));
+        assert_eq!(menus.set_item(menu, 4, Some(1), None, None, None, None), Err(MenuError::NoSuchItem));
     }
 
     #[test]

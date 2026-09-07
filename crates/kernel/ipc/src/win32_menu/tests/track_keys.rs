@@ -112,7 +112,7 @@ fn right_inside_a_popup_opens_the_submenu_of_the_highlighted_item() {
     let (mut menus, bar, file, _) = bar_chain();
     let deep = menus.create_popup().unwrap();
     menus.insert(deep, 0, MenuItem { id: 300, state: 0, text: text("&Deep"), submenu: None }).unwrap();
-    menus.set_item(MenuId::from_raw(file).unwrap(), 0, None, None, None, Some(Some(deep.raw()))).unwrap();
+    menus.set_item(MenuId::from_raw(file).unwrap(), 0, None, None, None, None, Some(Some(deep.raw()))).unwrap();
     let mut state = tracking(bar);
     state.set_current(file, 9);
     focus(&mut menus, file, 0);
