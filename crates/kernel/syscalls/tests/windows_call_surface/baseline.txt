@@ -1,24 +1,4 @@
 # Windows call-surface gaps still open. Ratchet: entries only leave.
-bind cryptsp.dll advapi32.dll MD4Final
-bind cryptsp.dll advapi32.dll MD4Init
-bind cryptsp.dll advapi32.dll MD4Update
-bind ws2_32.dll ntdll.dll RtlIpv4AddressToStringExA
-bind ws2_32.dll ntdll.dll RtlIpv4StringToAddressA
-bind ws2_32.dll ntdll.dll RtlIpv4StringToAddressExA
-bind ws2_32.dll ntdll.dll RtlIpv6AddressToStringExA
-bind ws2_32.dll ntdll.dll RtlIpv6StringToAddressA
-bind ws2_32.dll ntdll.dll RtlIpv6StringToAddressExA
-bind ws2_32.dll ntdll.dll RtlNtStatusToDosErrorNoTeb
-ntdll MD4Final
-ntdll MD4Init
-ntdll MD4Update
-ntdll RtlIpv4AddressToStringExA
-ntdll RtlIpv4StringToAddressA
-ntdll RtlIpv4StringToAddressExA
-ntdll RtlIpv6AddressToStringExA
-ntdll RtlIpv6StringToAddressA
-ntdll RtlIpv6StringToAddressExA
-ntdll RtlNtStatusToDosErrorNoTeb
 win32u 0x1084 NtGdiAbortDoc
 win32u 0x1085 NtGdiAbortPath
 win32u 0x1087 NtGdiAddFontMemResourceEx

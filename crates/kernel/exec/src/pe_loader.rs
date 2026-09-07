@@ -23,9 +23,9 @@ pub struct NtRuntime {
     pub wine_dispatcher: u64,
     pub wine_unix_dispatcher: u64,
     pub wine_unixlib_handle: u64,
-    addresses: [u64; 513],
+    addresses: [u64; 533],
 }
-const NTDLL_EXPORTS: [&[u8]; 513] = [
+const NTDLL_EXPORTS: [&[u8]; 533] = [
     b"NtAllocateVirtualMemory", b"NtFreeVirtualMemory", b"NtProtectVirtualMemory", b"NtQueryVirtualMemory",
     b"NtTerminateProcess", b"NtCreateEvent", b"NtClose", b"NtSetEvent", b"NtResetEvent", b"NtWaitForSingleObject",
     b"NtCreateFile", b"NtOpenFile", b"NtReadFile", b"NtWriteFile", b"NtQueryInformationFile", b"NtSetInformationFile", b"NtQueryDirectoryFile", b"NtWaitForMultipleObjects",
@@ -287,6 +287,7 @@ const NTDLL_EXPORTS: [&[u8]; 513] = [
     b"LdrGetDllHandle",
     b"RtlFindExportedRoutineByName",
     b"NtTestAlert", b"NtContinue", b"NtMakePermanentObject", b"RtlDeNormalizeProcessParams", b"TpPostWork", b"TpReleaseWork", b"TpReleaseTimer", b"TpSetTimer",
+    b"RtlIpv4AddressToStringA", b"RtlIpv4AddressToStringW", b"RtlIpv4AddressToStringExA", b"RtlIpv4AddressToStringExW", b"RtlIpv4StringToAddressA", b"RtlIpv4StringToAddressW", b"RtlIpv4StringToAddressExA", b"RtlIpv4StringToAddressExW", b"RtlIpv6AddressToStringA", b"RtlIpv6AddressToStringW", b"RtlIpv6AddressToStringExA", b"RtlIpv6AddressToStringExW", b"RtlIpv6StringToAddressA", b"RtlIpv6StringToAddressW", b"RtlIpv6StringToAddressExA", b"RtlIpv6StringToAddressExW", b"RtlNtStatusToDosErrorNoTeb", b"MD4Init", b"MD4Update", b"MD4Final",
 ];
 const WINE_SYSCALL_DISPATCHER: &[u8] = b"__wine_syscall_dispatcher";
 fn runtime_stub_bytes(index: usize) -> usize {
@@ -485,7 +486,7 @@ pub fn map_nt_runtime(as_: &AddressSpace) -> Result<NtRuntime, pe::Error> {
     let arena = as_.get_unmapped_area(mapped_bytes).map_err(|_| pe::Error::Einval)?.as_u64();
     let base_address = UserVirtAddr::new(arena).ok_or(pe::Error::Einval)?;
     let mut code = alloc::vec![0u8; mapped_bytes];
-    let mut addresses = [0u64; 513];
+    let mut addresses = [0u64; 533];
     let mut offset = 0usize;
     for index in 0..NTDLL_EXPORTS.len() {
         // Keep the debug exports tied to their actual catalog indexes. This
@@ -957,6 +958,26 @@ pub fn map_nt_runtime(as_: &AddressSpace) -> Result<NtRuntime, pe::Error> {
             510 => syscall::nt::NtService::TpReleaseWork,
             511 => syscall::nt::NtService::TpReleaseTimer,
             512 => syscall::nt::NtService::TpSetTimer,
+            513 => syscall::nt::NtService::RtlIpv4AddressToStringA,
+            514 => syscall::nt::NtService::RtlIpv4AddressToStringW,
+            515 => syscall::nt::NtService::RtlIpv4AddressToStringExA,
+            516 => syscall::nt::NtService::RtlIpv4AddressToStringExW,
+            517 => syscall::nt::NtService::RtlIpv4StringToAddressA,
+            518 => syscall::nt::NtService::RtlIpv4StringToAddressW,
+            519 => syscall::nt::NtService::RtlIpv4StringToAddressExA,
+            520 => syscall::nt::NtService::RtlIpv4StringToAddressExW,
+            521 => syscall::nt::NtService::RtlIpv6AddressToStringA,
+            522 => syscall::nt::NtService::RtlIpv6AddressToStringW,
+            523 => syscall::nt::NtService::RtlIpv6AddressToStringExA,
+            524 => syscall::nt::NtService::RtlIpv6AddressToStringExW,
+            525 => syscall::nt::NtService::RtlIpv6StringToAddressA,
+            526 => syscall::nt::NtService::RtlIpv6StringToAddressW,
+            527 => syscall::nt::NtService::RtlIpv6StringToAddressExA,
+            528 => syscall::nt::NtService::RtlIpv6StringToAddressExW,
+            529 => syscall::nt::NtService::RtlNtStatusToDosErrorNoTeb,
+            530 => syscall::nt::NtService::Md4Init,
+            531 => syscall::nt::NtService::Md4Update,
+            532 => syscall::nt::NtService::Md4Final,
             _ => syscall::nt::NtService::FreeHeap,
         };
         let bytes = if index == 505 { pe::nt_stub::encode_x64_zero_arg_stub(selector.entry()).to_vec() }

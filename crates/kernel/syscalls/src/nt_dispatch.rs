@@ -331,6 +331,8 @@ pub fn dispatch(call: NtCall) -> u64 {
     if let Some(result) = crate::nt_job::dispatch(call) { return result; }
     if let Some(result) = crate::nt_file::dispatch_native(call) { return result; }
     if let Some(result) = crate::nt_rtl::dispatch(call) { return result; }
+    if let Some(result) = crate::nt_ip_string::dispatch(call) { return result; }
+    if let Some(result) = crate::nt_md4::dispatch(call) { return result; }
     if call.service == syscall::nt::NtService::RelayCall {
         #[cfg(feature = "debug-faultdiag")]
         {

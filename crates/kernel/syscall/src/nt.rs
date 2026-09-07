@@ -344,6 +344,46 @@ pub enum NtService {
     TpSetTimer = 551,
     /// Bind a connected desktop bridge socket capability to the current process.
     BindCompositor = 552,
+    /// Render one IPv4 address as narrow dotted-quad text.
+    RtlIpv4AddressToStringA = 553,
+    /// Render one IPv4 address as wide dotted-quad text.
+    RtlIpv4AddressToStringW = 554,
+    /// Render one IPv4 address and port as narrow text, bounded by the caller's size.
+    RtlIpv4AddressToStringExA = 555,
+    /// Render one IPv4 address and port as wide text, bounded by the caller's size.
+    RtlIpv4AddressToStringExW = 556,
+    /// Parse narrow IPv4 text, reporting where the scan stopped.
+    RtlIpv4StringToAddressA = 557,
+    /// Parse wide IPv4 text, reporting where the scan stopped.
+    RtlIpv4StringToAddressW = 558,
+    /// Parse narrow IPv4 text with its optional port suffix.
+    RtlIpv4StringToAddressExA = 559,
+    /// Parse wide IPv4 text with its optional port suffix.
+    RtlIpv4StringToAddressExW = 560,
+    /// Render one IPv6 address as narrow text.
+    RtlIpv6AddressToStringA = 561,
+    /// Render one IPv6 address as wide text.
+    RtlIpv6AddressToStringW = 562,
+    /// Render one IPv6 address, scope and port as narrow text.
+    RtlIpv6AddressToStringExA = 563,
+    /// Render one IPv6 address, scope and port as wide text.
+    RtlIpv6AddressToStringExW = 564,
+    /// Parse narrow IPv6 text, reporting where the scan stopped.
+    RtlIpv6StringToAddressA = 565,
+    /// Parse wide IPv6 text, reporting where the scan stopped.
+    RtlIpv6StringToAddressW = 566,
+    /// Parse narrow IPv6 text with its scope and bracketed port.
+    RtlIpv6StringToAddressExA = 567,
+    /// Parse wide IPv6 text with its scope and bracketed port.
+    RtlIpv6StringToAddressExW = 568,
+    /// Translate one NT status without recording it on the thread block.
+    RtlNtStatusToDosErrorNoTeb = 569,
+    /// Start one MD4 accumulation in the caller's context record.
+    Md4Init = 570,
+    /// Absorb one message run into the caller's MD4 context record.
+    Md4Update = 571,
+    /// Pad the held block and publish the MD4 digest.
+    Md4Final = 572,
 }
 impl NtService {
     /// Return the tagged entry selector emitted by an NTDLL syscall stub.
@@ -994,6 +1034,26 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 540 { return Some(NtCall { service: NtService::KillWindowTimer, args }); }
     if service == 541 { return Some(NtCall { service: NtService::NtTestAlert, args }); }
     if service == 542 { return Some(NtCall { service: NtService::NtContinue, args }); }
+    if service == 553 { return Some(NtCall { service: NtService::RtlIpv4AddressToStringA, args }); }
+    if service == 554 { return Some(NtCall { service: NtService::RtlIpv4AddressToStringW, args }); }
+    if service == 555 { return Some(NtCall { service: NtService::RtlIpv4AddressToStringExA, args }); }
+    if service == 556 { return Some(NtCall { service: NtService::RtlIpv4AddressToStringExW, args }); }
+    if service == 557 { return Some(NtCall { service: NtService::RtlIpv4StringToAddressA, args }); }
+    if service == 558 { return Some(NtCall { service: NtService::RtlIpv4StringToAddressW, args }); }
+    if service == 559 { return Some(NtCall { service: NtService::RtlIpv4StringToAddressExA, args }); }
+    if service == 560 { return Some(NtCall { service: NtService::RtlIpv4StringToAddressExW, args }); }
+    if service == 561 { return Some(NtCall { service: NtService::RtlIpv6AddressToStringA, args }); }
+    if service == 562 { return Some(NtCall { service: NtService::RtlIpv6AddressToStringW, args }); }
+    if service == 563 { return Some(NtCall { service: NtService::RtlIpv6AddressToStringExA, args }); }
+    if service == 564 { return Some(NtCall { service: NtService::RtlIpv6AddressToStringExW, args }); }
+    if service == 565 { return Some(NtCall { service: NtService::RtlIpv6StringToAddressA, args }); }
+    if service == 566 { return Some(NtCall { service: NtService::RtlIpv6StringToAddressW, args }); }
+    if service == 567 { return Some(NtCall { service: NtService::RtlIpv6StringToAddressExA, args }); }
+    if service == 568 { return Some(NtCall { service: NtService::RtlIpv6StringToAddressExW, args }); }
+    if service == 569 { return Some(NtCall { service: NtService::RtlNtStatusToDosErrorNoTeb, args }); }
+    if service == 570 { return Some(NtCall { service: NtService::Md4Init, args }); }
+    if service == 571 { return Some(NtCall { service: NtService::Md4Update, args }); }
+    if service == 572 { return Some(NtCall { service: NtService::Md4Final, args }); }
     let service = match service {
         0 => NtService::AllocateVirtualMemory,
         1 => NtService::FreeVirtualMemory,
@@ -1265,6 +1325,7 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
         | NtService::SignalAndWait | NtService::OpenProcessToken | NtService::OpenThreadToken | NtService::QueryToken | NtService::RtlInitUnicodeString | NtService::RtlInitUnicodeStringEx | NtService::QueryObject | NtService::RtlInitAnsiString | NtService::RtlInitAnsiStringEx | NtService::QuerySecurityObject | NtService::RtlQueryPerformanceCounter | NtService::RtlQueryPerformanceFrequency | NtService::NtQueryPerformanceCounter | NtService::NtQuerySystemInformationEx | NtService::RenameKey | NtService::SetSecurityObject => Err(Errno::Enosys),
         NtService::NtMakePermanentObject => Err(Errno::Enosys),
         NtService::RtlDeNormalizeProcessParams => Err(Errno::Enosys),
+        NtService::RtlIpv4AddressToStringA | NtService::RtlIpv4AddressToStringW | NtService::RtlIpv4AddressToStringExA | NtService::RtlIpv4AddressToStringExW | NtService::RtlIpv4StringToAddressA | NtService::RtlIpv4StringToAddressW | NtService::RtlIpv4StringToAddressExA | NtService::RtlIpv4StringToAddressExW | NtService::RtlIpv6AddressToStringA | NtService::RtlIpv6AddressToStringW | NtService::RtlIpv6AddressToStringExA | NtService::RtlIpv6AddressToStringExW | NtService::RtlIpv6StringToAddressA | NtService::RtlIpv6StringToAddressW | NtService::RtlIpv6StringToAddressExA | NtService::RtlIpv6StringToAddressExW | NtService::RtlNtStatusToDosErrorNoTeb | NtService::Md4Init | NtService::Md4Update | NtService::Md4Final => Err(Errno::Enosys),
         NtService::NtQueryValueKey | NtService::NtQueryVolumeInformationFile | NtService::NtQueueApcThread | NtService::NtQueueApcThreadEx2 | NtService::NtRaiseException | NtService::NtReadFileScatter | NtService::NtReadVirtualMemory | NtService::NtRemoveIoCompletionEx | NtService::NtResetWriteWatch | NtService::NtResumeThread | NtService::NtSaveKey | NtService::NtSetContextThread | NtService::NtSetInformationObject | NtService::NtSetInformationToken | NtService::NtSetInformationVirtualMemory | NtService::NtSetSystemInformation | NtService::NtSetSystemTime | NtService::NtSetValueKey | NtService::NtSuspendThread | NtService::NtTestAlert | NtService::NtContinue | NtService::NtUnloadKey | NtService::NtWriteVirtualMemory | NtService::NtYieldExecution => Err(Errno::Enosys),
         NtService::BitBltGdiSurface => Err(Errno::Enosys),
         NtService::LdrGetDllPath => Err(Errno::Enosys),
