@@ -364,6 +364,7 @@ pub fn encode_x64_apc_continuation() -> Vec<u8> {
 /// register, the flags and the stack unchanged. A demand-paged stack needs no
 /// guard-page walk, so returning immediately is the whole contract, which is
 /// what the shipped runtime module's own export contains.
+/// # C: O(1)
 pub fn encode_x64_ret_stub() -> [u8; X64_RET_STUB_BYTES] { [0xc3] }
 
 /// Encode Wine's x86-64 debugger breakpoint entry. The trap is intentional:
