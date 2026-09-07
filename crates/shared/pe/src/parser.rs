@@ -665,7 +665,7 @@ impl<'a> Image<'a> {
         let low = self.unwind_slot(function, slot)? as u32; let high = self.unwind_slot(function, slot + 1)? as u32;
         Ok(low | high << 16)
     }
-    fn c_string(&self, rva: u32) -> Result<&'a [u8], Error> {
+    pub(crate) fn c_string(&self, rva: u32) -> Result<&'a [u8], Error> {
         let mut n = 0u32; while n < self.size_of_image.saturating_sub(rva) { let b = self.rva_range(rva + n, 1)?; if b[0] == 0 { return self.rva_range(rva, n); } n += 1; } Err(Error::Einval)
     }
 }

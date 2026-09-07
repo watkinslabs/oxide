@@ -31,9 +31,22 @@ impl PeStartupTransaction {
         env: &super::process_env::NtProcessEnvironment, stack_base: u64,
         stack_top: u64, state: &super::pe_loader::PeEntryState,
         initializer: Option<&super::pe_init::PeInitTrampoline>) -> Result<Self, Error> {
+        let transfer = initializer.map_or(image.entry, |value| value.entry);
+        Self::begin_with_transfer(as_, image, env, stack_base, stack_top, state, transfer)
+    }
+
+    /// Validate the same boundary against a caller-named transfer entry. The
+    /// loader handover enters the runtime module's initialization thunk, which
+    /// is neither the image entry nor a kernel-built initializer trampoline,
+    /// so the admitted target is named rather than inferred.
+    /// # C: O(1)
+    pub fn begin_with_transfer(as_: &AddressSpace, image: &super::pe_loader::PeLoadedImage,
+        env: &super::process_env::NtProcessEnvironment, stack_base: u64,
+        stack_top: u64, state: &super::pe_loader::PeEntryState,
+        transfer: UserVirtAddr) -> Result<Self, Error> {
         if state.personality != super::pe_loader::ExecutionPersonality::Nt
             || !executable(as_, image.entry) || !executable(as_, state.rip)
-            || (initializer.map_or(state.rip != image.entry, |value| state.rip != value.entry))
+            || state.rip != transfer
             || state.gs_base != env.teb { return Err(Error::Einval); }
         if stack_base != 0 {
             if stack_base >= stack_top { return Err(Error::Einval); }

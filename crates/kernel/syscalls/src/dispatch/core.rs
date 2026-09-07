@@ -49,6 +49,13 @@ fn syscall_entry_work(orig_nr: u64, args: &SyscallArgs) -> (Option<u64>, u64) {
     }
 }
 
+/// Run one decoded NT call through the personality's own dispatch. # C: O(1)
+#[inline]
+fn dispatch_nt_call(call: syscall::nt::NtCall) -> i64 {
+    if let Some(rv) = crate::nt_exec::dispatch(call) { return rv as i64; }
+    crate::nt_dispatch::dispatch(call) as i64
+}
+
 #[inline(never)]
 fn dispatch_routed_syscall(entry: (Option<u64>, u64), nr: u64, args: &SyscallArgs) -> i64 {
     if let Some(rv) = entry.0 { return rv as i64; }
@@ -98,14 +105,23 @@ fn dispatch_routed_syscall(entry: (Option<u64>, u64), nr: u64, args: &SyscallArg
             }
             return crate::nt_wine_window::unclaimed::STATUS_INVALID_SYSTEM_SERVICE as i64;
         }
+        // A shipped service stub carries a bare ordinal in the runtime service
+        // table: no namespace tag, and a number that is also a Linux syscall
+        // number. The module's own numbering, decoded at its load, says which
+        // service each one means. A number the module carries but this kernel
+        // publishes no service for is an unimplemented service, never the
+        // Linux call of the same number.
+        if let Ok(id) = u32::try_from(nr) {
+            if let Some(call) = syscall::nt::ordinals::call_for_ordinal(id, *args) { return dispatch_nt_call(call); }
+            if syscall::nt::ordinals::is_runtime_ordinal(id) {
+                return crate::nt_wine_window::unclaimed::STATUS_INVALID_SYSTEM_SERVICE as i64;
+            }
+        }
     }
     // A tagged NT word is consumed before the Linux number tables. The common
     // syscall entry/return frame is retained, but no Linux handler can claim
     // an NT service selector; the adapter separately checks NT task state.
-    if let Some(call) = crate::nt_dispatch::decode_entry(nr, *args) {
-        if let Some(rv) = crate::nt_exec::dispatch(call) { return rv as i64; }
-        return crate::nt_dispatch::dispatch(call) as i64;
-    }
+    if let Some(call) = crate::nt_dispatch::decode_entry(nr, *args) { return dispatch_nt_call(call); }
     if let Some(rv) = dispatch_route_a(nr, args) { return rv; }
     if let Some(rv) = dispatch_route_b(nr, args) { return rv; }
     if let Some(rv) = dispatch_route_c(nr, args) { return rv; }

@@ -137,7 +137,7 @@ pub fn dispatch(call: NtCall, stack: [u64; 5]) -> u64 {
         }
     }
     let startup = continuation.startup();
-    unsafe { sched::live::arm_user_entry(&child, prepared.initial_entry, prepared.initial_stack); }
+    unsafe { sched::live::arm_user_entry_with_argument(&child, prepared.initial_entry, prepared.initial_stack, prepared.initial_argument); }
     // The NT TEB is addressed through GS on x86-64.  `arm_user_entry` builds
     // a generic user context, so the native process transaction must publish
     // the image-specific GS base before the task becomes visible to the

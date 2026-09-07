@@ -9,6 +9,7 @@ pub mod image_view;
 pub use image_info::{image_information, ImageInformation, SECTION_IMAGE_INFORMATION_BYTES};
 pub use image_view::{image_section, shared_writable_sections, materialize_view, view_alignment, view_layout, ImageSection, SpanProt, ViewSpan};
 pub mod nt_stub;
+pub mod nt_context;
 pub mod catalog;
 pub mod apiset;
 pub mod loader_list;

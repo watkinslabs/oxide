@@ -95,10 +95,9 @@ unixlibs=$(find "$OUT/x86_64-unix" -maxdepth 1 -type f -name '*.so' | wc -l)
 [ "$unixlibs" -gt 0 ] || die "no unixlibs installed"
 [ -f "$OUT/x86_64-windows/notepad.exe" ] || die "notepad.exe absent from the PE catalog"
 [ -f "$OUT/x86_64-unix/ntdll.so" ] || die "ntdll.so absent from the unixlib catalog"
-# The runtime tree is the complete upstream build. The image, not the package,
-# decides which modules the guest catalog carries: the NT runtime module is
-# held back there so exactly one ntdll reaches a process, and the audit gate
-# reads the real image out of this tree to measure what that costs.
+# The runtime tree is the complete upstream build, and the image stages all of
+# it: the NT runtime module is what the kernel hands each process over to, and
+# the audit gate reads the same image out of this tree.
 [ -f "$OUT/x86_64-windows/ntdll.dll" ] || die "ntdll.dll absent from the PE catalog"
 [ -f "$OUT/x86_64-unix/win32u.so" ] || die "win32u.so absent from the unixlib catalog"
 grep -q wine_oxide_attach_thread <(nm -D --defined-only "$OUT/x86_64-unix/ntdll.so") \

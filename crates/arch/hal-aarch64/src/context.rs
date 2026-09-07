@@ -276,11 +276,21 @@ impl ContextAArch64 {
     /// on the `hal::Context` trait — mirrors x86's P2-13c shape).
     /// # C: O(1)
     pub fn new_user_with_irq_frame(stack_top: *mut u8, user_ip: u64, user_sp: u64) -> Self {
+        Self::new_user_with_irq_frame_and_arg(stack_top, user_ip, user_sp, 0)
+    }
+
+    /// The same scaffold with one value in the first argument register. An
+    /// entry point that takes an argument — a loader initialization thunk
+    /// reading its startup context — needs it there at the first instruction.
+    /// # C: O(1)
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    pub fn new_user_with_irq_frame_and_arg(stack_top: *mut u8, user_ip: u64, user_sp: u64, arg0: u64) -> Self {
         // SAFETY: caller asserts `stack_top` is the high end of a
         // writable, 16-byte-aligned kernel stack of at least 288 B.
         let sp = unsafe {
             let base = stack_top.cast::<u8>().sub(288) as *mut u64;
             for i in 0..22 { base.add(i).write(0); }
+            base.write(arg0);                     // x0 = first argument
             base.add(22).write(user_ip);          // ELR_EL1 = user entry
             // SPSR_EL1 = 0: M=EL0t (0b0000), DAIF all clear so EL0
             // accepts IRQ delivery — without this PL011 RX (SPI 33)

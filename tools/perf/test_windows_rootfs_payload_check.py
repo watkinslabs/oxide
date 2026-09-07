@@ -77,6 +77,7 @@ class Ext4ValidatorTests(unittest.TestCase):
             self.write(f"/usr/local/lib/oxide/windows/x86_64-windows/{name}",
                        (WINE_TREE / "x86_64-windows" / name).read_bytes())
         self.write("/usr/local/lib/oxide/windows/wine-version", f"{WINE_VERSION}\n".encode())
+        self.write("/usr/local/lib/oxide/windows/x86_64-windows/ntdll.dll", b"dll")
         self.write("/usr/local/lib/oxide/windows/x86_64-windows/imm32.dll", b"dll")
         self.write("/usr/local/lib/oxide/windows/x86_64-unix/kernel32.so", b"so")
         self.write("/usr/local/share/oxide/windows/nls/locale.nls", b"nls")
@@ -162,11 +163,11 @@ class Ext4ValidatorTests(unittest.TestCase):
         with self.assertRaisesRegex(MODULE.Failure, "imm32.dll"):
             self.run_validator()
 
-    def test_real_ext4_fixture_rejects_a_guest_catalog_carrying_the_held_back_runtime(self):
-        # The kernel publishes the NT runtime module's exports itself, so a
-        # real image of the same name in the guest catalog is a second source
-        # for them. The image holds it back; this is what notices if it stops.
-        self.write("/usr/local/lib/oxide/windows/x86_64-windows/ntdll.dll", b"MZ")
+    def test_real_ext4_fixture_rejects_a_guest_catalog_without_the_runtime_module(self):
+        # The kernel hands the process over to this module: it maps it and the
+        # executable and enters the module's own initialization thunk. Without
+        # it there is nothing to hand over to, and the launch has no loader.
+        self.debugfs("unlink /usr/local/lib/oxide/windows/x86_64-windows/ntdll.dll")
         with self.assertRaisesRegex(MODULE.Failure, "ntdll.dll"):
             self.run_validator()
 

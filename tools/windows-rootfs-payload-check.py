@@ -35,11 +35,6 @@ UNIX_ROOT = "/"
 # and the ImmGetContext delay thunk resolves it, both at runtime through the
 # system directory.
 RUNTIME_LOADED_MODULES = ("imm32.dll",)
-# The kernel publishes the NT runtime module's exports itself and is the loader
-# that binds every other module against them. A real image of the same name in
-# the guest catalog would be a second source for those exports, so the image
-# holds it back even though the package carries the complete upstream build.
-HELD_BACK_MODULES = ("ntdll.dll",)
 
 REQUIRED_FILES = (
     "/usr/local/bin/windows-runtime",
@@ -47,6 +42,11 @@ REQUIRED_FILES = (
     "/usr/local/bin/registryd",
     "/usr/local/bin/windows-notepad-smoke",
     f"{WINDOWS_CATALOG}/notepad.exe",
+    # The NT runtime module is what the kernel hands each process over to: it
+    # maps the executable and this module and enters the module's own
+    # initialization thunk, which loads the rest of the graph in user mode. An
+    # image without it leaves the loader with nothing to hand over to.
+    f"{WINDOWS_CATALOG}/ntdll.dll",
     f"{UNIX_CATALOG}/ntdll.so",
     f"{UNIX_CATALOG}/win32u.so",
     f"{NLS_ROOT}/locale.nls",
@@ -200,9 +200,6 @@ def check_image(path, expected_wine_version):
             missing.append(guest_path)
     if missing:
         raise Failure("missing required payload:\n  " + "\n  ".join(missing))
-    present = [name for name in image.entries(WINDOWS_CATALOG) if name.lower() in HELD_BACK_MODULES]
-    if present:
-        raise Failure("guest catalog carries a module the kernel publishes itself: " + ", ".join(present))
     pe_catalog = image.entries(WINDOWS_CATALOG)
     unix_catalog = image.entries(UNIX_CATALOG)
     if not any(name.lower().endswith(".dll") for name in pe_catalog):
