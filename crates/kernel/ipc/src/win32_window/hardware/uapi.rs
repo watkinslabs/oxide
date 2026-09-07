@@ -34,11 +34,14 @@ pub const WM_MOUSEWHEEL: u32 = 0x020a;
 pub const WM_NCMOUSEMOVE: u32 = 0x00a0;
 pub const WM_NCMOUSELAST: u32 = 0x00ae;
 
-/// First and last message of the keyboard range.
+/// First and last message of the keyboard range, whose last member is the
+/// UTF-16 character message.
 pub const WM_KEYFIRST: u32 = 0x0100;
-pub const WM_KEYLAST: u32 = 0x0108;
+pub const WM_UNICHAR: u32 = 0x0109;
+pub const WM_KEYLAST: u32 = WM_UNICHAR;
 pub const WM_KEYDOWN: u32 = 0x0100;
 pub const WM_KEYUP: u32 = 0x0101;
+pub const WM_CHAR: u32 = 0x0102;
 pub const WM_SYSKEYDOWN: u32 = 0x0104;
 pub const WM_SYSKEYUP: u32 = 0x0105;
 

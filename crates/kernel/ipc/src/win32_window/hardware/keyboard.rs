@@ -3,7 +3,7 @@
 //! removing retrieval turns three of them into a message of their own.
 use super::uapi::*;
 use super::ladder::ProcCall;
-use super::super::WinMessage;
+use super::super::{MessageFilter, WinMessage};
 
 /// What the retrieval does with the message the stage prepared.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -28,8 +28,9 @@ pub struct KeyContext {
     pub desktop: bool,
     /// Menu tracking is running, which owns the applications key itself.
     pub menu_active: bool,
-    pub first: u32,
-    pub last: u32,
+    /// The retrieval's own filter; the range it admits is read from it, never
+    /// from its two ends.
+    pub filter: MessageFilter,
 }
 
 /// One prepared keyboard message and the decision that goes with it.
@@ -54,7 +55,8 @@ const fn is_key_transition(message: u32) -> bool { matches!(message, WM_KEYDOWN 
 pub fn prepare(queued: WinMessage, ctx: &KeyContext) -> KeyPrepared {
     let mut message = queued;
     if is_key_transition(queued.message) { message.wparam = generic_key(queued.wparam); }
-    if message.message < ctx.first || message.message > ctx.last {
+    let (first, last) = ctx.filter.range();
+    if message.message < first || message.message > last {
         return KeyPrepared { outcome: KeyOutcome::Filtered, message, extra: None };
     }
     let extra = if ctx.remove { extra_for(message, ctx) } else { None };

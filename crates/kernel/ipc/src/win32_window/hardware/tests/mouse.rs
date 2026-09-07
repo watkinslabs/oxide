@@ -1,6 +1,6 @@
 use super::mouse::*;
 use super::uapi::*;
-use super::super::{WinMessage, WindowId, HTCLIENT, HTERROR, HTNOWHERE};
+use super::super::{MessageFilter, WinMessage, WindowId, HTCLIENT, HTERROR, HTNOWHERE};
 
 const WINDOW: u32 = 0x21;
 const HTCAPTION: i32 = 2;
@@ -8,8 +8,11 @@ const HTCAPTION: i32 = 2;
 fn ctx() -> MouseContext {
     MouseContext { hit_test: HTCLIENT, captured: false, modal: false, class_dbl_clks: false,
         double_click_ms: 500, double_click_width: 4, double_click_height: 4, time_ms: 1_000,
-        remove: true, first: 0, last: u32::MAX }
+        remove: true, filter: range(0, u32::MAX) }
 }
+
+/// The filter a retrieval naming both ends of a range builds.
+fn range(first: u32, last: u32) -> MessageFilter { MessageFilter { hwnd: None, first, last } }
 
 fn click(message: u32, x: i32, y: i32) -> WinMessage {
     WinMessage { hwnd: WindowId::from_raw(WINDOW), message, wparam: 1, lparam: make_point(x, y) }
@@ -29,8 +32,7 @@ fn a_captured_pointer_skips_the_ladder_and_a_filtered_message_is_dropped() {
     context.captured = true;
     assert_eq!(prepare(click(WM_LBUTTONDOWN, 3, 4), None, &context).outcome, MouseOutcome::Deliver);
     context.captured = false;
-    context.first = WM_KEYFIRST;
-    context.last = WM_KEYLAST;
+    context.filter = range(WM_KEYFIRST, WM_KEYLAST);
     let prepared = prepare(click(WM_LBUTTONDOWN, 3, 4), None, &context);
     assert_eq!(prepared.outcome, MouseOutcome::Filtered);
     // A message the caller never asked for must not become the first half of
@@ -128,4 +130,17 @@ fn a_peek_never_disturbs_the_remembered_click() {
 fn a_pointer_move_runs_the_ladder_so_the_cursor_is_still_set() {
     assert_eq!(prepare(click(WM_MOUSEMOVE, 3, 4), None, &ctx()).outcome, MouseOutcome::Ladder);
     assert_eq!(prepare(click(WM_MOUSEMOVE, 3, 4), None, &ctx()).click, ClickUpdate::Keep);
+}
+
+#[test]
+fn a_retrieval_naming_neither_end_of_the_range_admits_every_pointer_message() {
+    // GetMessage(&msg, NULL, 0, 0) asks for every message. Reading the two
+    // ends of that filter literally made every pointer message fall outside
+    // the range, and the retrieval ate the whole click.
+    let context = MouseContext { filter: range(0, 0), ..ctx() };
+    for message in [WM_MOUSEMOVE, WM_LBUTTONDOWN, WM_MOUSEWHEEL, WM_MOUSELAST] {
+        let prepared = prepare(click(message, 3, 4), None, &context);
+        assert_ne!(prepared.outcome, MouseOutcome::Filtered, "pointer message dropped by an unrestricted retrieval");
+    }
+    assert_eq!(prepare(click(WM_LBUTTONDOWN, 3, 4), None, &context).outcome, MouseOutcome::Ladder);
 }
