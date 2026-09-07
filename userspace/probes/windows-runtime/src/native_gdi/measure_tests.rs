@@ -1,9 +1,9 @@
 use syscall::nt_native_gdi as abi;
 
 fn request(count: usize) -> abi::MeasureRequest {
-    abi::MeasureRequest { version: 1, size: 88, dc: 1, kind: abi::MEASURE_EXTENT, count: count as u32,
+    abi::MeasureRequest { version: 1, size: std::mem::size_of::<abi::MeasureRequest>() as u32, dc: 1, kind: abi::MEASURE_EXTENT, count: count as u32,
         height: 16, width: 0, weight: 400, italic: 0, max_extent: -1, flags: 0,
-        text: 0x1000, metrics: 0, extent: 0x2000, fit: 0x3000, cumulative: 0x4000 }
+        text: 0x1000, metrics: 0, extent: 0x2000, fit: 0x3000, cumulative: 0x4000, break_extra: 0, break_rem: 0 }
 }
 
 #[test]
@@ -55,7 +55,7 @@ fn utf16_fit_and_copyout_prefix_are_bounded_and_validated() {
 
 #[test]
 fn measurement_empty_text_and_malformed_requests_fail_before_outputs() {
-    assert_eq!(std::mem::size_of::<abi::MeasureRequest>(), 88);
+    assert_eq!(std::mem::size_of::<abi::MeasureRequest>(), 96);
     assert_eq!(std::mem::size_of::<abi::MeasureOutput>(), 88);
     let valid = request(0);
     for bad in [abi::MeasureRequest { count: abi::MAX_UNITS + 1, ..valid },

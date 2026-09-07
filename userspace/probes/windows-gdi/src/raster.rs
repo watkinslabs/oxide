@@ -4,9 +4,12 @@ use crate::{Gdi, GdiError, Rect};
 mod measure;
 #[path = "raster_glyph.rs"]
 mod glyph;
+#[path = "raster_query.rs"]
+mod query;
 #[path = "raster_positioned.rs"]
 mod positioned;
 pub use measure::FontMeasurement;
+pub use query::GlyphRaster;
 
 const MAX_TEXT_PIXELS: usize = 16 * 1024 * 1024;
 pub const ETO_OPAQUE: u32 = 0x0002;

@@ -1,9 +1,9 @@
 use syscall::nt_native_gdi as abi;
 use super::{native, query, resource};
 fn request(kind: u32) -> abi::QueryRequest {
-    abi::QueryRequest { version: abi::VERSION, size: 80, dc: 1, kind, flags: 0,
+    abi::QueryRequest { version: abi::VERSION, size: std::mem::size_of::<abi::QueryRequest>() as u32, dc: 1, kind, flags: 0,
         height: 16, width: 0, weight: 400, italic: 0, first: 0, count: 0, input: 0,
-        output: 0x10000, table: 0, offset: 0, capacity: 0, reserved: 0 }
+        output: 0x10000, table: 0, offset: 0, capacity: 0, reserved: 0, aux: 0, value: 0, aux_bytes: 0, reserved2: 0 }
 }
 fn run(request: &abi::QueryRequest, input: &[u16]) -> Option<(u32, Vec<u8>)> {
     native::prepare_fonts().unwrap();
@@ -94,7 +94,7 @@ fn outline_full_record_real_names_and_short_prefix() {
 
 #[test]
 fn query_wire_and_copyout_bounds_reject_untrusted_lengths_before_writes() {
-    assert_eq!(std::mem::size_of::<abi::QueryRequest>(), 80);
+    assert_eq!(std::mem::size_of::<abi::QueryRequest>(), 104);
     assert_eq!(std::mem::size_of::<abi::QueryOutput>(), 24);
     assert_eq!(std::mem::offset_of!(abi::QueryRequest, input), 48);
     let req = request(abi::QUERY_CHARSET);
