@@ -28,6 +28,7 @@ pub(crate) const ERROR_POPUP_ALREADY_ACTIVE: u32 = 1446;
 pub(crate) const ERROR_INVALID_MENU_HANDLE: u32 = 1401;
 pub(crate) const ERROR_NOACCESS: u32 = 998;
 pub(crate) const ERROR_INVALID_WINDOW_HANDLE: u32 = 1400;
+pub(crate) const ERROR_INVALID_PARAMETER: u32 = 87;
 
 /// The window menu's commands, in the order a fresh system menu carries them.
 /// The text is what the caption menu shows for each command.

@@ -42,6 +42,7 @@ mod track_live;
 mod popup_live;
 #[cfg(target_os = "oxide-kernel")]
 pub(crate) use popup_live::popup_menu_window_proc;
+pub(crate) use live::get_menu_info;
 
 #[cfg(target_os = "oxide-kernel")]
 #[path = "menu_raw/live.rs"]

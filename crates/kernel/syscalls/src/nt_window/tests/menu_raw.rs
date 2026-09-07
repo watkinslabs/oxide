@@ -60,3 +60,35 @@ fn the_standard_window_menu_carries_its_commands_in_order() {
     assert_eq!(ids, alloc::vec![SC_RESTORE, SC_MOVE, SC_SIZE, SC_MINIMIZE, SC_MAXIMIZE, SC_SEPARATOR, SC_CLOSE]);
     assert!(SYSTEM_MENU_COMMANDS.iter().all(|(id, text)| (*id == SC_SEPARATOR) == text.is_empty()));
 }
+
+/// The query direction of the record: the mask picks which fields the menu
+/// owner overwrites, and every field the caller did not ask for reaches it
+/// back exactly as it was handed over. `IsMenu` is the empty-mask case — it
+/// reads nothing and only wants to know the handle answered — and the
+/// resource menu loader will not attach a submenu to an item until it does.
+#[test]
+fn a_query_overwrites_only_the_fields_its_mask_names() {
+    use ipc::win32_menu::{MenuInfo, MIM_MAXHEIGHT, MIM_STYLE};
+    let mut menus = ipc::win32_menu::MenuManager::new();
+    let menu = menus.create().unwrap();
+    menus.set_info(menu, 0x1f, MenuInfo { style: 0x77, max_height: 0x42, background: 9, context_help_id: 3, data: 8 }).unwrap();
+
+    let caller = record(MIM_MAXHEIGHT, 0xbbbb, 0, 0xcccc, 0xdddd, 0xeeee);
+    let (mask, mut info) = decode_menu_info(caller).unwrap();
+    assert!(menus.info(menu, mask, &mut info).is_ok());
+    let (_, answered) = decode_menu_info(encode_menu_info(caller, info)).unwrap();
+    assert_eq!(answered.max_height, 0x42, "the field the mask named comes from the menu");
+    assert_eq!((answered.style, answered.background, answered.context_help_id, answered.data), (0xbbbb, 0xcccc, 0xdddd, 0xeeee),
+        "every other field is the caller's own");
+
+    let (mask, mut info) = decode_menu_info(record(MIM_STYLE, 0, 0, 0, 0, 0)).unwrap();
+    assert!(menus.info(menu, mask, &mut info).is_ok());
+    assert_eq!(info.style, 0x77);
+
+    // The handle test itself: an empty mask still answers, and a destroyed
+    // menu answers nothing whatever the mask says.
+    let mut nothing = MenuInfo::default();
+    assert!(menus.info(menu, 0, &mut nothing).is_ok());
+    menus.destroy(menu).unwrap();
+    assert!(menus.info(menu, 0, &mut nothing).is_err());
+}
