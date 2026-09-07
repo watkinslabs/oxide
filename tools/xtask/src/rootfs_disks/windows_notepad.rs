@@ -82,7 +82,9 @@ pub(super) fn inject(root_img: &Path, arch: &str) -> Result<(), u8> {
     // catalog would be a disagreeing source for the same 533 names. The
     // package carries the complete upstream build; the hold-back is here, in
     // one place, and it is what the NT user-mode split reverses.
-    dbg(root_img, &format!("rm {WINDOWS_DIR}/{RUNTIME_MODULE}"))?;
+    // Tolerated when absent: an image composed from an older package never
+    // carried it. `payload::verify` is what refuses one that still does.
+    let _ = dbg(root_img, &format!("rm {WINDOWS_DIR}/{RUNTIME_MODULE}"));
     payload::verify(root_img, &wine.version)?;
     eprintln!("xtask rootfs: staged Windows runtime image boundary wine={} PE_DLLS={} UNIXLIBS={} root={}", wine.version, wine.modules, wine.unixlibs, root_img.display());
     Ok(())
