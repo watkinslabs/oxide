@@ -24,6 +24,14 @@ pub const CALLBACK_TABLE_TAG: u64 = 3;
 pub const CALLBACK_ENTRY_COUNT: u32 = 1;
 /// Chained entries a lookup follows before treating the chain as a cycle.
 pub const CHAIN_DEPTH_LIMIT: u32 = 32;
+/// The answer a registration service gives when the range is registered.
+pub const REGISTERED: u64 = 1;
+/// The answer it gives when the range is not. These exports publish a boolean
+/// rather than a status, so this is the only value that reads as failure: a
+/// caller tests the answer directly, and every NT failure status is nonzero,
+/// so answering with one would tell the caller its range was registered and
+/// its entry table will be consulted when it was not.
+pub const NOT_REGISTERED: u64 = 0;
 
 /// One registered range. `table` is the entry array for a static registration
 /// and the tagged identity word for a callback one; `callback` is zero unless
@@ -92,6 +100,27 @@ pub fn remove_by_table(entries: &mut Vec<Entry>, table: u64) -> bool {
     let Some(at) = entries.iter().position(|entry| entry.table == table) else { return false; };
     entries.remove(at);
     true
+}
+
+/// Turn one registration outcome into the answer these exports publish. Every
+/// registration service answers through here, so no failure path can leak a
+/// status into a boolean.
+/// # C: O(1)
+pub const fn registration_answer(recorded: bool) -> u64 {
+    if recorded { REGISTERED } else { NOT_REGISTERED }
+}
+
+/// Add one registration, answering the published boolean. A list that cannot
+/// take the entry records nothing and answers that it did not.
+/// # C: O(1) amortised
+pub fn record(entries: &mut Vec<Entry>, entry: Entry) -> u64 {
+    registration_answer(if entries.try_reserve(1).is_err() { false } else { entries.push(entry); true })
+}
+
+/// Remove one registration, answering the same published boolean.
+/// # C: O(N_registrations)
+pub fn retire(entries: &mut Vec<Entry>, table: u64) -> u64 {
+    registration_answer(remove_by_table(entries, table))
 }
 
 /// Index of the entry covering `offset` within a sorted entry array, given a

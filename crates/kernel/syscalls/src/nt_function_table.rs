@@ -7,10 +7,6 @@
 use sched::nt_function_table as registry;
 use syscall::nt::{NtCall, NtService};
 
-const STATUS_SUCCESS: u64 = 0;
-const STATUS_NO_MEMORY: u64 = 0xc000_0017;
-const FALSE: u64 = 0;
-const TRUE: u64 = 1;
 
 /// Route the dynamic unwind registration services.
 /// # C: O(N_registrations) plus bounded user reads
@@ -24,9 +20,12 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     }
 }
 
+/// Run one registration change against this process's list. A caller with no
+/// process, or one that is not running the Windows personality, registered
+/// nothing and is told so through the same answer every other failure uses.
 fn entries_of(call: impl FnOnce(&mut alloc::vec::Vec<registry::Entry>) -> u64) -> u64 {
-    let Some(cur) = sched::live::current() else { return FALSE; };
-    if !cur.is_nt_personality() { return FALSE; }
+    let Some(cur) = sched::live::current() else { return registry::NOT_REGISTERED; };
+    if !cur.is_nt_personality() { return registry::NOT_REGISTERED; }
     let mut entries = cur.thread_group.nt_function_tables.lock();
     call(&mut entries)
 }
@@ -43,24 +42,16 @@ fn end_address(table: u64, index: u32) -> Option<u32> {
 fn add(table: u64, count: u32, base: u64) -> u64 {
     let last = count.checked_sub(1).and_then(|index| end_address(table, index));
     let end = registry::static_range_end(base, count, last);
-    entries_of(|entries| {
-        if entries.try_reserve(1).is_err() { return STATUS_NO_MEMORY; }
-        entries.push(registry::static_entry(table, count, base, end));
-        TRUE
-    })
+    entries_of(|entries| registry::record(entries, registry::static_entry(table, count, base, end)))
 }
 
-fn delete(table: u64) -> u64 {
-    entries_of(|entries| if registry::remove_by_table(entries, table) { TRUE } else { FALSE })
-}
+fn delete(table: u64) -> u64 { entries_of(|entries| registry::retire(entries, table)) }
 
 fn install_callback(table: u64, base: u64, length: u32, callback: u64, context: u64) -> u64 {
-    let Some(entry) = registry::callback_entry(table, base, length, callback, context) else { return FALSE; };
-    entries_of(|entries| {
-        if entries.try_reserve(1).is_err() { return FALSE; }
-        entries.push(entry);
-        TRUE
-    })
+    let Some(entry) = registry::callback_entry(table, base, length, callback, context) else {
+        return registry::NOT_REGISTERED;
+    };
+    entries_of(|entries| registry::record(entries, entry))
 }
 
 /// Resolve one program counter against the dynamic registrations, answering

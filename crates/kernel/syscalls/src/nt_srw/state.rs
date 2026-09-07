@@ -18,8 +18,25 @@ pub const OWNERS_SHIFT: u32 = 16;
 pub const ONE_OWNER: u32 = 1 << OWNERS_SHIFT;
 /// Byte offset of the owner half inside the lock word.
 pub const OWNERS_BYTE_OFFSET: u64 = 2;
+/// Bytes one futex key covers, which is one aligned word.
+pub const FUTEX_KEY_BYTES: u64 = 4;
 /// Flag naming a shared, rather than exclusive, condition-variable lock mode.
 pub const CONDITION_VARIABLE_LOCKMODE_SHARED: u32 = 0x0001;
+
+/// The address a blocked waiter of one class parks on: a writer watches the
+/// owner half alone, a reader the whole word. Two addresses is what lets a
+/// release disturb one class without the other.
+/// # C: O(1)
+pub const fn wait_address(lock: u64, shared: bool) -> u64 {
+    if shared { lock } else { lock + OWNERS_BYTE_OFFSET }
+}
+
+/// The futex key covering one wait address. A key covers a whole aligned
+/// word, so both classes of waiter on one lock share a key here and a release
+/// cannot single one class out; the dispatcher answers that by waking all.
+/// # C: O(1)
+pub const fn futex_key(address: u64) -> u64 { address & !(FUTEX_KEY_BYTES - 1) }
+
 
 /// Owners recorded in one lock word. # C: O(1)
 pub const fn owners(word: u32) -> u32 { word >> OWNERS_SHIFT }

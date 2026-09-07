@@ -96,3 +96,44 @@ fn the_ordered_search_finds_the_covering_entry_and_only_that_one() {
 fn the_ordered_search_stops_when_an_entry_cannot_be_read() {
     assert_eq!(find_entry(3, 0x10, |_| None), None);
 }
+
+/// Every NT failure status has this bit set, which is what makes returning one
+/// from a boolean-answering export read as success at the call site.
+const STATUS_FAILURE_BIT: u64 = 0x8000_0000;
+/// The status a list that cannot take an entry would once have answered with.
+const STATUS_NO_MEMORY: u64 = 0xc000_0017;
+
+#[test]
+fn a_registration_answer_is_a_boolean_and_never_a_status() {
+    assert_eq!(registration_answer(true), REGISTERED);
+    assert_eq!(registration_answer(false), NOT_REGISTERED);
+    assert_eq!(NOT_REGISTERED, 0);
+    assert_ne!(REGISTERED, 0);
+    // A status in this position reads as success: it is nonzero, and its
+    // failure bit is exactly what a caller testing a boolean cannot see.
+    assert_ne!(STATUS_NO_MEMORY & STATUS_FAILURE_BIT, 0);
+    assert_ne!(STATUS_NO_MEMORY, 0);
+    for answer in [registration_answer(true), registration_answer(false)] {
+        assert!(answer <= 1, "a registration answered {answer:#x}, which is not a boolean");
+        assert_eq!(answer & STATUS_FAILURE_BIT, 0);
+    }
+}
+
+#[test]
+fn recording_and_retiring_answer_through_the_same_boolean() {
+    let mut entries = Vec::new();
+    let entry = table_entry(0x1000, 0x2000, 0xaa00, 2);
+    assert_eq!(record(&mut entries, entry), REGISTERED);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(lookup(&entries, 0x1500), Some(Found::Table { base: 0x1000, table: 0xaa00, count: 2 }));
+    // Retiring a table nobody registered is a failure, not an error status.
+    assert_eq!(retire(&mut entries, 0xbb00), NOT_REGISTERED);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(retire(&mut entries, 0xaa00), REGISTERED);
+    assert!(entries.is_empty());
+    // Every answer any of these services can give is a boolean.
+    let mut fresh = Vec::new();
+    for answer in [record(&mut fresh, entry), retire(&mut fresh, 0xaa00), retire(&mut fresh, 0xaa00)] {
+        assert!(answer <= 1, "a registration service answered {answer:#x}");
+    }
+}

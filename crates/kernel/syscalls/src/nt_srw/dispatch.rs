@@ -51,8 +51,17 @@ fn wake_all(key: u64) {
         u32::MAX, futex::FUTEX_BITSET_MATCH_ANY, 0);
 }
 
-/// Park until the word leaves `observed`.
-fn park(key: u64, observed: u32) {
+/// Release a single sleeper on one key.
+fn wake_one(key: u64) {
+    let _ = futex::dispatch_timed(key, FUTEX_WAKE_CMD | futex::FUTEX_PRIVATE_FLAG,
+        1, futex::FUTEX_BITSET_MATCH_ANY, 0);
+}
+
+/// Park a waiter of one class until the word leaves `observed`. The class
+/// chooses the address Windows parks it on; the key that address falls in is
+/// what a wake can reach.
+fn park(lock: u64, shared: bool, observed: u32) {
+    let key = state::futex_key(state::wait_address(lock, shared));
     let _ = futex::dispatch_timed(key, FUTEX_WAIT_CMD | futex::FUTEX_PRIVATE_FLAG,
         observed, futex::FUTEX_BITSET_MATCH_ANY, 0);
 }
@@ -73,7 +82,7 @@ pub fn acquire(lock: u64, shared: bool) -> bool {
                 Some(false) => continue,
                 None => return false,
             },
-            None => park(key, old),
+            None => park(key, shared, old),
         }
     }
 }
@@ -115,7 +124,11 @@ pub fn release(lock: u64, shared: bool) -> bool {
             Some(true) => {
                 let wake = if shared { state::wake_after_shared_release(new) }
                     else { state::wake_after_exclusive_release(new) };
-                if wake != Wake::None { wake_all(key); }
+                // Waking one writer would need the two classes to sit in
+                // different keys; they do not, so a single wake could land on
+                // a reader and leave the writer parked. Waking all is the
+                // superset that cannot lose one.
+                if wake != Wake::None { wake_all(state::futex_key(state::wait_address(key, shared))); }
                 return true;
             }
             Some(false) => continue,
@@ -137,6 +150,5 @@ fn wake_condition_variable(variable: u64) {
             None => return,
         }
     }
-    let _ = futex::dispatch_timed(key, FUTEX_WAKE_CMD | futex::FUTEX_PRIVATE_FLAG,
-        1, futex::FUTEX_BITSET_MATCH_ANY, 0);
+    wake_one(key);
 }

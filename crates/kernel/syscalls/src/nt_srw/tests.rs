@@ -122,3 +122,32 @@ fn readers_drain_before_a_waiting_writer_runs() {
 fn the_shared_condition_variable_mode_is_the_low_flag_bit() {
     assert_eq!(CONDITION_VARIABLE_LOCKMODE_SHARED, 1);
 }
+
+#[test]
+fn each_waiter_class_parks_on_the_address_its_wakes_come_from() {
+    // A reader watches the whole word; a writer watches the owner half, which
+    // is where a release that must reach only writers writes.
+    assert_eq!(wait_address(0x7000, true), 0x7000);
+    assert_eq!(wait_address(0x7000, false), 0x7000 + OWNERS_BYTE_OFFSET);
+    assert_ne!(wait_address(0x7000, true), wait_address(0x7000, false));
+}
+
+#[test]
+fn both_waiter_classes_fall_in_one_futex_key_so_a_release_cannot_single_one_out() {
+    assert_eq!(FUTEX_KEY_BYTES, 4);
+    for lock in [0x7000u64, 0x7004, 0x1_0000_0000] {
+        assert_eq!(futex_key(wait_address(lock, true)), lock);
+        assert_eq!(futex_key(wait_address(lock, false)), lock);
+        // This is the fact that forces every release to wake all: with one
+        // key, waking a single sleeper could reach the wrong class and leave
+        // the one that can make progress parked.
+        assert_eq!(futex_key(wait_address(lock, true)), futex_key(wait_address(lock, false)));
+    }
+    // The collapse is a consequence of the key's width, not of the two
+    // addresses being equal: they differ, and a wake channel whose grain were
+    // no wider than that difference would reach one class alone. That is what
+    // a finer channel would have to provide.
+    assert_ne!(wait_address(0x7000, true), wait_address(0x7000, false));
+    assert!(FUTEX_KEY_BYTES > OWNERS_BYTE_OFFSET,
+        "a key no wider than the owner half's offset would separate the classes");
+}
