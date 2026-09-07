@@ -25,6 +25,7 @@ pub fn dispatch(call: NtCall) -> u64 {
     if let Some(result) = crate::nt_nonclient_raw::route(ordinal, &args, |pointer| uaccess::get_user_u32(pointer).ok(), crate::nt_native_gdi::begin_nonclient) { return result; }
     if let Some(result) = crate::nt_wine_font_query_contract::route(ordinal, &args,
         |dc| crate::nt_gdi::text_snapshot_for_current(dc).ok().and_then(|state| state.font), crate::nt_native_gdi::begin_query) { return result; }
+    if let Some(result) = crate::nt_wine_font_family_contract::kernel::route(ordinal, &args) { return result; }
     if let Some(result) = property_raw::dispatch(ordinal, [args[0], args[1], args[2]]) { return result; }
     if ordinal == object_raw::GET_DC_OBJECT { return crate::nt_gdi::selected_object_current(args[0], args[1] as u32); }
     if let Some(result) = long_raw::dispatch(ordinal, [args[0], args[1], args[2], args[3]]) { return result; }
@@ -193,6 +194,7 @@ pub fn dispatch_raw(ordinal: u64, args: SyscallArgs) -> Option<u64> {
     if let Some(result) = crate::nt_nonclient_raw::route(ordinal, &[args.a0, args.a1, args.a2, args.a3], |pointer| uaccess::get_user_u32(pointer).ok(), crate::nt_native_gdi::begin_nonclient) { return Some(result); }
     if let Some(result) = crate::nt_wine_font_query_contract::route(ordinal, &[args.a0, args.a1, args.a2, args.a3, args.a4, args.a5],
         |dc| crate::nt_gdi::text_snapshot_for_current(dc).ok().and_then(|state| state.font), crate::nt_native_gdi::begin_query) { return Some(result); }
+    if let Some(result) = font_family_stack(ordinal, [args.a0, args.a1, args.a2, args.a3, args.a4, args.a5]) { return Some(result); }
     if let Some(result) = property_raw::dispatch(ordinal, [args.a0, args.a1, args.a2]) { return Some(result); }
     if let Some(operation) = clip_raw::decode(ordinal, &[args.a0, args.a1, args.a2, args.a3, args.a4]) { return Some(clip_raw::kernel::dispatch(operation)); }
     if let Some(operation) = crate::nt_wine_gdi_shape::decode::decode(ordinal, &[args.a0, args.a1, args.a2, args.a3, args.a4, args.a5]) { return Some(crate::nt_wine_gdi_shape::kernel::dispatch(operation)); }
@@ -390,6 +392,22 @@ pub fn dispatch_raw(ordinal: u64, args: SyscallArgs) -> Option<u64> {
         return Some(STATUS_INVALID_PARAMETER);
     }
     Some(STATUS_SUCCESS)
+}
+
+/// Two font-family ordinals carry eight Windows arguments. The entry router
+/// normalizes the first six, so only logical stack words six and seven remain
+/// to be read, and only after the ordinal is already admitted.
+/// # C: O(1) plus at most two stack reads
+#[cfg(target_os = "oxide-kernel")]
+fn font_family_stack(ordinal: u64, first: [u64; 6]) -> Option<u64> {
+    let count = crate::nt_wine_font_family_contract::argument_count(ordinal)?;
+    let mut args = [0u64; 8];
+    args[..6].copy_from_slice(&first);
+    for index in 6..count.min(args.len()) {
+        let Some(value) = crate::nt_dispatch::stack_argument(index) else { return Some(STATUS_INVALID_PARAMETER); };
+        args[index] = value;
+    }
+    crate::nt_wine_font_family_contract::kernel::route(ordinal, &args[..count])
 }
 
 /// Decode a raw Wine syscall after the architectural entry has captured the

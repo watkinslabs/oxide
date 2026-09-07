@@ -8,6 +8,9 @@ pub const QUERY_ABC: u32 = 4;
 pub const QUERY_OUTLINE: u32 = 5;
 pub const QUERY_NONCLIENT: u32 = 6;
 pub const QUERY_SYSTEM_METRIC: u32 = 7;
+#[path = "query_font.rs"]
+mod font;
+pub use font::*;
 /// Indices requiring measured nonclient fonts, not a scalar default. # C: O(1)
 pub fn system_metric_needs_font(index: u32) -> bool { matches!(index, 4 | 15 | 31 | 51 | 53 | 55 | 57) }
 pub const NONCLIENT_BYTES: u32 = 504;
@@ -23,6 +26,7 @@ pub struct QueryRequest {
     pub height: i32, pub width: i32, pub weight: i32, pub italic: u32,
     pub first: u32, pub count: u32, pub input: u64, pub output: u64,
     pub table: u32, pub offset: u32, pub capacity: u32, pub reserved: u32,
+    pub aux: u64, pub value: u64, pub aux_bytes: u32, pub reserved2: u32,
 }
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -30,11 +34,18 @@ pub struct QueryOutput { pub result: u32, pub length: u32, pub data: u64, pub re
 impl QueryRequest {
     /// API failure domain, distinct from callback dispatch return registers. # C: O(1)
     pub fn failure(&self) -> u64 {
-        match self.kind { QUERY_CHARSET => 1, QUERY_DATA | QUERY_GLYPHS => GDI_ERROR as u64, _ => 0 }
+        match self.kind {
+            QUERY_CHARSET => 1,
+            QUERY_DATA | QUERY_GLYPHS => GDI_ERROR as u64,
+            kind if kind >= QUERY_ENUM_FONTS => font::failure(kind),
+            _ => 0,
+        }
     }
     /// Validate sizes and pointer arithmetic before allocation or usercopy. # C: O(1)
     pub fn valid(&self) -> bool {
-        if self.version != VERSION || self.size as usize != core::mem::size_of::<Self>() || (self.dc == 0 && !matches!(self.kind, QUERY_NONCLIENT | QUERY_SYSTEM_METRIC)) || self.reserved != 0
+        if self.version != VERSION || self.size as usize != core::mem::size_of::<Self>()
+            || (self.dc == 0 && !matches!(self.kind, QUERY_NONCLIENT | QUERY_SYSTEM_METRIC) && !font::deviceless(self.kind))
+            || self.reserved != 0 || self.reserved2 != 0 || self.aux_bytes != font::aux_prefix(self)
             || !self.height.checked_abs().is_some_and(|v| v <= MAX_HEIGHT) || !self.width.checked_abs().is_some_and(|v| v <= MAX_WIDTH)
             || !(0..=1000).contains(&self.weight) || self.italic > 1 || self.count > MAX_UNITS
             || self.input.checked_add(self.count as u64 * 2).is_none() { return false; }
@@ -47,6 +58,7 @@ impl QueryRequest {
             QUERY_DATA | QUERY_OUTLINE if self.count == 0 && self.capacity <= MAX_QUERY_BYTES => self.capacity,
             QUERY_GLYPHS if self.count == 0 || self.input != 0 => self.count * 2,
             QUERY_ABC if self.input != 0 || self.first.checked_add(self.count).is_some_and(|n| n <= 65536) => self.count * 12,
+            kind if kind >= QUERY_ENUM_FONTS => return font::capacity_limit(self).is_some(),
             _ => return false,
         };
         if matches!(self.kind, QUERY_GLYPHS | QUERY_ABC) && self.count != 0 && self.output == 0 { return false; }
@@ -66,6 +78,7 @@ impl QueryRequest {
             QUERY_ABC => out.result == 1 && out.length == self.count * 12,
             QUERY_OUTLINE => out.result <= MAX_QUERY_BYTES && out.length <= self.capacity
                 && out.length == if self.output == 0 { 0 } else { out.result },
+            kind if kind >= QUERY_ENUM_FONTS => font::accepts(self, out),
             _ => false,
         }
     }

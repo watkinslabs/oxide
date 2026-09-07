@@ -128,6 +128,8 @@ pub enum GdiError { NoSuchObject, InvalidDimensions, InvalidText, HandleLimit }
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct PathState { open: Option<GdiPath>, closed: Option<GdiPath>, poly_fill_mode: i32, arc_clockwise: bool }
 
+struct DeviceContext { width: i32, height: i32, map_mode: u32, font: Option<u32>, brush: Option<u32>, dc_brush_color: u32, pen: u32, dc_pen_color: u32, text: TextAttributes, justification: (i32, i32), clip: Option<Rect>, paint_clip: Option<crate::win32_window::PaintRegion>, pixels: Vec<u32>, lease: Option<DcLease>, pending_output: PendingOutput }
+
 impl Default for PathState {
     /// Alternate fill and counter-clockwise arcs are the initial device-context attributes. # C: O(1)
     fn default() -> Self { Self { open: None, closed: None, poly_fill_mode: path::ALTERNATE, arc_clockwise: false } }

@@ -19,7 +19,10 @@ impl Default for TextAttributes {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct TextState { pub font: Option<Font>, pub attributes: TextAttributes, pub width: i32, pub height: i32 }
+pub struct TextState { pub font: Option<Font>, pub attributes: TextAttributes, pub width: i32, pub height: i32,
+    /// Justification amount per break character and the remainder distributed
+    /// one unit at a time over the leading break characters.
+    pub break_extra: i32, pub break_rem: i32 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TextAttribute { Foreground, Background, BackgroundMode, Alignment }
@@ -30,7 +33,8 @@ impl GdiManager {
     pub fn text_state(&self, dc: u32) -> Result<TextState, GdiError> {
         let (_, state) = self.dcs.iter().find(|(handle, _)| *handle == dc).ok_or(GdiError::NoSuchObject)?;
         state.ensure_active()?;
-        Ok(TextState { font: self.font_for(dc)?, attributes: state.text, width: state.width, height: state.height })
+        Ok(TextState { font: self.font_for(dc)?, attributes: state.text, width: state.width, height: state.height,
+            break_extra: state.justification.0, break_rem: state.justification.1 })
     }
 
     /// Return the previous value; invalid input leaves the DC unchanged.
@@ -46,6 +50,14 @@ impl GdiManager {
             _ => return Err(GdiError::InvalidText),
         };
         Ok(core::mem::replace(field, value))
+    }
+
+    /// Store the justification split already computed for this device context. # C: O(DCs)
+    pub fn set_justification(&mut self, dc: u32, split: (i32, i32)) -> Result<(), GdiError> {
+        let (_, state) = self.dcs.iter_mut().find(|(handle, _)| *handle == dc).ok_or(GdiError::NoSuchObject)?;
+        state.ensure_active()?;
+        state.justification = split;
+        Ok(())
     }
 
     /// MoveTo/current-position updates use the same DC owner. # C: O(DCs)

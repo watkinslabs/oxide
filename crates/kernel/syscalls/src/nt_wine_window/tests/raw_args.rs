@@ -56,6 +56,10 @@ fn installed_signature_counts_and_admission_are_exact() {
 
         // The bitmap, blit and palette family keeps its own admission table.
         let bitmaps = crate::nt_gdi_bitmap_shape::ORDINALS;
+
+            .or_else(|| shapes.iter().find(|entry| entry.0 == ordinal).map(|entry| entry.1)));
+        assert_eq!(argument_count(ordinal), signatures.iter().find(|entry| entry.0 == ordinal).map(|entry| entry.1 / 8)
+            .or_else(|| crate::nt_wine_font_family_contract::argument_count(ordinal)));
     }
 }
 

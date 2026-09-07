@@ -52,6 +52,7 @@ pub struct TextRequest {
     pub height: i32, pub width: i32, pub weight: i32, pub italic: u32,
     pub foreground: u32, pub background: u32, pub has_rect: u32, pub reserved: u32,
     pub background_mode: u32, pub alignment: u32, pub current_x: i32, pub current_y: i32,
+    pub break_extra: i32, pub break_rem: i32,
 }
 
 impl TextRequest {
@@ -59,7 +60,7 @@ impl TextRequest {
     pub fn valid(&self) -> bool {
         self.version == VERSION && self.size as usize == core::mem::size_of::<Self>()
             && self.width.checked_abs().is_some_and(|w| w <= MAX_WIDTH) && (0..=1000).contains(&self.weight) && self.italic <= 1 && self.reserved == 0
-            && matches!(self.background_mode, TRANSPARENT | BACKGROUND_OPAQUE) && self.alignment == 0
+            && matches!(self.background_mode, TRANSPARENT | BACKGROUND_OPAQUE) && self.alignment == 0 && self.break_rem >= 0
             && self.dc != 0 && self.count <= MAX_UNITS && (self.count == 0 || self.text != 0)
             && self.flags & !(OPAQUE | CLIPPED | GLYPH_INDEX | IGNORE_LANGUAGE | PDY) == 0 && self.has_rect <= 1
             && (self.flags & (OPAQUE | CLIPPED) == 0 || self.has_rect == 1)

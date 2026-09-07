@@ -6,6 +6,11 @@ pub(super) fn registration(task: &Task) -> Option<(u64, u64)> {
         && matches!(r.kind, RegistrationKind::Callback)).map(|r| (r.callback, r.context))
 }
 
+/// A registered native font backend answers with scalable installed fonts. # C: O(registrations)
+pub(crate) fn has_font_backend() -> bool {
+    sched::live::current().is_some_and(|task| registration(&task).is_some())
+}
+
 pub(crate) fn dispatch(call: NtCall) -> Option<u64> {
     if call.service != NtService::QueryVirtualMemory || call.args.a2 != abi::INFO_CLASS { return None; }
     let Some(task) = sched::live::current() else { return Some(abi::INVALID); };

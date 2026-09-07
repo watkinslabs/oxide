@@ -36,7 +36,7 @@ fn all_raw_argument_positions_preserve_pointers_and_truncate_only_scalars() {
     assert_eq!((req.dc, req.first, req.count, req.input, req.flags, req.output), (dc, 65, 3, input, 3, output));
     let req = decode(raw::GET_OUTLINE_METRICS, &[dc, high | 232, output, high | 7]);
     assert_eq!((req.dc, req.capacity, req.output, req.flags), (dc, 232, output, 7));
-    assert_eq!((req.version, req.size, req.reserved), (abi::VERSION, 80, 0));
+    assert_eq!((req.version, req.size as usize, req.reserved), (abi::VERSION, core::mem::size_of::<abi::QueryRequest>(), 0));
 }
 
 #[test]

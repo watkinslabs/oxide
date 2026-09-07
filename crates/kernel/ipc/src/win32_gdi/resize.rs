@@ -12,6 +12,11 @@ impl GdiManager {
         self.dcs.push((handle,DeviceContext{width,height,attr,font:Some(DEFAULT_DC_FONT_HANDLE),brush:None,
             dc_brush_color:0xffffff,pen:DEFAULT_DC_PEN_HANDLE,dc_pen_color:0,text:TextAttributes::default(),
             clip:None,meta_clip:None,paths:Default::default(),paint_clip:None,pixels,lease:None,pending_output:Default::default(),saved:Vec::new(),palette:None,bitmap:None,memory:false}));Ok(handle)
+
+            clip:None,meta_clip:None,paths:Default::default(),paint_clip:None,pixels,lease:None,pending_output:Default::default(),saved:Vec::new()}));Ok(handle)
+        self.dcs.push((handle,DeviceContext{width,height,map_mode:MM_TEXT,font:Some(DEFAULT_DC_FONT_HANDLE),brush:None,
+            dc_brush_color:0xffffff,pen:DEFAULT_DC_PEN_HANDLE,dc_pen_color:0,text:TextAttributes::default(),justification:(0,0),
+            clip:None,paint_clip:None,pixels,lease:None,pending_output:Default::default()}));Ok(handle)
     }
     /// Keep the canonical DC identity and attributes across window resize.
     /// Allocation/validation precede mutation. # C: O(DCs + new pixels)
