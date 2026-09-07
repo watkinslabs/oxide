@@ -28,6 +28,8 @@ pub enum MenuError { NoSuchMenu, NoSuchItem, InvalidPosition }
 
 struct MenuRecord { popup: bool, items: Vec<MenuItem>, info: MenuInfo }
 
+#[path = "win32_menu/bar_hit.rs"]
+pub mod bar_hit;
 #[path = "win32_menu/info.rs"]
 mod info;
 #[path = "win32_menu/draw.rs"]

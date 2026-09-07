@@ -284,8 +284,30 @@ impl Tracker {
 }
 
 /// Whether one menu is a popup rather than a bar. # C: O(N_menus)
-fn is_popup_menu(menus: &MenuManager, menu: u32) -> bool {
+pub fn is_popup_menu(menus: &MenuManager, menu: u32) -> bool {
     MenuId::from_raw(menu).and_then(|id| menus.is_popup(id).ok()).unwrap_or(false)
+}
+
+/// The menu whose item carries `target` as its submenu, searched from `top`
+/// down the submenu links. The top menu itself has no parent. A menu reached
+/// twice is not walked twice, so a malformed cycle terminates.
+/// # C: O(N_menus * N_items)
+pub fn parent_menu(menus: &MenuManager, top: u32, target: u32) -> Option<u32> {
+    if top == target { return None; }
+    let mut pending = alloc::vec![top];
+    let mut seen: Vec<u32> = Vec::new();
+    while let Some(menu) = pending.pop() {
+        if seen.contains(&menu) { continue; }
+        seen.push(menu);
+        let Some(id) = MenuId::from_raw(menu) else { continue; };
+        let Ok(count) = menus.count(id) else { continue; };
+        for position in 0..count {
+            let Some(submenu) = menus.item(id, position as u32, MF_BYPOSITION).ok().and_then(|item| item.submenu) else { continue; };
+            if submenu == target { return Some(menu); }
+            pending.push(submenu);
+        }
+    }
+    None
 }
 
 fn is_separator(menus: &MenuManager, menu: MenuId, position: u32) -> bool {
