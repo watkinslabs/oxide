@@ -190,6 +190,21 @@ impl<'a> Image<'a> {
         }
         Err(Error::Einval)
     }
+    /// Whether the image's virtual layout carries an address at `rva`.
+    ///
+    /// A section's virtual extent may exceed the bytes the file supplies; the
+    /// tail is zero-filled when the image is mapped. An address there is a
+    /// real image address that no file byte backs, so a validity check that
+    /// demands file bytes rejects it — which is what makes a data export in
+    /// the zero-filled tail of a section look like a malformed image.
+    /// # C: O(N_sections)
+    pub fn rva_mapped(&self, rva: u32) -> bool {
+        if rva < self.size_of_headers { return true; }
+        self.sections.iter().any(|section| {
+            section.virtual_address.checked_add(section.virtual_size.max(section.raw_size))
+                .is_some_and(|end| rva >= section.virtual_address && rva < end)
+        })
+    }
     /// # C: O(N_sections + SizeOfImage)
     pub fn materialize(&self) -> Result<Vec<u8>, Error> {
         let mut image = vec![0u8; self.size_of_image as usize];
@@ -350,7 +365,7 @@ impl<'a> Image<'a> {
         if rva >= directory.rva && rva < directory.rva.checked_add(directory.size).ok_or(Error::Einval)? {
             return Ok(Some(ExportTarget::Forwarder(self.c_string(rva)?)));
         }
-        self.rva_range(rva, 1)?;
+        if !self.rva_mapped(rva) { return Err(Error::Einval); }
         Ok(Some(ExportTarget::Rva(rva)))
     }
 

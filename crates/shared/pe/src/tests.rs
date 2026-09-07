@@ -2,6 +2,7 @@ use super::*;
 use alloc::{vec, vec::Vec};
 
 mod robustness;
+#[path = "tests/shipped_catalog.rs"] mod shipped_catalog;
 
 const OPT: usize = 0x98;
 const SEC: usize = 0x188;
@@ -477,4 +478,59 @@ fn resolves_wine_ntdll_export_when_installed() {
     let Ok(b) = std::fs::read("/usr/lib/wine/x86_64-windows/ntdll.dll") else { return };
     let p = parse(&b).expect("Wine's ntdll must satisfy the PE32+ contract");
     assert!(p.export_rva(&ImportThunk::Name { hint: 0, name: b"NtClose" }).unwrap().is_some());
+}
+
+/// A section's virtual extent may run past the bytes the file carries; the
+/// tail is zero-filled when the image is mapped. An export whose address
+/// lands there is an ordinary data export, not a malformed image, and the
+/// shipped C runtime modules place exports exactly there.
+#[test]
+fn an_export_in_a_zero_filled_section_tail_resolves_to_its_address() {
+    let mut b = image();
+    // Grow the section's virtual extent well past its 0x200 file bytes.
+    b[SEC + 8..SEC + 12].copy_from_slice(&0x2000u32.to_le_bytes());
+    let dir = OPT + 112 + IMAGE_DIRECTORY_ENTRY_EXPORT * 8;
+    b[dir..dir + 4].copy_from_slice(&0x1100u32.to_le_bytes());
+    b[dir + 4..dir + 8].copy_from_slice(&0x100u32.to_le_bytes());
+    b[0x500 + 12..0x500 + 16].copy_from_slice(&0x1160u32.to_le_bytes());
+    b[0x500 + 16..0x500 + 20].copy_from_slice(&1u32.to_le_bytes());
+    b[0x500 + 20..0x500 + 24].copy_from_slice(&1u32.to_le_bytes());
+    b[0x500 + 24..0x500 + 28].copy_from_slice(&1u32.to_le_bytes());
+    b[0x500 + 28..0x500 + 32].copy_from_slice(&0x1130u32.to_le_bytes());
+    b[0x500 + 32..0x500 + 36].copy_from_slice(&0x1134u32.to_le_bytes());
+    b[0x500 + 36..0x500 + 40].copy_from_slice(&0x1138u32.to_le_bytes());
+    // The export address is inside the zero-filled tail, past the file bytes.
+    b[0x530..0x534].copy_from_slice(&0x2800u32.to_le_bytes());
+    b[0x534..0x538].copy_from_slice(&0x1160u32.to_le_bytes());
+    b[0x538..0x53a].copy_from_slice(&0u16.to_le_bytes());
+    b[0x560..0x56b].copy_from_slice(b"ZeroFilled\0");
+    let parsed = parse(&b).unwrap();
+    assert!(parsed.rva_mapped(0x2800), "the zero-filled tail is part of the image");
+    assert_eq!(parsed.rva_range(0x2800, 1), Err(Error::Einval), "no file byte backs the tail");
+    let import = ImportThunk::Name { hint: 0, name: b"ZeroFilled" };
+    assert_eq!(parsed.export_target(&import).unwrap(), Some(ExportTarget::Rva(0x2800)));
+}
+
+/// The admission must still be able to fail: an export address outside every
+/// section is a malformed image and stays rejected.
+#[test]
+fn an_export_outside_every_section_is_still_refused() {
+    let mut b = image();
+    let dir = OPT + 112 + IMAGE_DIRECTORY_ENTRY_EXPORT * 8;
+    b[dir..dir + 4].copy_from_slice(&0x1100u32.to_le_bytes());
+    b[dir + 4..dir + 8].copy_from_slice(&0x100u32.to_le_bytes());
+    b[0x500 + 12..0x500 + 16].copy_from_slice(&0x1160u32.to_le_bytes());
+    b[0x500 + 16..0x500 + 20].copy_from_slice(&1u32.to_le_bytes());
+    b[0x500 + 20..0x500 + 24].copy_from_slice(&1u32.to_le_bytes());
+    b[0x500 + 24..0x500 + 28].copy_from_slice(&1u32.to_le_bytes());
+    b[0x500 + 28..0x500 + 32].copy_from_slice(&0x1130u32.to_le_bytes());
+    b[0x500 + 32..0x500 + 36].copy_from_slice(&0x1134u32.to_le_bytes());
+    b[0x500 + 36..0x500 + 40].copy_from_slice(&0x1138u32.to_le_bytes());
+    b[0x530..0x534].copy_from_slice(&0x9000u32.to_le_bytes());
+    b[0x534..0x538].copy_from_slice(&0x1160u32.to_le_bytes());
+    b[0x538..0x53a].copy_from_slice(&0u16.to_le_bytes());
+    b[0x560..0x56b].copy_from_slice(b"OffTheEnd\0\0");
+    let parsed = parse(&b).unwrap();
+    assert!(!parsed.rva_mapped(0x9000));
+    assert_eq!(parsed.export_target(&ImportThunk::Name { hint: 0, name: b"OffTheEnd" }), Err(Error::Einval));
 }

@@ -19,7 +19,13 @@ fn dependencies(name: &str, blob: &[u8]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut push = |value: String| if !out.contains(&value) { out.push(value); };
     if let Ok(image) = pe::parse(blob) {
-        for dep in image.loader_dependencies().unwrap_or_default() { push(catalog::normalize(&dep)); }
+        // A walk that fails contributes nothing, so treating the failure as an
+        // empty list shrinks the audited closure without saying so. Every
+        // shipped module's walk must succeed; one that does not is a parser
+        // defect and the audit reports it rather than auditing less.
+        let loader = image.loader_dependencies()
+            .unwrap_or_else(|error| panic!("{name}: loader dependency walk failed with {error:?}"));
+        for dep in loader { push(catalog::normalize(&dep)); }
         for dep in image.delay_dependencies().unwrap_or_default() { push(catalog::normalize(dep)); }
     }
     for (owner, loaded) in catalog::RUNTIME_LOADED {
