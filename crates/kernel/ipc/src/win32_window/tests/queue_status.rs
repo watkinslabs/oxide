@@ -42,7 +42,7 @@ fn hardware_pointer_input_wakes_the_mouse_bits_not_the_post_bits() {
     let mut manager = WindowManager::new();
     let window = manager.create(TID, None, 0).unwrap();
     manager.set_rect(window, WindowRect { left: 0, top: 0, right: 100, bottom: 100 }).unwrap();
-    manager.post_compositor_pointer(window, 5, 5, 0, 0).unwrap();
+    manager.post_compositor_pointer(window, 5, 5, 0, 0, 0).unwrap();
     let status = manager.queue_status(TID, QS_ALLINPUT).unwrap();
     assert_eq!((status >> 16) & QS_MOUSEMOVE, QS_MOUSEMOVE);
     assert_eq!((status >> 16) & QS_POSTMESSAGE, 0);

@@ -12,7 +12,7 @@ const XBUTTON2: u32 = 2;
 const MODIFIERS: u16 = MK_SHIFT | MK_CONTROL;
 const BUTTONS: u16 = MK_LBUTTON | MK_RBUTTON | MK_MBUTTON | MK_XBUTTON1 | MK_XBUTTON2;
 const POINTER_FLAGS: u32 = (MODIFIERS | BUTTONS) as u32;
-const MAX_MESSAGES: usize = 7;
+const MAX_MESSAGES: usize = 8;
 const TRANSITIONS: [(u16, u32, u32, u32); 5] = [
     (MK_LBUTTON, WM_LBUTTONDOWN, WM_LBUTTONUP, 0),
     (MK_RBUTTON, WM_RBUTTONDOWN, WM_RBUTTONUP, 0),
@@ -26,10 +26,10 @@ impl WindowManager {
     /// redirects delivery, not coordinate origin. Wheel lParam stays screen-relative.
     /// Queue capacity is admitted before any cursor/button/message mutation.
     /// # C: O(windows + queues); # Sleeps: no
-    pub fn post_compositor_pointer(&mut self, source: WindowId, x: i32, y: i32, buttons: u32, wheel_delta: i32) -> Result<(), WindowError> {
+    pub fn post_compositor_pointer(&mut self, source: WindowId, x: i32, y: i32, buttons: u32, wheel_delta: i32, hwheel_delta: i32) -> Result<(), WindowError> {
         self.get(source).ok_or(WindowError::NoSuchWindow)?;
         let origin = self.rect(source).ok_or(WindowError::NoSuchWindow)?;
-        if buttons & !POINTER_FLAGS != 0 || i16::try_from(wheel_delta).is_err() { return Err(WindowError::InvalidParent); }
+        if buttons & !POINTER_FLAGS != 0 || i16::try_from(wheel_delta).is_err() || i16::try_from(hwheel_delta).is_err() { return Err(WindowError::InvalidParent); }
         let screen = (origin.left.checked_add(x).ok_or(WindowError::InvalidParent)?,
             origin.top.checked_add(y).ok_or(WindowError::InvalidParent)?);
         let target = self.capture.unwrap_or(source);
@@ -56,6 +56,11 @@ impl WindowManager {
         }
         if wheel_delta != 0 {
             append(WM_MOUSEWHEEL, buttons as u64 | (((wheel_delta as i16 as u16) as u64) << 16), screen);
+        }
+        // A tilt wheel is its own axis and its own message; both axes can move
+        // in one report and neither stands in for the other.
+        if hwheel_delta != 0 {
+            append(WM_MOUSEHWHEEL, buttons as u64 | (((hwheel_delta as i16 as u16) as u64) << 16), screen);
         }
         if !self.queue_has_capacity(owner, count) { return Err(WindowError::QueueFull); }
         for message in &messages[..count] { self.post_to_window_with_bits(target, *message, super::queue_status::hardware_bit(message.message))?; }

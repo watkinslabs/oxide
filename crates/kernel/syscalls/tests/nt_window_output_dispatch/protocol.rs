@@ -26,7 +26,7 @@ fn reset(scenario:Scenario){
 pub(super) fn deliver_gui_event(state:&mut ipc::win32_window::WindowManager,hwnd:u32){
     let rect=syscall::nt_compositor::Rect{x:0,y:0,width:4,height:4};
     let event=Record::new(Opcode::Configure,1,hwnd as u64,rect.encode_window().unwrap().to_vec()).unwrap();
-    assert!(bridge::apply_event(state,&event,|state,id,x,y,buttons,wheel|state.post_compositor_pointer(id,x,y,buttons,wheel).is_ok()));
+    assert!(bridge::apply_event(state,&event,|state,id,x,y,buttons,wheel,hwheel|state.post_compositor_pointer(id,x,y,buttons,wheel,hwheel).is_ok()));
     let filter=MessageFilter{hwnd:WindowId::from_raw(hwnd),first:ipc::win32_window::WM_SIZE,last:ipc::win32_window::WM_SIZE};
     assert!(state.peek_for_thread(41,filter,false).is_some(),"Configure must queue GUI work without dispatching application paint");
 }

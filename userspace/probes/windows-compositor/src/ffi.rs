@@ -25,6 +25,8 @@ pub struct Screen { pub root: Window, pub default_colormap: u32, pub white_pixel
 #[repr(C)] pub struct VoidCookie { pub sequence: c_uint }
 #[repr(C)] pub struct QueryTreeCookie { pub sequence: c_uint }
 #[repr(C)] pub struct QueryTreeReply { pub response_type: u8, pub pad0: u8, pub sequence: u16, pub length: u32, pub root: Window, pub parent: Window, pub children_len: u16, pub pad1: [u8; 14] }
+#[repr(C)] pub struct TranslateCoordinatesCookie { pub sequence: c_uint }
+#[repr(C)] pub struct TranslateCoordinatesReply { pub response_type: u8, pub same_screen: u8, pub sequence: u16, pub length: u32, pub child: Window, pub dst_x: i16, pub dst_y: i16 }
 #[repr(C)] pub struct GenericError { pub response_type: u8, pub error_code: u8, pub sequence: u16, pub resource_id: u32, pub minor_code: u16, pub major_code: u8, pub pad0: u8, pub pad: [u8; 20] }
 
 pub const KEY_PRESS: u8 = 2; pub const KEY_RELEASE: u8 = 3; pub const BUTTON_PRESS: u8 = 4; pub const BUTTON_RELEASE: u8 = 5; pub const MOTION_NOTIFY: u8 = 6; pub const FOCUS_IN: u8 = 9; pub const FOCUS_OUT: u8 = 10; pub const EXPOSE: u8 = 12; pub const CONFIGURE_NOTIFY: u8 = 22; pub const PROPERTY_NOTIFY: u8 = 28; pub const CLIENT_MESSAGE: u8 = 33;
@@ -32,6 +34,10 @@ pub const PROP_MODE_REPLACE: u8 = 0; pub const ATOM_NONE: Atom = 0; pub const AT
 pub const WINDOW_CLASS_INPUT_OUTPUT: u16 = 1; pub const IMAGE_FORMAT_Z_PIXMAP: u8 = 2;
 pub const CW_EVENT_MASK: u32 = 1 << 11;
 pub const EVENT_KEY_PRESS: u32 = 1; pub const EVENT_KEY_RELEASE: u32 = 1 << 1; pub const EVENT_BUTTON_PRESS: u32 = 1 << 2; pub const EVENT_BUTTON_RELEASE: u32 = 1 << 3; pub const EVENT_POINTER_MOTION: u32 = 1 << 6; pub const EVENT_EXPOSURE: u32 = 1 << 15; pub const EVENT_STRUCTURE_NOTIFY: u32 = 1 << 17; pub const EVENT_FOCUS_CHANGE: u32 = 1 << 21; pub const EVENT_PROPERTY_CHANGE: u32 = 1 << 22;
+/// Focus-change `detail` and `mode` values. A pointer-boundary focus event is
+/// not a focus change, and a grab's focus event describes the grab, not the
+/// window that owns the keyboard afterwards.
+pub const NOTIFY_POINTER: u8 = 5; pub const NOTIFY_GRAB: u8 = 1; pub const NOTIFY_UNGRAB: u8 = 2;
 pub const CONFIGURE_X: u16 = 1; pub const CONFIGURE_Y: u16 = 2; pub const CONFIGURE_WIDTH: u16 = 4; pub const CONFIGURE_HEIGHT: u16 = 8; pub const CONFIGURE_SIBLING: u16 = 32; pub const CONFIGURE_STACK_MODE: u16 = 64; pub const STACK_ABOVE: u32 = 0; pub const STACK_BELOW: u32 = 1; pub const SUBSTRUCTURE_NOTIFY: u32 = 1 << 19; pub const SUBSTRUCTURE_REDIRECT: u32 = 1 << 20;
 
 #[link(name = ":libxcb.so.1")]
@@ -86,6 +92,9 @@ extern "C" {
     pub fn xcb_get_image_reply(c: *mut Connection, cookie: GetImageCookie, error: *mut *mut c_void) -> *mut GetImageReply;
     pub fn xcb_get_image_data(reply: *const GetImageReply) -> *mut u8;
     pub fn xcb_get_image_data_length(reply: *const GetImageReply) -> c_int;
+    pub fn xcb_translate_coordinates(c: *mut Connection, src_window: Window, dst_window: Window, src_x: i16, src_y: i16) -> TranslateCoordinatesCookie;
+    pub fn xcb_translate_coordinates_reply(c: *mut Connection, cookie: TranslateCoordinatesCookie, error: *mut *mut c_void) -> *mut TranslateCoordinatesReply;
+    pub fn xcb_reparent_window(c: *mut Connection, window: Window, parent: Window, x: i16, y: i16) -> VoidCookie;
     pub fn xcb_query_tree(c: *mut Connection, window: Window) -> QueryTreeCookie;
     pub fn xcb_query_tree_reply(c: *mut Connection, cookie: QueryTreeCookie, error: *mut *mut c_void) -> *mut QueryTreeReply;
     pub fn xcb_query_tree_children(reply: *const QueryTreeReply) -> *mut Window;

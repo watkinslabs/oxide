@@ -158,3 +158,131 @@ fn xvfb_workarea_uses_generic_properties_without_window_manager_identity() {
     set(workarea,&[0,0,320,230]);assert_eq!(backend.monitor_snapshot().unwrap().work_area.bottom,230);
     unsafe { ffi::xcb_disconnect(conn); }
 }
+
+// 31fn desktop input routing: an X event names an X window, and every layer
+// above the bridge names an HWND. Feeding map_input an HWND directly, as the
+// keyboard test does, cannot observe that translation; only a real event
+// delivered by the server can.
+#[test]
+fn xvfb_desktop_input_events_carry_the_hwnd_not_the_x_window() {
+    let server = xvfb();
+    let mut backend = Backend::connect(Some(&server.display)).unwrap();
+    let hwnd = 0x91u32;
+    backend.handle_command(BridgeCommand::Create { hwnd, title: Vec::new(), rect: Rect { left: 0, top: 0, right: 120, bottom: 90 }, parent: 0, style: 0x1000_0000, ex_style: 0 }).unwrap();
+    let xid = backend.xid_for(hwnd).unwrap();
+    assert_ne!(xid, hwnd, "the test is meaningless unless the X window id differs from the HWND");
+    let (conn, _) = unsafe { connect(&server.display) };
+    let send_raw = |bytes: &[u8; 32], mask: u32| unsafe { ffi::xcb_send_event(conn, 0, xid, mask, bytes.as_ptr() as *const _); ffi::xcb_flush(conn); };
+
+    let mut button = [0u8; 32];
+    button[0] = ffi::BUTTON_PRESS; button[1] = 1;
+    button[8..12].copy_from_slice(&xid.to_ne_bytes()); button[12..16].copy_from_slice(&xid.to_ne_bytes());
+    button[24..26].copy_from_slice(&30i16.to_ne_bytes()); button[26..28].copy_from_slice(&40i16.to_ne_bytes());
+    send_raw(&button, ffi::EVENT_BUTTON_PRESS);
+
+    let mut motion = [0u8; 32];
+    motion[0] = ffi::MOTION_NOTIFY;
+    motion[8..12].copy_from_slice(&xid.to_ne_bytes()); motion[12..16].copy_from_slice(&xid.to_ne_bytes());
+    motion[24..26].copy_from_slice(&31i16.to_ne_bytes()); motion[26..28].copy_from_slice(&41i16.to_ne_bytes());
+    send_raw(&motion, ffi::EVENT_POINTER_MOTION);
+
+    let mut focus = [0u8; 32];
+    focus[0] = ffi::FOCUS_IN;
+    focus[4..8].copy_from_slice(&xid.to_ne_bytes());
+    send_raw(&focus, ffi::EVENT_FOCUS_CHANGE);
+
+    let mut seen = Vec::new();
+    for _ in 0..500 {
+        while let Some(event) = backend.poll_event() { seen.push(event); }
+        if seen.len() >= 3 { break; }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(seen.contains(&BridgeEvent::Input(InputEvent::Pointer { hwnd, x: 30, y: 40, buttons: crate::pointer::MK_LBUTTON, wheel: 0, hwheel: 0 })), "button event did not reach the bridge as an HWND: {seen:?}");
+    assert!(seen.contains(&BridgeEvent::Input(InputEvent::Pointer { hwnd, x: 31, y: 41, buttons: 0, wheel: 0, hwheel: 0 })), "motion event did not reach the bridge as an HWND: {seen:?}");
+    assert!(seen.contains(&BridgeEvent::Input(InputEvent::Focus { hwnd, focused: true })), "focus event did not reach the bridge as an HWND: {seen:?}");
+    // An event on a window this bridge does not own is dropped, not forwarded
+    // with a foreign identifier the GUI owner would have to reject.
+    let (other, root) = unsafe { connect(&server.display) };
+    unsafe { ffi::xcb_disconnect(other); }
+    let mut stray = button; stray[8..12].copy_from_slice(&root.to_ne_bytes()); stray[12..16].copy_from_slice(&root.to_ne_bytes());
+    unsafe { ffi::xcb_send_event(conn, 0, xid, ffi::EVENT_BUTTON_PRESS, stray.as_ptr() as *const _); ffi::xcb_flush(conn); }
+    for _ in 0..50 { assert_eq!(backend.poll_event(), None, "an event naming a foreign X window must not become a window event"); std::thread::sleep(Duration::from_millis(1)); }
+    unsafe { ffi::xcb_disconnect(conn); }
+}
+
+// 31gd geometry under a decorating window manager: the desktop reparents a
+// top-level window into a frame, after which a real ConfigureNotify reports a
+// position inside that frame rather than a position on the screen.
+#[test]
+fn xvfb_configure_under_a_reparenting_window_manager_reports_screen_position() {
+    let server = xvfb();
+    let mut backend = Backend::connect(Some(&server.display)).unwrap();
+    let hwnd = 0xa1u32;
+    backend.handle_command(BridgeCommand::Create { hwnd, title: Vec::new(), rect: Rect { left: 0, top: 0, right: 60, bottom: 40 }, parent: 0, style: 0x1000_0000, ex_style: 0 }).unwrap();
+    let xid = backend.xid_for(hwnd).unwrap();
+    let (conn, root) = unsafe { connect(&server.display) };
+    let frame = unsafe { ffi::xcb_generate_id(conn) };
+    unsafe {
+        ffi::xcb_create_window(conn, 0, frame, root, 40, 50, 100, 80, 0, ffi::WINDOW_CLASS_INPUT_OUTPUT, 0, 0, ptr::null());
+        ffi::xcb_map_window(conn, frame);
+        ffi::xcb_reparent_window(conn, xid, frame, 0, 0);
+        let values = [3u32, 4];
+        ffi::xcb_configure_window(conn, xid, ffi::CONFIGURE_X | ffi::CONFIGURE_Y, values.as_ptr());
+        ffi::xcb_flush(conn);
+    }
+    let mut configure = None;
+    for _ in 0..500 {
+        while let Some(event) = backend.poll_event() { if let BridgeEvent::Configure { hwnd: id, rect } = event { assert_eq!(id, hwnd); configure = Some(rect); } }
+        if configure.is_some_and(|rect: Rect| rect.left != 0 || rect.top != 0) { break; }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(configure, Some(Rect { left: 43, top: 54, right: 103, bottom: 94 }), "a reparented window's configure must name its screen position");
+    unsafe { ffi::xcb_disconnect(conn); }
+}
+
+// 31fn: what leaves the bridge for a click and a wheel notch is a Win32 button
+// mask and a wheel axis, not the X modifier state and button number.
+#[test]
+fn xvfb_pointer_wire_carries_win32_buttons_and_wheel_not_x11_state() {
+    let server = xvfb();
+    let mut backend = Backend::connect(Some(&server.display)).unwrap();
+    let hwnd = 0xb1u32;
+    backend.handle_command(BridgeCommand::Create { hwnd, title: Vec::new(), rect: Rect { left: 0, top: 0, right: 60, bottom: 40 }, parent: 0, style: 0x1000_0000, ex_style: 0 }).unwrap();
+    let xid = backend.xid_for(hwnd).unwrap();
+    let (conn, _) = unsafe { connect(&server.display) };
+    // X reports the state that preceded the event: a press is not yet held,
+    // and a release still is.
+    const X_SHIFT: u16 = 1;
+    const X_BUTTON1: u16 = 1 << 8;
+    let mut send_button = |press: bool, button: u8, state: u16| {
+        let mut event = [0u8; 32];
+        event[0] = if press { ffi::BUTTON_PRESS } else { ffi::BUTTON_RELEASE }; event[1] = button;
+        event[8..12].copy_from_slice(&xid.to_ne_bytes()); event[12..16].copy_from_slice(&xid.to_ne_bytes());
+        event[24..26].copy_from_slice(&5i16.to_ne_bytes()); event[26..28].copy_from_slice(&6i16.to_ne_bytes());
+        event[28..30].copy_from_slice(&state.to_ne_bytes());
+        unsafe { ffi::xcb_send_event(conn, 0, xid, if press { ffi::EVENT_BUTTON_PRESS } else { ffi::EVENT_BUTTON_RELEASE }, event.as_ptr() as *const _); ffi::xcb_flush(conn); }
+    };
+    send_button(true, 1, X_SHIFT);
+    send_button(false, 1, X_SHIFT | X_BUTTON1);
+    send_button(true, 5, 0);
+    send_button(false, 5, 0);
+    send_button(true, 7, 0);
+
+    let mut seen = Vec::new();
+    for _ in 0..500 {
+        while let Some(event) = backend.poll_event() { seen.push(event); }
+        if seen.len() >= 4 { break; }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let pointer = |buttons, wheel, hwheel| BridgeEvent::Input(InputEvent::Pointer { hwnd, x: 5, y: 6, buttons, wheel, hwheel });
+    assert_eq!(seen, vec![
+        pointer(crate::pointer::MK_LBUTTON | crate::pointer::MK_SHIFT, 0, 0),
+        pointer(crate::pointer::MK_SHIFT, 0, 0),
+        pointer(0, -crate::pointer::WHEEL_DELTA, 0),
+        pointer(0, 0, crate::pointer::WHEEL_DELTA),
+    ], "the wheel's release is not a second notch and the X state is not the Win32 mask");
+    // Every one of these encodes; the raw X form never reaches the wire.
+    for event in &seen { assert!(crate::protocol::encode_event(event, 1).is_ok()); }
+    assert!(crate::protocol::encode_event(&BridgeEvent::Input(InputEvent::Button { hwnd, press: true, button: 1, x: 0, y: 0, state: X_BUTTON1 }), 1).is_err());
+    unsafe { ffi::xcb_disconnect(conn); }
+}

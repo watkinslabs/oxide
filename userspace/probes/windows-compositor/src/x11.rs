@@ -18,7 +18,7 @@ pub enum BackendError { DisplayUnavailable, X11, InvalidCommand, Transport(Trans
 
 struct Window { xid: Xid, parent: Xid, gc: ffi::Gcontext, rect: Rect, width: u32, height: u32, requested_visible: bool, suppress_backing_configure: bool, last_frame: Option<Frame>, caret: crate::caret::Surface }
 
-pub struct Backend { conn: *mut ffi::Connection, keymap: *mut ffi::XkbKeymap, state: *mut ffi::XkbState, context: *mut ffi::XkbContext, max_request_bytes: usize, root: Xid, visual: ffi::Visualid, depth: u8, screen: Rect, atoms: Atoms, windows: BTreeMap<u32, Window>, xid_to_hwnd: BTreeMap<Xid, u32>, down_keys: BTreeMap<u8, bool>, pending: VecDeque<BridgeEvent> }
+pub struct Backend { conn: *mut ffi::Connection, keymap: *mut ffi::XkbKeymap, state: *mut ffi::XkbState, context: *mut ffi::XkbContext, max_request_bytes: usize, root: Xid, visual: ffi::Visualid, depth: u8, screen: Rect, atoms: Atoms, windows: BTreeMap<u32, Window>, xid_to_hwnd: BTreeMap<Xid, u32>, down_keys: BTreeMap<u8, bool>, extra_buttons: u32, pending: VecDeque<BridgeEvent> }
 
 #[derive(Clone, Copy)] struct Atoms { wm_protocols: ffi::Atom, wm_delete: ffi::Atom, wm_transient_for: ffi::Atom, net_wm_name: ffi::Atom, utf8_string: ffi::Atom, net_workarea: ffi::Atom, net_current_desktop: ffi::Atom, net_active_window: ffi::Atom, net_wm_state: ffi::Atom, net_wm_state_above: ffi::Atom }
 
@@ -80,7 +80,7 @@ impl Backend {
         if state.is_null() { unsafe { ffi::xkb_keymap_unref(keymap); ffi::xkb_context_unref(context); ffi::xcb_disconnect(conn); } return Err(BackendError::X11); }
         Self::stage(started, "keymap-ready");
         let max_request_bytes = (unsafe { ffi::xcb_get_maximum_request_length(conn) } as usize).saturating_mul(4).min(64 * 1024);
-        Ok(Self { conn, keymap, state, context, max_request_bytes, root, visual: screen.root_visual, depth: screen.root_depth, screen: screen_rect, atoms, windows: BTreeMap::new(), xid_to_hwnd: BTreeMap::new(), down_keys: BTreeMap::new(), pending: VecDeque::new() })
+        Ok(Self { conn, keymap, state, context, max_request_bytes, root, visual: screen.root_visual, depth: screen.root_depth, screen: screen_rect, atoms, windows: BTreeMap::new(), xid_to_hwnd: BTreeMap::new(), down_keys: BTreeMap::new(), extra_buttons: 0, pending: VecDeque::new() })
     }
 
     /// `_NET_CURRENT_DESKTOP` and `_NET_WORKAREA` are published by a window
@@ -167,6 +167,7 @@ impl Backend {
         let raw = unsafe { ffi::xcb_poll_for_event(self.conn) };
         if raw.is_null() { return None; }
         let bytes = unsafe { std::slice::from_raw_parts(raw as *const u8, 32) };
+        let synthetic = bytes[0] & 0x80 != 0;
         let expose = if bytes[0] & 0x7f == ffi::EXPOSE { Some((u32::from_ne_bytes(bytes[4..8].try_into().ok()?), Rect { left: u16::from_ne_bytes([bytes[8], bytes[9]]) as i32, top: u16::from_ne_bytes([bytes[10], bytes[11]]) as i32, right: u16::from_ne_bytes([bytes[8], bytes[9]]) as i32 + u16::from_ne_bytes([bytes[12], bytes[13]]) as i32, bottom: u16::from_ne_bytes([bytes[10], bytes[11]]) as i32 + u16::from_ne_bytes([bytes[14], bytes[15]]) as i32 })) } else { None };
         let event = if bytes[0] & 0x7f == ffi::CLIENT_MESSAGE {
             let type_atom = u32::from_ne_bytes(bytes[8..12].try_into().ok()?);
@@ -183,9 +184,18 @@ impl Backend {
             Some(BridgeEvent::Configure { hwnd: xid, rect }) => {
                 let hwnd = self.xid_to_hwnd.get(&xid).copied()?;
                 let window = self.windows.get_mut(&hwnd)?;
-                if window.suppress_backing_configure && rect.right - rect.left <= 1 && rect.bottom - rect.top <= 1 { window.suppress_backing_configure = false; None } else { Some(BridgeEvent::Configure { hwnd, rect }) }
+                if window.suppress_backing_configure && rect.right - rect.left <= 1 && rect.bottom - rect.top <= 1 { window.suppress_backing_configure = false; return None; }
+                let xid = window.xid;
+                // A real ConfigureNotify reports a position in the parent's
+                // coordinates. A window manager that decorates a top-level
+                // window reparents it into a frame, so that position is an
+                // offset inside the frame and not where the window is; only
+                // the synthetic notification a window manager sends is
+                // already root-relative.
+                let rect = if synthetic { rect } else { self.root_position(xid).map_or(rect, |(left, top)| Rect { left, top, right: left + (rect.right - rect.left), bottom: top + (rect.bottom - rect.top) }) };
+                Some(BridgeEvent::Configure { hwnd, rect })
             }
-            Some(BridgeEvent::Input(input)) => self.map_input(input),
+            Some(BridgeEvent::Input(input)) => { let input = self.retarget_input(input)?; self.map_input(input) }
             Some(BridgeEvent::WorkArea(_)) => self.snapshot_event(),
             other => other,
         }
@@ -258,6 +268,34 @@ impl Backend {
     fn property_u32(&self, window: Xid, atom: ffi::Atom) -> Option<u32> { let values = self.property_u32s(window, atom)?; crate::geometry::decode_cardinals(&values) }
     fn property_u32s(&self, window: Xid, atom: ffi::Atom) -> Option<Vec<u32>> { self.property_u32s_typed(window, atom, ffi::ATOM_CARDINAL) }
     fn property_u32s_typed(&self, window: Xid, atom: ffi::Atom, type_: ffi::Atom) -> Option<Vec<u32>> { let cookie = unsafe { ffi::xcb_get_property(self.conn, 0, window, atom, type_, 0, 4) }; let mut error = ptr::null_mut(); let reply = unsafe { ffi::xcb_get_property_reply(self.conn, cookie, &mut error) }; if reply.is_null() { return None; } if unsafe { (*reply).format } != 32 { unsafe { libc::free(reply as *mut _); } return None; } let len = unsafe { ffi::xcb_get_property_value_length(reply) }; if len < 0 || len % 4 != 0 { unsafe { libc::free(reply as *mut _); } return None; } let ptr = unsafe { ffi::xcb_get_property_value(reply) as *const u32 }; let values = unsafe { std::slice::from_raw_parts(ptr, len as usize / 4) }.to_vec(); unsafe { libc::free(reply as *mut _); } Some(values) }
+    /// X events name an X window; every layer above this one names an HWND.
+    /// An event on a window this bridge does not own is not a window event at
+    /// all and is dropped, which is the same answer the translation gives for
+    /// a window destroyed between the server's dispatch and this poll.
+    /// Where a window sits on the screen, which is not what a real
+    /// ConfigureNotify reports once a window manager has reparented it.
+    fn root_position(&self, xid: Xid) -> Option<(i32, i32)> {
+        let cookie = unsafe { ffi::xcb_translate_coordinates(self.conn, xid, self.root, 0, 0) };
+        let mut error = ptr::null_mut();
+        let reply = unsafe { ffi::xcb_translate_coordinates_reply(self.conn, cookie, &mut error) };
+        if reply.is_null() { return None; }
+        let position = unsafe { ((*reply).dst_x as i32, (*reply).dst_y as i32) };
+        // SAFETY: xcb hands the reply to the caller to release exactly once.
+        unsafe { libc::free(reply as *mut _); }
+        Some(position)
+    }
+    fn retarget_input(&self, input: InputEvent) -> Option<InputEvent> {
+        let xid = match input { InputEvent::Key { hwnd, .. } | InputEvent::Text { hwnd, .. } | InputEvent::Button { hwnd, .. } | InputEvent::Motion { hwnd, .. } | InputEvent::Pointer { hwnd, .. } | InputEvent::Focus { hwnd, .. } => hwnd };
+        let hwnd = self.xid_to_hwnd.get(&xid).copied()?;
+        Some(match input {
+            InputEvent::Key { press, virtual_key, scan_code, modifiers, .. } => InputEvent::Key { hwnd, press, virtual_key, scan_code, modifiers },
+            InputEvent::Text { utf8, .. } => InputEvent::Text { hwnd, utf8 },
+            InputEvent::Button { press, button, x, y, state, .. } => InputEvent::Button { hwnd, press, button, x, y, state },
+            InputEvent::Motion { x, y, state, .. } => InputEvent::Motion { hwnd, x, y, state },
+            InputEvent::Pointer { x, y, buttons, wheel, hwheel, .. } => InputEvent::Pointer { hwnd, x, y, buttons, wheel, hwheel },
+            InputEvent::Focus { focused, .. } => InputEvent::Focus { hwnd, focused },
+        })
+    }
     fn map_input(&mut self, input: InputEvent) -> Option<BridgeEvent> {
         if let InputEvent::Key { hwnd, press, virtual_key: _, scan_code: keycode, modifiers: _state } = input {
             let alt_name = CString::new("Alt").map_err(|_| ()).ok()?;
@@ -278,7 +316,35 @@ impl Backend {
                 if n > 0 { let bytes = unsafe { std::slice::from_raw_parts(text.as_ptr() as *const u8, (n as usize).saturating_add(1).min(text.len())) }; if let Ok(Some(value)) = crate::keyboard::state_utf8(bytes, n, true) { self.pending.push_back(BridgeEvent::Input(InputEvent::Text { hwnd, utf8: value.as_bytes().to_vec() })); } }
             }
             Some(BridgeEvent::Input(InputEvent::Key { hwnd, press, virtual_key, scan_code: scan.code, modifiers }))
-        } else { Some(BridgeEvent::Input(input)) }
+        } else { self.map_pointer(input) }
+    }
+
+    /// X reports the modifier state in effect before the event's own
+    /// transition and names buttons by number; a window message carries a
+    /// complete Win32 button mask and a wheel axis. X publishes no state bit
+    /// for the fourth and fifth buttons, so their mask is carried here.
+    fn map_pointer(&mut self, input: InputEvent) -> Option<BridgeEvent> {
+        let (hwnd, x, y, state, transition) = match input {
+            InputEvent::Motion { hwnd, x, y, state } => (hwnd, x, y, state, None),
+            InputEvent::Button { hwnd, press, button, x, y, state } => (hwnd, x, y, state, Some((press, button))),
+            other => return Some(BridgeEvent::Input(other)),
+        };
+        const TRACKED: u32 = crate::pointer::MK_XBUTTON1 | crate::pointer::MK_XBUTTON2;
+        let mut wheel = 0; let mut hwheel = 0; let mut transitioned = 0; let mut released = 0;
+        if let Some((press, button)) = transition {
+            match (crate::pointer::button_mask(button), crate::pointer::wheel_for(button)) {
+                // The state X reports predates this event's own transition, so
+                // a press is not yet held there and a release still is.
+                (Some(mask), _) => { if press { transitioned = mask; } else { released = mask; }
+                    if mask & TRACKED != 0 { if press { self.extra_buttons |= mask; } else { self.extra_buttons &= !mask; } } }
+                // A wheel is a button press in X, and its release stands for
+                // no motion at all rather than for a second notch.
+                (None, Some((delta, horizontal))) => { if !press { return None; } if horizontal { hwheel = delta; } else { wheel = delta; } }
+                (None, None) => return None,
+            }
+        }
+        let buttons = ((crate::pointer::buttons_from_state(state) | (self.extra_buttons & TRACKED)) | transitioned) & !released;
+        Some(BridgeEvent::Input(InputEvent::Pointer { hwnd, x, y, buttons, wheel, hwheel }))
     }
 }
 
@@ -294,7 +360,11 @@ pub fn decode_event(raw: &[u8]) -> Option<BridgeEvent> {
         ffi::KEY_PRESS | ffi::KEY_RELEASE => Some(BridgeEvent::Input(InputEvent::Key { hwnd: xid(12), press: kind == ffi::KEY_PRESS, virtual_key: 0, scan_code: raw[1], modifiers: u16::from_ne_bytes([raw[28], raw[29]]) as u32 })),
         ffi::BUTTON_PRESS | ffi::BUTTON_RELEASE => Some(BridgeEvent::Input(InputEvent::Button { hwnd: xid(12), press: kind == ffi::BUTTON_PRESS, button: raw[1], x: i16::from_ne_bytes([raw[24], raw[25]]), y: i16::from_ne_bytes([raw[26], raw[27]]), state: u16::from_ne_bytes([raw[28], raw[29]]) })),
         ffi::MOTION_NOTIFY => Some(BridgeEvent::Input(InputEvent::Motion { hwnd: xid(12), x: i16::from_ne_bytes([raw[24], raw[25]]), y: i16::from_ne_bytes([raw[26], raw[27]]), state: u16::from_ne_bytes([raw[28], raw[29]]) })),
-        ffi::FOCUS_IN | ffi::FOCUS_OUT => Some(BridgeEvent::Input(InputEvent::Focus { hwnd: xid(4), focused: kind == ffi::FOCUS_IN })),
+        // A pointer-boundary focus event reports where the pointer is, not who
+        // owns the keyboard, and a grab's focus event reports the grab. Taking
+        // either as an activation change deactivates a window whenever the
+        // desktop grabs the keyboard, and reactivates it on release.
+        ffi::FOCUS_IN | ffi::FOCUS_OUT => { if raw[1] == ffi::NOTIFY_POINTER || raw[8] == ffi::NOTIFY_GRAB || raw[8] == ffi::NOTIFY_UNGRAB { return None; } Some(BridgeEvent::Input(InputEvent::Focus { hwnd: xid(4), focused: kind == ffi::FOCUS_IN })) }
         ffi::PROPERTY_NOTIFY => Some(BridgeEvent::WorkArea(MonitorSnapshot { desktop: 0, monitor: Rect { left: 0, top: 0, right: 0, bottom: 0 }, work_area: Rect { left: 0, top: 0, right: 0, bottom: 0 } })),
         ffi::EXPOSE => None,
         _ => None,

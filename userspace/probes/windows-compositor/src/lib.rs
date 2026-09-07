@@ -6,12 +6,14 @@
 mod ffi;
 mod geometry;
 mod keyboard;
+mod pointer;
 mod protocol;
 mod readiness;
 mod x11;
 mod caret;
 
 pub use geometry::{decode_cardinals, decode_work_area, MonitorSnapshot, Rect};
+pub use pointer::{buttons_from_state, button_mask, wheel_for, MK_ALL, WHEEL_DELTA};
 pub use keyboard::{evdev_x11_scan, key_flags, key_lparam, keysym_to_vk, state_utf8, ModifierMasks, Modifiers, Scan};
 pub use readiness::{parse_args, publish_then_notify, Options, UsageError, READY_TOKEN};
 pub use protocol::{BridgeCommand, BridgeEvent, Frame, Inbound, InputEvent, NativeTransport, StreamTransport, TransportError};
@@ -67,6 +69,18 @@ mod tests {
         assert_eq!(syscall::nt_compositor::u32_at(&payload, 12), Ok(keyboard::KEY_EXTENDED | keyboard::KEY_PREVIOUS));
         let invalid = BridgeEvent::Input(InputEvent::Key { hwnd: 9, press: true, virtual_key: 0, scan_code: 0x1e, modifiers: 0 });
         assert!(protocol::encode_event(&invalid, 1).is_err());
+    }
+
+    #[test]
+    fn pointer_boundary_and_grab_focus_events_are_not_activation_changes() {
+        let focus = |detail: u8, mode: u8| { let mut event = [0u8; 32]; event[0] = ffi::FOCUS_IN; event[1] = detail; event[4..8].copy_from_slice(&9u32.to_ne_bytes()); event[8] = mode; x11::decode_event(&event) };
+        assert_eq!(focus(0, 0), Some(BridgeEvent::Input(InputEvent::Focus { hwnd: 9, focused: true })));
+        assert_eq!(focus(ffi::NOTIFY_POINTER, 0), None);
+        assert_eq!(focus(0, ffi::NOTIFY_GRAB), None);
+        assert_eq!(focus(0, ffi::NOTIFY_UNGRAB), None);
+        // A focus event delivered while a grab is held still names the real
+        // keyboard owner and is not dropped.
+        assert_eq!(focus(0, 3), Some(BridgeEvent::Input(InputEvent::Focus { hwnd: 9, focused: true })));
     }
 
     #[test]

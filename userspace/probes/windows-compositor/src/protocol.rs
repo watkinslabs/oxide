@@ -48,8 +48,12 @@ pub enum BridgeEvent {
 pub enum InputEvent {
     Key { hwnd: u32, press: bool, virtual_key: u32, scan_code: u8, modifiers: u32 },
     Text { hwnd: u32, utf8: Vec<u8> },
+    /// X forms, before translation: an X button number and an X modifier
+    /// state, neither of which is a Win32 value.
     Button { hwnd: u32, press: bool, button: u8, x: i16, y: i16, state: u16 },
     Motion { hwnd: u32, x: i16, y: i16, state: u16 },
+    /// Translated form: a Win32 button mask and both wheel axes.
+    Pointer { hwnd: u32, x: i16, y: i16, buttons: u32, wheel: i32, hwheel: i32 },
     Focus { hwnd: u32, focused: bool },
 }
 
@@ -127,7 +131,17 @@ pub(crate) fn encode_event(event: &BridgeEvent, next: u64) -> Result<(Opcode, u6
         BridgeEvent::Destroyed { hwnd } => Ok((Opcode::Ack, *hwnd as u64, 0u32.to_le_bytes().to_vec(), next)),
         BridgeEvent::Input(InputEvent::Key { hwnd, press, virtual_key, scan_code, modifiers }) => { if *virtual_key == 0 || *virtual_key > 0xff || *modifiers & !(crate::keyboard::KEY_EXTENDED | crate::keyboard::KEY_ALT | crate::keyboard::KEY_PREVIOUS) != 0 { return Err(TransportError::Unsupported); } let mut p = Vec::new(); p.extend_from_slice(&virtual_key.to_le_bytes()); p.extend_from_slice(&(*scan_code as u32).to_le_bytes()); p.extend_from_slice(&(*press as u32).to_le_bytes()); p.extend_from_slice(&modifiers.to_le_bytes()); Ok((Opcode::Key, *hwnd as u64, p, next)) }
         BridgeEvent::Input(InputEvent::Text { hwnd, utf8 }) => Ok((Opcode::Text, *hwnd as u64, utf8.clone(), next)),
-        BridgeEvent::Input(InputEvent::Button { hwnd, x, y, state, .. }) | BridgeEvent::Input(InputEvent::Motion { hwnd, x, y, state }) => { let mut p = Vec::new(); p.extend_from_slice(&(*x as i32 as u32).to_le_bytes()); p.extend_from_slice(&(*y as i32 as u32).to_le_bytes()); p.extend_from_slice(&(*state as u32).to_le_bytes()); p.extend_from_slice(&0i32.to_le_bytes()); Ok((Opcode::Pointer, *hwnd as u64, p, next)) }
+        // The X forms never reach the wire: an X modifier state read as a
+        // Win32 button mask reports a click that did not happen and loses the
+        // one that did, so the translation is not optional.
+        BridgeEvent::Input(InputEvent::Button { .. }) | BridgeEvent::Input(InputEvent::Motion { .. }) => Err(TransportError::Unsupported),
+        BridgeEvent::Input(InputEvent::Pointer { hwnd, x, y, buttons, wheel, hwheel }) => {
+            if buttons & !crate::pointer::MK_ALL != 0 || i16::try_from(*wheel).is_err() || i16::try_from(*hwheel).is_err() { return Err(TransportError::Unsupported); }
+            let mut p = Vec::new();
+            p.extend_from_slice(&(*x as i32 as u32).to_le_bytes()); p.extend_from_slice(&(*y as i32 as u32).to_le_bytes());
+            p.extend_from_slice(&buttons.to_le_bytes()); p.extend_from_slice(&wheel.to_le_bytes()); p.extend_from_slice(&hwheel.to_le_bytes());
+            Ok((Opcode::Pointer, *hwnd as u64, p, next))
+        }
         BridgeEvent::Input(InputEvent::Focus { hwnd, focused }) => { if *hwnd == 0 { return Err(TransportError::Unsupported); } Ok((Opcode::Focus, *hwnd as u64, (*focused as u32).to_le_bytes().to_vec(), next)) }
     }
 }

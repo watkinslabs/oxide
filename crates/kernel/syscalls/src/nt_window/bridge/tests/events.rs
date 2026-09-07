@@ -12,7 +12,7 @@ fn event(opcode: Opcode, id: WindowId, payload: Vec<u8>) -> Record {
 }
 fn words(values: &[u32]) -> Vec<u8> { values.iter().flat_map(|word| word.to_le_bytes()).collect() }
 fn deliver(state: &mut WindowManager, event: &Record) -> bool {
-    apply_event(state, event, |_, _, _, _, _, _| panic!("unexpected pointer"))
+    apply_event(state, event, |_, _, _, _, _, _, _| panic!("unexpected pointer"))
 }
 fn next(state: &mut WindowManager) -> Option<WinMessage> {
     state.peek_for_thread(17, gui::MessageFilter { hwnd: None, first: 0, last: 0 }, true)
@@ -151,12 +151,12 @@ fn malformed_and_stale_events_do_not_mutate_or_enqueue() {
 #[test]
 fn pointer_forwards_absolute_signed_client_coordinates_and_win32_buttons_once() {
     let (mut state, id) = state();
-    let record = event(Opcode::Pointer, id, words(&[-4i32 as u32, 12, gui::MK_LBUTTON as u32, -120i32 as u32]));
+    let record = event(Opcode::Pointer, id, words(&[-4i32 as u32, 12, gui::MK_LBUTTON as u32, -120i32 as u32, 120]));
     let mut calls = 0;
-    assert!(apply_event(&mut state, &record, |owner, target, x, y, buttons, wheel| {
+    assert!(apply_event(&mut state, &record, |owner, target, x, y, buttons, wheel, hwheel| {
         calls += 1;
         assert!(owner.get(target).is_some());
-        assert_eq!((target, x, y, buttons, wheel), (id, -4, 12, 1, -120)); true
+        assert_eq!((target, x, y, buttons, wheel, hwheel), (id, -4, 12, 1, -120, 120)); true
     }));
     assert_eq!(calls, 1);
 }
@@ -164,7 +164,7 @@ fn pointer_forwards_absolute_signed_client_coordinates_and_win32_buttons_once() 
 #[test]
 fn pointer_rejects_x11_button_mask_and_wheel_overflow_before_owner_call() {
     let (mut state, id) = state();
-    for fields in [[0, 0, 1 << 8, 0], [0, 0, 0, 32768]] {
+    for fields in [[0, 0, 1 << 8, 0, 0], [0, 0, 0, 32768, 0], [0, 0, 0, 0, 32768]] {
         assert!(!deliver(&mut state, &event(Opcode::Pointer, id, words(&fields))));
     }
 }
@@ -200,15 +200,19 @@ fn bridge_pointer_reaches_canonical_capture_queue() {
     let capture = state.create(17, None, 0).unwrap();
     state.set_rect(capture, WindowRect { left: 100, top: 200, right: 300, bottom: 400 }).unwrap();
     state.set_capture(17, capture).unwrap();
-    let record = event(Opcode::Pointer, id, words(&[1, 2, gui::MK_LBUTTON as u32, 120]));
-    assert!(apply_event(&mut state, &record, |state, id, x, y, buttons, wheel| {
-        state.post_compositor_pointer(id, x, y, buttons, wheel).is_ok()
+    let record = event(Opcode::Pointer, id, words(&[1, 2, gui::MK_LBUTTON as u32, 120, -120i32 as u32]));
+    assert!(apply_event(&mut state, &record, |state, id, x, y, buttons, wheel, hwheel| {
+        state.post_compositor_pointer(id, x, y, buttons, wheel, hwheel).is_ok()
     }));
     let motion = next(&mut state).unwrap();
     assert_eq!((motion.hwnd, motion.message, motion.lparam), (Some(capture), gui::WM_MOUSEMOVE, gui::mouse_lparam(-79, -168)));
     assert_eq!(next(&mut state).unwrap().message, gui::WM_LBUTTONDOWN);
     let wheel = next(&mut state).unwrap();
     assert_eq!((wheel.message, wheel.lparam), (gui::WM_MOUSEWHEEL, gui::mouse_lparam(21, 32)));
+    // A tilt is its own message on the same report, not a re-reading of the
+    // vertical wheel.
+    let hwheel = next(&mut state).unwrap();
+    assert_eq!((hwheel.message, hwheel.wparam), (gui::WM_MOUSEHWHEEL, gui::MK_LBUTTON as u64 | ((-120i32 as i16 as u16 as u64) << 16)));
 }
 
 #[test]
@@ -419,4 +423,43 @@ fn configure_failure_preserves_existing_damage_as_well_as_rect_and_queue() {
     assert_eq!(state.rect(id), old);
     assert_eq!(state.begin_paint(id), Ok(Some(damage)));
     assert!(state.check_message_capacity(id, 1).is_ok());
+}
+
+/// A desktop click is two reports whose only difference is the button mask,
+/// and each has to become the window message that names that transition. The
+/// bridge's own tests end at the wire, so this is the boundary that proves a
+/// click reaches the window's queue.
+#[test]
+fn a_desktop_click_becomes_a_button_down_and_up_on_the_window_queue() {
+    let (mut state, id) = state();
+    let mut deliver_pointer = |state: &mut WindowManager, buttons: u32| {
+        let record = event(Opcode::Pointer, id, words(&[9, 11, buttons, 0, 0]));
+        apply_event(state, &record, |state, id, x, y, buttons, wheel, hwheel| state.post_compositor_pointer(id, x, y, buttons, wheel, hwheel).is_ok())
+    };
+    assert!(deliver_pointer(&mut state, gui::MK_LBUTTON as u32));
+    assert!(deliver_pointer(&mut state, 0));
+    // Hardware input wakes a queue on its own class, so a wait for input
+    // releases; a post bit alone would leave that wait parked.
+    let pending = state.pending_status(17);
+    assert_eq!(pending & gui::queue_status::QS_MOUSEBUTTON, gui::queue_status::QS_MOUSEBUTTON);
+    assert_eq!(pending & gui::queue_status::QS_MOUSEMOVE, gui::queue_status::QS_MOUSEMOVE);
+    let messages: Vec<u32> = core::iter::from_fn(|| next(&mut state)).map(|message| message.message).collect();
+    assert_eq!(messages, alloc::vec![gui::WM_MOUSEMOVE, gui::WM_LBUTTONDOWN, gui::WM_LBUTTONUP]);
+}
+
+/// The desktop reports focus on the top-level window; activation and keyboard
+/// focus are what the application observes.
+#[test]
+fn a_desktop_focus_report_activates_the_window_and_gives_it_the_keyboard() {
+    let (mut state, id) = state();
+    assert!(deliver(&mut state, &event(Opcode::Focus, id, words(&[1]))));
+    assert_eq!(state.active_window(), Some(id));
+    assert_eq!(state.focused(), Some(id));
+    let messages: Vec<u32> = core::iter::from_fn(|| next(&mut state)).map(|message| message.message).collect();
+    assert!(messages.contains(&0x0006), "activation must reach the window: {messages:?}");
+    assert!(messages.contains(&gui::WM_SETFOCUS), "keyboard focus must reach the window: {messages:?}");
+    // A key report then lands on that window as a Windows key message.
+    let key = event(Opcode::Key, id, words(&[0x41, 0x1e, 1, 0]));
+    assert!(deliver(&mut state, &key));
+    assert_eq!(next(&mut state).map(|message| (message.message, message.wparam)), Some((gui::WM_KEYDOWN, 0x41)));
 }
