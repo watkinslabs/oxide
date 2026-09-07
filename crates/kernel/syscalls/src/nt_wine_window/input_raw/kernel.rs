@@ -184,6 +184,8 @@ pub(crate) fn route(ordinal: u64, args: &[u64]) -> Option<u64> {
         TRACK_MOUSE_EVENT if !args.is_empty() => track_mouse_event(args[0]),
         SET_CAPTURE if !args.is_empty() => owner::set_capture_for_current(args[0], 0).unwrap_or(0),
         RELEASE_CAPTURE => owner::release_capture_for_current() as u64,
+        GET_MESSAGE_POS => owner::message_pos_for_current() as u64,
+        SET_MESSAGE_EXTRA_INFO if !args.is_empty() => owner::set_message_extra_for_current(args[0] as i64) as u64,
         GET_QUEUE_STATUS if !args.is_empty() => owner::queue_status_for_current(args[0] as u32).unwrap_or(0) as u64,
         GET_THREAD_STATE if !args.is_empty() => {
             let Some(class) = thread_state(args[0] as u32) else { return Some(0); };

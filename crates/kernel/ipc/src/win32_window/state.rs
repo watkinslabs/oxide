@@ -1,12 +1,12 @@
 //! Canonical HWND lifetime, geometry, painting and message work.
 use super::*;
 impl WindowManager {
-    pub fn new() -> Self { Self { next: 1, next_atom: 1, classes: Vec::new(), windows: Vec::new(), rects: Vec::new(), texts: Vec::new(), dirty: Vec::new(), painting: Vec::new(), queues: Vec::new(), timers: Vec::new(), focus: None, capture: None, cursor: (0, 0), buttons: 0, destroying: Vec::new(), keyboard: KeyboardState::default(), active: None, cursors: cursor_object::CursorIcons::new(), current_cursor: 0, cursor_count: 0, cursor_clip: None, cursor_change: 0, cursor_history: [cursor_pos::CursorPos { x: 0, y: 0, time: 0, info: 0 }; cursor_pos::CURSOR_HISTORY], cursor_latest: 0, menu_owner: None, move_size: None, hotkeys: hotkey::Hotkeys::new(), inputs: thread_input::ThreadInputs::new(), tracks: mouse_track::MouseTracks::new(), raw_input: rawinput::RawRegistrations::new(), layouts: Vec::new(), icons: window_icon::WindowIconTable::new(), attributes: Vec::new() } }
+    pub fn new() -> Self { Self { next: 1, next_atom: 1, classes: Vec::new(), windows: Vec::new(), rects: Vec::new(), texts: Vec::new(), dirty: Vec::new(), painting: Vec::new(), queues: Vec::new(), timers: Vec::new(), focus: None, capture: None, cursor: (0, 0), buttons: 0, destroying: Vec::new(), keyboard: KeyboardState::default(), active: None, cursors: cursor_object::CursorIcons::new(), current_cursor: 0, cursor_count: 0, cursor_clip: None, cursor_change: 0, cursor_history: [cursor_pos::CursorPos { x: 0, y: 0, time: 0, info: 0 }; cursor_pos::CURSOR_HISTORY], cursor_latest: 0, menu_owner: None, move_size: None, hotkeys: hotkey::Hotkeys::new(), inputs: thread_input::ThreadInputs::new(), tracks: mouse_track::MouseTracks::new(), raw_input: rawinput::RawRegistrations::new(), layouts: Vec::new(), icons: window_icon::WindowIconTable::new(), attributes: Vec::new(), pointer_frame: 0 } }
     pub fn create(&mut self, owner_tid: u64, parent: Option<WindowId>, wndproc: u64) -> Result<WindowId, WindowError> {
         if parent.is_some_and(|parent| self.get(parent).is_none()) { return Err(WindowError::InvalidParent); }
         let id = WindowId(self.next);
         self.next = self.next.checked_add(1).ok_or(WindowError::NoSuchWindow)?;
-        self.windows.push((id, OwnedWindow::new(WindowRecord { owner_tid, parent, owner: None, wndproc, unicode: true, class_atom: None, visible: false, sys_menu: None, id_menu: 0, presentation_ready: false, style: 0, ex_style: 0, last_focus: None, client_rect: None, imc: None }, 0, 0).map_err(|_| WindowError::NoMemory)?));
+        self.windows.push((id, OwnedWindow::new(WindowRecord { owner_tid, parent, owner: None, wndproc, unicode: true, class_atom: None, visible: false, sys_menu: None, id_menu: 0, presentation_ready: false, style: 0, ex_style: 0, last_focus: None, client_rect: None, imc: None, fnid: 0 }, 0, 0).map_err(|_| WindowError::NoMemory)?));
         self.rects.push((id, WindowRect { left: 0, top: 0, right: 0, bottom: 0 }));
         self.texts.push((id, Vec::new()));
         if self.queues.iter().all(|(tid, _)| *tid != owner_tid) { self.queues.push((owner_tid, MessageQueue::default())); }
@@ -200,25 +200,28 @@ impl WindowManager {
     }
     /// Enqueue one post stamped with the tick count it carries. # C: O(N_windows + N_queues)
     pub fn post_to_window_at(&mut self, id: WindowId, message: WinMessage, time: u32) -> Result<(), WindowError> {
+        let pos = self.queue_pos_default();
         let owner = self.get(id).ok_or(WindowError::NoSuchWindow)?.owner_tid;
         let queue = self.queues.iter_mut().find(|(tid, _)| *tid == owner).map(|(_, queue)| queue)
             .ok_or(WindowError::NoSuchWindow)?;
-        queue.post_with_bits_at(message, queue_status::QS_POSTED, time).map_err(|_| WindowError::QueueFull)
+        queue.post_with_bits_at(message, queue_status::QS_POSTED, time, pos).map_err(|_| WindowError::QueueFull)
     }
     /// Enqueue on the owning thread's queue with the wake bits the origin sets.
     /// # C: O(N_windows + N_queues)
     pub fn post_to_window_with_bits(&mut self, id: WindowId, message: WinMessage, bits: u32) -> Result<(), WindowError> {
+        let pos = self.queue_pos_default();
         let owner = self.get(id).ok_or(WindowError::NoSuchWindow)?.owner_tid;
         let queue = self.queues.iter_mut().find(|(tid, _)| *tid == owner).map(|(_, queue)| queue)
             .ok_or(WindowError::NoSuchWindow)?;
-        queue.post_with_bits(message, bits).map_err(|_| WindowError::QueueFull)
+        queue.post_with_bits(message, bits, pos).map_err(|_| WindowError::QueueFull)
     }
     /// Enqueue one hardware message, which counts as input rather than as a post. # C: O(N_windows)
     pub fn post_input_to_window(&mut self, id: WindowId, message: WinMessage) -> Result<(), WindowError> {
+        let pos = self.queue_pos_default();
         let owner = self.get(id).ok_or(WindowError::NoSuchWindow)?.owner_tid;
         let queue = self.queues.iter_mut().find(|(tid, _)| *tid == owner).map(|(_, queue)| queue)
             .ok_or(WindowError::NoSuchWindow)?;
-        queue.post_input(message).map_err(|_| WindowError::QueueFull)
+        queue.post_input(message, pos).map_err(|_| WindowError::QueueFull)
     }
     /// Enqueue one native keyboard transition on the focused window's owner queue. # C: O(N_windows)
     pub fn post_key(&mut self, tid: u64, key: u16, pressed: bool, repeat: bool) -> Result<(), WindowError> {
@@ -278,15 +281,21 @@ impl WindowManager {
         self.post_input_to_window(window, WinMessage { hwnd: Some(window), message, wparam: wparam as u64, lparam: mouse_lparam(self.cursor.0, self.cursor.1) })
     }
     pub fn peek_for_thread(&mut self, tid: u64, filter: MessageFilter, remove: bool) -> Option<WinMessage> {
+        let now = self.queue_pos_default();
         let queue_index = self.queues.iter().position(|(owner, _)| *owner == tid)?;
         let windows = &self.windows;
         let matches = |message| message_matches_in_windows(windows, filter, message);
         let queue = &mut self.queues[queue_index].1;
-        if let Some(message) = queue.peek_matching(matches, remove).or_else(|| queue.quit_message(filter, remove)) { return Some(message); }
+        if let Some(message) = queue.peek_matching(matches, remove).or_else(|| queue.quit_message(filter, remove, now)) {
+            self.note_retrieved_message(tid, message, timekeeper::monotonic_ns());
+            return Some(message);
+        }
         // A deferred paint is synthesised by the retrieval, so it carries the
         // tick count of the retrieval rather than a queued stamp.
+        let pos = self.queue_pos_default();
         let message = self.take_pending_paint(tid, filter, remove)?;
         self.note_thread_message_time(tid, msg_time::tick_ms());
+        self.note_thread_message_pos(tid, pos);
         Some(message)
     }
     /// Replace one queued message with the form a retrieval prepared: the
@@ -320,23 +329,30 @@ impl WindowManager {
     /// Post one message on a named thread's queue; a thread without a queue
     /// takes no message. # C: O(N_queues)
     pub fn post_to_thread(&mut self, tid: u64, message: WinMessage) -> Result<(), WindowError> {
+        let pos = self.queue_pos_default();
         let queue = self.queues.iter_mut().find(|(owner, _)| *owner == tid).map(|(_, queue)| queue)
             .ok_or(WindowError::NoSuchWindow)?;
-        queue.post(message).map_err(|_| WindowError::QueueFull)
+        queue.post(message, pos).map_err(|_| WindowError::QueueFull)
     }
     pub fn post_quit(&mut self, tid: u64, code: i32) {
         if let Some((_, queue)) = self.queues.iter_mut().find(|(owner, _)| *owner == tid) { queue.post_quit(code); }
         else { let mut queue = MessageQueue::default(); queue.post_quit(code); self.queues.push((tid, queue)); }
     }
     pub fn take_for_thread(&mut self, tid: u64, filter: MessageFilter) -> QueueResult {
+        let now = self.queue_pos_default();
         let Some(queue_index) = self.queues.iter().position(|(owner, _)| *owner == tid) else { return QueueResult::Empty; };
         let windows = &self.windows;
         let matches = |message| message_matches_in_windows(windows, filter, message);
         let queue = &mut self.queues[queue_index].1;
-        if let Some(message) = queue.peek_matching(matches, true) { QueueResult::Message(message) }
-        else if let Some(code) = queue.take_quit_matching(matches) { QueueResult::Quit(code) }
+        if let Some(message) = queue.peek_matching(matches, true) {
+            self.note_retrieved_message(tid, message, timekeeper::monotonic_ns());
+            QueueResult::Message(message)
+        }
+        else if let Some(code) = queue.take_quit_matching(matches, now) { QueueResult::Quit(code) }
         else if let Some(message) = self.take_pending_paint(tid, filter, true) {
+            let pos = self.queue_pos_default();
             self.note_thread_message_time(tid, msg_time::tick_ms());
+            self.note_thread_message_pos(tid, pos);
             QueueResult::Message(message)
         }
         else { QueueResult::Empty }

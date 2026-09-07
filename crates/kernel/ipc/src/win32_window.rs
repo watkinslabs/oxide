@@ -116,6 +116,16 @@ pub mod rawinput;
 #[path = "win32_window/msg_time.rs"]
 pub mod msg_time;
 pub use msg_time::{tick_ms, tick_ms_from_ns};
+#[path = "win32_window/window_fnid.rs"]
+pub mod window_fnid;
+pub use window_fnid::{fnid_proc_index, make_fnid, CLIENT_PROC_COUNT, FNID_VALID};
+#[path = "win32_window/msg_pos.rs"]
+pub mod msg_pos;
+pub use msg_pos::{pack_pos, pos_x, pos_y};
+#[path = "win32_window/pointer.rs"]
+pub mod pointer;
+pub use pointer::{Pointer, PointerInfo, POINTER_INFO_BYTES, POINTER_PEN_INFO_BYTES, POINTER_TOUCH_INFO_BYTES,
+    PT_POINTER, PT_TOUCH, PT_PEN, PT_MOUSE, PT_TOUCHPAD, MOUSE_POINTER_ID};
 #[path = "win32_window/in_send.rs"]
 pub mod in_send;
 pub use in_send::{receive_flags, ReceivedSend, ISMEX_NOSEND, ISMEX_REPLIED, ISMEX_SEND};
@@ -247,31 +257,37 @@ pub struct MessageQueue { messages: VecDeque<QueuedMessage>, quit: Option<i32>, 
     /// Descending windowless-timer id allocator; zero means untouched.
     next_timer_id: u64,
     /// Tick count of the message this thread last read.
-    message_time: u32 }
+    message_time: u32,
+    /// Packed position of the message this thread last read.
+    message_pos: u32,
+    /// Extra information this thread set, which the next retrieval resets.
+    message_extra: i64,
+    /// Pointers this thread has seen, in the order they were first reported.
+    pointers: Vec<pointer::Pointer> }
 
 impl MessageQueue {
     /// Post one hardware message, which contributes its own input class. # C: O(1)
-    pub fn post_input(&mut self, message: WinMessage) -> Result<(), QueueError> {
-        self.post_input_at(message, msg_time::tick_ms())
+    pub fn post_input(&mut self, message: WinMessage, pos: u32) -> Result<(), QueueError> {
+        self.post_input_at(message, msg_time::tick_ms(), pos)
     }
     /// # C: O(1)
-    pub fn post_input_at(&mut self, message: WinMessage, time: u32) -> Result<(), QueueError> {
+    pub fn post_input_at(&mut self, message: WinMessage, time: u32, pos: u32) -> Result<(), QueueError> {
         if self.messages.len() >= MESSAGE_QUEUE_LIMIT { return Err(QueueError::Full); }
-        self.messages.push_back(QueuedMessage { message, key: None, bits: queue_status::hardware_bit(message.message), time });
+        self.messages.push_back(QueuedMessage { message, key: None, bits: queue_status::hardware_bit(message.message), time, pos });
         Ok(())
     }
-    pub fn post(&mut self, message: WinMessage) -> Result<(), QueueError> {
-        self.post_with_bits(message, queue_status::QS_POSTED)
+    pub fn post(&mut self, message: WinMessage, pos: u32) -> Result<(), QueueError> {
+        self.post_with_bits(message, queue_status::QS_POSTED, pos)
     }
     /// Enqueue one message carrying the wake bits its origin sets. # C: O(1)
-    pub fn post_with_bits(&mut self, message: WinMessage, bits: u32) -> Result<(), QueueError> {
-        self.post_with_bits_at(message, bits, msg_time::tick_ms())
+    pub fn post_with_bits(&mut self, message: WinMessage, bits: u32, pos: u32) -> Result<(), QueueError> {
+        self.post_with_bits_at(message, bits, msg_time::tick_ms(), pos)
     }
-    /// Enqueue one message with the tick count it is stamped with. # C: O(1)
-    pub fn post_with_bits_at(&mut self, message: WinMessage, bits: u32, time: u32) -> Result<(), QueueError> {
+    /// Enqueue one message with the tick count and position it is stamped with. # C: O(1)
+    pub fn post_with_bits_at(&mut self, message: WinMessage, bits: u32, time: u32, pos: u32) -> Result<(), QueueError> {
         if self.messages.len() >= MESSAGE_QUEUE_LIMIT { return Err(QueueError::Full); }
         self.changed |= bits;
-        self.messages.push_back(QueuedMessage { message, key: None, bits, time });
+        self.messages.push_back(QueuedMessage { message, key: None, bits, time, pos });
         Ok(())
     }
     pub fn peek(&mut self, filter: MessageFilter, remove: bool) -> Option<WinMessage> {
@@ -306,21 +322,25 @@ impl MessageQueue {
     }
     pub fn post_quit(&mut self, code: i32) { self.quit = Some(code); }
     fn quit_pending(&self) -> bool { self.quit.is_some() }
-    fn quit_message(&mut self, filter: MessageFilter, remove: bool) -> Option<WinMessage> {
+    fn quit_message(&mut self, filter: MessageFilter, remove: bool, pos: u32) -> Option<WinMessage> {
         let code = self.quit?;
         let message = WinMessage { hwnd: None, message: WM_QUIT, wparam: code as u64, lparam: 0 };
         if !filter.matches(message) { return None; }
         if remove { self.quit = None; }
         self.note_message_time(msg_time::tick_ms());
+        self.note_message_pos(pos);
+        self.note_message_extra(0);
         Some(message)
     }
-    fn take_quit_matching<F>(&mut self, matches: F) -> Option<i32>
+    fn take_quit_matching<F>(&mut self, matches: F, pos: u32) -> Option<i32>
     where F: Fn(WinMessage) -> bool {
         let code = self.quit?;
         let message = WinMessage { hwnd: None, message: WM_QUIT, wparam: code as u64, lparam: 0 };
         if !matches(message) { return None; }
         self.quit = None;
         self.note_message_time(msg_time::tick_ms());
+        self.note_message_pos(pos);
+        self.note_message_extra(0);
         Some(code)
     }
 }
@@ -336,7 +356,10 @@ pub struct WindowRecord { pub owner_tid: u64, pub parent: Option<WindowId>, pub 
     pub id_menu: u64, pub presentation_ready: bool, pub style: u32, pub ex_style: u32, pub last_focus: Option<WindowId>, pub client_rect: Option<WindowRect>,
     /// Input context associated with this window, as the reference keeps it on
     /// the window record itself.
-    pub imc: Option<crate::win32_imc::ImcId> }
+    pub imc: Option<crate::win32_imc::ImcId>,
+    /// Builtin control identity this window's procedure belongs to; zero until
+    /// one is given.
+    pub fnid: u16 }
 
 
 const USER_ATOM_BASE: u16 = 0xc000;
@@ -402,7 +425,9 @@ pub struct WindowManager { next: u32, next_atom: u16, classes: Vec<WindowClass>,
     hotkeys: hotkey::Hotkeys, inputs: thread_input::ThreadInputs, tracks: mouse_track::MouseTracks,
     raw_input: rawinput::RawRegistrations, layouts: Vec<(u64, u64)>, icons: window_icon::WindowIconTable,
     /// Per-window attributes only a few calls touch; absent means defaults.
-    attributes: Vec<(WindowId, attributes::WindowAttributes)> }
+    attributes: Vec<(WindowId, attributes::WindowAttributes)>,
+    /// Frame identity stamped on the next pointer record; monotonic per owner.
+    pointer_frame: u32 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 struct WindowTimer { owner_tid: u64, hwnd: Option<WindowId>, message: u32, id: u64, period_ns: u64, due_ns: u64, proc: u64 }

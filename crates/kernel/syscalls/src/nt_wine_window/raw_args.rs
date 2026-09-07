@@ -141,9 +141,13 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x1418, 4), // NtUserGetMenuBarInfo
     (0x141a, 4), // NtUserGetMenuItemRect
     (0x141b, 4), // NtUserGetMessage
+    (0x141c, 0), // NtUserGetMessagePos
     (0x141f, 5), // NtUserGetMouseMovePointsEx
     (0x1420, 5), // NtUserGetObjectInformation
     (0x1422, 0), // NtUserGetOpenClipboardWindow
+    (0x142b, 3), // NtUserGetPointerDeviceRects
+    (0x142e, 8), // NtUserGetPointerInfoList
+    (0x1431, 2), // NtUserGetPointerType
     (0x1433, 2), // NtUserGetPriorityClipboardFormat
     (0x1434, 1), // NtUserGetProcessDefaultLayout
     (0x1435, 1), // NtUserGetProcessDpiAwarenessContext
@@ -172,6 +176,7 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x146c, 1), // NtUserHideCaret
     (0x146f, 4), // NtUserHiliteMenuItem
     (0x147a, 4), // NtUserInitializeClientPfnArrays
+    (0x147f, 2), // NtUserInitializeTouchInjection
     (0x1488, 2), // NtUserInternalGetWindowIcon
     (0x1489, 3), // NtUserInternalGetWindowText
     (0x148c, 3), // NtUserInvalidateRect
@@ -243,6 +248,7 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x1569, 2), // NtUserSetMenu
     (0x156a, 2), // NtUserSetMenuContextHelpId
     (0x156b, 3), // NtUserSetMenuDefaultItem
+    (0x156d, 1), // NtUserSetMessageExtraInfo
     (0x1573, 4), // NtUserSetObjectInformation
     (0x1574, 2), // NtUserSetParent
     (0x1576, 1), // NtUserSetProcessDefaultLayout
@@ -260,6 +266,7 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x1594, 5), // NtUserSetTimer
     (0x1599, 8), // NtUserSetWinEventHook
     (0x159e, 2), // NtUserSetWindowContextHelpId
+    (0x15a0, 2), // NtUserSetWindowFNID
     (0x15a3, 4), // NtUserSetWindowLong
     (0x15a4, 4), // NtUserSetWindowLongPtr
     (0x15a6, 2), // NtUserSetWindowPlacement

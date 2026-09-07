@@ -180,8 +180,8 @@ use super::tests::message;
     #[test]
     fn queue_rejects_messages_after_its_bounded_capacity() {
         let mut queue = MessageQueue::default();
-        for _ in 0..MESSAGE_QUEUE_LIMIT { queue.post(message(None, 1)).unwrap(); }
-        assert_eq!(queue.post(message(None, 2)), Err(QueueError::Full));
+        for _ in 0..MESSAGE_QUEUE_LIMIT { queue.post(message(None, 1), 0).unwrap(); }
+        assert_eq!(queue.post(message(None, 2), 0), Err(QueueError::Full));
         assert_eq!(queue.len(), MESSAGE_QUEUE_LIMIT);
     }
 
@@ -232,8 +232,8 @@ use super::tests::message;
     #[test]
     fn filtered_peek_can_remove_only_the_matching_message() {
         let mut queue = MessageQueue::default();
-        queue.post(message(None, 10)).unwrap();
-        queue.post(message(None, 20)).unwrap();
+        queue.post(message(None, 10), 0).unwrap();
+        queue.post(message(None, 20), 0).unwrap();
         assert_eq!(queue.peek(MessageFilter { hwnd: None, first: 15, last: 25 }, true), Some(message(None, 20)));
         assert_eq!(queue.peek(MessageFilter { hwnd: None, first: 0, last: 100 }, true), Some(message(None, 10)));
         assert_eq!(queue.len(), 0);

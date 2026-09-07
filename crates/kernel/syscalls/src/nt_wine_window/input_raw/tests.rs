@@ -8,9 +8,13 @@ fn the_ordinals_match_the_generated_win32u_table() {
     assert_eq!([CLIP_CURSOR, GET_CLIP_CURSOR, GET_CURSOR_INFO, GET_CURSOR_POS, SET_CURSOR_POS,
         GET_MOUSE_MOVE_POINTS_EX, TRACK_MOUSE_EVENT, SET_CAPTURE, RELEASE_CAPTURE, GET_QUEUE_STATUS,
         GET_THREAD_STATE, GET_CURRENT_INPUT_MESSAGE_SOURCE, GET_DOUBLE_CLICK_TIME, REGISTER_HOTKEY,
-        UNREGISTER_HOTKEY, ATTACH_THREAD_INPUT, SEND_INPUT],
+        UNREGISTER_HOTKEY, ATTACH_THREAD_INPUT, SEND_INPUT, GET_MESSAGE_POS, SET_MESSAGE_EXTRA_INFO],
         [0x1350, 0x13da, 0x13e9, 0x13ea, 0x154a, 0x141f, 0x15d3, 0x153a, 0x1508, 0x143b,
-         0x144e, 0x13e6, 0x13f5, 0x14f3, 0x15e0, 0x1322, 0x152e]);
+         0x144e, 0x13e6, 0x13f5, 0x14f3, 0x15e0, 0x1322, 0x152e, 0x141c, 0x156d]);
+    for ordinal in [GET_MESSAGE_POS, SET_MESSAGE_EXTRA_INFO] {
+        assert!(crate::hosted_contracts::nt_wine_raw_args_contract::argument_count(ordinal).is_some(),
+            "the argument table must admit {ordinal:#x}");
+    }
 }
 
 #[test]
