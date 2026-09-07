@@ -68,8 +68,19 @@ pub(crate) fn nc_paint_for_current(hwnd: u64) -> bool {
     if handle == 0 { return false; }
     let origin = MenuRect { left: 0, top: 0, right: width, bottom: height };
     let drawn = draw_into(hwnd, dc, origin) > 0;
-    let _ = crate::nt_gdi::release_window_dc_for_current(window, handle);
+    // Item text does not rasterize inside this pass: it enters the font
+    // backend after the syscall returns. Releasing the device context here
+    // would put the band on the screen before its labels reached it, and take
+    // the surface the pending upload names out from under it.
+    crate::nt_text_order::end_paint_for_current(hwnd, dc, release_band_dc);
     drawn
+}
+
+/// Release the window-wide device context the bar drew into, once every text
+/// run the same pass issued has rasterized into it. # C: O(pixels)
+fn release_band_dc(hwnd: u64, dc: u64) {
+    let (Ok(window), Ok(handle)) = (u32::try_from(hwnd), u32::try_from(dc)) else { return; };
+    let _ = crate::nt_gdi::release_window_dc_for_current(window, handle);
 }
 
 /// Enter menu tracking for one window's bar. A press names the point it began
