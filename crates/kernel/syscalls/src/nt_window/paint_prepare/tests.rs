@@ -1,4 +1,5 @@
 use super::*;
+use alloc::{vec, vec::Vec};
 #[derive(Default)]struct State{committed:Vec<bool>,copies:Vec<(u64,Vec<u8>)>,deleted:Vec<u32>,aborted:usize,bad_owner:bool,bad_copy:bool}
 impl Owner for State{
     fn commit(&mut self,_:Prepared,erase:bool)->Option<WindowRect>{if self.bad_owner{return None;}self.committed.push(erase);Some(WindowRect{left:2,top:3,right:7,bottom:9})}

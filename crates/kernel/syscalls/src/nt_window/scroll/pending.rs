@@ -47,6 +47,17 @@ impl Queue {
     pub(crate) fn len(&self) -> usize { self.entries.len() }
 }
 
+/// A terminal position continuation completes the frame change; a pending one must survive the
+/// mapping so the scroll caller stays suspended rather than being answered early. # C: O(1)
+pub(crate) fn from_position(outcome: crate::nt_window::position::Outcome) -> Outcome {
+    use crate::nt_window::position::Outcome as Position;
+    match outcome {
+        Position::Complete(true) => Outcome::Complete(1),
+        Position::Complete(false) | Position::Failed => Outcome::Failed,
+        Position::Pending => Outcome::Pending,
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/pending.rs"]
 mod tests;

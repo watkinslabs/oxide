@@ -432,7 +432,7 @@ fn configure_failure_preserves_existing_damage_as_well_as_rect_and_queue() {
 #[test]
 fn a_desktop_click_becomes_a_button_down_and_up_on_the_window_queue() {
     let (mut state, id) = state();
-    let mut deliver_pointer = |state: &mut WindowManager, buttons: u32| {
+    let deliver_pointer = |state: &mut WindowManager, buttons: u32| {
         let record = event(Opcode::Pointer, id, words(&[9, 11, buttons, 0, 0]));
         apply_event(state, &record, |state, id, x, y, buttons, wheel, hwheel| state.post_compositor_pointer(id, x, y, buttons, wheel, hwheel).is_ok())
     };

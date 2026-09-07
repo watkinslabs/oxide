@@ -46,3 +46,12 @@ fn cancellation_is_scoped_to_tid_or_root() {
     queue.cancel_root(9);
     assert_eq!(queue.len(), 0);
 }
+
+#[test]
+fn position_terminal_outcomes_map_without_collapsing_pending() {
+    use crate::nt_window::position::Outcome as Position;
+    assert_eq!(from_position(Position::Complete(true)), Outcome::Complete(1));
+    assert_eq!(from_position(Position::Complete(false)), Outcome::Failed);
+    assert_eq!(from_position(Position::Failed), Outcome::Failed);
+    assert_eq!(from_position(Position::Pending), Outcome::Pending);
+}

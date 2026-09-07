@@ -65,7 +65,6 @@ pub(crate) use input::{read_rect, read_region};
 
 #[path = "redraw/erase.rs"]
 pub(crate) mod erase;
-pub(crate) use erase::ErasePrepared;
 
 #[cfg(target_os = "oxide-kernel")]
 #[path = "redraw/live.rs"]

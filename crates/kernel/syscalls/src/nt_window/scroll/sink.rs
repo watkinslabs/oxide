@@ -23,14 +23,6 @@ pub(crate) type NonclientRepaint = fn(hwnd: u64, bar: i32, state: ScrollState) -
 pub(crate) type ScrollSend = fn(hwnd: u64, message: u32, wparam: u64, lparam: u64) -> Option<u64>;
 pub(crate) type FrameResume = fn(token: u64, outcome: PositionOutcome) -> u64;
 
-fn map_position_outcome(outcome: PositionOutcome) -> Outcome {
-    match outcome {
-        PositionOutcome::Complete(true) => Outcome::Complete(1),
-        PositionOutcome::Complete(false) | PositionOutcome::Failed => Outcome::Failed,
-        PositionOutcome::Pending => Outcome::Pending,
-    }
-}
-
 pub(crate) struct ScrollSink {
     repaint: NonclientRepaint,
     send: ScrollSend,
@@ -66,7 +58,7 @@ impl ScrollSink {
         let Some(context) = position::position_context_for_current(hwnd) else { return Outcome::Failed; };
         let request = Request { hwnd, rect: context.rect, order: None, visible: None,
             flags: SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED };
-        map_position_outcome(position::position_apply_resumable_for_current(
+        super::pending::from_position(position::position_apply_resumable_for_current(
             request,
             Some(Continuation { token, resume: self.resume }),
         ))
@@ -90,12 +82,8 @@ pub(crate) fn resume_frame(
     outcome: PositionOutcome,
     sink: &mut ScrollSink,
 ) -> u64 {
-    super::live::complete_pending_for_current(token, map_position_outcome(outcome), sink)
+    super::live::complete_pending_for_current(token, super::pending::from_position(outcome), sink)
 }
-
-#[cfg(test)]
-#[path = "tests/sink.rs"]
-mod tests;
 
 impl super::ScrollActionSink for ScrollSink {
     fn show_scrollbar(&mut self, hwnd: u64, bar: i32) -> bool { self.mutate_visibility(hwnd, bar, true) }
