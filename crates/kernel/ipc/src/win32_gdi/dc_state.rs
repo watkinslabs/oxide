@@ -13,6 +13,7 @@ mod save;
 pub use save::SavedDc;
 #[path = "dc_state/attrs.rs"]
 mod attrs;
+pub use attrs::GDI_ERROR;
 #[path = "dc_state/print.rs"]
 mod print;
 pub use print::{SP_ERROR, START_PAGE_RESULT, JOB_RESULT, INIT_SPOOL_RESULT, SPOOL_MESSAGE_RESULT, EXT_ESCAPE_RESULT};

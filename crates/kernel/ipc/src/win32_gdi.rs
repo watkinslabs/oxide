@@ -35,9 +35,14 @@ pub use dc_attr::{DcAttr, DeviceGeometry, add_bounds_rect, empty_bounds, rect_is
     XFORM_WORLD_TO_PAGE, XFORM_PAGE_TO_DEVICE, XFORM_WORLD_TO_DEVICE, XFORM_DEVICE_TO_WORLD,
     LP_TO_DP, DP_TO_LP, LAYOUT_RTL, GM_COMPATIBLE, GM_ADVANCED, AD_COUNTERCLOCKWISE, AD_CLOCKWISE,
     DEFAULT_MITER_LIMIT};
+#[path = "win32_gdi/draw.rs"]
+mod draw;
+pub use draw::{ellipse_first_quadrant, arc_points, round_rect_points, flatten_bezier, fill_polygon,
+    ALTERNATE, WINDING, ARC, ARC_TO, CHORD, PIE, POLY_POLYGON, POLY_POLYLINE, POLY_BEZIER,
+    POLY_BEZIER_TO, POLYLINE_TO, POLY_POLYGON_RGN, PT_MOVETO, PT_LINETO, PT_BEZIERTO, PT_CLOSEFIGURE};
 #[path = "win32_gdi/dc_state.rs"]
 mod dc_state;
-pub use dc_state::{DcKind, SavedDc, SP_ERROR, START_PAGE_RESULT, JOB_RESULT, INIT_SPOOL_RESULT,
+pub use dc_state::{DcKind, SavedDc, GDI_ERROR, SP_ERROR, START_PAGE_RESULT, JOB_RESULT, INIT_SPOOL_RESULT,
     SPOOL_MESSAGE_RESULT, EXT_ESCAPE_RESULT};
 #[path = "win32_gdi/handles.rs"]
 mod handles;
