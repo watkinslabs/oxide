@@ -4,8 +4,7 @@ const WM_ACTIVATE: u32 = 0x0006;
 const WM_ACTIVATEAPP: u32 = 0x001c;
 const WA_INACTIVE: u64 = 0;
 const WA_ACTIVE: u64 = 1;
-const WS_CHILD: u32 = 0x4000_0000;
-const WS_MINIMIZE: u32 = 0x2000_0000;
+use super::styles::{WS_CHILD, WS_MINIMIZE};
 const ACTIVATE_MINIMIZED: u64 = 0x0020_0000;
 
 impl WindowManager {
