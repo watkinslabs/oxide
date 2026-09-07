@@ -1,0 +1,222 @@
+--- a/dlls/ntdll/Makefile.in
++++ b/dlls/ntdll/Makefile.in
+@@ -56,6 +56,7 @@
+ 	unix/file.c \
+ 	unix/loader.c \
+ 	unix/loadorder.c \
++	unix/oxide.c \
+ 	unix/process.c \
+ 	unix/registry.c \
+ 	unix/security.c \
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -121,6 +121,8 @@
+ };
+ 
+ extern pthread_key_t thread_data_key;
++extern int ntdll_init_teb_key(void);
++extern BOOL ntdll_oxide_attached(void);
+ 
+ static inline struct thread_data *get_thread_data(void)
+ {
+--- a/dlls/ntdll/unix/thread.c
++++ b/dlls/ntdll/unix/thread.c
+@@ -1680,7 +1680,10 @@
+  */
+ TEB * WINAPI NtCurrentTeb(void)
+ {
+-    struct thread_data *data = get_thread_data();
++    struct thread_data *data;
++
++    if (ntdll_init_teb_key()) return NULL;
++    data = get_thread_data();
+     return data ? data->teb : NULL;
+ }
+ 
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -4083,8 +4083,11 @@
+     thread_data = virtual_alloc_thread_data();
+     thread_data->teb = teb;
+     list_add_head( &teb_list, &thread_data->entry );
+-    pthread_key_create( &thread_data_key, NULL );
+-    pthread_setspecific( thread_data_key, thread_data );
++    if (ntdll_init_teb_key() || pthread_setspecific( thread_data_key, thread_data ))
++    {
++        ERR( "wine: failed to initialize native thread-local storage\n" );
++        exit(1);
++    }
+     return teb;
+ }
+ 
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -2108,6 +2108,11 @@
+  */
+ DECLSPEC_EXPORT void __wine_main( int argc, char *argv[] )
+ {
++    if (ntdll_oxide_attached())
++    {
++        fprintf( stderr, "wine: hosted startup cannot replace an attached Oxide process\n" );
++        exit(1);
++    }
+     main_argc = argc;
+     main_argv = argv;
+ 
+--- /dev/null
++++ b/dlls/ntdll/unix/oxide.c
+@@ -0,0 +1,112 @@
++/* Source-owned native attachment. Borrow canonical identity; never run the
++ * hosted process/thread startup path or allocate a second TEB.
++ */
++#if 0
++#pragma makedep unix
++#endif
++
++#include <stdint.h>
++#include <stdlib.h>
++#include <sys/mman.h>
++#include "ntstatus.h"
++#define WIN32_NO_STATUS
++#include "winternl.h"
++#include "ddk/wdm.h"
++#include "wine/oxide.h"
++#include "unix_private.h"
++
++/* The thread data block the attached thread publishes. Its signal stack is
++ * never entered: the caller owns signal delivery, and the hosted thread
++ * startup path that would use it is refused while attached.
++ */
++#define OXIDE_THREAD_DATA_SIZE (sizeof(struct thread_data) + 0x10000)
++
++static pthread_once_t teb_key_once = PTHREAD_ONCE_INIT;
++static pthread_mutex_t attach_mutex = PTHREAD_MUTEX_INITIALIZER;
++static int teb_key_error;
++static BOOL oxide_attached;
++
++static void create_teb_key(void)
++{
++    teb_key_error = pthread_key_create( &thread_data_key, NULL );
++}
++
++int ntdll_init_teb_key(void)
++{
++    int error = pthread_once( &teb_key_once, create_teb_key );
++    return error ? error : teb_key_error;
++}
++
++BOOL ntdll_oxide_attached(void)
++{
++    BOOL attached;
++    pthread_mutex_lock( &attach_mutex );
++    attached = oxide_attached;
++    pthread_mutex_unlock( &attach_mutex );
++    return attached;
++}
++
++static struct thread_data *alloc_attached_thread_data( TEB *teb )
++{
++    void *block = mmap( NULL, OXIDE_THREAD_DATA_SIZE, PROT_READ | PROT_WRITE,
++                        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0 );
++    struct thread_data *data;
++
++    if (block == MAP_FAILED) return NULL;
++    data = block;
++    data->teb        = teb;
++    data->request_fd = -1;
++    data->reply_fd   = -1;
++    data->wait_fd[0] = -1;
++    data->wait_fd[1] = -1;
++    data->alert_fd   = -1;
++    data->tid        = HandleToULong( teb->ClientId.UniqueThread );
++    data->pthread_id = pthread_self();
++    return data;
++}
++
++DECLSPEC_EXPORT int32_t wine_oxide_attach_thread( uint64_t teb_address, uint64_t peb_address )
++{
++    TEB *teb = (TEB *)(uintptr_t)teb_address;
++    PEB *process_peb = (PEB *)(uintptr_t)peb_address;
++    struct thread_data *data;
++    NTSTATUS status = STATUS_INVALID_PARAMETER;
++
++    if (sizeof(void *) != sizeof(uint64_t) || !teb_address || !peb_address ||
++        (teb_address & 7) || (peb_address & 7)) return status;
++    if (teb->Tib.Self != &teb->Tib || teb->Peb != process_peb ||
++        !teb->ClientId.UniqueProcess || !teb->ClientId.UniqueThread) return status;
++    if (ntdll_init_teb_key()) return STATUS_NO_MEMORY;
++
++    pthread_mutex_lock( &attach_mutex );
++    data = get_thread_data();
++    /* A hosted Wine process is not an attachable Oxide process, even if its
++     * caller supplies the same PEB. Do not mix the two startup authorities. */
++    if ((peb && (!oxide_attached || peb != process_peb)) ||
++        (data && data->teb != teb)) goto done;
++    if (data && data->teb == teb)
++    {
++        status = oxide_attached && peb == process_peb ? STATUS_SUCCESS : STATUS_INVALID_PARAMETER;
++        goto done;
++    }
++
++    if (!(data = alloc_attached_thread_data( teb )))
++    {
++        status = STATUS_NO_MEMORY;
++        goto done;
++    }
++    if (pthread_setspecific( thread_data_key, data ))
++    {
++        munmap( data, OXIDE_THREAD_DATA_SIZE );
++        status = STATUS_NO_MEMORY;
++        goto done;
++    }
++    /* The existing process-global PEB and the existing private key are the
++     * only associations. Canonical IDs, user TLS and frames are untouched. */
++    peb = process_peb;
++    oxide_attached = TRUE;
++    status = STATUS_SUCCESS;
++done:
++    pthread_mutex_unlock( &attach_mutex );
++    return status;
++}
+--- /dev/null
++++ b/include/wine/oxide.h
+@@ -0,0 +1,29 @@
++/* Native ELF attachment to an existing canonical NT environment.
++ * This interface does not create a process, thread, stack or NT backend.
++ */
++#ifndef __WINE_OXIDE_H
++#define __WINE_OXIDE_H
++
++#include <stdint.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/* Native SysV ABI, not WINAPI. Caller must already be a valid libc thread.
++ * teb/peb are borrowed, aligned, mapped canonical TEB/PEB addresses. Caller
++ * guarantees their lifetime and exclusive thread attachment. The complete
++ * native TEB must be writable. No pointer probing or kernel identity query
++ * is performed by this userspace binding operation.
++ *
++ * Success: 0. Invalid arguments, malformed identity, or a conflicting
++ * attachment: STATUS_INVALID_PARAMETER. Native TLS allocation/publication
++ * failure: STATUS_NO_MEMORY. Same-thread, same-TEB attachment is idempotent.
++ * Call after loading this ntdll.so and before loading dependent Unixlibs.
++ */
++int32_t wine_oxide_attach_thread( uint64_t teb, uint64_t peb );
++
++#ifdef __cplusplus
++}
++#endif
++#endif
+--- a/include/Makefile.in
++++ b/include/Makefile.in
+@@ -1138,6 +1138,7 @@
+ 	wine/nsi.h \
+ 	wine/opengl_driver.h \
+ 	wine/orpc.idl \
++	wine/oxide.h \
+ 	wine/plugplay.idl \
+ 	wine/rbtree.h \
+ 	wine/schrpc.idl \

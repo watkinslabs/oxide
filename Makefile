@@ -287,10 +287,11 @@ QEMU_FEATURES_ARM := $(FEATURES)
 # Keep the standard x86 developer image useful for NT/Notepad testing. Set
 # WINDOWS_NOTEPAD=0 for a deliberately minimal image or when the host Wine
 # runtime catalog is unavailable.
+# The Windows runtime itself comes from the `oxide-wine` package the image
+# compose installs (tools/build-wine-runtime.sh builds it); staging copies no
+# Wine module from the build host and takes no path from the environment.
 WINDOWS_NOTEPAD ?= 1
-WINDOWS_WINE_NTDLL ?= target/lanes/wine-10.20-build/dlls/ntdll/ntdll.so
-WINDOWS_WINE_WIN32U ?= target/lanes/wine-10.20-build/dlls/win32u/win32u.so
-WINDOWS_NOTEPAD_ENV = $(if $(filter 0 no false,$(WINDOWS_NOTEPAD)),,OXIDE_WINDOWS_NOTEPAD_SMOKE=1 OXIDE_WINE_NTDLL=$(abspath $(WINDOWS_WINE_NTDLL)) OXIDE_WINE_WIN32U=$(abspath $(WINDOWS_WINE_WIN32U)))
+WINDOWS_NOTEPAD_ENV = $(if $(filter 0 no false,$(WINDOWS_NOTEPAD)),,OXIDE_WINDOWS_NOTEPAD_SMOKE=1)
 
 # SMP CPU count for qemu (default 1). The boot-smoke gate sets SMP=2 so
 # AP bring-up + the periodic load balancer are exercised every push.

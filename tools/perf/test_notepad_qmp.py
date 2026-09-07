@@ -172,18 +172,15 @@ class QmpTests(unittest.TestCase):
         self.assertFalse(waiter.is_alive())
         self.assertEqual(errors, [])
 
-    def test_acceptance_image_env_supplies_source_owned_wine_adapters(self):
+    def test_acceptance_image_env_names_no_host_wine_adapter(self):
         spec = importlib.util.spec_from_file_location("acceptance_env_test", TOOLS / "windows-notepad-acceptance.py")
         runner = importlib.util.module_from_spec(spec)
         with patch("atexit.register"), patch.dict("os.environ", {}, clear=True):
             spec.loader.exec_module(runner)
         env = runner.image_build_env({})
-        self.assertEqual(env["OXIDE_WINE_NTDLL"], str(runner.DEFAULT_WINE_NTDLL))
-        self.assertEqual(env["OXIDE_WINE_WIN32U"], str(runner.DEFAULT_WINE_WIN32U))
-        custom = {"OXIDE_WINE_NTDLL": "/tmp/custom-ntdll.so", "OXIDE_WINE_WIN32U": "/tmp/custom-win32u.so"}
-        self.assertEqual(runner.image_build_env(custom)["OXIDE_WINE_NTDLL"], custom["OXIDE_WINE_NTDLL"])
-        self.assertEqual(runner.image_build_env(custom)["OXIDE_WINE_WIN32U"], custom["OXIDE_WINE_WIN32U"])
-
+        self.assertEqual(env["OXIDE_WINDOWS_NOTEPAD_SMOKE"], "1")
+        for name in ("OXIDE_WINE_NTDLL", "OXIDE_WINE_WIN32U", "OXIDE_WINE_NLS", "OXIDE_WINE_RUNTIME_ROOT"):
+            self.assertNotIn(name, env)
 
 if __name__ == "__main__":
     unittest.main()

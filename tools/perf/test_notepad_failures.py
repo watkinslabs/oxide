@@ -76,21 +76,15 @@ class FailureTests(unittest.TestCase):
         self.assertIn("image", image.args[0])
         return image.kwargs["env"]
 
-    def test_plain_acceptance_passes_makefile_adapter_defaults_to_image(self):
+    def test_plain_acceptance_passes_no_host_wine_path_to_the_image(self):
         environment = self.image_environment({})
+        self.assertEqual(environment["OXIDE_WINDOWS_NOTEPAD_SMOKE"], "1")
         makefile = (TOOLS.parent / "Makefile").read_text()
-        for library in ("NTDLL", "WIN32U"):
-            relative = re.search(rf"^WINDOWS_WINE_{library} \?= (.+)$",
-                                 makefile, re.MULTILINE).group(1)
-            self.assertEqual(environment[f"OXIDE_WINE_{library}"],
-                             str(TOOLS.parent / relative))
-
-    def test_acceptance_preserves_explicit_adapter_overrides(self):
-        overrides = {"OXIDE_WINE_NTDLL": "/custom/ntdll.so",
-                     "OXIDE_WINE_WIN32U": "/custom/win32u.so"}
-        environment = self.image_environment(overrides)
-        for key, value in overrides.items():
-            self.assertEqual(environment[key], value)
+        # The Wine tree is packaged, not pointed at: no adapter path may reach
+        # staging through the environment or the make invocation.
+        for name in ("OXIDE_WINE_NTDLL", "OXIDE_WINE_WIN32U", "OXIDE_WINE_NLS", "OXIDE_WINE_RUNTIME_ROOT"):
+            self.assertNotIn(name, environment)
+            self.assertNotIn(name, makefile)
 
     def test_emitted_wrapper_reports_success_and_failure_under_errexit(self):
         source = (TOOLS / "xtask/src/rootfs_disks/windows_notepad.rs").read_text()

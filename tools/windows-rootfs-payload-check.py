@@ -3,11 +3,10 @@
 
 The check never mounts or writes the guest image. It verifies the files that
 the normal qemu-x86 assembly must publish, including the selected
-native bridge pair and the desktop/MIME launch path. Optional expected
-artifacts establish exact byte provenance for the selected native build inputs.
+native bridge pair and the desktop/MIME launch path. The packaged Wine version
+stamp and the modules themselves establish which Wine the image carries.
 """
 import argparse
-import hashlib
 import os
 from pathlib import Path
 import re
@@ -20,6 +19,12 @@ WINDOWS_ROOT = "/usr/local/lib/oxide/windows"
 WINDOWS_CATALOG = f"{WINDOWS_ROOT}/x86_64-windows"
 UNIX_CATALOG = f"{WINDOWS_ROOT}/x86_64-unix"
 NLS_ROOT = "/usr/local/share/oxide/windows/nls"
+VERSION_STAMP = f"{WINDOWS_ROOT}/wine-version"
+# Modules of the Notepad closure whose version resource names the Wine release.
+# A catalog blended from two builds answers this question twice.
+VERSIONED_MODULES = ("user32.dll", "gdi32.dll", "kernel32.dll", "comctl32.dll",
+                     "shell32.dll", "advapi32.dll")
+MIN_AGREEING_MODULES = 4
 # The native DOS drive namespace. A drive letter directory under the DOS root
 # is the drive; the system drive's windows/system32 is where the loader and
 # every native file open resolve a module named by a DOS path.
@@ -40,6 +45,7 @@ REQUIRED_FILES = (
     f"{UNIX_CATALOG}/ntdll.so",
     f"{UNIX_CATALOG}/win32u.so",
     f"{NLS_ROOT}/locale.nls",
+    VERSION_STAMP,
     "/etc/oxide/windows-runtime.conf",
     "/usr/share/applications/oxide-notepad.desktop",
     "/etc/xdg/mimeapps.list",
@@ -131,9 +137,48 @@ class Image:
             raise Failure("image changed during validation")
 
 
-def check_image(path, expected_ntdll=None, expected_win32u=None):
-    if (expected_ntdll is None) != (expected_win32u is None):
-        raise Failure("expected native provenance requires both ntdll and win32u artifacts")
+def module_wine_version(blob):
+    """The Wine release a PE module's version resource names, if any."""
+    needle = "Wine ".encode("utf-16-le")
+    at = 0
+    while True:
+        found = blob.find(needle, at)
+        if found < 0:
+            return None
+        cursor = found + len(needle)
+        version = ""
+        while cursor + 1 < len(blob) and blob[cursor + 1] == 0 and chr(blob[cursor]) in "0123456789.":
+            version += chr(blob[cursor])
+            cursor += 2
+        if "." in version and version[0].isdigit():
+            return version
+        at = found + len(needle)
+
+
+def check_wine_provenance(image, expected):
+    """One Wine, stated by the image and backed by the modules themselves."""
+    with tempfile.TemporaryDirectory(prefix="oxide-wine-version-") as tmp:
+        tmpdir = Path(tmp)
+        stamp = image.dump(VERSION_STAMP, tmpdir).read_text().strip()
+        if stamp != expected:
+            raise Failure(f"image carries Wine {stamp!r}, expected {expected!r}")
+        agreeing = 0
+        for name in VERSIONED_MODULES:
+            try:
+                blob = image.dump(f"{WINDOWS_CATALOG}/{name}", tmpdir).read_bytes()
+            except Failure:
+                continue
+            found = module_wine_version(blob)
+            if found is None:
+                continue
+            if found != expected:
+                raise Failure(f"{name} is Wine {found}, not {expected}: the staged catalog is blended")
+            agreeing += 1
+        if agreeing < MIN_AGREEING_MODULES:
+            raise Failure(f"only {agreeing} staged modules name a Wine version; the stamp is unbacked")
+
+
+def check_image(path, expected_wine_version):
     image = Image(path)
     missing = []
     for guest_path in REQUIRED_FILES:
@@ -162,9 +207,7 @@ def check_image(path, expected_ntdll=None, expected_win32u=None):
 
     check_native_elf(image, f"{UNIX_CATALOG}/ntdll.so", require_attach=True)
     check_native_elf(image, f"{UNIX_CATALOG}/win32u.so", require_attach=False)
-    if expected_ntdll is not None:
-        compare_expected(image, f"{UNIX_CATALOG}/ntdll.so", expected_ntdll)
-        compare_expected(image, f"{UNIX_CATALOG}/win32u.so", expected_win32u)
+    check_wine_provenance(image, expected_wine_version)
 
     with tempfile.TemporaryDirectory(prefix="oxide-rootfs-payload-") as tmp:
         tmpdir = Path(tmp)
@@ -184,18 +227,6 @@ def check_image(path, expected_ntdll=None, expected_win32u=None):
             raise Failure("MIME association does not select the Notepad desktop entry")
     image.unchanged()
     return "payload: PASS"
-
-
-def compare_expected(image, staged_path, expected_path):
-    expected = Path(expected_path).resolve(strict=True)
-    if not expected.is_file():
-        raise Failure(f"expected native artifact is not a regular file: {expected}")
-    with tempfile.TemporaryDirectory(prefix="oxide-native-provenance-") as tmp:
-        staged = image.dump(staged_path, Path(tmp))
-        def digest(path):
-            return hashlib.sha256(path.read_bytes()).hexdigest()
-        if digest(staged) != digest(expected):
-            raise Failure(f"staged native artifact differs from expected build input: {staged_path}")
 
 
 def check_native_elf(image, path, require_attach):
@@ -222,11 +253,10 @@ def check_native_elf(image, path, require_attach):
 def main(argv):
     parser = argparse.ArgumentParser()
     parser.add_argument("--image", required=True)
-    parser.add_argument("--expected-ntdll")
-    parser.add_argument("--expected-win32u")
+    parser.add_argument("--expected-wine-version", required=True)
     args = parser.parse_args(argv)
     try:
-        print(check_image(args.image, args.expected_ntdll, args.expected_win32u))
+        print(check_image(args.image, args.expected_wine_version))
     except Failure as error:
         print(f"payload: FAIL: {error}", file=sys.stderr)
         return 1

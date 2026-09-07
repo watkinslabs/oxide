@@ -46,8 +46,6 @@ LOCATE_SECONDS = 15
 # Bound on the guest painting the typed token into its edit control.
 TOKEN_SECONDS = 30
 TOKEN = os.environ.get("OXIDE_NOTEPAD_TOKEN", f"oxide-{RUN}").lower()
-DEFAULT_WINE_NTDLL = ROOT / "target/lanes/wine-10.20-build/dlls/ntdll/ntdll.so"
-DEFAULT_WINE_WIN32U = ROOT / "target/lanes/wine-10.20-build/dlls/win32u/win32u.so"
 MILESTONES = [
     "[WINDOWS-PE-START] entry=", "[WINDOWS-NT-UNIX] entry",
     "[WINDOWS-USER32] create-window", "[WINDOWS-WINDOW-SHOW] hwnd=",
@@ -388,12 +386,8 @@ def image_build_env(base=None):
     build_env = dict(os.environ if base is None else base,
                      OXIDE_WINDOWS_NOTEPAD_SMOKE="1", OXIDE_QUICKBOOT_PROFILE="gnome",
                      OXIDE_SERIAL_SHELL="1")
-    # Rootfs staging deliberately rejects stock Wine because the native
-    # bootstrap requires the source-owned TEB attachment ABI.  Keep direct
-    # acceptance invocations equivalent to `make qemu-x86`; callers may still
-    # override either path for a deliberately different adapter build.
-    build_env.setdefault("OXIDE_WINE_NTDLL", str(DEFAULT_WINE_NTDLL))
-    build_env.setdefault("OXIDE_WINE_WIN32U", str(DEFAULT_WINE_WIN32U))
+    # The Windows runtime reaches the guest through the oxide-wine package the
+    # compose installs. There is no host adapter path to point staging at.
     return build_env
 
 
