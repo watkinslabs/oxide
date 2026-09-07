@@ -120,3 +120,6 @@ mod nt_message_params;
 #[path = "nt_wine_window/object_raw.rs"]
 mod nt_wine_object_contract;
 mod nt_milestone;
+mod nt_ip_string;
+mod nt_md4;
+pub(crate) mod nt_status_dos;

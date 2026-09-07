@@ -101,6 +101,7 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `31ge-windows-native-text-callback.md` | FROZEN | 2026-09-06 | `31fk`,`31n`,`31l`,`52`,`53`,`54` |
 | `31gf-windows-gdi-client-state.md` | FROZEN | 2026-09-06 | `31fk`,`31fj`,`31n`,`52`,`53` |
 | `31gg-windows-nt-delay-load.md` | FROZEN | 2026-09-06 | `31a`,`31aw`,`31fw`,`31h`,`52`,`53`,`54` |
+| `31gh-windows-nt-ip-strings-md4.md` | FROZEN | 2026-09-06 | `01`,`02`,`31am`,`31h`,`52`,`53` |
 | `31ay-windows-nt-add-atom.md` | FROZEN | 2026-08-31 | `01`,`02`,`31h`,`52`,`53` |
 | `31az-windows-nt-assign-process-job.md` | FROZEN | 2026-08-31 | `01`,`02`,`31h`,`52`,`53` |
 | `31ba-windows-nt-create-job.md` | FROZEN | 2026-08-31 | `01`,`02`,`31h`,`52`,`53` |

@@ -273,7 +273,8 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RtlIsTextUnicode { return Some(is_text_unicode(call.args.a0, call.args.a1 as i64, call.args.a2)); }
     if call.service == NtService::RtlLengthSecurityDescriptor { return Some(length_security_descriptor(call.args.a0)); }
     if call.service == NtService::RtlMakeSelfRelativeSD { return Some(make_self_relative_sd(call.args.a0, call.args.a1, call.args.a2)); }
-    if call.service == NtService::RtlNtStatusToDosError { return Some(nt_status_to_dos_error(call.args.a0 as u32) as u64); }
+    if call.service == NtService::RtlNtStatusToDosError { return Some(crate::nt_status_dos::nt_status_to_dos_error(call.args.a0 as u32) as u64); }
+    if call.service == NtService::RtlNtStatusToDosErrorNoTeb { return Some(crate::nt_status_dos::nt_status_to_dos_error(call.args.a0 as u32) as u64); }
     if call.service == NtService::RtlQueryInformationAcl { return Some(query_acl(call.args.a0, call.args.a1, call.args.a2 as u32, call.args.a3 as u32)); }
     if call.service == NtService::RtlUniform { return Some(uniform(call.args.a0)); }
     if call.service == NtService::RtlRandom { return Some(random(call.args.a0)); }
@@ -1317,24 +1318,6 @@ fn read_acl(address: u64) -> Option<alloc::vec::Vec<u8>> {
     let size = u16::from_le_bytes([head[2], head[3]]) as usize;
     if size < ACL_HEADER_BYTES { return None; }
     let mut bytes = vec![0u8; size]; uaccess::copy_from_user(&mut bytes, address).ok()?; Some(bytes)
-}
-fn nt_status_to_dos_error(status: u32) -> u32 {
-    if status == 0 || status & 0x2000_0000 != 0 { return status; }
-    let status = if status & 0xf000_0000 == 0xd000_0000 { status & !0x1000_0000 } else { status };
-    match status {
-        0xc000_0005 => 998,
-        0xc000_0008 => 6,
-        0xc000_000d => 87,
-        0xc000_000f | 0xc000_0034 => 2,
-        0xc000_003a => 3,
-        0xc000_0022 => 5,
-        0xc000_0023 => 122,
-        0xc000_0002 => 120,
-        0xc000_007b => 193,
-        0xc000_0102 => 1460,
-        0x0000_0103 => 997,
-        _ => 317,
-    }
 }
 fn query_acl(acl: u64, info: u64, length: u32, class: u32) -> u64 {
     if acl == 0 || info == 0 { return STATUS_INVALID_PARAMETER; }
