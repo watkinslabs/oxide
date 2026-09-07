@@ -755,21 +755,15 @@ fn unicode_string_to_ansi_string(target: u64, source: u64, allocate: bool) -> u6
     result
 }
 
+// The code page itself belongs to the one wide-to-ANSI owner every ANSI entry
+// point converts through; this reads the units out of user memory and hands
+// them over.
 fn convert_utf16(buffer: u64, length: usize) -> Option<Vec<u8>> {
     if length != 0 && buffer == 0 { return None; }
-    let mut output = Vec::new();
+    let mut units = Vec::new();
     let mut index = 0usize;
-    while index < length / 2 {
-        let unit = read_u16(buffer, index)?;
-        let mut value = unit as u32;
-        if (0xd800..=0xdbff).contains(&unit) && index + 1 < length / 2 {
-            let next = read_u16(buffer, index + 1)?;
-            if (0xdc00..=0xdfff).contains(&next) { value = 0x1_0000 + (((unit - 0xd800) as u32) << 10) + (next - 0xdc00) as u32; index += 1; }
-        }
-        if value <= 0x7f { output.push(value as u8); } else if value <= 0x7ff { output.extend_from_slice(&[0xc0 | (value >> 6) as u8, 0x80 | (value & 0x3f) as u8]); } else if value <= 0xffff { output.extend_from_slice(&[0xe0 | (value >> 12) as u8, 0x80 | ((value >> 6) & 0x3f) as u8, 0x80 | (value & 0x3f) as u8]); } else { output.extend_from_slice(&[0xf0 | (value >> 18) as u8, 0x80 | ((value >> 12) & 0x3f) as u8, 0x80 | ((value >> 6) & 0x3f) as u8, 0x80 | (value & 0x3f) as u8]); }
-        index += 1;
-    }
-    Some(output)
+    while index < length / 2 { units.push(read_u16(buffer, index)?); index += 1; }
+    Some(ipc::win32_text::utf16_to_ansi(&units))
 }
 
 fn read_u16(buffer: u64, index: usize) -> Option<u16> {
