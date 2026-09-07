@@ -7,6 +7,8 @@ mod queue;
 mod stream;
 #[path="../../src/nt_gdi/output/transport.rs"]
 mod transport;
+#[path="../../src/nt_window/geom_trace.rs"]
+mod geom_trace;
 #[path="../../src/nt_window/bridge.rs"]
 mod bridge;
 pub use queue::{Completion,TransportError};

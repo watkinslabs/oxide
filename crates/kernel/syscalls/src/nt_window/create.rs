@@ -57,7 +57,7 @@ pub(crate) fn begin_create_lifecycle_for_current(hwnd: u64, params: CreateStruct
         }
         let token = entries[index].next_create;
         entries[index].next_create = token.checked_add(1).filter(|value| *value != 0).unwrap_or(1);
-        entries[index].pending_creates.push(PendingCreate { token, hwnd, wndproc: record.wndproc, params, convention, nccalc: 0 });
+        entries[index].pending_creates.push(PendingCreate { token, hwnd, wndproc: record.wndproc, params, convention, nccalc: 0, nccalc_handed: ipc::win32_window::WindowRect { left: 0, top: 0, right: 0, bottom: 0 } });
         (token, record.wndproc)
     };
     // The compositor/backend HWND must exist before WM_NCCREATE: application
@@ -90,11 +90,11 @@ pub(crate) fn begin_create_lifecycle_for_current(hwnd: u64, params: CreateStruct
 
 /// Record the user address the outstanding creation-time nonclient
 /// calculation is writing into. # C: O(processes + pending creates)
-fn set_pending_nccalc(token: u64, pointer: u64) {
+fn set_pending_nccalc(token: u64, pointer: u64, handed: ipc::win32_window::WindowRect) {
     let Some(cur) = sched::live::current() else { return; };
     let mut entries = GUI.lock();
     let Some(entry) = entries.iter_mut().find(|entry| entry.group.ptr_eq(&Arc::downgrade(&cur.thread_group))) else { return; };
-    if let Some(pending) = entry.pending_creates.iter_mut().find(|pending| pending.token == token) { pending.nccalc = pointer; }
+    if let Some(pending) = entry.pending_creates.iter_mut().find(|pending| pending.token == token) { pending.nccalc = pointer; pending.nccalc_handed = handed; }
 }
 
 /// Continue the create transaction at WM_CREATE. # C: O(processes + windows); # Sleeps: yes
@@ -212,16 +212,16 @@ pub(crate) fn complete_callback(completion: sched::nt_callback::Completion, call
             // WM_CREATE. A window that never runs it keeps a client rectangle
             // equal to its window rectangle, so nothing the nonclient area
             // owns - a menu bar first of all - ever reserves its band.
-            if let Some((status, pointer)) = nccalcsize::begin(pending.hwnd, pending.wndproc, pending.token) {
-                set_pending_nccalc(pending.token, pointer);
+            if let Some((status, pointer, handed)) = nccalcsize::begin(pending.hwnd, pending.wndproc, pending.token) {
+                set_pending_nccalc(pending.token, pointer, handed);
                 return status;
             }
             begin_create_message(pending)
         }
         CALLBACK_CREATE_NCCALCSIZE => {
             let Some(pending) = pending_create_for_current(completion.argument) else { return STATUS_INVALID_PARAMETER; };
-            nccalcsize::apply_for_current(pending.hwnd, pending.nccalc);
-            set_pending_nccalc(pending.token, 0);
+            nccalcsize::apply_for_current(pending.hwnd, pending.nccalc, pending.nccalc_handed);
+            set_pending_nccalc(pending.token, 0, pending.nccalc_handed);
             begin_create_message(pending)
         }
         CALLBACK_CREATE => {

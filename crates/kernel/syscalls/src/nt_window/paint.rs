@@ -13,6 +13,7 @@ pub(crate) fn backing_for_current(hwnd: u32) -> Option<ipc::win32_gdi::PaintBack
 fn layout(state: &ipc::win32_window::WindowManager, window: ipc::win32_window::WindowId) -> Option<ipc::win32_gdi::PaintBacking> {
     let bounds = state.rect(window)?;
     let client = state.get(window)?.client_rect.unwrap_or(bounds);
+    super::geom_trace::line(b"layout", window.raw() as u64, &[(b"bounds", bounds), (b"client", client)]);
     Some(ipc::win32_gdi::PaintBacking { width: bounds.right.checked_sub(bounds.left)?, height: bounds.bottom.checked_sub(bounds.top)?,
         client: ipc::win32_gdi::Rect { left: client.left.checked_sub(bounds.left)?, top: client.top.checked_sub(bounds.top)?,
             right: client.right.checked_sub(bounds.left)?, bottom: client.bottom.checked_sub(bounds.top)? } })

@@ -15,10 +15,15 @@ pub const fn creation_nccalcsize(wndproc: u64, window: WindowRect) -> Option<Win
     Some(window)
 }
 
-/// The client rectangle a window adopts from that reply. An ill-formed reply
-/// leaves the client area equal to the window rectangle. # C: O(1)
-pub const fn creation_client_rect(window: WindowRect, returned: WindowRect) -> WindowRect {
-    if well_formed(returned) { returned } else { window }
+/// The client rectangle a window adopts from that reply. The reply states its
+/// insets off the rectangle the calculation was handed, so a window whose own
+/// rectangle moved while the calculation ran adopts those insets against the
+/// rectangle it has now instead of a client area in the previous space. An
+/// ill-formed reply leaves the client area equal to the window rectangle.
+/// # C: O(1)
+pub const fn creation_client_rect(handed: WindowRect, current: WindowRect, returned: WindowRect) -> WindowRect {
+    if !well_formed(returned) { return current; }
+    match inset_client(current, insets(handed, returned)) { Some(client) => client, None => current }
 }
 
 /// A child rectangle is kept relative to its parent's client area; presenting
@@ -26,6 +31,22 @@ pub const fn creation_client_rect(window: WindowRect, returned: WindowRect) -> W
 /// # C: O(1)
 pub const fn client_origin(window: WindowRect, client: WindowRect) -> (i32, i32) {
     (client.left - window.left, client.top - window.top)
+}
+
+/// The four nonclient insets one client rectangle takes off its window
+/// rectangle, in that rectangle's own coordinates. # C: O(1)
+pub const fn insets(window: WindowRect, client: WindowRect) -> (i32, i32, i32, i32) {
+    (client.left - window.left, client.top - window.top, window.right - client.right, window.bottom - client.bottom)
+}
+
+/// The client rectangle those insets name inside a new window rectangle: what
+/// a nonclient size calculation answers again after a geometry change, so the
+/// client area follows its window instead of naming the previous one.
+/// # C: O(1)
+pub const fn inset_client(window: WindowRect, insets: (i32, i32, i32, i32)) -> Option<WindowRect> {
+    let (left, top, right, bottom) = (window.left + insets.0, window.top + insets.1, window.right - insets.2, window.bottom - insets.3);
+    let client = WindowRect { left, top, right, bottom };
+    if well_formed(client) { Some(client) } else { None }
 }
 
 #[cfg(test)]

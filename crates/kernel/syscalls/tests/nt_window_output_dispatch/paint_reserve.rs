@@ -12,6 +12,8 @@ const NEW_DAMAGE:WindowRect=WindowRect{left:1,top:1,right:2,bottom:2};
 const ORPHAN_ROLLBACK_CONTROL:bool=false;
 static COPY:Mutex<Vec<(u64,WindowRect)>>=Mutex::new(Vec::new());
 thread_local!{static COPY_INVALIDATE:RefCell<bool>=const{RefCell::new(false)};}
+#[path="../../src/nt_window/geom_trace.rs"]
+mod geom_trace;
 #[path="../../src/nt_window/paint.rs"]
 mod production;
 fn valid_window(hwnd:u64)->Option<WindowId>{u32::try_from(hwnd).ok().and_then(WindowId::from_raw)}

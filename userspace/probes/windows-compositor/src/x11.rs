@@ -186,10 +186,11 @@ impl Backend {
                 let window = self.windows.get_mut(&hwnd)?;
                 if window.suppress_backing_configure && rect.right - rect.left <= 1 && rect.bottom - rect.top <= 1 { window.suppress_backing_configure = false; return None; }
                 let xid = window.xid;
-                // A child window's canonical rect is stated in its parent's
-                // client coordinates, which is exactly what its own
-                // ConfigureNotify reports; translating it to the screen would
-                // offset the child by wherever its top level happens to sit.
+                // A child's ConfigureNotify states its position inside its
+                // parent's X window, which is the parent's window rectangle;
+                // the canonical owner takes the parent's client origin back
+                // off it. Translating it to the screen instead would offset
+                // the child by wherever its top level happens to sit.
                 let toplevel = window.parent == self.root;
                 // A real ConfigureNotify reports a position in the parent's
                 // coordinates. A window manager that decorates a top-level
