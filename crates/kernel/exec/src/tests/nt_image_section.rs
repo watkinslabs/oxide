@@ -107,3 +107,30 @@ fn a_relocated_view_is_what_the_shared_relocation_owner_consumes() {
 fn a_file_that_is_not_an_image_builds_no_image_section() {
     assert!(build(b"not a pe file at all, just bytes", 32).is_err());
 }
+
+/// Two views of one image in one address space: the first reaches the
+/// preferred base, the second cannot and is placed elsewhere. Nothing in the
+/// not-at-base report is exercised unless a second view actually moves, and
+/// most of the staged catalog shares a preferred base with something else.
+#[test]
+fn a_second_view_of_the_same_image_is_placed_away_from_the_preferred_base() {
+    let blob = image(0x2000_0000);
+    let section = build(&blob, blob.len() as u64).unwrap();
+    let as_ = AddressSpace::new(0x20_000).unwrap();
+    let preferred = UserVirtAddr::new(section.preferred_base).unwrap();
+    let first = as_.mmap_with_may_at(MmapPlacement::Advisory(Some(preferred)), section.size(),
+        VmaProt::READ, VmaProt::READ | VmaProt::WRITE | VmaProt::EXEC, VmaFlags::PRIVATE,
+        VmaBacking::KernelBytes { data: Arc::clone(&section.bytes), off: 0 }).unwrap();
+    assert!(section.at_preferred_base(first.as_u64()), "an empty hole must take the hint");
+    let second = as_.mmap_with_may_at(MmapPlacement::Advisory(Some(preferred)), section.size(),
+        VmaProt::READ, VmaProt::READ | VmaProt::WRITE | VmaProt::EXEC, VmaFlags::PRIVATE,
+        VmaBacking::KernelBytes { data: Arc::clone(&section.bytes), off: 0 }).unwrap();
+    assert_ne!(second.as_u64(), first.as_u64(), "the occupied hint must fall back");
+    assert!(!section.at_preferred_base(second.as_u64()));
+    // The moved view is still a complete image view: every span keeps its own
+    // protection, which is what makes it relocatable rather than merely mapped.
+    protect_view(&as_, second, &section.spans).unwrap();
+    let at = |offset: u64| as_.find_vma(UserVirtAddr::new(second.as_u64() + offset).unwrap()).unwrap().prot;
+    assert_eq!(at(0x1000), VmaProt::READ | VmaProt::EXEC);
+    assert_eq!(at(0x3000), VmaProt::READ | VmaProt::WRITE);
+}

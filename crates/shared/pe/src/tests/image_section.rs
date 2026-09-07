@@ -185,3 +185,40 @@ fn every_shipped_module_lays_out_a_disjoint_covering_view() {
     assert!(failures.is_empty(), "{failures:?}");
     assert!(tails > 0, "shipped modules do place exports in a zero-filled tail");
 }
+
+/// A section that every view shares writes to needs one backing store shared
+/// between those views. An image view here is private, so each process would
+/// silently get its own copy. No module the guest stages carries such a
+/// section — this fails the day one does, rather than diverging quietly.
+#[test]
+fn no_shipped_module_needs_a_shared_writable_section() {
+    let Some(root) = catalog() else { eprintln!("pe: shipped catalog absent, skipped"); return };
+    let mut count = 0usize;
+    let mut carriers: Vec<String> = Vec::new();
+    for entry in std::fs::read_dir(&root).into_iter().flatten().flatten() {
+        let path = entry.path();
+        let extension = path.extension().and_then(|value| value.to_str()).unwrap_or("");
+        if extension != "dll" && extension != "exe" { continue; }
+        let Ok(blob) = std::fs::read(&path) else { continue };
+        let Ok(parsed) = parse(&blob) else { continue };
+        count += 1;
+        let shared = shared_writable_sections(&parsed);
+        if shared != 0 {
+            carriers.push(format!("{}: {shared}", path.file_name().and_then(|v| v.to_str()).unwrap_or("")));
+        }
+    }
+    assert!(count > 20, "the catalog must carry the module set, found {count}");
+    assert!(carriers.is_empty(), "shared writable sections are not backed by a shared store yet: {carriers:?}");
+}
+
+/// The predicate itself must be able to see one.
+#[test]
+fn a_shared_writable_section_is_recognised() {
+    let mut b = two_section_image();
+    b[SEC2 + 36..SEC2 + 40].copy_from_slice(
+        &(SectionFlags::MEM_READ | SectionFlags::MEM_WRITE | SectionFlags::MEM_SHARED).to_le_bytes());
+    let parsed = parse(&b).unwrap();
+    assert_eq!(shared_writable_sections(&parsed), 1);
+    let plain = two_section_image();
+    assert_eq!(shared_writable_sections(&parse(&plain).unwrap()), 0);
+}

@@ -38,6 +38,15 @@ impl ViewSpan {
     pub fn zero_fill(&self) -> u32 { self.size - self.file_bytes }
 }
 
+/// A section every view of the image shares writes to, rather than taking a
+/// private copy of. Such a section needs a backing store shared between views;
+/// a private view of one silently gives each process its own copy.
+pub fn shared_writable_sections(image: &Image<'_>) -> usize {
+    image.sections.iter()
+        .filter(|section| section.characteristics.contains(SectionFlags::MEM_SHARED | SectionFlags::MEM_WRITE))
+        .count()
+}
+
 /// Alignment an image's spans are rounded to. # C: O(1)
 pub fn view_alignment(image: &Image<'_>) -> u32 { image.section_alignment.max(PAGE_BYTES) }
 

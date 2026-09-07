@@ -29,6 +29,7 @@ const MAX_FORWARDER_MODULE_NAME: usize = 256;
 #[derive(Copy, Clone, Debug, Eq, PartialEq)] pub struct DataDirectory { pub rva: u32, pub size: u32 }
 #[derive(Copy, Clone, Debug, Eq, PartialEq)] pub struct SectionFlags(pub u32);
 impl SectionFlags {
+    pub const MEM_SHARED: u32 = 0x1000_0000;
     pub const MEM_EXECUTE: u32 = 0x2000_0000;
     pub const MEM_READ: u32 = 0x4000_0000;
     pub const MEM_WRITE: u32 = 0x8000_0000;
