@@ -1,13 +1,19 @@
 use super::*;
 const TEB_LAST_ERROR_OFFSET: u64 = 0x68;
-/// Bounded trace of the offset-0 pointer slot: control classes keep their state
-/// pointer there, and two crashes read garbage through it.
+/// Bounded trace of the dialog extra range: control classes keep their state
+/// pointer at offset zero, and a dialog keeps its procedure and user word at
+/// the DWLP slots just above it. Two crashes read garbage through offset zero,
+/// and a dialog that cannot store its procedure faults on the next read, so
+/// the whole DLGWINDOWEXTRA span is reported rather than the first slot alone.
+const DIALOG_EXTRA_SPAN: i32 = 0x20;
 fn trace_slot(op: &'static [u8], hwnd: u64, index: i32, value: u64) {
     use core::sync::atomic::{AtomicU32, Ordering};
     static BUDGET: AtomicU32 = AtomicU32::new(0);
-    if index != 0 || BUDGET.fetch_add(1, Ordering::Relaxed) >= 96 { return; }
+    if !(0..DIALOG_EXTRA_SPAN).contains(&index) { return; }
+    if BUDGET.fetch_add(1, Ordering::Relaxed) >= 96 { return; }
     klog::write_raw(b"[WINDOWS-WNDEXTRA] op="); klog::write_raw(op);
     klog::write_raw(b" hwnd="); klog::write_hex_u64(hwnd);
+    klog::write_raw(b" index="); klog::write_hex_u64(index as u32 as u64);
     klog::write_raw(b" value="); klog::write_hex_u64(value); klog::write_raw(b"\n");
 }
 

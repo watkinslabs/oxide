@@ -376,6 +376,27 @@ fn handle(va_raw: u64, fault: FaultKind, user_mode: bool, ip: u64)
                 }
                 None => klog::write_raw(b" vma=none"),
             }
+            // The faulting address alone cannot name the code that faulted: a
+            // null dereference reports va=0 whatever ran. Resolving the
+            // instruction pointer's mapping names the image and the offset
+            // inside it, which is what a disassembly can be taken at. Without
+            // it the image base has to be guessed from a symbol whose page
+            // offset happens to match, and a wrong guess disassembles noise.
+            match UserVirtAddr::new(ip).and_then(|rip| mm.find_vma(rip)) {
+                Some(vma) => {
+                    klog::write_raw(b" rip-vma=");
+                    klog::write_hex_u64(vma.start.as_u64());
+                    klog::write_raw(b"-");
+                    klog::write_hex_u64(vma.end.as_u64());
+                    klog::write_raw(b" rip-delta=");
+                    klog::write_hex_u64(ip.wrapping_sub(vma.start.as_u64()));
+                    if let VmaBacking::File { off, .. } = &vma.backing {
+                        klog::write_raw(b" rip-file-off=");
+                        klog::write_hex_u64(off.wrapping_add(ip.wrapping_sub(vma.start.as_u64())));
+                    }
+                }
+                None => klog::write_raw(b" rip-vma=none"),
+            }
         }
         klog::write_raw(b"\n");
     }

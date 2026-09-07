@@ -75,7 +75,21 @@ pub(super) fn is_child(parent: u64, child: u64) -> bool {
 /// SetDialogInfo hands one window its dialog state pointer.
 /// # C: O(N_processes + N_windows)
 pub(super) fn set_dialog_info(hwnd: u64, info: u64) -> u64 {
-    u64::from(crate::nt_window::set_dialog_info_for_current(hwnd, info))
+    let stored = crate::nt_window::set_dialog_info_for_current(hwnd, info);
+    trace_dialog_store(hwnd, info, stored);
+    u64::from(stored)
+}
+
+/// Report the dialog-state store, bounded. The paired read is reported by the
+/// one-window query; both halves are needed to tell a store that never landed
+/// from a read that never found it.
+fn trace_dialog_store(hwnd: u64, info: u64, stored: bool) {
+    use core::sync::atomic::{AtomicU32, Ordering};
+    static BUDGET: AtomicU32 = AtomicU32::new(0);
+    if BUDGET.fetch_add(1, Ordering::Relaxed) >= 64 { return; }
+    klog::write_raw(b"[WINDOWS-DLGINFO] op=set hwnd="); klog::write_hex_u64(hwnd);
+    klog::write_raw(b" value="); klog::write_hex_u64(info);
+    klog::write_raw(b" stored="); klog::write_hex_u64(u64::from(stored)); klog::write_raw(b"\n");
 }
 
 /// SetMDIClientInfo writes the client info to the window's pointer slot and
