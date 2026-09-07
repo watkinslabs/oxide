@@ -1,19 +1,19 @@
-# Notepad: click and typing reach the edit control; the typed text is not yet on screen — 2026-09-07
+# Notepad: menu bar legible, typing handled; text paints too slowly for the harness — 2026-09-07
 
 First command: `git log --oneline -8 && make windows-surface-gate && git worktree list && tools/issues.sh --query status=OPEN grep='Notepad\|bridge\|menu'`
 
-## State (main e351002a1)
+## State (main db44b8870)
 
 - Static call surface closed: `crates/kernel/syscalls/tests/windows_call_surface/baseline.txt` has zero entries (134 → 0 this session: PRs #7546 window/desktop/clipboard/hook, #7547 message/timer/scroll/menu/sysparams, #7551 drag/icon/idle; #7548 warning fix). KI-0473 fixed.
 - Serial "stall" was never the UART: the scheduler's cpufreq hook spun on a process-held plain spinlock inside the wakeup IRQ (PR #7545, KI-0521).
 - Notepad window never reached the GNOME screen because `shmctl` answered EIDRM on segments marked SHM_DEST, which is the normal state of a GTK MIT-SHM segment; XWayland turned it into BadAccess and `mutter-x11-frames` died on every map (PR #7550, KI-0540). Acceptance run `/home/nd/oxide/acc2/` (uart-193559.log, screen-193559-after-token.ppm): Notepad is framed, titled, raised on click, paints white client + status bar.
 - One wait list carries the message queue and NT objects (PR #7549, KI-0535).
 
-## What acceptance still fails on (measured, last full run `/home/nd/oxide/tgt-B3547/acc/`)
+## What acceptance still fails on (last full run `/home/nd/oxide/tgt-B3557/acc/`)
 
-Merged since the previous note: #7568 retrieval stage compared hardware messages against the raw zero filter (every mouse/key message dropped); #7569 thread-state classes; #7570 phantom nt_window tests made real; #7571 console reader kept the run's tail (two "wedges" were capture artifacts); #7572 ONE win32u routing chain (the raw entry routed twelve fewer families; unclaimed count now 0 on the real path; hosted coverage test pins every family walked); #7574 InvalidateRect had a second, divergent implementation (erase flag dropped, no children); #7575 debug-channel header never wrote the resolved flags back (every trace site re-entered the kernel); #7576 show invalidates the frame so WM_NCPAINT is sent; #7577 NT heap: regions/blocks instead of a mapping per allocation (164 -> 6 address-space ops per run).
+Merged since the previous note: #7579 creation-time WM_NCCALCSIZE + complete class info (menu name); #7580 PE resource walk (offsets from the root, language fallback) so LoadMenu works; #7581 damage cropped to the visible rect + BeginPaint reserves before the DC (status-bar paint storm); #7582 menu item strings read to the NUL; #7583 per-syscall console trace removed (it starved the pump) + client rect carried on move; #7584 kernel-owned text runs sized on their own fields + redirect status returned + text order at the issuer's callback depth: the bar reads File Edit Format View Help; #7585 configure keeps nonclient insets and reads a child in the parent's client space (band no longer overwritten).
 
-Now: framed, focused, caret visible; click -> WM_LBUTTONDOWN, typing -> ~60 WM_CHAR handled by the edit (EN_CHANGE notifications flow), a typed character invalidates a rect on the edit and WM_PAINT is retrieved; UART audit clean. Still red: (1) the typed token is not painted within the harness window (KI-0608 open: pump was ~1 message / 1.6 s before #7575/#7577; the first acceptance on main with both merged has not run yet, run it first); (2) no menu bar: frame gets WM_NCPAINT but its default handling never reaches the kernel arm and WM_NCCALCSIZE goes only to the edit child (KI-0615, lane `B3550-frame-nccalcsize-and-ncpaint-reach-bar` running at hand-off); (3) KI-0610 native InvalidateWindow probe surface, KI-0614 SetMenu frame change, KI-0617..0623 heap follow-ups, KI-0603 caret blink test red on main, KI-0613 three test targets do not compile, KI-0616 setpriority flake.
+Now: framed, focused, menu bar legible and stable, click activates, every typed key retrieved and handled by the edit, every invalidation records damage, WM_PAINT retrieved. Still red: the pump spends ~240 ms per typed character (KI-0636; lane `B3556-typed-character-latency` running at hand-off), so the token is not drawn within the harness's 2 s window. Then the harness continues to A4/A5 (clear token, Alt+F4, exit status 0). Open follow-ups: KI-0630 (evidence updated), KI-0632 item-info method slots, KI-0637 menu font, KI-0638 mnemonic underline, KI-0641 configure runs no NCCALCSIZE, KI-0610/0614/0625/0626/0627/0629/0640/0643, heap KI-0617..0623.
 
 ## Integration recipe (unchanged; see auto-memory `union-merge-damage-checklist`)
 
