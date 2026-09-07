@@ -240,6 +240,31 @@ fn xvfb_configure_under_a_reparenting_window_manager_reports_screen_position() {
     unsafe { ffi::xcb_disconnect(conn); }
 }
 
+// 31gd geometry of a child: a child window's canonical rect is stated in its
+// parent's client coordinates, and its own ConfigureNotify already reports
+// exactly that. Translating it to the screen would offset every child by
+// wherever its top level happens to sit, which is what pushed Notepad's edit
+// control out of its own client area.
+#[test]
+fn xvfb_configure_of_a_child_stays_in_its_parents_coordinates() {
+    let server = xvfb();
+    let mut backend = Backend::connect(Some(&server.display)).unwrap();
+    let top = 0xb1u32; let child = 0xb2u32;
+    backend.handle_command(BridgeCommand::Create { hwnd: top, title: Vec::new(), rect: Rect { left: 0, top: 0, right: 120, bottom: 90 }, parent: 0, style: 0x1000_0000, ex_style: 0 }).unwrap();
+    backend.handle_command(BridgeCommand::Create { hwnd: child, title: Vec::new(), rect: Rect { left: 0, top: 0, right: 100, bottom: 70 }, parent: top as u64, style: 0x5000_0000, ex_style: 0 }).unwrap();
+    // Put the top level away from the origin so a screen position and a
+    // parent-relative one cannot be the same number.
+    backend.handle_command(BridgeCommand::Configure { hwnd: top, rect: Rect { left: 37, top: 29, right: 157, bottom: 119 } }).unwrap();
+    backend.handle_command(BridgeCommand::Configure { hwnd: child, rect: Rect { left: 5, top: 7, right: 95, bottom: 67 } }).unwrap();
+    let mut configure = None;
+    for _ in 0..500 {
+        while let Some(event) = backend.poll_event() { if let BridgeEvent::Configure { hwnd: id, rect } = event { if id == child { configure = Some(rect); } } }
+        if configure.is_some() { break; }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(configure, Some(Rect { left: 5, top: 7, right: 95, bottom: 67 }), "a child's configure must stay in its parent's coordinates");
+}
+
 // 31fn: what leaves the bridge for a click and a wheel notch is a Win32 button
 // mask and a wheel axis, not the X modifier state and button number.
 #[test]

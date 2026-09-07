@@ -20,6 +20,11 @@ smoke_source="$root/tools/boot-smoke.sh"
 acceptance_source="$root/tools/windows-notepad-acceptance.py"
 fixture="${OXIDE_WINE_NOTEPAD_FIXTURE:-}"
 
+# The overview decision is a pixel rule over the guest's own frames; a rule
+# that can never fire makes leaving the overview a step that always reports
+# success. Run its unit test here so the gate exercises it.
+python3 "$root/tools/perf/test_gnome_overview.py" >/dev/null
+
 require_text() {
     local label="$1" file="$2" needle="$3"
     if [[ ! -f "$file" ]]; then
@@ -70,6 +75,11 @@ fi
 
 require_text "smoke admission" "$makefile" "SMOKE_MARKER='[WINDOWS-PE-START] entry='"
 require_text "desktop bridge staging" "$wrapper_source" 'probe_cargo("x86_64", "windows-compositor")'
+# The bridge's diagnostics must reach the console while the launch is still
+# running: an acceptance run stops the guest with Notepad up, so a replay that
+# waits for the launch to return never runs.
+require_text "desktop bridge log streaming" "$wrapper_source" 'tail -n +1 -f "$oxide_log" >&2'
+
 require_text "image-owned ELF dependency closure" "$wrapper_source" 'verify_elf_dependencies(root_img, &[&launcher, &compositor, &registryd])?;'
 require_text "raw DC lease release routing" "$wine_window_source" 'if ordinal == WINE_RELEASE_DC { return Some(release_window_dc(args.a0, args.a1)); }'
 require_text "descriptor DC lease release routing" "$wine_window_source" 'WINE_RELEASE_DC => release_window_dc(args[0], args[1]),'
@@ -184,4 +194,4 @@ for contract in \
     "fn server_map_view(" "fn server_unmap_view("; do
     require_text "Wine image mapping" "$wine_unix_source" "$contract"
 done
-echo "windows-notepad-harness: PASS (W1-W5 PE, graph, environment, user32/GDI contracts, and ordered runtime milestones verified)"
+echo "windows-notepad-harness: PASS (W1-W5 PE, graph, environment, user32/GDI contracts, overview decision, and ordered runtime milestones verified)"

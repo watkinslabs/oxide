@@ -186,13 +186,18 @@ impl Backend {
                 let window = self.windows.get_mut(&hwnd)?;
                 if window.suppress_backing_configure && rect.right - rect.left <= 1 && rect.bottom - rect.top <= 1 { window.suppress_backing_configure = false; return None; }
                 let xid = window.xid;
+                // A child window's canonical rect is stated in its parent's
+                // client coordinates, which is exactly what its own
+                // ConfigureNotify reports; translating it to the screen would
+                // offset the child by wherever its top level happens to sit.
+                let toplevel = window.parent == self.root;
                 // A real ConfigureNotify reports a position in the parent's
                 // coordinates. A window manager that decorates a top-level
                 // window reparents it into a frame, so that position is an
                 // offset inside the frame and not where the window is; only
                 // the synthetic notification a window manager sends is
                 // already root-relative.
-                let rect = if synthetic { rect } else { self.root_position(xid).map_or(rect, |(left, top)| Rect { left, top, right: left + (rect.right - rect.left), bottom: top + (rect.bottom - rect.top) }) };
+                let rect = if synthetic || !toplevel { rect } else { self.root_position(xid).map_or(rect, |(left, top)| Rect { left, top, right: left + (rect.right - rect.left), bottom: top + (rect.bottom - rect.top) }) };
                 Some(BridgeEvent::Configure { hwnd, rect })
             }
             Some(BridgeEvent::Input(input)) => { let input = self.retarget_input(input)?; self.map_input(input) }
@@ -268,11 +273,7 @@ impl Backend {
     fn property_u32(&self, window: Xid, atom: ffi::Atom) -> Option<u32> { let values = self.property_u32s(window, atom)?; crate::geometry::decode_cardinals(&values) }
     fn property_u32s(&self, window: Xid, atom: ffi::Atom) -> Option<Vec<u32>> { self.property_u32s_typed(window, atom, ffi::ATOM_CARDINAL) }
     fn property_u32s_typed(&self, window: Xid, atom: ffi::Atom, type_: ffi::Atom) -> Option<Vec<u32>> { let cookie = unsafe { ffi::xcb_get_property(self.conn, 0, window, atom, type_, 0, 4) }; let mut error = ptr::null_mut(); let reply = unsafe { ffi::xcb_get_property_reply(self.conn, cookie, &mut error) }; if reply.is_null() { return None; } if unsafe { (*reply).format } != 32 { unsafe { libc::free(reply as *mut _); } return None; } let len = unsafe { ffi::xcb_get_property_value_length(reply) }; if len < 0 || len % 4 != 0 { unsafe { libc::free(reply as *mut _); } return None; } let ptr = unsafe { ffi::xcb_get_property_value(reply) as *const u32 }; let values = unsafe { std::slice::from_raw_parts(ptr, len as usize / 4) }.to_vec(); unsafe { libc::free(reply as *mut _); } Some(values) }
-    /// X events name an X window; every layer above this one names an HWND.
-    /// An event on a window this bridge does not own is not a window event at
-    /// all and is dropped, which is the same answer the translation gives for
-    /// a window destroyed between the server's dispatch and this poll.
-    /// Where a window sits on the screen, which is not what a real
+    /// Where a top-level window sits on the screen, which is not what a real
     /// ConfigureNotify reports once a window manager has reparented it.
     fn root_position(&self, xid: Xid) -> Option<(i32, i32)> {
         let cookie = unsafe { ffi::xcb_translate_coordinates(self.conn, xid, self.root, 0, 0) };
@@ -284,6 +285,10 @@ impl Backend {
         unsafe { libc::free(reply as *mut _); }
         Some(position)
     }
+    /// X events name an X window; every layer above this one names an HWND.
+    /// An event on a window this bridge does not own is not a window event at
+    /// all and is dropped, which is the same answer the translation gives for
+    /// a window destroyed between the server's dispatch and this poll.
     fn retarget_input(&self, input: InputEvent) -> Option<InputEvent> {
         let xid = match input { InputEvent::Key { hwnd, .. } | InputEvent::Text { hwnd, .. } | InputEvent::Button { hwnd, .. } | InputEvent::Motion { hwnd, .. } | InputEvent::Pointer { hwnd, .. } | InputEvent::Focus { hwnd, .. } => hwnd };
         let hwnd = self.xid_to_hwnd.get(&xid).copied()?;
