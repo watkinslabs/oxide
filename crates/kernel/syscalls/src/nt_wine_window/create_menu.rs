@@ -1,8 +1,5 @@
 //! Effective-child classification and what a creation `hMenu` word means.
 
-pub(crate) const WS_CHILD: u32 = 0x4000_0000;
-pub(crate) const WS_POPUP: u32 = 0x8000_0000;
-
 /// POPUP wins over CHILD, matching the frozen effective-child rule. The
 /// canonical window owner decides it; this is the shim's name for that call.
 /// # C: O(1)

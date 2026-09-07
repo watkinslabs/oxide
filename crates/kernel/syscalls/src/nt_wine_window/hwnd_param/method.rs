@@ -37,5 +37,8 @@ pub(crate) const SET_RAW_WINDOW_POS: u32 = 29;
 pub(crate) const GET_PRIVATE_DATA: u32 = 30;
 pub(crate) const SET_PRIVATE_DATA: u32 = 31;
 
-/// Methods the enumeration holds; every index below it names one.
+/// Methods the enumeration holds; every index below it names one. Read by the
+/// exhaustiveness test that walks the whole enumeration through the decoder,
+/// which is the only thing that needs the count rather than a name.
+#[cfg(test)]
 pub(crate) const COUNT: u32 = 32;

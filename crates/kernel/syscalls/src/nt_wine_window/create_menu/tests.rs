@@ -1,5 +1,6 @@
 //! Effective-child classification of a creation `hMenu` word.
 use super::*;
+use ipc::win32_window::styles::{WS_CHILD, WS_POPUP};
 
 #[test]
 fn popup_wins_over_child_and_a_child_menu_word_is_a_control_id() {

@@ -53,6 +53,9 @@ pub(crate) struct WindowRects { pub rect: u64, pub dpi: u32 }
 impl WindowRects {
     /// # C: O(1)
     pub(crate) fn decode(bytes: [u8; WINDOW_RECTS_BYTES]) -> Self { Self { rect: u64_at(&bytes, 0), dpi: u32_at(&bytes, 8) } }
+    /// The decoder's inverse, which builds a caller's block so a test can
+    /// prove the two agree at every offset. Nothing answers with this record.
+    #[cfg(test)]
     /// # C: O(1)
     pub(crate) fn encode(self) -> [u8; WINDOW_RECTS_BYTES] {
         let mut out = [0u8; WINDOW_RECTS_BYTES];
@@ -70,6 +73,9 @@ impl MapPoints {
     pub(crate) fn decode(bytes: [u8; MAP_POINTS_BYTES]) -> Self {
         Self { hwnd_to: u64_at(&bytes, 0), points: u64_at(&bytes, 8), count: u32_at(&bytes, 16), dpi: u32_at(&bytes, 20) }
     }
+    /// The decoder's inverse, which builds a caller's block so a test can
+    /// prove the two agree at every offset. Nothing answers with this record.
+    #[cfg(test)]
     /// # C: O(1)
     pub(crate) fn encode(self) -> [u8; MAP_POINTS_BYTES] {
         let mut out = [0u8; MAP_POINTS_BYTES];
@@ -93,6 +99,9 @@ impl PrivateData {
     pub(crate) fn decode_set(bytes: [u8; SET_PRIVATE_BYTES]) -> Self {
         Self { offset: u32_at(&bytes, 0), size: u32_at(&bytes, 4), value: u64_at(&bytes, 8) }
     }
+    /// The decoder's inverse, which builds a caller's block so a test can
+    /// prove the two agree at every offset. Nothing answers with this record.
+    #[cfg(test)]
     /// # C: O(1)
     pub(crate) fn encode_set(self) -> [u8; SET_PRIVATE_BYTES] {
         let mut out = [0u8; SET_PRIVATE_BYTES];
@@ -113,6 +122,9 @@ impl Expose {
     pub(crate) fn decode(bytes: [u8; EXPOSE_BYTES]) -> Self {
         Self { flags: u32_at(&bytes, 0), whole: u32_at(&bytes, 4) != 0, rect: Rect::decode(&bytes[8..24]) }
     }
+    /// The decoder's inverse, which builds a caller's block so a test can
+    /// prove the two agree at every offset. Nothing answers with this record.
+    #[cfg(test)]
     /// # C: O(1)
     pub(crate) fn encode(self) -> [u8; EXPOSE_BYTES] {
         let mut out = [0u8; EXPOSE_BYTES];
@@ -131,6 +143,9 @@ impl RawWindowPos {
     pub(crate) fn decode(bytes: [u8; RAW_WINDOW_POS_BYTES]) -> Self {
         Self { rect: Rect::decode(&bytes[0..16]), flags: u32_at(&bytes, 16), internal: u32_at(&bytes, 20) != 0 }
     }
+    /// The decoder's inverse, which builds a caller's block so a test can
+    /// prove the two agree at every offset. Nothing answers with this record.
+    #[cfg(test)]
     /// # C: O(1)
     pub(crate) fn encode(self) -> [u8; RAW_WINDOW_POS_BYTES] {
         let mut out = [0u8; RAW_WINDOW_POS_BYTES];
@@ -149,6 +164,9 @@ impl HardwareInput {
     pub(crate) fn decode(bytes: [u8; HARDWARE_INPUT_BYTES]) -> Self {
         Self { flags: u32_at(&bytes, 0), input: u64_at(&bytes, 8), lparam: u64_at(&bytes, 16) }
     }
+    /// The decoder's inverse, which builds a caller's block so a test can
+    /// prove the two agree at every offset. Nothing answers with this record.
+    #[cfg(test)]
     /// # C: O(1)
     pub(crate) fn encode(self) -> [u8; HARDWARE_INPUT_BYTES] {
         let mut out = [0u8; HARDWARE_INPUT_BYTES];

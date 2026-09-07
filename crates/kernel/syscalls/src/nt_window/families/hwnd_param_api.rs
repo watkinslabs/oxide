@@ -2,6 +2,11 @@
 //! mapping, the descriptive record, thread ownership, the child test and the
 //! two private-region accesses. Every decision is the owner's; this module
 //! resolves the caller and converts handles.
+//!
+//! No client-size query lives here. A layout mirror is measured about the
+//! window's client width inside the mapping owner's own walk, and a region
+//! mirror about the window rectangle's width, so neither reads a size through
+//! this boundary.
 use super::super::*;
 use ipc::win32_window::{LongPtrError, WindowId};
 
@@ -39,16 +44,6 @@ pub(crate) fn window_relative_for_current(hwnd: u64, relationship: u32) -> u64 {
 pub(crate) fn is_child_for_current(parent: u64, child: u64) -> bool {
     let (Some(parent), Some(child)) = (id(parent), id(child)) else { return false; };
     access::with_state(|state| state.is_child(parent, child)).unwrap_or(false)
-}
-
-/// A window's client-area size, which a layout mirror is measured against.
-/// # C: O(N_processes + N_windows)
-pub(crate) fn client_size_for_current(hwnd: u64) -> Option<(i32, i32)> {
-    let window = id(hwnd)?;
-    access::with_state(|state| {
-        let rect = state.client_rect(window)?;
-        Some((rect.right.saturating_sub(rect.left), rect.bottom.saturating_sub(rect.top)))
-    })?
 }
 
 /// Read one slot of a window's private extra region. # C: O(N_processes + N_windows)
