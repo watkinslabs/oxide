@@ -15,9 +15,7 @@ pub(crate) const POPUP_MENU_CLASS: [u16; 6] = [b'#' as u16, b'3' as u16, b'2' as
 pub(crate) const POPUP_MENU_EXTRA_OFFSET: i32 = 0;
 const WS_POPUP: u32 = 0x8000_0000;
 
-fn metrics() -> PopupMetrics {
-    PopupMetrics { char_width: ipc::win32_gdi::MENU_CHAR_WIDTH, char_height: ipc::win32_gdi::MENU_CHAR_HEIGHT }
-}
+fn metrics() -> PopupMetrics { PopupMetrics::menu() }
 
 /// The rectangle a popup may occupy. # C: O(1)
 pub(crate) fn work_area() -> MenuRect {

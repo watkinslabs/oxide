@@ -12,6 +12,15 @@ use super::{MenuId, MenuManager, MenuRect};
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct BarMetrics { pub char_width: i32, pub char_height: i32, pub bar_height: i32 }
 
+impl BarMetrics {
+    /// The cells the nonclient profile's menu font measures a bar with: the
+    /// one face the bar is also drawn in. # C: O(1)
+    pub fn menu() -> Self {
+        let metrics = crate::win32_gdi::menu_bar_metrics();
+        Self { char_width: metrics.char_width, char_height: metrics.char_height, bar_height: metrics.bar_height }
+    }
+}
+
 /// Name what a screen point falls on in one window's menu bar. The band the
 /// bar occupies spans the whole width of the window; a point in the band that
 /// no item covers is the bar's own background, and a point outside the band

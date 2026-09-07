@@ -43,6 +43,9 @@ pub mod popup;
 pub mod track;
 #[path = "win32_menu/track_loop.rs"]
 pub mod track_loop;
+#[cfg(test)]
+#[path = "win32_menu/tests/menu_font.rs"]
+mod menu_font_tests;
 pub use info::{MenuInfo, MENUINFO_BYTES, MF_DEFAULT, MF_HILITE, MF_POPUP, MF_SEPARATOR, MF_SYSMENU,
     MIM_APPLYTOSUBMENUS, MIM_BACKGROUND, MIM_HELPID, MIM_MAXHEIGHT, MIM_MENUDATA, MIM_STYLE, NO_DEFAULT_ITEM};
 

@@ -13,9 +13,11 @@ use ipc::win32_window::WindowId;
 const TPM_LEFTALIGN_LEFTBUTTON: u32 = 0;
 use ipc::win32_menu::popup::{TF_ENDMENU, TPM_BUTTONDOWN};
 
-/// Cell metrics one bar is measured and drawn with. # C: O(1)
+/// Cell metrics one bar is measured and drawn with: the profile's menu font,
+/// which the drawing selects into its device context. # C: O(1)
 fn metrics() -> (i32, i32, i32) {
-    (ipc::win32_gdi::MENU_CHAR_WIDTH, ipc::win32_gdi::MENU_CHAR_HEIGHT, ipc::win32_gdi::MENU_BAR_HEIGHT)
+    let metrics = ipc::win32_gdi::menu_bar_metrics();
+    (metrics.char_width, metrics.char_height, metrics.bar_height)
 }
 
 /// The menu one window shows on its bar, and the window's own rectangle.
