@@ -50,11 +50,12 @@ fn register_cbwndextra_twenty_reaches_canonical_registration() {
     assert_eq!(raw_class::register_class(args), 21);
     STATE.with(|s| { let s = s.borrow();
         assert_eq!(s.registered, Some((vec![78], 0x1400042c0, 20)));
-        assert_eq!(s.user_reads, vec![args.a0, args.a0 + 20, args.a0 + 4]);
+        assert_eq!(s.user_reads, vec![args.a0]);
         assert_eq!(s.registered_style, Some(0x83));
         assert_eq!(s.registered_unicode, Some(true));
     });
 }
+
 #[test]
 fn register_encoding_uses_low_dword_ansi_flag() {
     for (flag,unicode) in [(0,true),(1,false),(0x7fa6_0000_0000,true),(0x7fa6_0000_0001,false)] {

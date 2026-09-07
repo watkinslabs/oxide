@@ -1,9 +1,6 @@
 //! Raw Wine class and window entry points.
 
 use super::*;
-const CLASS_STYLE_OFFSET: u64 = 4;
-const CLASS_BACKGROUND_OFFSET: u64 = 48;
-
 use super::create_abi;
 
 macro_rules! wine_window_diag {
@@ -12,48 +9,9 @@ macro_rules! wine_window_diag {
     };
 }
 
-/// Register a raw Wine WNDCLASSEXW through the process-local canonical owner.
-/// # C: O(N_process_gui_states + N_classes) plus bounded usercopy
-pub(super) fn register_class(args: SyscallArgs) -> u64 {
-    if args.a0 == 0 || uaccess::get_user_u32(args.a0).ok() != Some(80) {
-        wine_window_diag! { klog::write_raw(b"[WINDOWS-PE-WINE-CLASS] reject-wndclass ptr="); klog::write_hex_u64(args.a0); klog::write_raw(b"\n"); }
-        return 0;
-    }
-    let Some(name) = read_unicode_string(args.a1) else {
-        wine_window_diag! { klog::write_raw(b"[WINDOWS-PE-WINE-CLASS] reject-name ptr="); klog::write_hex_u64(args.a1); klog::write_raw(b"\n"); }
-        return 0;
-    };
-    let Some(wndproc_address) = args.a0.checked_add(8) else { return 0; };
-    let Some(wndproc) = uaccess::get_user_u64(wndproc_address).ok() else { return 0; };
-    let Some(extra_address) = args.a0.checked_add(20) else { return 0; };
-    let Ok(extra) = uaccess::get_user_u32(extra_address) else { return 0; };
-    let Some(style_address) = args.a0.checked_add(CLASS_STYLE_OFFSET) else { return 0; };
-    let Ok(style) = uaccess::get_user_u32(style_address) else { return 0; };
-    let Some(background_address) = args.a0.checked_add(CLASS_BACKGROUND_OFFSET) else { return 0; };
-    let Ok(background) = uaccess::get_user_u64(background_address) else { return 0; };
-    // The class menu name never travels inside WNDCLASSEXW across this
-    // boundary: the caller hands it over as its own record of client pointers,
-    // and window creation reads it back to load the class's menu.
-    let menu_name = client_menu_name(args.a3);
-    let result = crate::nt_window::register_class_desc_for_current(ipc::win32_window::ClassRegistration {
-        cb_wnd_extra: extra as i32, unicode: args.a5 as u32 == 0, style, background, menu_name,
-        ..ipc::win32_window::ClassRegistration::new(&name, wndproc) }).unwrap_or(0);
-    wine_window_diag! { klog::write_raw(b"[WINDOWS-PE-WINE-CLASS] result="); klog::write_hex_u64(result); klog::write_raw(b" wndproc="); klog::write_hex_u64(wndproc);
-        klog::write_raw(b" menu-name="); klog::write_hex_u64(menu_name.wide); klog::write_raw(b"\n"); }
-    result
-}
-
-/// The registering client's menu-name record: ANSI pointer, wide pointer and
-/// counted-string pointer, in that order. A class registered without one
-/// carries no menu name. # C: O(1) plus bounded usercopy
-fn client_menu_name(pointer: u64) -> ipc::win32_window::ClassMenuName {
-    const NAME_ANSI: u64 = 0;
-    const NAME_WIDE: u64 = 8;
-    const NAME_COUNTED: u64 = 16;
-    let field = |offset: u64| pointer.checked_add(offset).and_then(|address| uaccess::get_user_u64(address).ok()).unwrap_or(0);
-    if pointer == 0 { return ipc::win32_window::ClassMenuName::default(); }
-    ipc::win32_window::ClassMenuName { ansi: field(NAME_ANSI), wide: field(NAME_WIDE), unicode_string: field(NAME_COUNTED) }
-}
+#[path = "raw_class/register.rs"]
+mod register;
+pub(super) use register::register_class;
 
 /// Both ordinal entries reach this with the same normalized argument array.
 /// # C: O(N_process_gui_states + N_classes + N_windows) plus bounded usercopy

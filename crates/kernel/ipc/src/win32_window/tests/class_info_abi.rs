@@ -48,3 +48,35 @@ fn every_remaining_field_carries_the_registered_value() {
     assert_eq!(field(&bytes, 64), 0x7ffd_0000);
     assert_eq!(field(&bytes, 72), 0x3333);
 }
+
+#[test]
+fn a_registration_decodes_to_the_fields_it_was_encoded_from() {
+    let bytes = encode(&described(), &reply(false));
+    let fields = decode(&bytes).expect("this layout's own encoding must decode");
+    assert_eq!(fields.style, 0x0003);
+    assert_eq!(fields.wndproc, 0x1_4000_42c0);
+    assert_eq!(fields.cb_cls_extra, 4);
+    assert_eq!(fields.cb_wnd_extra, 8);
+    assert_eq!(fields.instance, 0x1_4000_0000);
+    assert_eq!(fields.icon, 0x2222);
+    assert_eq!(fields.icon_sm, 0x3333);
+    assert_eq!(fields.cursor, 0x1111);
+    assert_eq!(fields.background, 6);
+    assert_eq!(fields.menu_name, 0x67);
+    assert_eq!(fields.class_name, 0x7ffd_0000);
+}
+
+#[test]
+fn a_structure_whose_size_is_not_this_layout_decodes_to_nothing() {
+    let mut bytes = encode(&described(), &reply(false));
+    assert!(decode(&bytes).is_some());
+    bytes[0] = (BYTES as u32 - 8) as u8;
+    assert!(decode(&bytes).is_none());
+}
+
+#[test]
+fn a_negative_extra_size_survives_the_decode_so_the_owner_can_refuse_it() {
+    let mut bytes = encode(&described(), &reply(false));
+    bytes[CLS_EXTRA..CLS_EXTRA + 4].copy_from_slice(&(-1i32).to_le_bytes());
+    assert_eq!(decode(&bytes).unwrap().cb_cls_extra, -1);
+}

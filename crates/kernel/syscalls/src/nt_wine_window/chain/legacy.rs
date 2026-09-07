@@ -33,7 +33,9 @@ pub(super) fn route(ordinal: u64, a: &Args) -> Option<u64> {
             // The call hands back the client-side menu name so the caller can
             // free it. The class owner keeps none, so the record is cleared.
             if a[2] != 0 && !clear_client_menu_name(a[2]) { return Some(0); }
-            win_bool(crate::nt_window::unregister_class_for_current(&name).then_some(STATUS_SUCCESS).unwrap_or(STATUS_INVALID_PARAMETER))
+            // A class another module registered is not this caller's to
+            // remove, and the module argument is what says so.
+            win_bool(crate::nt_window::unregister_class_for_current(&name, a[1]).then_some(STATUS_SUCCESS).unwrap_or(STATUS_INVALID_PARAMETER))
         }
         WINE_REGISTER_WINDOW_MESSAGE => {
             let Some(name) = read_unicode_string(a[0]) else { return Some(0); };
