@@ -6,7 +6,7 @@ impl WindowManager {
         if parent.is_some_and(|parent| self.get(parent).is_none()) { return Err(WindowError::InvalidParent); }
         let id = WindowId(self.next);
         self.next = self.next.checked_add(1).ok_or(WindowError::NoSuchWindow)?;
-        self.windows.push((id, OwnedWindow::new(WindowRecord { owner_tid, parent, owner: None, wndproc, unicode: true, class_atom: None, visible: false, menu: None, sys_menu: None, id_menu: 0, presentation_ready: false, style: 0, ex_style: 0, last_focus: None, client_rect: None, imc: None }, 0, 0).map_err(|_| WindowError::NoMemory)?));
+        self.windows.push((id, OwnedWindow::new(WindowRecord { owner_tid, parent, owner: None, wndproc, unicode: true, class_atom: None, visible: false, sys_menu: None, id_menu: 0, presentation_ready: false, style: 0, ex_style: 0, last_focus: None, client_rect: None, imc: None }, 0, 0).map_err(|_| WindowError::NoMemory)?));
         self.rects.push((id, WindowRect { left: 0, top: 0, right: 0, bottom: 0 }));
         self.texts.push((id, Vec::new()));
         if self.queues.iter().all(|(tid, _)| *tid != owner_tid) { self.queues.push((owner_tid, MessageQueue::default())); }
@@ -20,16 +20,22 @@ impl WindowManager {
         record.visible = visible;
         Ok(())
     }
-    /// Associate one canonical HMENU with a window and return the prior one. # C: O(N_windows)
+    /// Associate one canonical HMENU with a window and return the prior one.
+    /// An effective child owns a control identifier in this slot, not a menu,
+    /// so it is refused rather than silently overwritten. # C: O(N_windows)
     pub fn set_menu(&mut self, id: WindowId, menu: Option<u32>) -> Result<Option<u32>, WindowError> {
         let Some((_, record)) = self.windows.iter_mut().find(|(window, _)| *window == id) else { return Err(WindowError::NoSuchWindow); };
-        let previous = record.menu;
-        record.menu = menu;
+        if is_effective_child(record.style) { return Err(WindowError::InvalidParent); }
+        let previous = menu_of(record.style, record.id_menu);
+        record.id_menu = menu.map_or(0, u64::from);
         Ok(previous)
     }
-    /// Detach a destroyed HMENU from every canonical HWND. # C: O(N_windows)
-    pub fn clear_menu(&mut self, menu: u32) { for (_, record) in &mut self.windows { if record.menu == Some(menu) { record.menu = None; } } }
-    pub fn menu(&self, id: WindowId) -> Option<u32> { self.get(id)?.menu }
+    /// Detach a destroyed HMENU from every canonical HWND. A child's identifier
+    /// that happens to equal the handle is not a menu and stays. # C: O(N_windows)
+    pub fn clear_menu(&mut self, menu: u32) { for (_, record) in &mut self.windows { if menu_of(record.style, record.id_menu) == Some(menu) { record.id_menu = 0; } } }
+    /// The menu named by the shared identifier slot, for a window whose style
+    /// makes that slot a menu handle. # C: O(N_windows)
+    pub fn menu(&self, id: WindowId) -> Option<u32> { let record = self.get(id)?; menu_of(record.style, record.id_menu) }
     /// Set the current thread's focus window and return the previous focus. # C: O(N_windows)
     pub fn set_focus(&mut self, tid: u64, id: Option<WindowId>) -> Result<Option<WindowId>, WindowError> {
         if let Some(id) = id {

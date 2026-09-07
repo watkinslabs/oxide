@@ -188,7 +188,8 @@ use alloc::vec;
         let window = manager.create(9, None, 0).unwrap();
         assert_eq!(manager.set_menu(window, Some(4)), Ok(None));
         manager.clear_menu(4);
-        assert_eq!(manager.get(window).unwrap().menu, None);
+        assert_eq!(manager.menu(window), None);
+        assert_eq!(manager.get(window).unwrap().id_menu, 0);
     }
 
     #[test]

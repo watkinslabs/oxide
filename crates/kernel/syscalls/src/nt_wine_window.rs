@@ -54,6 +54,7 @@ mod object_raw;
 mod create_context;
 
 #[cfg(target_os = "oxide-kernel")]
+mod create_abi;
 mod raw_class;
 #[cfg(target_os = "oxide-kernel")]
 mod raw_callback;

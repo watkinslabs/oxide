@@ -23,6 +23,7 @@ mod thread_exit;
 mod class;
 #[path = "win32_window/control.rs"]
 mod control;
+pub use control::{is_effective_child, menu_of};
 #[path = "win32_window/extra.rs"]
 mod extra;
 pub use extra::GWLP_HINSTANCE;
@@ -325,10 +326,14 @@ impl MessageQueue {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct WindowRecord { pub owner_tid: u64, pub parent: Option<WindowId>, pub owner: Option<WindowId>, pub wndproc: u64, pub unicode: bool, pub class_atom: Option<u16>, pub visible: bool, pub menu: Option<u32>,
+pub struct WindowRecord { pub owner_tid: u64, pub parent: Option<WindowId>, pub owner: Option<WindowId>, pub wndproc: u64, pub unicode: bool, pub class_atom: Option<u16>, pub visible: bool,
     /// The window's system menu bar, whose single popup item is what the
     /// window-menu query reports.
-    pub sys_menu: Option<u32>, pub id_menu: u64, pub presentation_ready: bool, pub style: u32, pub ex_style: u32, pub last_focus: Option<WindowId>, pub client_rect: Option<WindowRect>,
+    pub sys_menu: Option<u32>,
+    /// One field holds either the window's menu handle or, for an effective
+    /// child, its control identifier: the `GWLP_ID` slot, whose meaning the
+    /// style decides. A child never names a menu here.
+    pub id_menu: u64, pub presentation_ready: bool, pub style: u32, pub ex_style: u32, pub last_focus: Option<WindowId>, pub client_rect: Option<WindowRect>,
     /// Input context associated with this window, as the reference keeps it on
     /// the window record itself.
     pub imc: Option<crate::win32_imc::ImcId> }

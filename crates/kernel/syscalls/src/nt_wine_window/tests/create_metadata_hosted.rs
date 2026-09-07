@@ -8,7 +8,7 @@ fn child_full_width_hmenu_is_control_id_without_menu_validation() {
     let mut args = input(); args.a4 = CHILD; args.a0 = 0x7fa6_0000_0200;
     let id = 0xfedc_ba98_7654_3210;
     STATE.with(|s| { let mut s = s.borrow_mut(); s.stack[9] = 7; s.stack[10] = id; s.fail_menu = true; });
-    assert_eq!(raw_class::create_window(args), 42);
+    assert_eq!(create_window(args), 42);
     STATE.with(|s| { let s = s.borrow();
         assert_eq!(s.class, Some((21, 7)));
         assert_eq!(s.metadata, Some((42, CHILD as u32, 0x200, 0)));
@@ -24,7 +24,7 @@ fn popup_wins_over_child_for_parent_owner_and_menu() {
     for style in [POPUP, CHILD | POPUP] {
         let mut args = input(); args.a4 = style;
         STATE.with(|s| { let mut s = s.borrow_mut(); s.stack[9] = 7; s.stack[10] = 9; });
-        assert_eq!(raw_class::create_window(args), 42);
+        assert_eq!(create_window(args), 42);
         STATE.with(|s| { let s = s.borrow();
             assert_eq!(s.class, Some((21, 0)));
             assert_eq!(s.metadata, Some((42, style as u32, 0, 7)));
@@ -39,7 +39,7 @@ fn popup_wins_over_child_for_parent_owner_and_menu() {
 fn combined_popup_child_rejects_full_width_menu_as_top_level() {
     let mut args = input(); args.a4 = CHILD | POPUP;
     STATE.with(|s| { let mut s = s.borrow_mut(); s.stack[9] = 7; s.stack[10] = 0x1_0000_0001; });
-    assert_eq!(raw_class::create_window(args), 0);
+    assert_eq!(create_window(args), 0);
     STATE.with(|s| { let s = s.borrow(); assert_eq!(s.control_id, None); assert_eq!(s.destroyed, 1); });
 }
 
@@ -62,5 +62,46 @@ fn register_encoding_uses_low_dword_ansi_flag() {
         STATE.with(|s|{let mut s=s.borrow_mut();s.wndclass=args.a0;s.extra=20;});
         assert_eq!(raw_class::register_class(args),21);
         STATE.with(|s|assert_eq!(s.borrow().registered_unicode,Some(unicode)));
+    }
+}
+
+#[test]
+fn child_identifier_that_would_fit_a_handle_still_never_reaches_the_menu_owner() {
+    // The value's width cannot be the discriminator: a control identifier is
+    // usually small, and a small value is exactly what a menu handle is too.
+    for id in [1u64, 0x66, 0xffff_ffff] {
+        let mut args = input(); args.a4 = CHILD;
+        STATE.with(|s| { let mut s = s.borrow_mut(); s.stack[9] = 7; s.stack[10] = id; s.fail_menu = true; });
+        assert_eq!(create_window(args), 42);
+        STATE.with(|s| { let s = s.borrow();
+            assert_eq!(s.control_id, Some((42, id)));
+            assert_eq!(s.menu, None, "a child's identifier must not be validated as a menu handle");
+            assert_eq!(s.destroyed, 0);
+        });
+    }
+}
+
+#[test]
+fn top_level_menu_the_owner_refuses_destroys_the_window_and_returns_null() {
+    for style in [0u64, POPUP, CHILD | POPUP] {
+        let mut args = input(); args.a4 = style;
+        STATE.with(|s| { let mut s = s.borrow_mut(); s.stack[9] = 7; s.stack[10] = 0x51; s.fail_menu = true; });
+        assert_eq!(create_window(args), 0);
+        STATE.with(|s| { let s = s.borrow();
+            assert_eq!(s.menu, Some(0x51));
+            assert_eq!(s.control_id, None);
+            assert_eq!(s.destroyed, 1);
+            assert!(s.creation.is_none(), "a refused menu must not reach the create lifecycle");
+        });
+    }
+}
+
+#[test]
+fn zero_menu_argument_consults_neither_owner_for_either_style() {
+    for style in [0u64, CHILD] {
+        let mut args = input(); args.a4 = style;
+        STATE.with(|s| { let mut s = s.borrow_mut(); s.stack[9] = 7; s.stack[10] = 0; s.fail_menu = true; });
+        assert_eq!(create_window(args), 42);
+        STATE.with(|s| { let s = s.borrow(); assert_eq!(s.menu, None); assert_eq!(s.control_id, None); });
     }
 }

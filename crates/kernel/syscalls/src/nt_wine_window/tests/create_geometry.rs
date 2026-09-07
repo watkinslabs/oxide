@@ -34,7 +34,7 @@ fn primary_metrics_fix_notepad_dimensions_before_default_placement() {
     STATE.with(|s| { let mut s = s.borrow_mut();
         s.stack[6] = 0x7fa680000000; s.stack[7] = width as u64; s.stack[8] = height as u64;
         s.placement = defaults(); });
-    assert_eq!(raw_class::create_window(args), 42);
+    assert_eq!(create_window(args), 42);
     STATE.with(|s| assert_eq!(s.borrow().rect, Some([50, 40, 620, 467])));
 }
 
@@ -52,7 +52,7 @@ fn captured_raw_slots_reach_clamped_rectangle_after_default_resolution() {
     let mut args = input(); args.a4 = 0x7fa600cf0000; args.a5 = 0x7fa680000000;
     STATE.with(|s| { let mut s = s.borrow_mut(); s.stack[6] = 0x7fa680000000;
         s.stack[7] = 0x7fa6c3333336; s.stack[8] = 0x7ffe12666668; s.placement = defaults(); });
-    assert_eq!(raw_class::create_window(args), 42);
+    assert_eq!(create_window(args), 42);
     STATE.with(|s| {
         assert_eq!(s.borrow().rect, Some([50, 40, 50, 308700816]));
         assert_eq!(s.borrow().destroyed, 0);
@@ -62,7 +62,7 @@ fn captured_raw_slots_reach_clamped_rectangle_after_default_resolution() {
 #[test]
 fn missing_work_area_fails_before_class_mutation_not_at_overflow() {
     let mut args = input(); args.a5 = i32::MIN as u64;
-    assert_eq!(raw_class::create_window(args), 0);
+    assert_eq!(create_window(args), 0);
     STATE.with(|s| assert!(s.borrow().class.is_none()));
 }
 
