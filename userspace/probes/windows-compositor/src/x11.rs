@@ -309,7 +309,11 @@ pub fn decode_event(raw: &[u8]) -> Option<BridgeEvent> {
         ffi::KEY_PRESS | ffi::KEY_RELEASE => Some(BridgeEvent::Input(InputEvent::Key { hwnd: xid(12), press: kind == ffi::KEY_PRESS, virtual_key: 0, scan_code: raw[1], modifiers: u16::from_ne_bytes([raw[28], raw[29]]) as u32 })),
         ffi::BUTTON_PRESS | ffi::BUTTON_RELEASE => Some(BridgeEvent::Input(InputEvent::Button { hwnd: xid(12), press: kind == ffi::BUTTON_PRESS, button: raw[1], x: i16::from_ne_bytes([raw[24], raw[25]]), y: i16::from_ne_bytes([raw[26], raw[27]]), state: u16::from_ne_bytes([raw[28], raw[29]]) })),
         ffi::MOTION_NOTIFY => Some(BridgeEvent::Input(InputEvent::Motion { hwnd: xid(12), x: i16::from_ne_bytes([raw[24], raw[25]]), y: i16::from_ne_bytes([raw[26], raw[27]]), state: u16::from_ne_bytes([raw[28], raw[29]]) })),
-        ffi::FOCUS_IN | ffi::FOCUS_OUT => Some(BridgeEvent::Input(InputEvent::Focus { hwnd: xid(4), focused: kind == ffi::FOCUS_IN })),
+        // A pointer-boundary focus event reports where the pointer is, not who
+        // owns the keyboard, and a grab's focus event reports the grab. Taking
+        // either as an activation change deactivates a window whenever the
+        // desktop grabs the keyboard, and reactivates it on release.
+        ffi::FOCUS_IN | ffi::FOCUS_OUT => { if raw[1] == ffi::NOTIFY_POINTER || raw[8] == ffi::NOTIFY_GRAB || raw[8] == ffi::NOTIFY_UNGRAB { return None; } Some(BridgeEvent::Input(InputEvent::Focus { hwnd: xid(4), focused: kind == ffi::FOCUS_IN })) }
         ffi::PROPERTY_NOTIFY => Some(BridgeEvent::WorkArea(MonitorSnapshot { desktop: 0, monitor: Rect { left: 0, top: 0, right: 0, bottom: 0 }, work_area: Rect { left: 0, top: 0, right: 0, bottom: 0 } })),
         ffi::EXPOSE => None,
         _ => None,

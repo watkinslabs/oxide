@@ -32,6 +32,10 @@ pub const PROP_MODE_REPLACE: u8 = 0; pub const ATOM_NONE: Atom = 0; pub const AT
 pub const WINDOW_CLASS_INPUT_OUTPUT: u16 = 1; pub const IMAGE_FORMAT_Z_PIXMAP: u8 = 2;
 pub const CW_EVENT_MASK: u32 = 1 << 11;
 pub const EVENT_KEY_PRESS: u32 = 1; pub const EVENT_KEY_RELEASE: u32 = 1 << 1; pub const EVENT_BUTTON_PRESS: u32 = 1 << 2; pub const EVENT_BUTTON_RELEASE: u32 = 1 << 3; pub const EVENT_POINTER_MOTION: u32 = 1 << 6; pub const EVENT_EXPOSURE: u32 = 1 << 15; pub const EVENT_STRUCTURE_NOTIFY: u32 = 1 << 17; pub const EVENT_FOCUS_CHANGE: u32 = 1 << 21; pub const EVENT_PROPERTY_CHANGE: u32 = 1 << 22;
+/// Focus-change `detail` and `mode` values. A pointer-boundary focus event is
+/// not a focus change, and a grab's focus event describes the grab, not the
+/// window that owns the keyboard afterwards.
+pub const NOTIFY_POINTER: u8 = 5; pub const NOTIFY_GRAB: u8 = 1; pub const NOTIFY_UNGRAB: u8 = 2;
 pub const CONFIGURE_X: u16 = 1; pub const CONFIGURE_Y: u16 = 2; pub const CONFIGURE_WIDTH: u16 = 4; pub const CONFIGURE_HEIGHT: u16 = 8; pub const CONFIGURE_SIBLING: u16 = 32; pub const CONFIGURE_STACK_MODE: u16 = 64; pub const STACK_ABOVE: u32 = 0; pub const STACK_BELOW: u32 = 1; pub const SUBSTRUCTURE_NOTIFY: u32 = 1 << 19; pub const SUBSTRUCTURE_REDIRECT: u32 = 1 << 20;
 
 #[link(name = ":libxcb.so.1")]

@@ -70,6 +70,18 @@ mod tests {
     }
 
     #[test]
+    fn pointer_boundary_and_grab_focus_events_are_not_activation_changes() {
+        let focus = |detail: u8, mode: u8| { let mut event = [0u8; 32]; event[0] = ffi::FOCUS_IN; event[1] = detail; event[4..8].copy_from_slice(&9u32.to_ne_bytes()); event[8] = mode; x11::decode_event(&event) };
+        assert_eq!(focus(0, 0), Some(BridgeEvent::Input(InputEvent::Focus { hwnd: 9, focused: true })));
+        assert_eq!(focus(ffi::NOTIFY_POINTER, 0), None);
+        assert_eq!(focus(0, ffi::NOTIFY_GRAB), None);
+        assert_eq!(focus(0, ffi::NOTIFY_UNGRAB), None);
+        // A focus event delivered while a grab is held still names the real
+        // keyboard owner and is not dropped.
+        assert_eq!(focus(0, 3), Some(BridgeEvent::Input(InputEvent::Focus { hwnd: 9, focused: true })));
+    }
+
+    #[test]
     fn focus_event_wire_uses_shared_bool_opcode() {
         let event = BridgeEvent::Input(InputEvent::Focus { hwnd: 9, focused: true });
         let (opcode, hwnd, payload, _) = protocol::encode_event(&event, 1).unwrap();
