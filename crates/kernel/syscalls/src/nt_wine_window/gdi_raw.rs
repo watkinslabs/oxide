@@ -26,7 +26,7 @@ pub(crate) mod text_output;
 
 #[cfg(target_os = "oxide-kernel")]
 #[path = "gdi_raw/kernel.rs"]
-pub(super) mod kernel;
+pub(crate) mod kernel;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TextMetricW {

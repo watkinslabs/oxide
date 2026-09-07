@@ -3,6 +3,11 @@
 pub const SB_HORZ: i32 = 0;
 pub const SB_VERT: i32 = 1;
 pub const SB_CTL: i32 = 2;
+pub const SB_BOTH: i32 = 3;
+pub const ESB_ENABLE_BOTH: u32 = 0x0000;
+pub const ESB_DISABLE_LTUP: u32 = 0x0001;
+pub const ESB_DISABLE_RTDN: u32 = 0x0002;
+pub const ESB_DISABLE_BOTH: u32 = ESB_DISABLE_LTUP | ESB_DISABLE_RTDN;
 pub const SIF_RANGE: u32 = 0x0001;
 pub const SIF_PAGE: u32 = 0x0002;
 pub const SIF_POS: u32 = 0x0004;
@@ -19,6 +24,8 @@ pub struct ScrollInfo { pub cb_size: u32, pub mask: u32, pub min: i32, pub max: 
 pub struct ScrollState {
     pub min: i32, pub max: i32, pub page: i32, pub pos: i32, pub track_pos: i32,
     pub tracking: bool, pub visible: bool, pub disabled: bool,
+    /// `ESB_*` arrow-disable flags this bar carries.
+    pub flags: u32,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -42,7 +49,7 @@ impl ScrollInfo {
 impl Default for ScrollState { fn default() -> Self { Self::new() } }
 
 impl ScrollState {
-    pub const fn new() -> Self { Self { min: 0, max: 0, page: 0, pos: 0, track_pos: 0, tracking: false, visible: false, disabled: false } }
+    pub const fn new() -> Self { Self { min: 0, max: 0, page: 0, pos: 0, track_pos: 0, tracking: false, visible: false, disabled: false, flags: ESB_ENABLE_BOTH } }
 
     pub fn apply(&mut self, info: ScrollInfo) -> Result<i32, ScrollError> {
         Ok(self.apply_for_bar(SB_VERT, info, false)?.result)
@@ -99,7 +106,7 @@ impl ScrollState {
 pub const fn valid_bar(bar: i32) -> bool { matches!(bar, SB_HORZ | SB_VERT | SB_CTL) }
 
 #[path = "scroll/owner.rs"]
-pub(crate) mod owner;
+pub mod owner;
 
 #[cfg(test)]
 #[path = "scroll/tests.rs"]

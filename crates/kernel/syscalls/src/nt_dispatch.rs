@@ -148,6 +148,29 @@ const EVENT_ALLOWED_ACCESS: u32 = EVENT_ALL_ACCESS | GENERIC_READ | GENERIC_WRIT
 const EVENT_MODIFY_STATE: u32 = 0x0002;
 #[cfg(target_os = "oxide-kernel")]
 const SYNCHRONIZE_ACCESS: u32 = 0x0010_0000;
+
+/// Resolve a user array of handles into synchronizable objects, as a wait does.
+/// A handle that is absent, unsynchronizable or of the wrong kind fails the whole
+/// array. # C: O(count)
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) fn resolve_wait_objects(handles: u64, count: u32)
+    -> Result<alloc::vec::Vec<alloc::sync::Arc<sched::nt_object::NtObject>>, ()> {
+    let mut objects = alloc::vec::Vec::new();
+    if count == 0 { return Ok(objects); }
+    let cur = sched::live::current().ok_or(())?;
+    let table = cur.thread_group.nt_handles();
+    objects.try_reserve(count as usize).map_err(|_| ())?;
+    for index in 0..count as usize {
+        let address = handles.checked_add((index * core::mem::size_of::<u32>()) as u64).ok_or(())?;
+        let raw = uaccess::get_user_u32(address).map_err(|_| ())?;
+        let native = sched::nt_object::NtHandle::from_raw(raw);
+        let object = table.get(native, SYNCHRONIZE_ACCESS).ok_or(())?;
+        if !matches!(object.kind(), sched::nt_object::NtObjectType::Event | sched::nt_object::NtObjectType::Semaphore
+            | sched::nt_object::NtObjectType::Mutant | sched::nt_object::NtObjectType::Timer) { return Err(()); }
+        objects.push(object);
+    }
+    Ok(objects)
+}
 #[cfg(target_os = "oxide-kernel")]
 const STATUS_TIMEOUT: u64 = 0x0000_0102;
 #[cfg(target_os = "oxide-kernel")]

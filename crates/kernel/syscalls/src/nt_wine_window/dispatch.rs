@@ -15,6 +15,15 @@ pub fn dispatch(call: NtCall) -> u64 {
     if let Some(result) = station_raw::kernel::route(ordinal, &args) { return result; }
     if let Some(result) = window_raw::kernel::route(ordinal, &args) { return result; }
     if let Some(result) = crate::nt_window::scroll::dispatch(ordinal, [args[0], args[1], args[2], args[3]]) { return result; }
+    if let Some(result) = crate::nt_window::message_queue::route(ordinal, &args) { return result; }
+    if let Some(result) = crate::nt_window::timer::dispatch(ordinal, [args[0], args[1], args[2], args[3], args[4]]) { return result; }
+    if let Some(result) = crate::nt_window::update_region::route(ordinal, [args[0], args[1], args[2]]) { return result; }
+    if let Some(result) = crate::nt_window::caption::route(ordinal, &args) { return result; }
+    if let Some(result) = crate::nt_window::sys_colors::route(ordinal, &args) { return result; }
+    if let Some(result) = crate::nt_window::scroll::bar_live::route(ordinal, [args[0], args[1], args[2], args[3]]) { return result; }
+    if let Some(result) = crate::nt_window::scroll::dc_live::route(ordinal, &args) { return result; }
+    if let Some(result) = crate::nt_window::menu_raw::route(ordinal, &args) { return result; }
+    if let Some(result) = crate::nt_window::display::route(ordinal, &args) { return result; }
     if let Some(result) = crate::nt_visibility_raw::kernel::route(ordinal, &args) { return result; }
     if let Some(result) = crate::nt_region_raw::kernel::route(ordinal, &args) { return result; }
     if let Some(result) = crate::nt_dc_query_raw::kernel::route(ordinal, &args) { return result; }
@@ -191,6 +200,16 @@ pub fn dispatch_raw(ordinal: u64, args: SyscallArgs) -> Option<u64> {
     if let Some(result) = caret_raw::dispatch(ordinal, [args.a0, args.a1, args.a2, args.a3]) { return Some(result); }
     if let Some(result) = multiplexers(ordinal, &[args.a0, args.a1, args.a2, args.a3]) { return Some(result); }
     if let Some(result) = crate::nt_window::scroll::dispatch(ordinal, [args.a0, args.a1, args.a2, args.a3]) { return Some(result); }
+    if let Some(result) = crate::nt_window::message_queue::route(ordinal, &[args.a0, args.a1, args.a2, args.a3, args.a4]) { return Some(result); }
+    if let Some(result) = crate::nt_window::timer::dispatch(ordinal, [args.a0, args.a1, args.a2, args.a3, args.a4]) { return Some(result); }
+    if let Some(result) = crate::nt_window::update_region::route(ordinal, [args.a0, args.a1, args.a2]) { return Some(result); }
+    if let Some(result) = crate::nt_window::caption::route(ordinal, &[args.a0, args.a1, args.a2, args.a3, args.a4, args.a5, crate::nt_dispatch::stack_argument(6).unwrap_or(0)]) { return Some(result); }
+    if let Some(result) = crate::nt_window::sys_colors::route(ordinal, &[args.a0, args.a1, args.a2]) { return Some(result); }
+    if let Some(result) = crate::nt_window::scroll::bar_live::route(ordinal, [args.a0, args.a1, args.a2, args.a3]) { return Some(result); }
+    if let Some(result) = crate::nt_window::scroll::dc_live::route(ordinal, &[args.a0, args.a1, args.a2, args.a3, args.a4, args.a5,
+        crate::nt_dispatch::stack_argument(6).unwrap_or(0), crate::nt_dispatch::stack_argument(7).unwrap_or(0)]) { return Some(result); }
+    if let Some(result) = crate::nt_window::menu_raw::route(ordinal, &[args.a0, args.a1, args.a2, args.a3, args.a4, args.a5]) { return Some(result); }
+    if let Some(result) = crate::nt_window::display::route(ordinal, &[args.a0, args.a1, args.a2, args.a3, args.a4, args.a5]) { return Some(result); }
     if let Some(result) = crate::nt_visibility_raw::kernel::route(ordinal, &[args.a0, args.a1]) { return Some(result); }
     if let Some(result) = crate::nt_region_raw::kernel::route(ordinal, &[args.a0, args.a1, args.a2, args.a3]) { return Some(result); }
     if let Some(result) = crate::nt_dc_query_raw::kernel::route(ordinal, &[args.a0, args.a1, args.a2]) { return Some(result); }

@@ -59,6 +59,7 @@ impl WindowManager {
         }
         if !self.queue_has_capacity(owner, count) { return Err(WindowError::QueueFull); }
         for message in &messages[..count] { self.post_to_window_with_bits(target, *message, super::queue_status::hardware_bit(message.message))?; }
+
         self.cursor = screen; self.buttons = buttons;
         Ok(())
     }

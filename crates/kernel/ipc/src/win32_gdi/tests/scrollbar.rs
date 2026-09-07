@@ -5,7 +5,7 @@ const COLORS: ScrollColors = ScrollColors { face: 0xc0c0c0, highlight: 0xffffff,
     shadow: 0x808080, dark_shadow: 0x404040, text: 0x010101, window: 0xfefefe, track: 0xaabbcc };
 const BAR: Rect = Rect { left: 2, top: 2, right: 19, bottom: 202 };
 fn state() -> ScrollState { ScrollState { min: 0, max: 99, page: 20, pos: 40, track_pos: 0,
-    tracking: false, visible: true, disabled: false } }
+    tracking: false, visible: true, disabled: false, flags: 0 } }
 fn draw(g: &mut GdiManager, dc: u32, s: ScrollState, part: ScrollPart) -> ScrollDrawOutcome {
     g.draw_nonclient_scrollbar(dc, BAR, true, s, METRICS, COLORS, part).unwrap()
 }

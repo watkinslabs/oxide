@@ -111,6 +111,15 @@ impl WindowManager {
     pub fn dirty_windows(&self) -> alloc::vec::Vec<WindowId> {
         self.dirty.iter().map(|(id, _)| *id).collect()
     }
+
+    /// Status bits pending for one thread, including a deferred paint.
+    /// # C: O(N_queues + N_messages + N_windows)
+    pub fn pending_status(&self, tid: u64) -> u32 {
+        let queued = self.queues.iter().find(|(owner, _)| *owner == tid).map_or(0, |(_, queue)| queue.wake_bits());
+        queued | if self.thread_has_pending_paint(tid) { QS_PAINT } else { 0 }
+    }
+    /// Whether any pending class satisfies a requested wait mask. # C: O(N_queues + N_messages + N_windows)
+    pub fn queue_satisfies(&self, tid: u64, mask: u32) -> bool { self.pending_status(tid) & mask != 0 }
 }
 
 #[cfg(test)]

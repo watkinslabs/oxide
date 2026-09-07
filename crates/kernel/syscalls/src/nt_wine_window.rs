@@ -31,7 +31,7 @@ mod rawinput_raw;
 mod message_send;
 pub(crate) mod placement;
 pub(crate) mod position;
-mod gdi_raw;
+pub(crate) mod gdi_raw;
 mod gdi_route;
 mod bitmap_raw;
 pub(crate) mod input_context;
@@ -59,6 +59,9 @@ mod raw_callback;
 pub(crate) mod raw_gather;
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 pub(crate) mod raw_args;
+
+#[path = "nt_wine_window/queue_raw.rs"]
+pub(crate) mod queue_raw;
 
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 const STATUS_NOT_IMPLEMENTED: u64 = 0xc000_0002;

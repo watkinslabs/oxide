@@ -32,6 +32,10 @@ impl Queue {
         let reply=Arc::new(Reply::with_continuation(continuation));let token=self.next;self.next=next;
         self.work.push(Work{token,sender,target,message,reply:reply.clone(),resume:None,cancelled:false});Some((token,reply))
     }
+    /// The reply of the message this thread is currently receiving. # C: O(sends)
+    pub(crate) fn active_reply(&self,tid:u64)->Option<Arc<Reply>>{
+        self.work.iter().find(|w|w.target==tid&&w.resume.is_some()).map(|w|Arc::clone(&w.reply))
+    }
     pub(super) fn start(&mut self,tid:u64,resume:Resume,token:Option<u64>)->Option<Work>{
         let w=self.work.iter_mut().find(|w|w.target==tid&&w.resume.is_none()&&token.is_none_or(|t|w.token==t))?;
         w.resume=Some(resume);Some(w.clone())

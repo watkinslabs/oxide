@@ -74,3 +74,50 @@ impl WindowManager {
         owned.set_scroll_info(bar, info, redraw)
     }
 }
+
+/// `SCROLLBARINFO.rgstate` element count: the bar, then its five parts.
+pub const SCROLLBAR_STATE_PARTS: usize = 6;
+/// `SCROLLBARINFO` size in bytes: cbSize, rcScrollBar, three metrics plus one
+/// reserved word, then six per-part states.
+pub const SCROLLBARINFO_BYTES: usize = 4 + 16 + 16 + SCROLLBAR_STATE_PARTS * 4;
+pub const STATE_SYSTEM_INVISIBLE: u32 = 0x0000_8000;
+pub const STATE_SYSTEM_OFFSCREEN: u32 = 0x0001_0000;
+pub const STATE_SYSTEM_UNAVAILABLE: u32 = 0x0000_0001;
+pub const STATE_SYSTEM_PRESSED: u32 = 0x0000_0008;
+
+/// Per-part accessibility state a scrollbar reports. `bar` is the whole bar;
+/// the remaining entries are the top arrow, the page-up region, the thumb,
+/// the page-down region and the bottom arrow, in that order.
+/// # C: O(1)
+pub fn scrollbar_states(state: ScrollState, bar: i32, styled_visible: bool, control_enabled: bool)
+    -> [u32; SCROLLBAR_STATE_PARTS] {
+    let mut parts = [0u32; SCROLLBAR_STATE_PARTS];
+    if bar != super::super::SB_CTL && !styled_visible { parts[0] |= STATE_SYSTEM_INVISIBLE; }
+    if state.min >= state.max - (state.page - 1).max(0) {
+        parts[0] |= if parts[0] & STATE_SYSTEM_INVISIBLE == 0 { STATE_SYSTEM_UNAVAILABLE } else { STATE_SYSTEM_OFFSCREEN };
+    }
+    if bar == super::super::SB_CTL && !control_enabled { parts[0] |= STATE_SYSTEM_UNAVAILABLE; }
+    if state.flags & super::super::ESB_DISABLE_LTUP != 0 { parts[1] |= STATE_SYSTEM_UNAVAILABLE; }
+    if state.pos == state.min { parts[2] |= STATE_SYSTEM_INVISIBLE; }
+    if state.pos >= state.max - 1 { parts[4] |= STATE_SYSTEM_INVISIBLE; }
+    if state.flags & super::super::ESB_DISABLE_RTDN != 0 { parts[5] |= STATE_SYSTEM_UNAVAILABLE; }
+    parts
+}
+
+impl WindowManager {
+    /// Store one bar's arrow-disable flags and report whether they changed.
+    /// # C: O(N_windows)
+    pub fn set_scroll_flags(&mut self, window: WindowId, bar: i32, flags: u32) -> Result<bool, ScrollError> {
+        let Some(index) = index(bar) else { return Err(ScrollError::InvalidBar); };
+        let Some((_, owned)) = self.windows.iter_mut().find(|(candidate, _)| *candidate == window) else {
+            return Err(ScrollError::InvalidWindow);
+        };
+        let changed = owned.scroll[index].flags != flags;
+        owned.scroll[index].flags = flags;
+        Ok(changed)
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/states.rs"]
+mod state_tests;

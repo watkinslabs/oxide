@@ -26,7 +26,12 @@ pub struct MenuRect { pub left: i32, pub top: i32, pub right: i32, pub bottom: i
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum MenuError { NoSuchMenu, NoSuchItem, InvalidPosition }
 
-struct MenuRecord { popup: bool, items: Vec<MenuItem> }
+struct MenuRecord { popup: bool, items: Vec<MenuItem>, info: MenuInfo }
+
+#[path = "win32_menu/info.rs"]
+mod info;
+pub use info::{MenuInfo, MENUINFO_BYTES, MF_DEFAULT, MF_HILITE, MF_POPUP, MF_SEPARATOR, MF_SYSMENU,
+    MIM_APPLYTOSUBMENUS, MIM_BACKGROUND, MIM_HELPID, MIM_MAXHEIGHT, MIM_MENUDATA, MIM_STYLE, NO_DEFAULT_ITEM};
 
 /// Owns every HMENU in one NT process. Window associations remain in
 /// `WindowManager`, while this owner retains menu lifetime and item state.
@@ -47,7 +52,7 @@ impl MenuManager {
     fn create_kind(&mut self, popup: bool) -> Result<MenuId, MenuError> {
         let id = MenuId(self.next);
         self.next = self.next.checked_add(1).ok_or(MenuError::NoSuchMenu)?;
-        self.menus.push((id, MenuRecord { popup, items: Vec::new() }));
+        self.menus.push((id, MenuRecord { popup, items: Vec::new(), info: MenuInfo::default() }));
         Ok(id)
     }
 
@@ -141,6 +146,16 @@ impl MenuManager {
         Ok(previous)
     }
 
+    fn menu_info(&self, id: MenuId) -> Result<MenuInfo, MenuError> {
+        Ok(self.menus.get(self.index(id).ok_or(MenuError::NoSuchMenu)?).ok_or(MenuError::NoSuchMenu)?.1.info)
+    }
+    fn menu_info_mut(&mut self, id: MenuId) -> Result<&mut MenuInfo, MenuError> {
+        Ok(&mut self.record_mut(id).ok_or(MenuError::NoSuchMenu)?.info)
+    }
+    fn submenus(&self, id: MenuId) -> Result<Vec<MenuId>, MenuError> {
+        let record = self.menus.get(self.index(id).ok_or(MenuError::NoSuchMenu)?).ok_or(MenuError::NoSuchMenu)?;
+        Ok(record.1.items.iter().filter_map(|item| item.submenu.and_then(MenuId::from_raw)).collect())
+    }
     fn index(&self, id: MenuId) -> Option<usize> { self.menus.iter().position(|(candidate, _)| *candidate == id) }
     fn record_mut(&mut self, id: MenuId) -> Option<&mut MenuRecord> { self.menus.iter_mut().find(|(candidate, _)| *candidate == id).map(|(_, record)| record) }
     fn item_mut(&mut self, menu: MenuId, id: u32, flags: u32) -> Result<&mut MenuItem, MenuError> {

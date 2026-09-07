@@ -135,7 +135,13 @@ struct GuiEntry { group: Weak<sched::thread_group::ThreadGroup>, state: ipc::win
     /// Input-context objects this process owns, one default per thread.
     contexts: ipc::win32_imc::InputContexts,
     /// Open deferred window-position batches of this process.
-    defer: ipc::win32_window::DeferBatches }
+    defer: ipc::win32_window::DeferBatches,
+
+    /// Process startup-info flags the window manager mirrors, and the default
+    /// display layout new device contexts inherit.
+    startup_info_flags: u32, process_layout: u32,
+    /// Window whose menu this thread is tracking, if any.
+    menu_tracking: Option<u64> }
 static GUI: Spinlock<Vec<GuiEntry>, GuiLockClass> = Spinlock::new(Vec::new());
 #[cfg(target_os = "oxide-kernel")]
 static USER_ATOMS: Spinlock<ipc::win32_window::UserAtomTable, GuiLockClass> = Spinlock::new(ipc::win32_window::UserAtomTable::new());
@@ -374,6 +380,27 @@ pub(crate) fn unregister_class_for_current(name: &[u16]) -> bool {
 #[path = "nt_window/menu.rs"]
 mod menu;
 pub(crate) use menu::*;
+
+#[path = "nt_window/message_queue.rs"]
+pub(crate) mod message_queue;
+
+#[path = "nt_window/timer.rs"]
+pub(crate) mod timer;
+
+#[path = "nt_window/update_region.rs"]
+pub(crate) mod update_region;
+
+#[path = "nt_window/caption.rs"]
+pub(crate) mod caption;
+
+#[path = "nt_window/sys_colors.rs"]
+pub(crate) mod sys_colors;
+
+#[path = "nt_window/menu_raw.rs"]
+pub(crate) mod menu_raw;
+
+#[path = "nt_window/display.rs"]
+pub(crate) mod display;
 
 /// Create a Wine window by resolving its registered class in the canonical
 /// process window owner. # C: O(N_process_gui_states + N_classes + N_windows)

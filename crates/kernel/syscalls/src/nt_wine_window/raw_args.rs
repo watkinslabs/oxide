@@ -52,6 +52,7 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x133d, 2), // NtUserCallOneParam
     (0x133e, 3), // NtUserCallTwoParam
     (0x1341, 2), // NtUserChangeClipboardChain
+    (0x1342, 5), // NtUserChangeDisplaySettings
     (0x1347, 3), // NtUserCheckMenuItem
     (0x134b, 4), // NtUserChildWindowFromPointEx
     (0x1350, 1), // NtUserClipCursor
@@ -78,16 +79,24 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x1384, 1), // NtUserDestroyWindow
     (0x1389, 1), // NtUserDisableThreadIme
     (0x138b, 1), // NtUserDispatchMessage
+    (0x138c, 1), // NtUserDisplayConfigGetDeviceInfo
+    (0x1399, 7), // NtUserDrawCaptionTemp
     (0x139b, 1), // NtUserDrawMenuBar
     (0x139c, 5), // NtUserDrawMenuBarTemp
     (0x13a4, 0), // NtUserEmptyClipboard
     (0x13a7, 3), // NtUserEnableMenuItem
     (0x13a9, 1), // NtUserEnableMouseInPointer
     (0x13aa, 0), // NtUserEnableMouseInPointerForThread
+    (0x13b0, 3), // NtUserEnableScrollBar
     (0x13b5, 2), // NtUserEnableWindow
     (0x13ba, 2), // NtUserEndDeferWindowPosEx
+    (0x13bb, 0), // NtUserEndMenu
     (0x13bc, 2), // NtUserEndPaint
     (0x13be, 1), // NtUserEnumClipboardFormats
+    (0x13bf, 4), // NtUserEnumDisplayDevices
+    (0x13c0, 4), // NtUserEnumDisplayMonitors
+    (0x13c1, 4), // NtUserEnumDisplaySettings
+    (0x13c3, 2), // NtUserExcludeUpdateRgn
     (0x13c5, 3), // NtUserFindExistingCursorIcon
     (0x13c6, 5), // NtUserFindWindowEx
     (0x13c7, 1), // NtUserFlashWindowEx
@@ -111,7 +120,9 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x13ea, 1), // NtUserGetCursorPos
     (0x13eb, 1), // NtUserGetDC
     (0x13ec, 3), // NtUserGetDCEx
+    (0x13f4, 3), // NtUserGetDisplayConfigBufferSizes
     (0x13f5, 0), // NtUserGetDoubleClickTime
+    (0x13f7, 4), // NtUserGetDpiForMonitor
     (0x13fa, 0), // NtUserGetForegroundWindow
     (0x13fb, 2), // NtUserGetGUIThreadInfo
     (0x1403, 6), // NtUserGetIconInfo
@@ -131,6 +142,7 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x1420, 5), // NtUserGetObjectInformation
     (0x1422, 0), // NtUserGetOpenClipboardWindow
     (0x1433, 2), // NtUserGetPriorityClipboardFormat
+    (0x1434, 1), // NtUserGetProcessDefaultLayout
     (0x1435, 1), // NtUserGetProcessDpiAwarenessContext
     (0x1437, 0), // NtUserGetProcessWindowStation
     (0x1438, 2), // NtUserGetProp
@@ -140,10 +152,14 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x143f, 4), // NtUserGetRawInputDeviceInfo
     (0x1440, 3), // NtUserGetRawInputDeviceList
     (0x1442, 3), // NtUserGetRegisteredRawInputDevices
+    (0x1445, 3), // NtUserGetScrollBarInfo
     (0x144b, 1), // NtUserGetSystemDpiForProcess
+    (0x144c, 2), // NtUserGetSystemMenu
     (0x144d, 1), // NtUserGetThreadDesktop
     (0x144e, 1), // NtUserGetThreadState
     (0x144f, 2), // NtUserGetTitleBarInfo
+    (0x1455, 3), // NtUserGetUpdateRect
+    (0x1456, 3), // NtUserGetUpdateRgn
     (0x1457, 3), // NtUserGetUpdatedClipboardFormats
     (0x145d, 1), // NtUserGetWindowContextHelpId
     (0x145e, 1), // NtUserGetWindowDC
@@ -151,16 +167,26 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x1463, 2), // NtUserGetWindowPlacement
     (0x1465, 3), // NtUserGetWindowRgnEx
     (0x146c, 1), // NtUserHideCaret
+    (0x146f, 4), // NtUserHiliteMenuItem
     (0x147a, 4), // NtUserInitializeClientPfnArrays
     (0x1488, 2), // NtUserInternalGetWindowIcon
     (0x1489, 3), // NtUserInternalGetWindowText
     (0x148c, 3), // NtUserInvalidateRect
+    (0x148d, 3), // NtUserInvalidateRgn
+    (0x148e, 1), // NtUserIsChildWindowDpiMessageEnabled
     (0x148f, 1), // NtUserIsClipboardFormatAvailable
     (0x1490, 0), // NtUserIsMouseInPointerEnabled
+    (0x149a, 2), // NtUserKillSystemTimer
+    (0x149b, 2), // NtUserKillTimer
     (0x14a5, 1), // NtUserLockWindowUpdate
+    (0x14a7, 2), // NtUserLogicalToPerMonitorDPIPhysicalPoint
     (0x14b1, 3), // NtUserMapVirtualKeyEx
+    (0x14b3, 4), // NtUserMenuItemFromPoint
+    (0x14b4, 1), // NtUserMessageBeep
     (0x14b5, 7), // NtUserMessageCall
+    (0x14b8, 2), // NtUserModifyUserStartupInfoFlags
     (0x14ba, 6), // NtUserMoveWindow
+    (0x14bb, 5), // NtUserMsgWaitForMultipleObjectsEx
     (0x14be, 2), // NtUserNotifyIMEStatus
     (0x14c1, 4), // NtUserNotifyWinEvent
     (0x14c2, 2), // NtUserOpenClipboard
@@ -168,8 +194,12 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x14c4, 3), // NtUserOpenInputDesktop
     (0x14c6, 2), // NtUserOpenWindowStation
     (0x14ca, 5), // NtUserPeekMessage
+    (0x14cb, 2), // NtUserPerMonitorDPIPhysicalToLogicalPoint
     (0x14d0, 4), // NtUserPostMessage
+    (0x14d1, 1), // NtUserPostQuitMessage
+    (0x14d2, 4), // NtUserPostThreadMessage
     (0x14d4, 3), // NtUserPrintWindow
+    (0x14db, 6), // NtUserQueryDisplayConfig
     (0x14dd, 2), // NtUserQueryInputContext
     (0x14df, 2), // NtUserQueryWindow
     (0x14e1, 3), // NtUserRealChildWindowFromPoint
@@ -184,8 +214,13 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x151b, 1), // NtUserRemoveClipboardFormatListener
     (0x151d, 3), // NtUserRemoveMenu
     (0x151e, 2), // NtUserRemoveProp
+    (0x1521, 1), // NtUserReplyMessage
+    (0x1529, 1), // NtUserScheduleDispatchNotification
+    (0x152a, 7), // NtUserScrollDC
+    (0x152b, 8), // NtUserScrollWindowEx
     (0x152e, 3), // NtUserSendInput
     (0x1532, 1), // NtUserSetActiveWindow
+    (0x1533, 3), // NtUserSetAdditionalForegroundBoostProcesses
     (0x153a, 1), // NtUserSetCapture
     (0x153b, 1), // NtUserSetCaretBlinkTime
     (0x153c, 2), // NtUserSetCaretPos
@@ -203,16 +238,23 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x1565, 1), // NtUserSetKeyboardState
     (0x1566, 4), // NtUserSetLayeredWindowAttributes
     (0x1569, 2), // NtUserSetMenu
+    (0x156a, 2), // NtUserSetMenuContextHelpId
+    (0x156b, 3), // NtUserSetMenuDefaultItem
     (0x1573, 4), // NtUserSetObjectInformation
     (0x1574, 2), // NtUserSetParent
+    (0x1576, 1), // NtUserSetProcessDefaultLayout
     (0x1577, 2), // NtUserSetProcessDpiAwarenessContext
     (0x157d, 1), // NtUserSetProcessWindowStation
     (0x157e, 1), // NtUserSetProgmanWindow
     (0x157f, 3), // NtUserSetProp
     (0x1581, 4), // NtUserSetScrollInfo
     (0x1585, 2), // NtUserSetShellWindowEx
+    (0x1586, 3), // NtUserSetSysColors
+    (0x158a, 2), // NtUserSetSystemMenu
+    (0x158b, 3), // NtUserSetSystemTimer
     (0x158e, 1), // NtUserSetTaskmanWindow
     (0x158f, 1), // NtUserSetThreadDesktop
+    (0x1594, 5), // NtUserSetTimer
     (0x1599, 8), // NtUserSetWinEventHook
     (0x159e, 2), // NtUserSetWindowContextHelpId
     (0x15a3, 4), // NtUserSetWindowLong
@@ -225,13 +267,17 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x15b7, 1), // NtUserShowCaret
     (0x15b8, 1), // NtUserShowCursor
     (0x15b9, 2), // NtUserShowOwnedPopups
+    (0x15ba, 3), // NtUserShowScrollBar
     (0x15bd, 2), // NtUserShowWindow
     (0x15be, 2), // NtUserShowWindowAsync
     (0x15c9, 1), // NtUserSwitchDesktop
     (0x15cb, 4), // NtUserSystemParametersInfo
+    (0x15cc, 5), // NtUserSystemParametersInfoForDpi
+    (0x15cf, 2), // NtUserThunkedMenuInfo
     (0x15d0, 6), // NtUserThunkedMenuItemInfo
     (0x15d1, 7), // NtUserToUnicodeEx
     (0x15d3, 1), // NtUserTrackMouseEvent
+    (0x15d4, 6), // NtUserTrackPopupMenuEx
     (0x15d7, 3), // NtUserTranslateAccelerator
     (0x15d8, 2), // NtUserTranslateMessage
     (0x15da, 1), // NtUserUnhookWinEvent
@@ -241,7 +287,10 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x15e0, 2), // NtUserUnregisterHotKey
     (0x15e5, 3), // NtUserUpdateInputContext
     (0x15e7, 10), // NtUserUpdateLayeredWindow
+    (0x15f1, 2), // NtUserValidateRect
+    (0x15f2, 2), // NtUserValidateRgn
     (0x15f4, 2), // NtUserVkKeyScanEx
+    (0x15fb, 0), // NtUserWaitMessage
     (0x15fd, 1), // NtUserWindowFromDC
     (0x15ff, 2), // NtUserWindowFromPoint
 ];

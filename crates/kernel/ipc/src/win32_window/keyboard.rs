@@ -78,6 +78,7 @@ impl WindowManager {
         message.wparam = generic(raw) as u64;
         queue.changed |= super::queue_status::QS_KEY;
         queue.messages.push_back(QueuedMessage { message, key: Some(transition), bits: super::queue_status::QS_KEY });
+
         self.keyboard.apply(transition, true);
         Ok(())
     }

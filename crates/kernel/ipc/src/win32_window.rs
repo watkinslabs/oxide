@@ -34,7 +34,7 @@ mod scroll;
 mod caret;
 #[path = "win32_window/paint_damage.rs"]
 mod paint_damage;
-pub use paint_damage::{PaintDamage, PaintRegion, RDW_INVALIDATE, RDW_INTERNALPAINT, RDW_ERASE, RDW_VALIDATE,
+pub use paint_damage::{PaintDamage, PaintRegion, region_complexity, RDW_INVALIDATE, RDW_INTERNALPAINT, RDW_ERASE, RDW_VALIDATE,
     RDW_NOINTERNALPAINT, RDW_NOERASE, RDW_NOCHILDREN, RDW_ALLCHILDREN, RDW_UPDATENOW, RDW_ERASENOW, RDW_FRAME, RDW_NOFRAME};
 #[path = "win32_window/caret/blink.rs"]
 mod caret_blink;
@@ -57,7 +57,8 @@ mod paint_session;
 pub use paint_session::{PaintSession, PaintSessionError};
 pub use redraw::PaintChildren;
 pub use caret::{CaretState, CaretTransition, CaretCommit, CaretError};
-pub use scroll::{ScrollInfo, ScrollState, ScrollAction, ScrollOutcome, ScrollError, SB_HORZ, SB_VERT, SB_CTL, SIF_RANGE, SIF_PAGE, SIF_POS, SIF_DISABLENOSCROLL, SIF_TRACKPOS, SIF_ALL, SIF_RETURNPREV, SCROLLINFO_BYTES, valid_bar};
+pub use scroll::owner as scroll_owner;
+pub use scroll::{ScrollInfo, ScrollState, ScrollAction, ScrollOutcome, ScrollError, SB_HORZ, SB_VERT, SB_CTL, SB_BOTH, ESB_ENABLE_BOTH, ESB_DISABLE_LTUP, ESB_DISABLE_RTDN, ESB_DISABLE_BOTH, SIF_RANGE, SIF_PAGE, SIF_POS, SIF_DISABLENOSCROLL, SIF_TRACKPOS, SIF_ALL, SIF_RETURNPREV, SCROLLINFO_BYTES, valid_bar};
 pub use property::{WindowProperties, WindowProperty, PropertyName, PropertyOrigin, MAX_PROPERTY_NAME};
 pub use extra::{OwnedWindow, WindowExtra, LongPtrError};
 #[path = "win32_window/class_long.rs"]
@@ -153,6 +154,7 @@ pub const WM_PAINT: u32 = 0x000f;
 pub const WM_QUIT: u32 = 0x0012;
 pub const WM_SETFOCUS: u32 = 0x0007;
 pub const WM_TIMER: u32 = 0x0113;
+pub const WM_SYSTIMER: u32 = 0x0118;
 const KEY_REPEAT_COUNT_MASK: u32 = 0xffff;
 const KEY_PREVIOUS_STATE: u32 = 1 << 30;
 const KEY_TRANSITION_STATE: u32 = 1 << 31;
@@ -221,9 +223,17 @@ pub struct MessageQueue { messages: VecDeque<QueuedMessage>, quit: Option<i32>, 
     /// Monotonic nanoseconds at which the owning thread last read this queue.
     access_ns: u64,
     /// Wake bits set since the last query that reported them.
-    changed: u32 }
+    changed: u32,
+    /// Descending windowless-timer id allocator; zero means untouched.
+    next_timer_id: u64 }
 
 impl MessageQueue {
+    /// Post one hardware message, which contributes its own input class. # C: O(1)
+    pub fn post_input(&mut self, message: WinMessage) -> Result<(), QueueError> {
+        if self.messages.len() >= MESSAGE_QUEUE_LIMIT { return Err(QueueError::Full); }
+        self.messages.push_back(QueuedMessage { message, key: None, bits: queue_status::hardware_bit(message.message) });
+        Ok(())
+    }
     pub fn post(&mut self, message: WinMessage) -> Result<(), QueueError> {
         self.post_with_bits(message, queue_status::QS_POSTED)
     }
@@ -275,10 +285,14 @@ impl MessageQueue {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct WindowRecord { pub owner_tid: u64, pub parent: Option<WindowId>, pub owner: Option<WindowId>, pub wndproc: u64, pub unicode: bool, pub class_atom: Option<u16>, pub visible: bool, pub menu: Option<u32>, pub id_menu: u64, pub presentation_ready: bool, pub style: u32, pub ex_style: u32, pub last_focus: Option<WindowId>, pub client_rect: Option<WindowRect>,
+pub struct WindowRecord { pub owner_tid: u64, pub parent: Option<WindowId>, pub owner: Option<WindowId>, pub wndproc: u64, pub unicode: bool, pub class_atom: Option<u16>, pub visible: bool, pub menu: Option<u32>,
+    /// The window's system menu bar, whose single popup item is what the
+    /// window-menu query reports.
+    pub sys_menu: Option<u32>, pub id_menu: u64, pub presentation_ready: bool, pub style: u32, pub ex_style: u32, pub last_focus: Option<WindowId>, pub client_rect: Option<WindowRect>,
     /// Input context associated with this window, as the reference keeps it on
     /// the window record itself.
     pub imc: Option<crate::win32_imc::ImcId> }
+
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WindowClass { pub name: Vec<u16>, pub wndproc: u64, pub unicode: bool, pub atom: u16, pub cb_wnd_extra: u32, pub style: u32,
@@ -370,7 +384,7 @@ pub struct WindowManager { next: u32, next_atom: u16, classes: Vec<WindowClass>,
     attributes: Vec<(WindowId, attributes::WindowAttributes)> }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-struct WindowTimer { owner_tid: u64, hwnd: Option<WindowId>, id: u64, period_ns: u64, due_ns: u64, proc: u64 }
+struct WindowTimer { owner_tid: u64, hwnd: Option<WindowId>, message: u32, id: u64, period_ns: u64, due_ns: u64, proc: u64 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum QueueResult { Message(WinMessage), Quit(i32), Empty }
@@ -379,6 +393,9 @@ impl Default for WindowManager { fn default() -> Self { Self::new() } }
 
 #[path = "win32_window/state.rs"]
 mod state;
+#[path = "win32_window/timer.rs"]
+mod timer;
+pub use timer::{clamp_timeout, TIMER_ID_FIRST, TIMER_ID_LAST, USER_TIMER_MAXIMUM, USER_TIMER_MINIMUM};
 
 fn message_matches_in_windows(windows: &[(WindowId, OwnedWindow)], filter: MessageFilter, message: WinMessage) -> bool {
     let range = MessageFilter { hwnd: None, first: filter.first, last: filter.last };

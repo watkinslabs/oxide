@@ -23,8 +23,8 @@ fn exit_clears_focus_capture_paint_reservations_and_thread_only_timers(){
     s.show(7,window,true).unwrap();s.focus=Some(window);s.capture=Some(window);s.active=Some(window);
     assert!(s.begin_paint(window).unwrap().is_some());assert_eq!(s.painting.len(),1);
     s.begin_destroy(7,window).unwrap();
-    s.timers.push(WindowTimer {owner_tid:7,hwnd:None,id:1,period_ns:1,due_ns:1,proc:0});
-    s.timers.push(WindowTimer {owner_tid:8,hwnd:None,id:2,period_ns:1,due_ns:1,proc:0});
+    s.timers.push(WindowTimer {message:WM_TIMER,owner_tid:7,hwnd:None,id:1,period_ns:1,due_ns:1,proc:0});
+    s.timers.push(WindowTimer {message:WM_TIMER,owner_tid:8,hwnd:None,id:2,period_ns:1,due_ns:1,proc:0});
     assert_eq!(s.exit_thread(7),[window]);
     assert_eq!(s.focus,None);assert_eq!(s.capture,None);assert_eq!(s.active,None);
     assert!(s.dirty.is_empty());assert!(s.painting.is_empty());assert!(s.destroying.is_empty());
@@ -41,7 +41,7 @@ fn overlapping_thread_roots_return_each_removed_handle_once(){
 fn exit_without_windows_removes_thread_queue_quit_and_timers_only(){
     let mut s=WindowManager::new();s.queues.push((7,MessageQueue::default()));s.queues.push((8,MessageQueue::default()));
     s.post_quit(7,42);s.post_quit(8,24);
-    s.timers.push(WindowTimer {owner_tid:7,hwnd:None,id:1,period_ns:1,due_ns:1,proc:0});
+    s.timers.push(WindowTimer {message:WM_TIMER,owner_tid:7,hwnd:None,id:1,period_ns:1,due_ns:1,proc:0});
     assert!(s.exit_thread(7).is_empty());assert!(!s.queues.iter().any(|(tid,_)|*tid==7));assert!(s.timers.is_empty());
     assert!(s.quit_pending(8));assert!(!s.quit_pending(7));
 }

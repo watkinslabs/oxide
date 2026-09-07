@@ -81,7 +81,7 @@ mod system_brush;
 #[path = "win32_gdi/scrollbar.rs"]
 mod scrollbar;
 pub use scrollbar::{ScrollMetrics, ScrollColors, ScrollPart, ScrollDrawOutcome, ScrollLayout, scrollbar_layout};
-pub use system_brush::{SystemBrushes, SystemColor};
+pub use system_brush::{SystemBrushes, SystemColor, SystemColorTable, SYSTEM_COLOR_COUNT};
 #[path = "win32_gdi/font.rs"]
 mod font;
 pub use font::{FontRecord, FontQuery, LOGFONTW_BYTES};

@@ -182,7 +182,7 @@ fn production_retrieval_deadline_joins_existing_timer_and_missing_is_unbounded()
     {
         let mut entries = nt_window::GUI.lock();
         let entry = entries.first_mut().unwrap();
-        entry.state.set_timer(41, Some(window), 9, 5, 0, timekeeper::monotonic_ns()).unwrap();
+        entry.state.set_timer(41, Some(window), ipc::win32_window::WM_TIMER, 9, 10, 0, timekeeper::monotonic_ns()).unwrap();
     }
     assert_eq!(blink_impl::retrieval_deadline_for_current(), Some(caret_deadline.min(timekeeper::monotonic_ns() + 5_000_000)));
     let filter = MessageFilter { hwnd: Some(window), first: WM_TIMER, last: WM_TIMER };

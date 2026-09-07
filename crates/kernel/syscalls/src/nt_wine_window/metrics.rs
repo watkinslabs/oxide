@@ -38,7 +38,7 @@ pub(super) fn primary(monitors: &[Monitor]) -> Option<Monitor> {
 
 /// Primary-monitor resolution, the screen a device context reports as its own
 /// resolution. # C: O(monitors)
-pub(super) fn screen_size(snapshot: impl FnOnce() -> Option<alloc::vec::Vec<Monitor>>) -> Option<(i32, i32)> {
+pub(crate) fn screen_size(snapshot: impl FnOnce() -> Option<alloc::vec::Vec<Monitor>>) -> Option<(i32, i32)> {
     let monitors = snapshot()?;
     let primary = primary(&monitors);
     let width = from_snapshot(SM_CXSCREEN as i64 as u64, primary, &monitors) as i32;

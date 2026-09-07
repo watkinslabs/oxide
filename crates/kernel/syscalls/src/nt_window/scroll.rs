@@ -2,6 +2,16 @@
 
 #[path = "scroll/raw.rs"]
 mod raw;
+#[path = "scroll/bar_raw.rs"]
+pub(crate) mod bar_raw;
+#[path = "scroll/dc_raw.rs"]
+pub(crate) mod dc_raw;
+#[cfg(target_os = "oxide-kernel")]
+#[path = "scroll/dc_live.rs"]
+pub(crate) mod dc_live;
+#[cfg(target_os = "oxide-kernel")]
+#[path = "scroll/bar_live.rs"]
+pub(crate) mod bar_live;
 #[cfg(target_os = "oxide-kernel")]
 #[path = "scroll/kernel.rs"]
 mod kernel;

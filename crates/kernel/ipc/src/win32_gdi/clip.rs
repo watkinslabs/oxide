@@ -48,6 +48,19 @@ impl GdiManager {
         self.combine_app_clip(dc, ordered(rect), RGN_DIFF)
     }
 
+    /// Remove one region from the device context's paint coverage, which is
+    /// what excluding a window's update region from a DC does. The result is
+    /// the complexity of the coverage that remains. # C: O(DCs + N_rects²)
+    pub fn exclude_clip_region(&mut self, dc: u32, region: &PaintRegion) -> Result<u32, GdiError> {
+        let state = &mut self.dcs.iter_mut().find(|(id, _)| *id == dc).ok_or(GdiError::NoSuchObject)?.1;
+        state.ensure_active()?;
+        let mut next = state.effective_region()?;
+        next.subtract(region).map_err(|_| GdiError::InvalidDimensions)?;
+        let result = crate::win32_window::region_complexity(&next);
+        state.paint_clip = Some(next);
+        Ok(result)
+    }
+
     /// Query effective application/surface intersection, including an initialized empty box. # C: O(DCs)
     pub fn get_app_clip_box(&self, dc: u32) -> Result<(u32, Rect), GdiError> {
         if self.dcs.iter().find(|(id, _)| *id == dc).is_some_and(|(_, state)| state.lease.is_some()) {
