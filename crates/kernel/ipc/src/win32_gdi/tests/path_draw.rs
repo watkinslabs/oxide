@@ -1,4 +1,6 @@
 use super::*;
+use crate::win32_gdi::{PT_LINETO, PT_MOVETO};
+use crate::win32_gdi::region::scan::Point;
 use crate::win32_gdi::{GdiManager, Rect};
 
 fn setup() -> (GdiManager, u32) { let mut g = GdiManager::new(); let dc = g.create_dc(10, 10).unwrap(); (g, dc) }
@@ -68,4 +70,42 @@ fn the_device_context_clip_bounds_what_a_path_paints() {
     g.fill_path(dc).unwrap();
     assert_eq!(g.pixels(dc).unwrap()[5 * 10 + 3], 0x0000_ff00);
     assert_eq!(g.pixels(dc).unwrap()[5 * 10 + 6], 0);
+}
+
+#[test]
+fn a_line_drawn_while_a_path_is_open_records_instead_of_rasterizing() {
+    let (mut g, dc) = setup();
+    let pen = g.create_pen(0, 1, 0x00ff_0000).unwrap();
+    g.select_pen(dc, pen).unwrap();
+    g.begin_path(dc).unwrap();
+    g.set_text_position(dc, (1, 1)).unwrap();
+    g.pen_line_to(dc, (8, 1), None).unwrap();
+    // Nothing reached the surface, and the segment is in the path.
+    assert!(g.pixels(dc).unwrap().iter().all(|pixel| *pixel == 0));
+    g.end_path(dc).unwrap();
+    let (points, flags) = g.path_points(dc).unwrap();
+    assert_eq!(points.len(), 2);
+    assert_eq!(flags, [PT_MOVETO, PT_LINETO]);
+    assert_eq!(points[1], Point { x: 8, y: 1 });
+}
+
+#[test]
+fn a_rectangle_drawn_while_a_path_is_open_records_one_closed_figure() {
+    let (mut g, dc) = setup();
+    let brush = g.create_solid_brush(0x0000_00ff).unwrap();
+    g.select_brush(dc, brush).unwrap();
+    g.begin_path(dc).unwrap();
+    g.pen_rectangle(dc, Rect { left: 1, top: 1, right: 5, bottom: 5 }, None).unwrap();
+    assert!(g.pixels(dc).unwrap().iter().all(|pixel| *pixel == 0));
+    g.end_path(dc).unwrap();
+    assert_eq!(g.path_points(dc).map(|(points, _)| points.len()), Ok(4));
+}
+
+#[test]
+fn the_same_calls_rasterize_once_the_path_is_closed() {
+    let (mut g, dc) = setup();
+    let brush = g.create_solid_brush(0x0000_00ff).unwrap();
+    g.select_brush(dc, brush).unwrap();
+    g.pen_rectangle(dc, Rect { left: 1, top: 1, right: 5, bottom: 5 }, None).unwrap();
+    assert!(g.pixels(dc).unwrap().iter().any(|pixel| *pixel != 0));
 }

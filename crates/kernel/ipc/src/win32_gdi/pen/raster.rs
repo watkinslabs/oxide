@@ -22,6 +22,8 @@ impl GdiManager {
     /// Endpoint position commits only after successful drawing; shared callers own their copyout.
     /// # C: O(DCs + pens + visible major-axis span)
     pub fn pen_line_to(&mut self,dc:u32,end:(i32,i32),shared:Option<PenRasterState>)->Result<(),GdiError>{
+        // An open path records the segment instead of rasterizing it.
+        if self.path_recording(dc)? {self.path_line_to(dc,end.0,end.1)?;return self.set_text_position(dc,end).map(|_|());}
         let state=shared.unwrap_or(self.pen_raster_state(dc)?);
         let pen=self.stroke_pen(dc,state)?;
         let mut target=self.raster_dc(dc)?;
@@ -32,6 +34,8 @@ impl GdiManager {
     }
     /// Rectangle never changes current position. # C: O(DCs + objects + clipped area)
     pub fn pen_rectangle(&mut self,dc:u32,rect:Rect,shared:Option<PenRasterState>)->Result<(),GdiError>{
+        // An open path records one closed figure instead of rasterizing the rectangle.
+        if self.path_recording(dc)? {self.path_rectangle(dc,rect.left,rect.top,rect.right,rect.bottom)?;return Ok(());}
         let state=shared.unwrap_or(self.pen_raster_state(dc)?);
         let pen=self.stroke_pen(dc,state)?;
         let dc_state=&self.dcs.iter().find(|(id,_)|*id==dc).ok_or(GdiError::NoSuchObject)?.1;
