@@ -270,6 +270,8 @@ pub fn route_hardware_mouse(ev_type: u16, code: u16, value: i32) -> bool {
 // Module manifest: dispatch routes canonical GUI operations; menu owns menu adapters.
 #[path = "nt_window/dispatch.rs"]
 mod dispatch;
+#[path = "nt_window/pump_trace.rs"]
+pub(crate) mod pump_trace;
 pub use dispatch::dispatch;
 
 #[cfg(target_os = "oxide-kernel")]
