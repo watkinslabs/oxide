@@ -106,6 +106,11 @@ require_text "visible acceptance OCR" "$acceptance_source" "tesseract"
 require_text "visible acceptance clean exit" "$acceptance_source" "runtime-exit status=0"
 require_text "fresh Oxide image composition" "$acceptance_source" "gnome-x86_64"
 require_text "Oxide image identity gate" "$acceptance_source" "ID=oxide"
+require_text "UART finding audit wired" "$acceptance_source" "from notepad_uart_audit import audit as uart_audit"
+require_text "UART audit runs even on a clean A1-A5 pass" "$acceptance_source" "result = run_uart_audit()"
+require_text "UART audit fails the run on any finding" "$acceptance_source" "if not result.passed:"
+require_text "UART audit runs on early die() too" "$acceptance_source" "run_uart_audit()"
+require_text "UART audit evidence file" "$acceptance_source" 'AUDIT_MD = OUT / f"audit-{RUN}.md"'
 require_text "marker gate admission" "$smoke_source" 'if required_markers_present && grep -qF "$MARKER"'
 if grep -Fq "SMOKE_MARKER='[WINDOWS-PE-COMMIT] success'" "$makefile"; then
     echo "windows-notepad-harness: commit marker must not admit readiness" >&2
