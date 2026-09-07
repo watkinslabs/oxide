@@ -501,3 +501,6 @@ mod tests;
 #[cfg(test)]
 #[path = "win32_window/tests/lifecycle.rs"]
 mod lifecycle_tests;
+#[cfg(test)]
+#[path = "win32_window/tests/typed_text_paint.rs"]
+mod typed_text_paint_tests;

@@ -10,7 +10,7 @@ fn validating_a_rectangle_subtracts_it_from_the_windows_update_region() {
 #[test]
 fn validating_with_no_window_repaints_the_whole_desktop_instead() {
     assert_eq!(decode(VALIDATE_RECT, [0, 0x1000, 0]),
-        Some(Request::Redraw { hwnd: 0, rect: 0, region: 0, flags: DESKTOP_VALIDATE_FLAGS }));
+        Some(Request::Redraw { hwnd: 0, rect: 0, region: 0, flags: DESKTOP_REDRAW_FLAGS }));
 }
 
 #[test]
@@ -42,3 +42,17 @@ fn the_update_queries_carry_their_output_and_erase_request() {
 
 #[test]
 fn an_unrelated_ordinal_is_not_claimed() { assert_eq!(decode(0x1234, [0; 3]), None); }
+
+#[test]
+fn invalidating_a_rectangle_adds_the_erase_flag_only_when_asked() {
+    assert_eq!(decode(INVALIDATE_RECT, [7, 0x1000, 0]),
+        Some(Request::Redraw { hwnd: 7, rect: 0x1000, region: 0, flags: RDW_INVALIDATE }));
+    assert_eq!(decode(INVALIDATE_RECT, [7, 0x1000, 1]),
+        Some(Request::Redraw { hwnd: 7, rect: 0x1000, region: 0, flags: RDW_INVALIDATE | RDW_ERASE }));
+}
+
+#[test]
+fn invalidating_with_no_window_repaints_the_whole_desktop_instead() {
+    assert_eq!(decode(INVALIDATE_RECT, [0, 0x1000, 1]),
+        Some(Request::Redraw { hwnd: 0, rect: 0, region: 0, flags: DESKTOP_REDRAW_FLAGS }));
+}

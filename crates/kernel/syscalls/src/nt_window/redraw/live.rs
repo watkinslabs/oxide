@@ -3,13 +3,28 @@ use alloc::sync::Arc;
 use super::super::{GUI, STATUS_PENDING, send};
 const WM_PAINT: u32 = 0x000f;
 
+/// A redraw that damages nothing is indistinguishable, from the outside, from
+/// one that was never issued: both leave the window unpainted. Name the
+/// coverage the request actually carried, bounded so a running system is quiet.
+fn trace_redraw(hwnd: u64, flags: u32, rects: usize, pending: bool) {
+    use core::sync::atomic::{AtomicU32, Ordering};
+    static BUDGET: AtomicU32 = AtomicU32::new(0);
+    if BUDGET.fetch_add(1, Ordering::Relaxed) >= 200 { return; }
+    klog::write_raw(b"[WINDOWS-REDRAW] hwnd="); klog::write_hex_u64(hwnd);
+    klog::write_raw(b" flags="); klog::write_hex_u64(flags as u64);
+    klog::write_raw(b" rects="); klog::write_hex_u64(rects as u64);
+    klog::write_raw(b" pending="); klog::write_hex_u64(pending as u64);
+    klog::write_raw(b"\n");
+}
+
 /// Mutate canonical damage then execute synchronous paint when requested.
 /// # C: O(windows traversal + callbacks); # Sleeps: yes
 pub(crate) fn for_current(hwnd: u64, rect: u64, region: u64, flags: u32) -> u64 {
     let Some(mode) = mode(rect, region, flags) else { return 0; };
     let Ok(input) = read_region(rect, region,
         |out, source| uaccess::copy_from_user(out, source).map_err(|_| ()),
-        |handle| crate::nt_gdi::region_snapshot_for_current(handle).map_err(|_| ())) else { return 0; };
+        |handle| crate::nt_gdi::region_snapshot_for_current(handle).map_err(|_| ())) else {
+            trace_redraw(hwnd, flags, usize::MAX, false); return 0; };
     let Some(root) = u32::try_from(hwnd).ok().and_then(WindowId::from_raw) else { return 0; };
     let Some(cur) = sched::live::current().filter(|cur| cur.is_nt_personality()) else { return 0; };
     let token = {
@@ -17,7 +32,10 @@ pub(crate) fn for_current(hwnd: u64, rect: u64, region: u64, flags: u32) -> u64 
         let Some(entry) = entries.iter_mut().find(|entry| entry.group.ptr_eq(&Arc::downgrade(&cur.thread_group))) else { return 0; };
         // Stored parent/client coordinates already share canonical units. Raw DPI
         // conversion belongs at ingress, not in a second per-HWND scale registry.
-        if entry.state.redraw_tree(root, input.as_ref(), flags, |_, _, region| region.try_copy()).is_err() { return 0; }
+        let applied = entry.state.redraw_tree(root, input.as_ref(), flags, |_, _, region| region.try_copy());
+        trace_redraw(hwnd, flags, input.as_ref().map_or(0, |region| region.rects().len()),
+            applied.is_ok() && entry.state.dirty_windows().contains(&root));
+        if applied.is_err() { return 0; }
         if flags & (ipc::win32_window::RDW_UPDATENOW | ipc::win32_window::RDW_ERASENOW) == 0 { return 1; }
         let Some(token) = entry.redraw.admit(cur.tid as u64, root, mode) else { return 0; };
         if flags & ipc::win32_window::RDW_UPDATENOW == 0 { entry.redraw.set_erase(cur.tid as u64, token); }
