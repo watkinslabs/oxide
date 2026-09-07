@@ -10,6 +10,11 @@ const PATCOPY: u32 = 0x00F0_0021;
 const DSTINVERT: u32 = 0x0055_0009;
 
 impl GdiManager {
+    /// Paint exact region coverage with the currently selected brush. # C: O(region rectangles + pixels)
+    pub fn fill_region_coverage(&mut self, dc: u32, region: &PaintRegion) -> Result<(), GdiError> {
+        self.paint_region(dc, region, PATCOPY)
+    }
+
     fn paint_region(&mut self, dc: u32, region: &PaintRegion, rop: u32) -> Result<(), GdiError> {
         for rect in region.rects() {
             let (width, height) = (rect.right - rect.left, rect.bottom - rect.top);

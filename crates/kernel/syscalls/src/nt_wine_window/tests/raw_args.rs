@@ -28,8 +28,14 @@ fn installed_signature_counts_and_admission_are_exact() {
     assert!(RAW_CALLS.windows(2).all(|pair| pair[0].0 < pair[1].0));
     for ordinal in 0..0x2000 {
         let fonts = [(0x11e6,6), (0x11fe,5), (0x1204,5), (0x1211,4), (0x1225,3)];
+        // Paths, region shapes and region clipping admit their own signatures.
+        let shapes = [(0x1085,1), (0x1096,1), (0x10a0,1), (0x10b2,4), (0x10bc,6), (0x119e,1), (0x11c0,2),
+            (0x11c2,5), (0x11c4,3), (0x11c8,3), (0x11d2,1), (0x11d3,3), (0x11d4,1), (0x11d8,5), (0x1212,4),
+            (0x121a,3), (0x121d,3), (0x1239,2), (0x1244,3), (0x1245,3), (0x124d,1), (0x1253,3), (0x1254,3),
+            (0x1257,2), (0x126d,2), (0x1280,1), (0x1291,1), (0x1292,1), (0x129d,1)];
         assert_eq!(argument_count(ordinal), signatures.iter().find(|entry| entry.0 == ordinal).map(|entry| entry.1 / 8)
-            .or_else(|| fonts.iter().find(|entry| entry.0 == ordinal).map(|entry| entry.1)));
+            .or_else(|| fonts.iter().find(|entry| entry.0 == ordinal).map(|entry| entry.1))
+            .or_else(|| shapes.iter().find(|entry| entry.0 == ordinal).map(|entry| entry.1)));
     }
 }
 

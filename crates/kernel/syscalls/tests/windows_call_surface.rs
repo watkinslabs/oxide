@@ -17,6 +17,9 @@ use elf_load::pe_loader::{map_nt_runtime, ImportResolver, NtRuntime, PeExportRef
 use vmm::AddressSpace;
 
 #[path = "../src/nt_wine_window/font_query_raw.rs"] mod nt_wine_font_query_contract;
+// Only the ordinal table is needed here; the typed decode carries an alloc dependency.
+#[path = "../src/nt_wine_window/gdi_shape_raw/ordinals.rs"] mod gdi_shape_ordinals;
+mod nt_wine_gdi_shape { pub(crate) use super::gdi_shape_ordinals as ordinals; }
 #[path = "../src/nt_wine_window/raw_args.rs"] mod raw_args;
 #[path = "windows_call_surface/baseline.rs"] mod baseline;
 #[path = "windows_call_surface/catalog.rs"] mod catalog;

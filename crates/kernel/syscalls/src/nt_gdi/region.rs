@@ -16,15 +16,15 @@ pub(crate) fn set_rect_region_for_current(handle:u64,rect:Rect)->bool{
 
 /// Publish the exact owned region or roll back both canonical and client identity. # C: O(processes + regions)
 pub(crate) fn create_region_for_current(region: PaintRegion) -> Result<u32,u64> {
-    create(|state| state.create_region(region))
+    create_with(|state| state.create_region(region))
 }
 
 /// Raw rectangular creation uses the same canonical normalization and transaction. # C: O(processes + regions)
 pub(crate) fn create_rect_region_for_current(rect: Rect) -> Result<u32,u64> {
-    create(|state| state.create_rect_region(rect))
+    create_with(|state| state.create_rect_region(rect))
 }
 
-fn create(operation: impl FnOnce(&mut ipc::win32_gdi::GdiManager) -> Result<u32,ipc::win32_gdi::GdiError>) -> Result<u32,u64> {
+pub(super) fn create_with(operation: impl FnOnce(&mut ipc::win32_gdi::GdiManager) -> Result<u32,ipc::win32_gdi::GdiError>) -> Result<u32,u64> {
     let _gate = lifecycle::ClientGate::acquire_current().map_err(|_| STATUS_INVALID_HANDLE)?;
     let current = sched::live::current().ok_or(STATUS_INVALID_HANDLE)?;
     let group = Arc::clone(&current.thread_group);

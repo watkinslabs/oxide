@@ -12,6 +12,8 @@ pub mod bezier;
 pub mod flatten;
 #[path = "path/ops.rs"]
 pub mod ops;
+#[path = "path/draw.rs"]
+mod draw;
 
 pub use record::{GdiPath, PT_BEZIERTO, PT_CLOSEFIGURE, PT_LINETO, PT_MOVETO};
 pub use ops::{ALTERNATE, WINDING};
