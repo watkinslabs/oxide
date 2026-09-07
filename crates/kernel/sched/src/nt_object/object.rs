@@ -77,6 +77,7 @@ pub struct NtSection {
     protection: vmm::VmaProt,
     file: Option<Arc<vfs::File>>,
     flags: u32,
+    image: Option<Arc<pe::ImageSection>>,
     // The claim is intentionally retained for the section lifetime; dropping
     // it before the last mapping closes would violate the inode share owner.
     _file_share: Option<Arc<NtFileShare>>,
@@ -103,7 +104,7 @@ impl NtSection {
         let mut bytes = Vec::new();
         bytes.try_reserve_exact(size).ok()?;
         bytes.resize(size, 0);
-        Some(Arc::new(Self { bytes: bytes.into(), size, protection, file: None, flags, _file_share: None }))
+        Some(Arc::new(Self { bytes: bytes.into(), size, protection, file: None, flags, image: None, _file_share: None }))
     }
     /// Construct a file-backed section retaining the VFS open description. # C: O(1)
     pub fn from_file(file: Arc<vfs::File>, size: usize) -> Arc<Self> {
@@ -115,7 +116,7 @@ impl NtSection {
     }
     /// Construct file-backed section backing with maximum view protection. # C: O(1)
     pub fn from_file_with_protection(file: Arc<vfs::File>, size: usize, flags: u32, protection: vmm::VmaProt) -> Arc<Self> {
-        Arc::new(Self { bytes: Arc::from(&[][..]), size, protection, file: Some(file), flags, _file_share: None })
+        Arc::new(Self { bytes: Arc::from(&[][..]), size, protection, file: Some(file), flags, image: None, _file_share: None })
     }
     /// Construct a file-backed section retaining its mapping share claim. # C: O(1)
     pub fn from_file_with_share(file: Arc<vfs::File>, size: usize, flags: u32, file_share: Arc<NtFileShare>) -> Arc<Self> {
@@ -123,8 +124,19 @@ impl NtSection {
     }
     /// Construct file-backed section backing with sharing and maximum protection. # C: O(1)
     pub fn from_file_with_share_and_protection(file: Arc<vfs::File>, size: usize, flags: u32, protection: vmm::VmaProt, file_share: Arc<NtFileShare>) -> Arc<Self> {
-        Arc::new(Self { bytes: Arc::from(&[][..]), size, protection, file: Some(file), flags, _file_share: Some(file_share) })
+        Arc::new(Self { bytes: Arc::from(&[][..]), size, protection, file: Some(file), flags, image: None, _file_share: Some(file_share) })
     }
+    /// Construct an image-attributed section over one parsed image. The view
+    /// bytes are the image's own layout, so the extent is SizeOfImage and the
+    /// retained file description exists only for identity, never for backing.
+    /// # C: O(1)
+    pub fn from_image(image: Arc<pe::ImageSection>, file: Arc<vfs::File>, flags: u32, file_share: Option<Arc<NtFileShare>>) -> Arc<Self> {
+        let size = image.size();
+        let protection = image_protection(&image);
+        Arc::new(Self { bytes: Arc::clone(&image.bytes), size, protection, file: Some(file), flags, image: Some(image), _file_share: file_share })
+    }
+    /// Return the image record when this section carries the image attribute. # C: O(1)
+    pub fn image(&self) -> Option<Arc<pe::ImageSection>> { self.image.clone() }
     /// Return the section's byte backing for a VMA. # C: O(1)
     pub fn bytes(&self) -> Arc<[u8]> { self.bytes.clone() }
     /// Return the section extent. # C: O(1)
@@ -136,6 +148,16 @@ impl NtSection {
     /// Return protocol-visible mapping flags. # C: O(1)
     pub fn flags(&self) -> u32 { self.flags }
 }
+/// Widest view protection an image section admits: every span's own
+/// protection, plus write so a view can be relocated in place.
+/// # C: O(N_spans)
+fn image_protection(image: &pe::ImageSection) -> vmm::VmaProt {
+    let widest = image.max_prot();
+    let mut prot = vmm::VmaProt::READ | vmm::VmaProt::WRITE;
+    if widest.exec { prot |= vmm::VmaProt::EXEC; }
+    prot
+}
+
 impl NtObject {
     /// Create one immutable native object identity. # C: O(1)
     pub fn new(kind: NtObjectType, id: u64) -> Arc<Self> {

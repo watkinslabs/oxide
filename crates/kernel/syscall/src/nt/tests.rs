@@ -562,7 +562,7 @@ fn user_client_pfn_services_round_trip_through_the_nt_namespace() {
         assert!(matches!(decode_object(decode(17, SyscallArgs { a0: 2, a1: 0x1000, a2: 1, a3: 1, a4: 0, ..args() }).unwrap()), Ok(NtObjectCall::WaitMultiple { count: 2, wait_type: 1, alertable: 1, timeout: None, .. })));
         assert_eq!(decode_object(decode(18, SyscallArgs { a0: 0x1000, a1: 4, a2: 0x2000, a3: 4, a4: 0x1_0000_0000, a5: 9 }).unwrap()), Ok(NtObjectCall::CreateSection {
             handle: UserPtr::new(0x1000).unwrap(), desired_access: 4, size: 0x2000,
-            protect: 4, attributes: 0x1_0000_0000, file: 9,
+            protect: 4, attributes: 0x1_0000_0000, allocation_attributes: 0, file: 9,
         }));
         assert!(matches!(decode_object(decode(21, SyscallArgs { a0: u64::MAX, a1: 0, a2: 0x1000, a3: 48, a4: 0, ..args() }).unwrap()), Ok(NtObjectCall::QueryProcess { class: 0, length: 48, .. })));
         assert!(matches!(decode_object(decode(22, SyscallArgs { a0: 0x1000, a1: u64::MAX, a2: 0x4000, a3: 7, a4: 0x1000, a5: 0 }).unwrap()), Ok(NtObjectCall::CreateThreadEx { start: 0x4000, parameter: 7, .. })));

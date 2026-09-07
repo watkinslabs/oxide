@@ -224,6 +224,12 @@ impl NtHandleTable {
         NtObject::new_section(id, NtSection::from_file_with_share_and_protection(file, size, flags, protection, share))
     }
 
+    /// Wrap one parsed image in an image-attributed section object. # C: O(1)
+    pub fn new_image_section(&self, image: Arc<pe::ImageSection>, file: Arc<vfs::File>, flags: u32, share: Option<Arc<NtFileShare>>) -> Arc<NtObject> {
+        let id = self.next_object_id.fetch_add(1, Ordering::Relaxed);
+        NtObject::new_section(id, NtSection::from_image(image, file, flags, share))
+    }
+
     /// Allocate a symbolic-link object with one immutable target. # C: O(1)
     pub fn new_symbolic_link(&self, target: String) -> Arc<NtObject> {
         let id = self.next_object_id.fetch_add(1, Ordering::Relaxed);

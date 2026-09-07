@@ -44,19 +44,24 @@ const CURRENT_THREAD: u64 = u64::MAX - 1;
 fn native_section_object(call: NtCall) -> Option<NtObjectCall> {
     match call.service {
         nt::NtService::CreateSection | nt::NtService::NtCreateSectionEx => {
-            let file = stack_argument(6)?;
+            let allocation_attributes = stack_argument(crate::nt_section_image::CREATE_SECTION_ALLOCATION_ATTRIBUTES_ARG)?;
+            let file = stack_argument(crate::nt_section_image::CREATE_SECTION_FILE_ARG)?;
             if call.service == nt::NtService::NtCreateSectionEx
                 && !create_section_ex_parameters_admitted(stack_argument(7)?, stack_argument(8)?) { return None; }
-            if file > u32::MAX as u64 { return None; }
+            if file > u32::MAX as u64 || allocation_attributes > u32::MAX as u64 { return None; }
             let mut size = if call.args.a3 == 0 { 0 } else { uaccess::get_user_u64(call.args.a3).ok()? };
-            if size == 0 && file != 0 {
+            // An image section's extent is the image's own; only a data
+            // section over a file inherits the file's size when the caller
+            // asks for the whole of it.
+            if size == 0 && file != 0 && allocation_attributes as u32 & SEC_IMAGE == 0 {
                 let cur = sched::live::current()?;
                 let object = cur.thread_group.nt_handles().get(sched::nt_object::NtHandle::from_raw(file as u32), 0)?;
                 size = vfs::generic_fillattr(object.file()?.inode(), &vfs::IDENTITY).size as u64;
             }
             Some(NtObjectCall::CreateSectionNative {
                 handle: UserPtr::new(call.args.a0).ok()?, desired_access: call.args.a1 as u32,
-                size, protect: call.args.a4 as u32, attributes: call.args.a2, file: file as u32,
+                size, protect: call.args.a4 as u32, attributes: call.args.a2,
+                allocation_attributes: allocation_attributes as u32, file: file as u32,
             })
         }
         nt::NtService::MapViewOfSection => {
@@ -89,6 +94,8 @@ fn native_section_object(call: NtCall) -> Option<NtObjectCall> {
     }
 }
 #[cfg(target_os = "oxide-kernel")]
+use crate::nt_section_image::SEC_IMAGE;
+#[cfg(target_os = "oxide-kernel")]
 const MEM_RESERVE: u32 = 0x2000;
 #[cfg(target_os = "oxide-kernel")]
 const MEM_COMMIT: u32 = 0x1000;
@@ -111,9 +118,9 @@ const STATUS_SUCCESS: u64 = 0;
 #[cfg(target_os = "oxide-kernel")]
 pub(crate) const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 #[cfg(target_os = "oxide-kernel")]
-const STATUS_NO_MEMORY: u64 = 0xc000_0017;
+pub(crate) const STATUS_NO_MEMORY: u64 = 0xc000_0017;
 #[cfg(target_os = "oxide-kernel")]
-const STATUS_CONFLICTING_ADDRESSES: u64 = 0xc000_0018;
+pub(crate) const STATUS_CONFLICTING_ADDRESSES: u64 = 0xc000_0018;
 #[cfg(target_os = "oxide-kernel")]
 const STATUS_MAPPED_ALIGNMENT: u64 = 0xc000_0220;
 #[cfg(target_os = "oxide-kernel")]
@@ -133,8 +140,8 @@ const STATUS_SUSPEND_COUNT_EXCEEDED: u64 = 0xc000_004a;
 #[cfg(target_os = "oxide-kernel")]
 #[cfg(target_os = "oxide-kernel")]
 const STATUS_NOT_SAME_OBJECT: u64 = 0xc000_01ac;
-const STATUS_INFO_LENGTH_MISMATCH: u64 = 0xc000_0004;
-const STATUS_INVALID_INFO_CLASS: u64 = 0xc000_0003;
+pub(crate) const STATUS_INFO_LENGTH_MISMATCH: u64 = 0xc000_0004;
+pub(crate) const STATUS_INVALID_INFO_CLASS: u64 = 0xc000_0003;
 const EVENT_ALL_ACCESS: u32 = 0x001f_0003;
 const GENERIC_ALL: u32 = 0x1000_0000;
 const GENERIC_READ: u32 = 0x8000_0000;
@@ -1256,14 +1263,21 @@ pub fn dispatch(call: NtCall) -> u64 {
                     sched::NtWaitOutcome::Interrupted => STATUS_ALERTED,
                 }
             }
-            NtObjectCall::CreateSection { handle, desired_access, size, protect, attributes, file }
-            | NtObjectCall::CreateSectionNative { handle, desired_access, size, protect, attributes, file } => {
+            NtObjectCall::CreateSection { handle, desired_access, size, protect, attributes, allocation_attributes, file }
+            | NtObjectCall::CreateSectionNative { handle, desired_access, size, protect, attributes, allocation_attributes, file } => {
                 if desired_access & !(SECTION_QUERY | SECTION_MAP_READ | SECTION_MAP_WRITE | SECTION_MAP_EXECUTE | SYNCHRONIZE_ACCESS) != 0
-                    || size == 0 || size > SECTION_MAX_BYTES { return STATUS_INVALID_PARAMETER; }
+                    || !crate::nt_section_image::attributes_admitted(allocation_attributes) { return STATUS_INVALID_PARAMETER; }
+                if crate::nt_section_image::image_needs_file(allocation_attributes, file) { return crate::nt_section_image::STATUS_INVALID_FILE_FOR_SECTION; }
+                if size > SECTION_MAX_BYTES || (size == 0 && allocation_attributes & SEC_IMAGE == 0) { return STATUS_INVALID_PARAMETER; }
                 let page = hal::PAGE_SIZE_BYTES as u64;
                 let Some(size) = size.checked_add(page - 1).map(|v| v & !(page - 1)) else { return STATUS_INVALID_PARAMETER; };
                 let Ok(protection) = elf_load::nt_memory::windows_protection(protect) else { return STATUS_INVALID_PARAMETER; };
-                let object = if file == 0 {
+                let object = if allocation_attributes & SEC_IMAGE != 0 {
+                    match crate::nt_image_section::create(&table, file, size, allocation_attributes) {
+                        Ok(object) => object,
+                        Err(status) => return status,
+                    }
+                } else if file == 0 {
                     let Some(object) = table.new_section_with_protection(size as usize, 0, protection) else { return STATUS_NO_MEMORY; };
                     object
                 } else {
@@ -1315,6 +1329,21 @@ pub fn dispatch(call: NtCall) -> u64 {
                 if elf_load::nt_memory::section_view_protection(section.protection(), protection).is_err() { return STATUS_INVALID_PARAMETER; }
                 if offset >= section.size() as u64 { return STATUS_INVALID_PARAMETER; }
                 let requested = match uaccess::get_user_u64(base.as_u64()) { Ok(0) => None, Ok(raw) => hal::UserVirtAddr::new(raw), Err(_) => return STATUS_INVALID_PARAMETER };
+                // An image view is laid out section by section, so it owns the
+                // whole image extent and cannot start part-way into it.
+                if let Some(image) = section.image() {
+                    if offset != 0 { return STATUS_INVALID_PARAMETER; }
+                    let (mapped, len, status) = match crate::nt_image_section::map_view(&mm, &image, requested) {
+                        Ok(view) => view,
+                        Err(status) => return status,
+                    };
+                    if uaccess::put_user_u64(base.as_u64(), mapped.as_u64()).is_err()
+                        || uaccess::put_user_u64(size.as_u64(), len as u64).is_err() {
+                        let _ = mm.munmap(mapped, len);
+                        return STATUS_INVALID_PARAMETER;
+                    }
+                    return status;
+                }
                 if requested.map(|address| address.as_u64() & 0xffff != 0).unwrap_or(false) { return STATUS_MAPPED_ALIGNMENT; }
                 if let Some(address) = requested {
                     let valid = if zero_bits == 0 { true }
@@ -1375,9 +1404,6 @@ pub fn dispatch(call: NtCall) -> u64 {
                 if elf_load::nt_unmap::unmap_range(&mm, start, len).is_ok() { STATUS_SUCCESS } else { STATUS_MEMORY_NOT_ALLOCATED }
             }
             NtObjectCall::QuerySection { section, class, info, length, return_length } => {
-                const SECTION_BASIC_INFORMATION_BYTES: u32 = 24;
-                if class != 0 { return STATUS_INVALID_INFO_CLASS; }
-                if length < SECTION_BASIC_INFORMATION_BYTES { return STATUS_INFO_LENGTH_MISMATCH; }
                 if info.as_u64() == 0 { return STATUS_ACCESS_VIOLATION; }
                 let native = sched::nt_object::NtHandle::from_raw(section);
                 let Some(object) = table.get(native, SECTION_QUERY) else {
@@ -1385,13 +1411,25 @@ pub fn dispatch(call: NtCall) -> u64 {
                 };
                 if object.kind() != sched::nt_object::NtObjectType::Section { return STATUS_INVALID_HANDLE; }
                 let Some(section) = object.section() else { return STATUS_INVALID_HANDLE; };
-                if uaccess::put_user_u64(info.as_u64(), 0).is_err()
-                    || uaccess::put_user_u32(info.as_u64() + 8, 0).is_err()
+                let image = section.image();
+                let bytes = match crate::nt_section_image::query_record_bytes(class, length, image.is_some()) {
+                    Ok(bytes) => bytes,
+                    Err(status) => return status,
+                };
+                if class == crate::nt_section_image::SECTION_IMAGE_INFORMATION {
+                    // A query answers for the section, not for one process's
+                    // view of it, so the transfer address names the image's own
+                    // base. A view placed elsewhere learns that from the status
+                    // its map returned.
+                    let record = image.expect("an image class is refused for a data section").information.encode();
+                    if uaccess::copy_to_user(info.as_u64(), &record).is_err() { return STATUS_INVALID_PARAMETER; }
+                } else if uaccess::put_user_u64(info.as_u64(), 0).is_err()
+                    || uaccess::put_user_u32(info.as_u64() + 8, section.flags()).is_err()
                     || uaccess::put_user_u64(info.as_u64() + 16, section.size() as u64).is_err() {
                     return STATUS_INVALID_PARAMETER;
                 }
                 if let Some(return_length) = return_length {
-                    if uaccess::put_user_u64(return_length.as_u64(), SECTION_BASIC_INFORMATION_BYTES as u64).is_err() {
+                    if uaccess::put_user_u64(return_length.as_u64(), bytes as u64).is_err() {
                         return STATUS_INVALID_PARAMETER;
                     }
                 }
