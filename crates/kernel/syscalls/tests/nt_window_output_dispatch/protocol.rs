@@ -53,7 +53,7 @@ pub fn enqueue_current(opcode:Opcode,hwnd:u64,payload:Vec<u8>)->Result<u64,Trans
 }
 pub fn wait_completion_current(ticket:u64,timeout:u64)->Result<Completion,TransportError>{
     assert_eq!(timeout,5_000_000_000);assert!(nt_gdi::GDI.unlocked());assert!(nt_window::GUI.unlocked());
-    let bytes=QUEUE.with(|q|{let mut q=q.borrow_mut();assert_eq!(q.take_completion(ticket),Ok(Completion::Pending));q.take_send().unwrap()});
+    let bytes=QUEUE.with(|q|{let mut q=q.borrow_mut();assert_eq!(q.take_completion(ticket),Ok(Completion::Pending));let (taken,bytes)=q.take_send().unwrap();assert_eq!(taken,ticket);bytes});
     let header=Header::decode(&bytes[..syscall::nt_compositor::HEADER_LEN]).unwrap();assert_eq!(header.sequence,ticket);
     let scenario=SCENARIO.with(|s|*s.borrow());
     if matches!(scenario,Scenario::GuiBeforeAck){
@@ -86,7 +86,7 @@ pub fn wait_completion_current(ticket:u64,timeout:u64)->Result<Completion,Transp
             q.close();return q.take_completion(ticket);
         }
         let mut transmitted=Vec::new();stream::write_record(&bytes,|part|{let n=part.len().min(7);transmitted.extend_from_slice(&part[..n]);Ok(n)}).unwrap();
-        assert_eq!(transmitted,bytes);q.sent().unwrap();
+        assert_eq!(transmitted,bytes);q.sent(ticket).unwrap();
         if matches!(scenario,Scenario::CompletedThenDisconnect){q.close();}
         q.take_completion(ticket)
     })

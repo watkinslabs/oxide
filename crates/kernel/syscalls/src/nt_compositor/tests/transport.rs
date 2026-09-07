@@ -16,13 +16,14 @@ fn queue_acceptance_is_not_presentation_and_completion_frees_capacity() {
     let ticket = queue.enqueue(Opcode::Destroy, 7, vec![]).unwrap();
     assert_eq!(queue.take_completion(ticket), Ok(Completion::Pending));
     assert_eq!(queue.acknowledge(ticket, 7, 0), Err(TransportError::Unknown));
-    let bytes = queue.take_send().unwrap();
+    let (taken, bytes) = queue.take_send().unwrap();
+    assert_eq!(taken, ticket);
     assert_eq!(Header::decode(&bytes).unwrap().sequence, ticket);
     assert!(queue.take_send().is_none());
     assert_eq!(queue.acknowledge(ticket, 8, 0), Err(TransportError::Unknown));
     queue.acknowledge(ticket, 7, 0).unwrap();
     assert_eq!(queue.take_completion(ticket), Ok(Completion::Pending));
-    queue.sent().unwrap();
+    queue.sent(ticket).unwrap();
     assert_eq!(queue.take_completion(ticket), Ok(Completion::Presented));
     assert_eq!(queue.take_completion(ticket), Err(TransportError::Unknown));
 }
@@ -32,7 +33,7 @@ fn bounded_records_include_unconsumed_completions() {
     let mut queue = Queue::new();
     for _ in 0..wire::MAX_QUEUED_RECORDS { queue.enqueue(Opcode::Destroy, 1, vec![]).unwrap(); }
     assert_eq!(queue.enqueue(Opcode::Destroy, 1, vec![]), Err(TransportError::Full));
-    queue.take_send().unwrap(); queue.sent().unwrap(); queue.acknowledge(1, 1, 0).unwrap();
+    let (first, _) = queue.take_send().unwrap(); queue.sent(first).unwrap(); queue.acknowledge(1, 1, 0).unwrap();
     assert_eq!(queue.enqueue(Opcode::Destroy, 1, vec![]), Err(TransportError::Full));
     assert_eq!(queue.take_completion(1), Ok(Completion::Presented));
     assert!(queue.enqueue(Opcode::Destroy, 1, vec![]).is_ok());
@@ -41,7 +42,7 @@ fn bounded_records_include_unconsumed_completions() {
 #[test]
 fn disconnect_and_backend_failure_never_report_presented() {
     let mut queue = Queue::new(); let ticket = queue.enqueue(Opcode::Destroy, 1, vec![]).unwrap();
-    queue.take_send(); queue.sent().unwrap(); queue.acknowledge(ticket, 1, 3).unwrap();
+    let (taken, _) = queue.take_send().unwrap(); queue.sent(taken).unwrap(); queue.acknowledge(ticket, 1, 3).unwrap();
     assert_eq!(queue.take_completion(ticket), Ok(Completion::Failed(3)));
     let next = queue.enqueue(Opcode::Destroy, 1, vec![]).unwrap(); queue.close();
     assert_eq!(queue.take_completion(next), Err(TransportError::Disconnected));
@@ -102,7 +103,7 @@ fn byte_budget_applies_even_with_record_slots_remaining() {
     };
     for _ in 0..3 { queue.enqueue(Opcode::Frame, 1, frame()).unwrap(); }
     assert_eq!(queue.enqueue(Opcode::Frame, 1, frame()), Err(TransportError::Full));
-    queue.take_send().unwrap(); queue.sent().unwrap(); queue.acknowledge(1, 1, 0).unwrap();
+    let (first, _) = queue.take_send().unwrap(); queue.sent(first).unwrap(); queue.acknowledge(1, 1, 0).unwrap();
     assert_eq!(queue.take_completion(1), Ok(Completion::Presented));
     assert!(queue.enqueue(Opcode::Frame, 1, frame()).is_ok());
 }
@@ -110,11 +111,11 @@ fn byte_budget_applies_even_with_record_slots_remaining() {
 #[test]
 fn ack_before_failed_transfer_is_never_success_and_duplicates_are_rejected() {
     let mut queue = Queue::new(); let ticket = queue.enqueue(Opcode::Destroy, 1, vec![]).unwrap();
-    queue.take_send().unwrap(); queue.acknowledge(ticket, 1, 0).unwrap();
+    let _ = queue.take_send().unwrap(); queue.acknowledge(ticket, 1, 0).unwrap();
     assert_eq!(queue.acknowledge(ticket, 1, 0), Err(TransportError::Unknown));
     assert_eq!(queue.take_completion(ticket), Ok(Completion::Pending));
     queue.close();
-    assert_eq!(queue.sent(), Err(TransportError::Disconnected));
+    assert_eq!(queue.sent(ticket), Err(TransportError::Disconnected));
     assert_eq!(queue.take_completion(ticket), Err(TransportError::Disconnected));
 }
 
@@ -124,7 +125,7 @@ fn rejected_prepared_record_stays_with_caller_for_drop_after_unlock() {
     for _ in 0..wire::MAX_QUEUED_RECORDS { queue.enqueue(Opcode::Destroy, 1, vec![]).unwrap(); }
     let mut prepared = Some(super::queue::Prepared::new(Opcode::Title, 1, b"owned".to_vec()).unwrap());
     assert_eq!(queue.enqueue_prepared(&mut prepared, true), Err(TransportError::Full)); assert!(prepared.is_some());
-    queue.take_send(); queue.sent().unwrap(); queue.acknowledge(1, 1, 0).unwrap(); queue.take_completion(1).unwrap();
+    let (first, _) = queue.take_send().unwrap(); queue.sent(first).unwrap(); queue.acknowledge(1, 1, 0).unwrap(); queue.take_completion(1).unwrap();
     assert!(queue.enqueue_prepared(&mut prepared, true).is_ok()); assert!(prepared.is_none());
 }
 
@@ -211,7 +212,7 @@ fn a_record_nobody_waits_for_releases_its_slot_when_it_settles() {
     let ticket = queue.enqueue_prepared(&mut prepared, false).unwrap();
     let _ = queue.take_send().unwrap();
     queue.acknowledge(ticket, 3, 0).unwrap();
-    queue.sent().unwrap();
+    queue.sent(ticket).unwrap();
     // Settled and gone: no completion is owed, so the slot and its bytes are
     // back without anyone calling take_completion.
     assert_eq!(queue.take_completion(ticket), Err(TransportError::Unknown));
@@ -224,7 +225,7 @@ fn an_awaited_record_still_keeps_its_completion_until_it_is_taken() {
     let ticket = queue.enqueue(Opcode::Destroy, 3, vec![]).unwrap();
     let _ = queue.take_send().unwrap();
     queue.acknowledge(ticket, 3, 0).unwrap();
-    queue.sent().unwrap();
+    queue.sent(ticket).unwrap();
     assert_eq!(queue.take_completion(ticket), Ok(Completion::Presented));
 }
 
@@ -236,7 +237,7 @@ fn unwaited_records_do_not_exhaust_the_queue() {
         let ticket = queue.enqueue_prepared(&mut prepared, false).expect("an unwaited record always finds a slot");
         let _ = queue.take_send().unwrap();
         queue.acknowledge(ticket, 3, 0).unwrap();
-        queue.sent().unwrap();
+        queue.sent(ticket).unwrap();
     }
 }
 
@@ -253,15 +254,55 @@ fn only_a_presented_frame_reports_the_desktop_acknowledgement() {
         p.resize(wire::FRAME_HEADER_BYTES + 4, 0); p
     };
     let control = queue.enqueue(Opcode::Title, 7, b"name".to_vec()).unwrap();
-    queue.take_send().unwrap(); queue.sent().unwrap();
+    let (taken, _) = queue.take_send().unwrap(); queue.sent(taken).unwrap();
     assert_eq!(queue.acknowledge(control, 7, 0), Ok(false));
 
     let frame = queue.enqueue(Opcode::Frame, 7, pixels()).unwrap();
-    queue.take_send().unwrap(); queue.sent().unwrap();
+    let (taken, _) = queue.take_send().unwrap(); queue.sent(taken).unwrap();
     assert_eq!(queue.acknowledge(frame, 7, 0), Ok(true));
 
     // A frame the desktop refused is not an acknowledgement of pixels.
     let refused = queue.enqueue(Opcode::Frame, 7, pixels()).unwrap();
-    queue.take_send().unwrap(); queue.sent().unwrap();
+    let (taken, _) = queue.take_send().unwrap(); queue.sent(taken).unwrap();
     assert_eq!(queue.acknowledge(refused, 7, 1), Ok(false));
+}
+
+#[test]
+fn a_record_in_flight_never_holds_back_the_one_behind_it() {
+    let mut queue = Queue::new();
+    let first = queue.enqueue(Opcode::Destroy, 1, vec![]).unwrap();
+    let second = queue.enqueue(Opcode::Destroy, 1, vec![]).unwrap();
+    let (taken, _) = queue.take_send().expect("the writer takes the record at the head");
+    assert_eq!(taken, first);
+    queue.sent(first).unwrap();
+    // The desktop has not answered for `first`, and its answer is a round trip
+    // through another process. Holding `second` for it is head-of-line
+    // blocking: it made every frame behind a slow one wait that whole round
+    // trip before the socket ever saw it.
+    assert!(queue.has_send(), "a record the socket can take is still waiting");
+    let (next, _) = queue.take_send().expect("the record behind an unacknowledged one still goes out");
+    assert_eq!(next, second);
+    queue.sent(second).unwrap();
+    // Acknowledgements are matched by their own sequence, so they settle in
+    // whatever order the desktop answers.
+    assert_eq!(queue.acknowledge(second, 1, 0), Ok(false));
+    assert_eq!(queue.take_completion(second), Ok(Completion::Presented));
+    assert_eq!(queue.take_completion(first), Ok(Completion::Pending));
+    assert_eq!(queue.acknowledge(first, 1, 0), Ok(false));
+    assert_eq!(queue.take_completion(first), Ok(Completion::Presented));
+}
+
+#[test]
+fn an_acknowledgement_for_a_record_the_socket_never_saw_is_refused() {
+    let mut queue = Queue::new();
+    let queued = queue.enqueue(Opcode::Destroy, 1, vec![]).unwrap();
+    let pending = queue.enqueue(Opcode::Destroy, 1, vec![]).unwrap();
+    let (taken, _) = queue.take_send().unwrap();
+    assert_eq!(taken, queued);
+    // Only the record handed to the socket can be acknowledged; the peer
+    // cannot have received the one still holding its bytes.
+    assert_eq!(queue.acknowledge(pending, 1, 0), Err(TransportError::Unknown));
+    queue.acknowledge(queued, 1, 0).unwrap();
+    assert_eq!(queue.acknowledge(queued, 1, 0), Err(TransportError::Unknown));
+    assert_eq!(queue.sent(pending), Err(TransportError::Unknown));
 }
