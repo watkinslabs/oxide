@@ -6,5 +6,6 @@ use crate::nt_window::imc;
 /// # C: O(processes + windows)
 pub(crate) fn route(ordinal: u64, args: &[u64]) -> Option<u64> {
     if ordinal != ORDINAL { return None; }
-    Some(answer(args[1], imc::query_window_facts(args[0], args[1], timekeeper::monotonic_ns())))
+    let (hwnd, cls) = (args.first().copied().unwrap_or(0), args.get(1).copied().unwrap_or(0));
+    Some(answer(cls, imc::query_window_facts(hwnd, cls, timekeeper::monotonic_ns())))
 }
