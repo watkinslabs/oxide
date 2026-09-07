@@ -3,7 +3,7 @@
 #[cfg(target_arch = "x86_64")]
 use alloc::{string::String, vec, vec::Vec};
 #[cfg(target_arch = "x86_64")]
-use elf_load::pe_loader::{ImportResolver, PeExportModule, PeExportResolver};
+use elf_load::pe_loader::{ImportResolver, PeExportModule, PeExportRef, PeGraphResolver};
 use super::STATUS_INVALID_PARAMETER;
 #[cfg(target_arch = "x86_64")]
 use super::{LDR_LOAD_LIST_OFFSET, LIST_LINK_OFFSET, MAX_MODULE_SCAN, MODULE_BASE_NAME_OFFSET, MODULE_BASE_OFFSET, PEB_LDR_OFFSET, STATUS_DLL_NOT_FOUND, STATUS_SUCCESS, TEB_PEB_OFFSET};
@@ -11,17 +11,21 @@ use super::{LDR_LOAD_LIST_OFFSET, LIST_LINK_OFFSET, MAX_MODULE_SCAN, MODULE_BASE
 #[cfg(target_arch = "aarch64")]
 const STATUS_NOT_SUPPORTED: u64 = 0xc000_00bb;
 
+/// The ntdll half of a runtime load's import resolution: ntdll is the native
+/// runtime, not a PE module, so its names resolve through the runtime export
+/// table. Everything else is answered by the loaded-module graph in front of
+/// this fallback, which also chases forwarded exports the way the reference
+/// follows a forwarder into whichever loaded module owns the target.
 #[cfg(target_arch = "x86_64")]
-struct Resolver<'a> { exports: PeExportResolver<'a>, ntdll: u64 }
+struct NtRuntimeFallback { ntdll: u64 }
 #[cfg(target_arch = "x86_64")]
-impl ImportResolver for Resolver<'_> {
+impl ImportResolver for NtRuntimeFallback {
     fn resolve(&self, dll: &[u8], import: &pe::ImportThunk<'_>) -> Result<u64, pe::Error> {
-        if dll.eq_ignore_ascii_case(b"ntdll.dll") {
-            if let pe::ImportThunk::Name { name, .. } = import {
-                if let Some(address) = elf_load::pe_loader::resolve_nt_runtime_export(self.ntdll, name) { return Ok(address); }
-            }
+        if !dll.eq_ignore_ascii_case(b"ntdll.dll") { return Err(pe::Error::Unsupported); }
+        match import {
+            pe::ImportThunk::Name { name, .. } => elf_load::pe_loader::resolve_nt_runtime_export(self.ntdll, name).ok_or(pe::Error::Unsupported),
+            pe::ImportThunk::Ordinal(_) => Err(pe::Error::Unsupported),
         }
-        self.exports.resolve(dll, import)
     }
 }
 
@@ -223,7 +227,9 @@ fn load_wide_locked(cur: &sched::Task, wanted: &[u8], module_output: u64) -> u64
     let name = root.name.clone();
     let blob = root.blob.clone();
     let (exports, ntdll) = match loaded_exports(peb, &filesystem.catalog) { Ok(value) => value, Err(status) => return status };
-    let resolver = Resolver { exports: PeExportResolver { modules: &exports }, ntdll };
+    let references: Vec<PeExportRef<'_, '_>> = exports.iter().map(|module| PeExportRef { name: module.name, image: &module.image, base: module.base }).collect();
+    let fallback = NtRuntimeFallback { ntdll };
+    let resolver = PeGraphResolver { modules: &references, fallback: &fallback };
     let catalog_source = &filesystem.catalog;
     let modules = match pe::discover_owned_modules_with_builtins(&name, &blob, &catalog_source,
         |candidate| pe::loader_name::matches_ascii(candidate, b"ntdll.dll") || loaded_module(peb, candidate)) {

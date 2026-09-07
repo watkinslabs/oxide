@@ -781,6 +781,69 @@
     }
 
     #[test]
+    fn installed_wine_imm32_loads_through_the_owned_module_graph() {
+        // The dynamic loader maps a runtime-loaded DLL through the graph
+        // loader; imm32 is the first DLL Notepad loads after launch.
+        let path = std::path::Path::new("/usr/lib64/wine/x86_64-windows/imm32.dll");
+        if !path.is_file() { return; }
+        let blob = std::fs::read(path).expect("installed Wine imm32 must be readable");
+        struct AnyResolver(u64);
+        impl ImportResolver for AnyResolver {
+            fn resolve(&self, _dll: &[u8], _import: &pe::ImportThunk<'_>) -> Result<u64, pe::Error> { Ok(self.0) }
+        }
+        let as_ = AddressSpace::new(0x200_000).unwrap();
+        let data = as_.stash_bytes(alloc::boxed::Box::new([0u8; 4096]));
+        let target = as_.mmap(None, 4096, VmaProt::READ | VmaProt::EXEC,
+            VmaFlags::PRIVATE, VmaBacking::KernelBytes { data, off: 0 }, false).unwrap();
+        let owned = [pe::OwnedModule { name: b"imm32.dll".to_vec(), blob }];
+        let loaded = load_owned_pe_module_graph(&owned, &as_, &AnyResolver(target.as_u64()), 0)
+            .unwrap_or_else(|error| panic!("imm32 graph load failed: {error:?}"));
+        assert_eq!(loaded.len(), 1);
+    }
+
+    #[test]
+    fn installed_wine_imm32_binds_every_import_against_the_installed_dependencies() {
+        let dir = std::path::Path::new("/usr/lib64/wine/x86_64-windows");
+        if !dir.join("imm32.dll").is_file() { return; }
+        let blob = std::fs::read(dir.join("imm32.dll")).unwrap();
+        let parsed = pe::parse(&blob).unwrap();
+        let mut dependency_blobs = Vec::new();
+        for import in parsed.imports().unwrap() {
+            let name = alloc::string::String::from_utf8_lossy(import.name).to_ascii_lowercase();
+            if name == "ntdll.dll" || dependency_blobs.iter().any(|(known, _)| *known == name) { continue; }
+            let bytes = std::fs::read(dir.join(&name)).unwrap_or_else(|_| panic!("dependency {name} must be installed"));
+            dependency_blobs.push((name, bytes));
+        }
+        let mut exports = Vec::new();
+        for (index, (name, bytes)) in dependency_blobs.iter().enumerate() {
+            exports.push(PeExportModule { name: name.as_bytes(), image: pe::parse(bytes).unwrap(), base: 0x7f00_0000_0000 + (index as u64) * 0x0100_0000 });
+        }
+        // Forwarded exports (kernel32!HeapAlloc -> ntdll, user32!DefWindowProcW
+        // -> win32u) bind only through the graph resolver; the plain export
+        // resolver refuses every forwarder.
+        struct NtdllOnly;
+        impl ImportResolver for NtdllOnly {
+            fn resolve(&self, dll: &[u8], _import: &pe::ImportThunk<'_>) -> Result<u64, pe::Error> {
+                if dll.eq_ignore_ascii_case(b"ntdll.dll") { Ok(0x7fff_0000_0000) } else { Err(pe::Error::Unsupported) }
+            }
+        }
+        let references: Vec<PeExportRef<'_, '_>> = exports.iter().map(|module| PeExportRef { name: module.name, image: &module.image, base: module.base }).collect();
+        let plain = PeExportResolver { modules: &exports };
+        let heap_alloc = pe::ImportThunk::Name { hint: 0, name: b"HeapAlloc" };
+        assert!(plain.resolve(b"kernel32.dll", &heap_alloc).is_err(), "a forwarder must not bind through the plain export resolver");
+        let table = PeGraphResolver { modules: &references, fallback: &NtdllOnly };
+        let mut unresolved = Vec::new();
+        for import in parsed.imports().unwrap() {
+            for thunk in parsed.import_thunks(&import).unwrap() {
+                if table.resolve(import.name, &thunk).is_err() {
+                    unresolved.push(alloc::format!("{}!{:?}", alloc::string::String::from_utf8_lossy(import.name), thunk));
+                }
+            }
+        }
+        assert!(unresolved.is_empty(), "imports the installed DLL set cannot bind: {unresolved:?}");
+    }
+
+    #[test]
     fn loaded_wine_advapi_initializer_keeps_executable_code_backed() {
         let path = std::path::Path::new("/usr/lib64/wine/x86_64-windows/advapi32.dll");
         if !path.is_file() { return; }
