@@ -103,6 +103,8 @@ mod nt_wine_window;
 mod hosted_contracts;
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
 pub(crate) use hosted_contracts::*;
+#[path = "nt_wine_window/paint_open.rs"]
+mod nt_wine_paint_open;
 #[path = "nt_gdi/text_callback_policy.rs"]
 mod nt_gdi_text_policy;
 #[path = "nt_window/retrieval_policy.rs"]

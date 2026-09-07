@@ -34,19 +34,20 @@ impl WindowManager {
     /// Apply one window's already-mapped redraw request; traversal owns descendants.
     /// # C: O(windows + region operations)
     pub fn redraw_damage(&mut self, id: WindowId, region: Option<&PaintRegion>, flags: u32, nested: bool) -> Result<(), WindowError> {
-        let record = self.get(id).ok_or(WindowError::NoSuchWindow)?;
-        let client = self.client_rect(id).ok_or(WindowError::NoSuchWindow)?;
-        let window = self.rect(id).ok_or(WindowError::NoSuchWindow)?;
-        let origin = record.client_rect.unwrap_or(window);
-        let frame = WindowRect {
-            left: window.left.checked_sub(origin.left).ok_or(WindowError::InvalidParent)?,
-            top: window.top.checked_sub(origin.top).ok_or(WindowError::InvalidParent)?,
-            right: window.right.checked_sub(origin.left).ok_or(WindowError::InvalidParent)?,
-            bottom: window.bottom.checked_sub(origin.top).ok_or(WindowError::InvalidParent)?,
-        };
+        self.get(id).ok_or(WindowError::NoSuchWindow)?;
+        let cropped = self.visible_paint_rect(id, false).zip(self.visible_paint_rect(id, true));
         let index = self.dirty.iter().position(|(window, _)| *window == id);
         let mut next = match index { Some(index) => self.dirty[index].1.try_copy()?, None => PaintDamage::default() };
-        next.apply(region, client, frame, flags, nested)?;
+        match cropped {
+            Some((client, frame)) => next.apply(region, client, frame, flags, nested)?,
+            // Coverage is cropped to the area the window exposes before any
+            // paint state is recorded, so a window that exposes nothing takes
+            // no damage and no internal paint; validating everything is the
+            // one request decided ahead of that crop.
+            None if flags & RDW_INVALIDATE == 0 && flags & RDW_VALIDATE != 0
+                && region.is_none() && flags & RDW_NOFRAME != 0 => next.validate_all(),
+            None => return Ok(()),
+        }
         if !next.pending() { if let Some(index) = index { self.dirty.remove(index); } }
         else if let Some(index) = index { self.dirty[index].1 = next; }
         else { self.dirty.try_reserve(1).map_err(|_| WindowError::NoMemory)?; self.dirty.push((id, next)); }

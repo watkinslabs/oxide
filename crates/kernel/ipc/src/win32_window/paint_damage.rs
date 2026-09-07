@@ -22,6 +22,8 @@ mod tree;
 mod readiness;
 #[path = "paint_damage/parents.rs"]
 mod parents;
+#[path = "paint_damage/visible.rs"]
+mod visible;
 #[cfg(test)]
 #[path = "paint_damage/tests.rs"]
 mod tests;

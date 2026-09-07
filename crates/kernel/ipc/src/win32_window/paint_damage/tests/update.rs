@@ -6,6 +6,7 @@ use crate::win32_gdi::{COMPLEX_REGION, NULL_REGION, SIMPLE_REGION};
 fn window(state: &mut WindowManager) -> WindowId {
     let id = state.create(7, None, 0).unwrap();
     state.set_rect(id, WindowRect { left: 0, top: 0, right: 100, bottom: 80 }).unwrap();
+    state.set_visible(id, true).unwrap();
     id
 }
 
