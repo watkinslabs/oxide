@@ -6,7 +6,7 @@ const SRCCOPY: u32 = 0x00cc_0020;
 
 /// Only the brush color varies in these cases; text and background are unread.
 fn shared(brush: u32) -> crate::win32_gdi::SharedDcColors {
-    crate::win32_gdi::SharedDcColors { brush, text: 0, background: 0 }
+    crate::win32_gdi::SharedDcColors { brush, text: 0, background: 0, background_mode: crate::win32_gdi::OPAQUE }
 }
 
 #[test]

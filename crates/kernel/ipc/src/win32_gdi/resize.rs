@@ -14,6 +14,8 @@ impl GdiManager {
             clip:None,meta_clip:None,paths:Default::default(),paint_clip:None,pixels,lease:None,pending_output:Default::default(),saved:Vec::new()}));Ok(handle)
 
             clip:None,paint_clip:None,pixels,lease:None,pending_output:Default::default(),palette:None}));Ok(handle)
+
+            clip:None,paint_clip:None,pixels,lease:None,pending_output:Default::default(),palette:None,bitmap:None,memory:false}));Ok(handle)
     }
     /// Keep the canonical DC identity and attributes across window resize.
     /// Allocation/validation precede mutation. # C: O(DCs + new pixels)

@@ -31,10 +31,11 @@ fn live_projection_contains_exact_stock_and_typed_dynamic_identities_once() {
     for index in [0, 1, 2, 3, 4, 5, 18] { expected.push(0x00900000 | (32 + index)); }
     for index in [6, 7, 8, 19] { expected.push(0x00b00000 | (32 + index)); }
     for index in [10, 11, 12, 13, 14, 16, 17] { expected.push(0x008a0000 | (32 + index)); }
+    expected.push(0x00880000 | (32 + 15));
     expected.sort_unstable();
     let mut actual = owner.live_handles(); actual.sort_unstable();
     assert_eq!(actual, expected);
-    assert_eq!(actual.len(), 21);
+    assert_eq!(actual.len(), 22);
     for handle in actual { assert!(owner.contains_object(handle)); }
     owner.delete_object(font).unwrap();
     assert!(!owner.contains_object(font));
