@@ -4,6 +4,7 @@
 use super::entry::{current_tid, with_entry};
 use super::session::MenuSession;
 use alloc::vec::Vec;
+use ipc::win32_menu::bar_hit::BarMetrics;
 use ipc::win32_menu::chain;
 use ipc::win32_menu::popup::{popup_origin, PopupLayout, PopupMetrics};
 use ipc::win32_menu::{MenuId, MenuRect, MF_BYPOSITION};
@@ -16,6 +17,8 @@ pub(crate) const POPUP_MENU_EXTRA_OFFSET: i32 = 0;
 const WS_POPUP: u32 = 0x8000_0000;
 
 fn metrics() -> PopupMetrics { PopupMetrics::menu() }
+/// The cell metrics one menu bar is measured, drawn and hit-tested with.
+fn bar_metrics() -> BarMetrics { BarMetrics::menu() }
 
 /// The rectangle a popup may occupy. # C: O(1)
 #[inline(never)]
@@ -24,26 +27,42 @@ pub(crate) fn work_area() -> MenuRect {
     MenuRect { left: 0, top: 0, right: width, bottom: height }
 }
 
-/// Create the window one menu is shown in and retain the menu on it, the way
-/// the reference creates a popup-menu-class window naming the menu as its
-/// creation parameter. # C: O(N_classes + N_windows)
+/// Create the window one menu is shown in, at the rectangle it will occupy,
+/// and retain the menu on it, the way the reference creates a popup-menu-class
+/// window naming the menu as its creation parameter. The rectangle is set
+/// before the desktop is told about the window, because the create the desktop
+/// is handed carries the window's extent and an empty one names no surface.
+/// # C: O(N_classes + N_windows)
 #[inline(never)]
-pub(crate) fn create_popup_window(owner: u64, menu: u32) -> Option<u64> {
+pub(crate) fn create_popup_window(owner: u64, menu: u32, rect: WindowRect) -> Option<u64> {
     let tid = current_tid()?;
     let hwnd = with_entry(|entry| {
         let window = entry.state.create_class(tid, None, &POPUP_MENU_CLASS).ok()?;
         let _ = entry.state.set_window_long_ptr(window, POPUP_MENU_EXTRA_OFFSET, menu as u64);
+        let _ = entry.state.set_rect(window, rect);
         Some(window.raw() as u64)
-    }).flatten()?;
+    }).flatten();
+    let Some(hwnd) = hwnd else { reject(b"class", 0); return None; };
     let _ = crate::nt_window::set_creation_metadata_current(hwnd, WS_POPUP, 0, owner, 0);
     // The desktop has to learn about the window before anything is drawn into
     // it, the same way it learns about an application's own: a window the
     // compositor never heard of is a menu nobody can see.
     if crate::nt_window::bridge::publish_create_current(hwnd, WS_POPUP, 0).is_err() {
+        reject(b"publish", hwnd);
         if let Some(window) = WindowId::from_raw(u32::try_from(hwnd).ok()?) { with_entry(|entry| { let _ = entry.state.destroy(window); }); }
         return None;
     }
     Some(hwnd)
+}
+
+/// A popup that could not be opened leaves the menu bar looking exactly like
+/// one nobody clicked, so the reason is on the record. # C: O(1)
+fn reject(stage: &'static [u8], hwnd: u64) {
+    klog::write_primary_raw(b"[WINDOWS-MENU-POPUP] reject=");
+    klog::write_primary_raw(stage);
+    klog::write_primary_raw(b" hwnd=");
+    klog::write_primary_hex_u64(hwnd);
+    klog::write_primary_raw(b"\n");
 }
 
 /// Measure, place and show one popup, returning its window. `xanchor` and
@@ -52,17 +71,20 @@ pub(crate) fn create_popup_window(owner: u64, menu: u32) -> Option<u64> {
 #[inline(never)]
 pub(crate) fn show_popup(session: &mut MenuSession, menu: u32, flags: u32, x: i32, y: i32, xanchor: i32, yanchor: i32) -> Option<u64> {
     let id = MenuId::from_raw(menu)?;
-    let hwnd = match session.window_of(menu) { Some(hwnd) => hwnd, None => { let hwnd = create_popup_window(session.owner, menu)?; session.opened(menu, hwnd); hwnd } };
-    let window = WindowId::from_raw(u32::try_from(hwnd).ok()?)?;
     let tid = current_tid()?;
+    // Measured and placed first: the window is created at the rectangle it
+    // will occupy, never at an empty one.
     let Some(layout) = with_entry(|entry| {
         let _ = entry.menus.set_focused_item(id, ipc::win32_menu::popup::NO_SELECTED_ITEM);
         let max_height = { let mut info = ipc::win32_menu::MenuInfo::default(); let _ = entry.menus.info(id, ipc::win32_menu::MIM_MAXHEIGHT, &mut info); if info.max_height == 0 { i32::MAX } else { info.max_height as i32 } };
         entry.menus.popup_layout(id, metrics(), max_height).ok()
     }).flatten() else { return None; };
     let (x, y) = popup_origin(flags, x, y, layout.width, layout.height, work_area(), xanchor, yanchor);
+    let rect = WindowRect { left: x, top: y, right: x + layout.width, bottom: y + layout.height };
+    let hwnd = match session.window_of(menu) { Some(hwnd) => hwnd, None => { let hwnd = create_popup_window(session.owner, menu, rect)?; session.opened(menu, hwnd); hwnd } };
+    let window = WindowId::from_raw(u32::try_from(hwnd).ok()?)?;
     with_entry(|entry| {
-        let _ = entry.state.set_rect(window, WindowRect { left: x, top: y, right: x + layout.width, bottom: y + layout.height });
+        let _ = entry.state.set_rect(window, rect);
         let _ = entry.state.show(tid, window, true);
         let _ = entry.state.invalidate(window, None);
     });
@@ -118,18 +140,37 @@ pub(crate) fn submenu_target(menu: u32) -> Option<(u32, u32)> {
     with_entry(|entry| chain::submenu_target(&entry.menus, menu)).flatten()
 }
 
-/// Open one item's submenu beside the item, and report the menu tracking now
+/// The item one menu of the chain draws at `position`, and which kind of menu
+/// it belongs to. A menu shown in a window of its own measures its items
+/// against that window; the top menu of a bar has no window and its items are
+/// already in the owner's own space. # C: O(N_items)
+#[inline(never)]
+fn parent_item(session: &MenuSession, menu: u32, position: u32) -> Option<(chain::ParentMenu, MenuRect)> {
+    if let Some(hwnd) = session.window_of(menu) {
+        let (rect, layout) = (window_rect(hwnd)?, layout_of(menu)?);
+        return Some((chain::ParentMenu::Popup { window: rect }, layout.items.get(position as usize).copied()?));
+    }
+    let id = MenuId::from_raw(menu)?;
+    let window = u32::try_from(session.owner).ok().and_then(WindowId::from_raw)?;
+    with_entry(|entry| {
+        if entry.menus.is_popup(id).unwrap_or(true) { return None; }
+        let rect = entry.state.rect(window)?;
+        let bounds = MenuRect { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
+        let metrics = bar_metrics();
+        let item = entry.menus.bar_item_rect(id, position as usize, bounds, metrics.char_width, metrics.char_height, metrics.bar_height).ok()?;
+        Some((chain::ParentMenu::Bar, item))
+    }).flatten()
+}
+
+/// Open one item's submenu against the item, and report the menu tracking now
 /// follows. The owner has already been told to update it. # C: O(N_items + N_windows)
 #[inline(never)]
 pub(crate) fn open_sub_popup(session: &mut MenuSession, menu: u32, position: u32, submenu: u32, flags: u32) -> u32 {
     let Some(id) = MenuId::from_raw(menu) else { return menu; };
-    let Some(hwnd) = session.window_of(menu) else { return menu; };
-    let (Some(rect), Some(layout)) = (window_rect(hwnd), layout_of(menu)) else { return menu; };
-    let Some(item_rect) = layout.items.get(position as usize).copied() else { return menu; };
+    let Some((parent, item_rect)) = parent_item(session, menu, position) else { return menu; };
     with_entry(|entry| chain::mark_mouse_select(&mut entry.menus, id.raw(), position));
-    // A submenu opens at the item's right edge, and never inherits the
-    // caller's alignment.
-    let ((x, y), (xanchor, yanchor)) = chain::sub_popup_origin(rect, item_rect);
+    // A submenu never inherits the caller's alignment.
+    let ((x, y), (xanchor, yanchor)) = chain::submenu_origin(parent, item_rect);
     let plain = flags & !(ipc::win32_menu::popup::TPM_CENTERALIGN | ipc::win32_menu::popup::TPM_RIGHTALIGN
         | ipc::win32_menu::popup::TPM_VCENTERALIGN | ipc::win32_menu::popup::TPM_BOTTOMALIGN);
     if show_popup(session, submenu, plain, x, y, xanchor, yanchor).is_none() { return menu; }

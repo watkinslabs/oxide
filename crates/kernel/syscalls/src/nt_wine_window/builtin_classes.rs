@@ -59,10 +59,18 @@ pub(crate) const BUILTINS: [Builtin; 12] = [
 /// reverse. Returns how many were registered. # C: O(builtins)
 pub(crate) fn register_all(mut procedure: impl FnMut(usize) -> Option<u64>, mut cursor: impl FnMut(u32) -> Option<u64>,
     mut register: impl FnMut(&Builtin, u64, u64) -> bool) -> usize {
+    register_reporting(&mut procedure, &mut cursor, &mut register, &mut |_| {})
+}
+
+/// The same registration, reporting the name of every builtin it could not
+/// register. A skipped class is invisible in the count, and a window of it can
+/// never be created afterwards. # C: O(builtins)
+pub(crate) fn register_reporting(procedure: &mut impl FnMut(usize) -> Option<u64>, cursor: &mut impl FnMut(u32) -> Option<u64>,
+    register: &mut impl FnMut(&Builtin, u64, u64) -> bool, skipped: &mut impl FnMut(&'static str)) -> usize {
     let mut registered = 0;
     for builtin in &BUILTINS {
-        let Some(wndproc) = procedure(builtin.proc_index).filter(|proc| *proc != 0) else { continue; };
-        if register(builtin, wndproc, cursor(builtin.cursor).unwrap_or(0)) { registered += 1; }
+        let Some(wndproc) = procedure(builtin.proc_index).filter(|proc| *proc != 0) else { skipped(builtin.name); continue; };
+        if register(builtin, wndproc, cursor(builtin.cursor).unwrap_or(0)) { registered += 1; } else { skipped(builtin.name); }
     }
     registered
 }

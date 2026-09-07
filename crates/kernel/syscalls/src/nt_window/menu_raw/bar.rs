@@ -92,28 +92,17 @@ fn release_band_dc(hwnd: u64, dc: u64) {
     let _ = crate::nt_gdi::release_window_dc_for_current(window, handle);
 }
 
-/// One stage of the entry into menu tracking. The route is the
-/// non-allocating one: a stage that reports while the GUI owner is locked
-/// must not enter a console sink that allocates. # C: O(1)
-pub(crate) fn trace(stage: &'static [u8]) {
-    klog::write_primary_raw(b"[MENU-ENTRY] ");
-    klog::write_primary_raw(stage);
-    klog::write_primary_raw(b"\n");
-}
-
 /// Enter menu tracking for one window's bar. A press names the point it began
 /// at; a key names no point and lets the loop select the first item.
 /// # C: O(N_messages * N_items); # Sleeps: yes
 #[inline(never)]
 pub(crate) fn track_for_current(hwnd: u64, command: MenuCommand, point: (i32, i32)) -> Option<u64> {
-    trace(b"track-entered");
     let menu = match command {
         MenuCommand::Mouse { hit } if hit == HTSYSMENU => system_menu_of(hwnd),
         MenuCommand::Mouse { .. } => bar_of(hwnd).map(|(menu, _)| menu.raw()),
         MenuCommand::Keyboard { character } => keyboard_menu(hwnd, character),
     };
-    let Some(menu) = menu else { trace(b"no-menu"); return None; };
-    trace(b"menu-resolved");
+    let Some(menu) = menu else { return None; };
     let mut flags = TPM_LEFTALIGN_LEFTBUTTON;
     if matches!(command, MenuCommand::Mouse { .. }) { flags |= TPM_BUTTONDOWN; }
     if let MenuCommand::Keyboard { character } = command {
@@ -126,11 +115,9 @@ pub(crate) fn track_for_current(hwnd: u64, command: MenuCommand, point: (i32, i3
         }
     }
     let already = with_entry(|entry| entry.menu_tracking.is_some()).unwrap_or(true);
-    if already { trace(b"already-tracking"); return None; }
+    if already { return None; }
     let _ = with_entry(|entry| entry.menu_tracking = Some(super::session::MenuCancel { owner: hwnd, exit: false }));
-    trace(b"claimed");
     let _ = work_area();
-    trace(b"work-area");
     // The loop suspends in every window procedure it enters and reports from
     // the callback return that finishes it.
     Some(track_bar_menu(hwnd, menu, flags, point))
@@ -204,16 +191,12 @@ pub(crate) fn default_proc_for_current(hwnd: u64, message: u32, wparam: u64, lpa
     use ipc::win32_window::nonclient_menu as nc;
     match message {
         nc::WM_NCLBUTTONDOWN => {
-            trace(b"nc-button-down");
             let command = nc::nc_button_sys_command(wparam as u16 as i16)?;
-            trace(b"nc-button-command");
             let _ = crate::nt_window::send::send_for_current(hwnd, nc::WM_SYSCOMMAND, command as u64, lparam as u64);
             Some(0)
         }
         nc::WM_SYSCOMMAND => {
-            trace(b"syscommand");
             let command = nc::menu_sys_command(wparam as u32, lparam as u32)?;
-            trace(b"syscommand-decoded");
             let point = ((lparam as u64 as u16 as i16) as i32, (((lparam as u64) >> 16) as u16 as i16) as i32);
             Some(track_for_current(hwnd, command, point).unwrap_or(0))
         }

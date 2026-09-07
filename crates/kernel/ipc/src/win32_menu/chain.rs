@@ -75,12 +75,26 @@ pub fn mark_mouse_select(menus: &mut MenuManager, menu: u32, position: u32) {
     if let Ok(item) = menus.item_mut_by_position(id, position as usize) { item.state |= MF_MOUSESELECT; }
 }
 
-/// Where a submenu opens: at the right edge of the item that owns it, in the
-/// screen space its parent's window is placed in. Reports the origin and the
-/// anchor size a popup that will not fit is pushed past. # C: O(1)
-pub fn sub_popup_origin(parent: MenuRect, item: MenuRect) -> ((i32, i32), (i32, i32)) {
-    ((parent.left.saturating_add(item.right), parent.top.saturating_add(item.top)),
-        (item.right.saturating_sub(item.left), item.bottom.saturating_sub(item.top)))
+/// The menu a submenu is opening from: a popup shown in a window of its own,
+/// or the bar drawn on its owner's window, which has none.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ParentMenu {
+    /// The bar's item rectangles are already in the owner's own space.
+    Bar,
+    /// A popup's are relative to its window, which sits here.
+    Popup { window: MenuRect },
+}
+
+/// Where the submenu of one item opens, and the anchor size a popup that will
+/// not fit is pushed past rather than over. A popup's submenu opens at the
+/// right edge of the item, level with it; a bar's drops below the item.
+/// # C: O(1)
+pub fn submenu_origin(parent: ParentMenu, item: MenuRect) -> ((i32, i32), (i32, i32)) {
+    let origin = match parent {
+        ParentMenu::Bar => (item.left, item.bottom),
+        ParentMenu::Popup { window } => (window.left.saturating_add(item.right), window.top.saturating_add(item.top)),
+    };
+    (origin, (item.right.saturating_sub(item.left), item.bottom.saturating_sub(item.top)))
 }
 
 #[cfg(test)]

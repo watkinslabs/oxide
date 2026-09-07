@@ -134,11 +134,9 @@ pub(crate) fn track_popup_menu(owner: u64, menu: u32, flags: u32, x: i32, y: i32
 /// The pending report has the same meaning as for a popup.
 /// # C: O(N_messages * N_items); # Sleeps: yes
 pub(crate) fn track_bar_menu(owner: u64, menu: u32, flags: u32, point: (i32, i32)) -> u64 {
-    super::bar::trace(b"bar-track-entered");
     let Some(tid) = current_tid() else { return 0; };
     let mut state = TrackLoop::new(flags & !TPM_POPUPMENU, owner as u32, menu, point);
     state.begin();
-    super::bar::trace(b"bar-track-begun");
     put(alloc::boxed::Box::new(PendingTrack { tid, state, session: MenuSession::new(owner), origin: point }));
     drive()
 }
@@ -150,14 +148,14 @@ fn drive() -> u64 {
         let Some(mut track) = take() else { return 0; };
         let Some(step) = with_entry(|entry| track.state.next(&mut entry.menus)) else { return 0; };
         match step {
-            LoopStep::Done(executed) => { super::bar::trace(b"step-done"); return finish(executed); }
-            LoopStep::Send(call) | LoopStep::Dispatch(call) => { super::bar::trace(b"step-send"); put(track); if let Some(pending) = call_window_proc(call) { return pending; } }
-            LoopStep::Effect(effect) => { super::bar::trace(b"step-effect"); track_effects::apply(&mut track, effect); put(track); }
-            LoopStep::ShowTop => { super::bar::trace(b"step-show-top"); show_top(&mut track); put(track); }
-            LoopStep::ShowSub { menu, position, submenu, select_first } => { super::bar::trace(b"step-show-sub"); track_effects::show_sub(&mut track, menu, position, submenu, select_first); put(track); }
-            LoopStep::Close { menu } => { super::bar::trace(b"step-close"); close_and_follow(&mut track, menu); put(track); }
-            LoopStep::PressAt { point } => { super::bar::trace(b"step-press"); initial_press(&mut track, point); put(track); }
-            LoopStep::NextMessage => { super::bar::trace(b"step-next-message"); if !next_message(&mut track) { track.state.cancel(); } put(track); }
+            LoopStep::Done(executed) => return finish(executed),
+            LoopStep::Send(call) | LoopStep::Dispatch(call) => { put(track); if let Some(pending) = call_window_proc(call) { return pending; } }
+            LoopStep::Effect(effect) => { track_effects::apply(&mut track, effect); put(track); }
+            LoopStep::ShowTop => { show_top(&mut track); put(track); }
+            LoopStep::ShowSub { menu, position, submenu, select_first } => { track_effects::show_sub(&mut track, menu, position, submenu, select_first); put(track); }
+            LoopStep::Close { menu } => { close_and_follow(&mut track, menu); put(track); }
+            LoopStep::PressAt { point } => { initial_press(&mut track, point); put(track); }
+            LoopStep::NextMessage => { if !next_message(&mut track) { track.state.cancel(); } put(track); }
         }
     }
 }
@@ -167,7 +165,6 @@ fn drive() -> u64 {
 /// the loop continues. # C: O(sends + windows); # Sleeps: yes
 #[inline(never)]
 fn call_window_proc(call: ProcCall) -> Option<u64> {
-    super::bar::trace(b"call-window-proc");
     let Some(tid) = current_tid() else { return Some(0); };
     match send::send_resumable_current(call.hwnd, call.message, call.wparam, call.lparam as u64, Continuation { token: tid, resume }) {
         SendOutcome::Pending => Some(STATUS_PENDING),

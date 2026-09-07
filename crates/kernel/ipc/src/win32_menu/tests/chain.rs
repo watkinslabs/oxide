@@ -60,9 +60,13 @@ fn the_submenu_target_is_the_focused_item_that_owns_one() {
     assert_eq!(submenu_target(&menus, popup), None, "an item with no submenu is no target");
 }
 
+/// A popup's submenu opens beside the item; a bar's drops below it, and a bar
+/// keeps its items in the owner's own space, so nothing is added to them.
 #[test]
-fn a_submenu_opens_at_the_right_edge_of_the_item_that_owns_it() {
-    let parent = MenuRect { left: 40, top: 60, right: 140, bottom: 200 };
+fn a_submenu_opens_beside_a_popup_item_and_below_a_bar_item() {
+    let window = MenuRect { left: 40, top: 60, right: 140, bottom: 200 };
     let item = MenuRect { left: 3, top: 19, right: 97, bottom: 35 };
-    assert_eq!(sub_popup_origin(parent, item), ((137, 79), (94, 16)));
+    assert_eq!(submenu_origin(ParentMenu::Popup { window }, item), ((137, 79), (94, 16)));
+    let bar_item = MenuRect { left: 148, top: 147, right: 196, bottom: 165 };
+    assert_eq!(submenu_origin(ParentMenu::Bar, bar_item), ((148, 165), (48, 18)));
 }

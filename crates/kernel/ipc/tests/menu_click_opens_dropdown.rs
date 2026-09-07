@@ -177,14 +177,14 @@ fn apply(state: &mut TrackLoop, desktop: &mut Desktop, effect: TrackEffect) {
 fn show_sub(state: &mut TrackLoop, desktop: &mut Desktop, menu: u32, position: u32, submenu: u32, select_first: bool) {
     let id = MenuId::from_raw(submenu).unwrap();
     let layout = desktop.menus.popup_layout(id, POPUP_METRICS, i32::MAX).unwrap();
-    let (origin, anchor) = if menu == desktop.bar {
-        let item = desktop.bar_item(position as usize);
-        ((item.left, item.bottom), (item.right - item.left, item.bottom - item.top))
-    } else {
-        let parent = desktop.popup_rect(menu).unwrap();
-        let item = chain::sub_popup_origin(parent, desktop.menus.popup_layout(MenuId::from_raw(menu).unwrap(), POPUP_METRICS, i32::MAX).unwrap().items[position as usize]);
-        item
+    // The same two decisions the driver makes: which menu the item belongs to,
+    // and where its submenu opens against it.
+    let (parent, item) = match desktop.popup_rect(menu) {
+        Some(window) => (chain::ParentMenu::Popup { window },
+            desktop.menus.popup_layout(MenuId::from_raw(menu).unwrap(), POPUP_METRICS, i32::MAX).unwrap().items[position as usize]),
+        None => (chain::ParentMenu::Bar, desktop.bar_item(position as usize)),
     };
+    let (origin, anchor) = chain::submenu_origin(parent, item);
     chain::mark_mouse_select(&mut desktop.menus, menu, position);
     let (x, y) = popup_origin(state.flags(), origin.0, origin.1, layout.width, layout.height, WORK, anchor.0, anchor.1);
     let bounds = MenuRect { left: x, top: y, right: x + layout.width, bottom: y + layout.height };
