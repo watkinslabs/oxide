@@ -25,6 +25,8 @@ mod class_raw;
 mod cursor_raw;
 mod cursor_icon_raw;
 mod input_raw;
+pub(crate) mod drag_raw;
+pub(crate) mod draw_icon_raw;
 mod keyboard_raw;
 mod rawinput_raw;
 #[cfg(target_os = "oxide-kernel")]

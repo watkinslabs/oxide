@@ -86,6 +86,10 @@ pub(crate) mod nt_wine_cursor_contract;
 pub(crate) mod nt_wine_cursor_icon_contract;
 #[path = "nt_wine_window/input_raw.rs"]
 pub(crate) mod nt_wine_input_contract;
+#[path = "nt_wine_window/drag_raw.rs"]
+pub(crate) mod nt_wine_drag_contract;
+#[path = "nt_wine_window/draw_icon_raw.rs"]
+pub(crate) mod nt_wine_draw_icon_contract;
 #[path = "nt_wine_window/keyboard_raw.rs"]
 pub(crate) mod nt_wine_keyboard_contract;
 #[path = "nt_wine_window/rawinput_raw.rs"]

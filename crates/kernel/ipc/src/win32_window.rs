@@ -140,6 +140,8 @@ pub const WM_RBUTTONUP: u32 = 0x0205;
 pub const WM_MBUTTONDOWN: u32 = 0x0207;
 pub const WM_MBUTTONUP: u32 = 0x0208;
 pub const WM_MOUSEWHEEL: u32 = 0x020a;
+/// Last message of the mouse range, which a mouse-only filter spans to.
+pub const WM_MOUSEHWHEEL: u32 = 0x020e;
 /// Sent before a window's nonclient area is created. The default handling must
 /// answer TRUE: a FALSE return from this message is the documented way to
 /// abort creation, so treating it as an unhandled message destroys every

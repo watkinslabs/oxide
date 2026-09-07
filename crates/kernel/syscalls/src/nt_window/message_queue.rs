@@ -5,4 +5,4 @@
 #[path = "message_queue/live.rs"]
 mod live;
 #[cfg(target_os = "oxide-kernel")]
-pub(crate) use live::route;
+pub(crate) use live::{msg_wait, route};

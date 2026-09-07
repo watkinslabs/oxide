@@ -113,7 +113,7 @@ fn foreground_boost() -> u64 {
 /// slot after the caller's objects and shares their process wait list, so an
 /// object another thread signals releases this wait at once.
 /// # C: O(N_objects + N_queued); # Sleeps: yes
-fn msg_wait(count: u32, handles: u64, timeout_ms: u32, mask: u32) -> u32 {
+pub(crate) fn msg_wait(count: u32, handles: u64, timeout_ms: u32, mask: u32) -> u32 {
     if !wait::count_admitted(count) {
         crate::nt_rtl::set_last_win32_error(wait::ERROR_INVALID_PARAMETER as u64);
         return wait::WAIT_FAILED;

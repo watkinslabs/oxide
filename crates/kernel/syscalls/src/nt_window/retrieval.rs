@@ -47,5 +47,8 @@ fn raw_result(call: NtCall, status: u64) -> u64 {
     } else { None };
     let result = policy::raw_result(get, status, message);
     if get && result == 1 { crate::nt_milestone::message_get(); }
+    // A peek that finds nothing is a thread that has drained its input, which
+    // is the state an input-idle wait on this process waits for.
+    if !get && result == 0 { drag::mark_idle_for_current(); }
     result
 }

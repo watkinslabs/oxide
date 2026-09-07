@@ -18,9 +18,6 @@ pub(crate) const REGISTER_HOTKEY: u64 = 0x14f3;
 pub(crate) const UNREGISTER_HOTKEY: u64 = 0x15e0;
 pub(crate) const ATTACH_THREAD_INPUT: u64 = 0x1322;
 pub(crate) const SEND_INPUT: u64 = 0x152e;
-pub(crate) const DRAG_DETECT: u64 = 0x1393;
-pub(crate) const DRAG_OBJECT: u64 = 0x1394;
-pub(crate) const WAIT_FOR_INPUT_IDLE: u64 = 0x15f8;
 pub(crate) const ENABLE_MOUSE_IN_POINTER: u64 = 0x13a9;
 pub(crate) const ENABLE_MOUSE_IN_POINTER_FOR_THREAD: u64 = 0x13aa;
 pub(crate) const IS_MOUSE_IN_POINTER_ENABLED: u64 = 0x1490;
@@ -48,12 +45,6 @@ pub(crate) const MOVE_POINT_HISTORY: usize = 64;
 pub(crate) const GMMP_USE_DISPLAY_POINTS: u32 = 1;
 /// Default double-click interval in milliseconds.
 pub(crate) const DEFAULT_DOUBLE_CLICK_MS: u32 = 500;
-/// The wait was satisfied by the process becoming idle.
-pub(crate) const WAIT_OBJECT_0: u64 = 0;
-/// The wait timed out.
-pub(crate) const WAIT_TIMEOUT: u64 = 0x0000_0102;
-/// The wait could not be started.
-pub(crate) const WAIT_FAILED: u64 = 0xffff_ffff;
 
 /// Decode a `RECT`. # C: O(1)
 pub(crate) fn decode_rect(bytes: &[u8; RECT_BYTES]) -> ipc::win32_window::WindowRect {

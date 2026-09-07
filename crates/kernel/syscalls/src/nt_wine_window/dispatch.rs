@@ -24,6 +24,8 @@ pub fn dispatch(call: NtCall) -> u64 {
     if let Some(result) = crate::nt_window::scroll::dc_live::route(ordinal, &args) { return result; }
     if let Some(result) = crate::nt_window::menu_raw::route(ordinal, &args) { return result; }
     if let Some(result) = crate::nt_window::display::route(ordinal, &args) { return result; }
+    if let Some(result) = crate::nt_window::drag::route(ordinal, &args) { return result; }
+    if let Some(result) = crate::nt_window::draw_icon::route(ordinal, &args) { return result; }
     if let Some(result) = crate::nt_visibility_raw::kernel::route(ordinal, &args) { return result; }
     if let Some(result) = crate::nt_region_raw::kernel::route(ordinal, &args) { return result; }
     if let Some(result) = crate::nt_dc_query_raw::kernel::route(ordinal, &args) { return result; }
