@@ -185,7 +185,7 @@ impl Backend {
                 let window = self.windows.get_mut(&hwnd)?;
                 if window.suppress_backing_configure && rect.right - rect.left <= 1 && rect.bottom - rect.top <= 1 { window.suppress_backing_configure = false; None } else { Some(BridgeEvent::Configure { hwnd, rect }) }
             }
-            Some(BridgeEvent::Input(input)) => self.map_input(input),
+            Some(BridgeEvent::Input(input)) => { let input = self.retarget_input(input)?; self.map_input(input) }
             Some(BridgeEvent::WorkArea(_)) => self.snapshot_event(),
             other => other,
         }
@@ -258,6 +258,21 @@ impl Backend {
     fn property_u32(&self, window: Xid, atom: ffi::Atom) -> Option<u32> { let values = self.property_u32s(window, atom)?; crate::geometry::decode_cardinals(&values) }
     fn property_u32s(&self, window: Xid, atom: ffi::Atom) -> Option<Vec<u32>> { self.property_u32s_typed(window, atom, ffi::ATOM_CARDINAL) }
     fn property_u32s_typed(&self, window: Xid, atom: ffi::Atom, type_: ffi::Atom) -> Option<Vec<u32>> { let cookie = unsafe { ffi::xcb_get_property(self.conn, 0, window, atom, type_, 0, 4) }; let mut error = ptr::null_mut(); let reply = unsafe { ffi::xcb_get_property_reply(self.conn, cookie, &mut error) }; if reply.is_null() { return None; } if unsafe { (*reply).format } != 32 { unsafe { libc::free(reply as *mut _); } return None; } let len = unsafe { ffi::xcb_get_property_value_length(reply) }; if len < 0 || len % 4 != 0 { unsafe { libc::free(reply as *mut _); } return None; } let ptr = unsafe { ffi::xcb_get_property_value(reply) as *const u32 }; let values = unsafe { std::slice::from_raw_parts(ptr, len as usize / 4) }.to_vec(); unsafe { libc::free(reply as *mut _); } Some(values) }
+    /// X events name an X window; every layer above this one names an HWND.
+    /// An event on a window this bridge does not own is not a window event at
+    /// all and is dropped, which is the same answer the translation gives for
+    /// a window destroyed between the server's dispatch and this poll.
+    fn retarget_input(&self, input: InputEvent) -> Option<InputEvent> {
+        let xid = match input { InputEvent::Key { hwnd, .. } | InputEvent::Text { hwnd, .. } | InputEvent::Button { hwnd, .. } | InputEvent::Motion { hwnd, .. } | InputEvent::Focus { hwnd, .. } => hwnd };
+        let hwnd = self.xid_to_hwnd.get(&xid).copied()?;
+        Some(match input {
+            InputEvent::Key { press, virtual_key, scan_code, modifiers, .. } => InputEvent::Key { hwnd, press, virtual_key, scan_code, modifiers },
+            InputEvent::Text { utf8, .. } => InputEvent::Text { hwnd, utf8 },
+            InputEvent::Button { press, button, x, y, state, .. } => InputEvent::Button { hwnd, press, button, x, y, state },
+            InputEvent::Motion { x, y, state, .. } => InputEvent::Motion { hwnd, x, y, state },
+            InputEvent::Focus { focused, .. } => InputEvent::Focus { hwnd, focused },
+        })
+    }
     fn map_input(&mut self, input: InputEvent) -> Option<BridgeEvent> {
         if let InputEvent::Key { hwnd, press, virtual_key: _, scan_code: keycode, modifiers: _state } = input {
             let alt_name = CString::new("Alt").map_err(|_| ()).ok()?;

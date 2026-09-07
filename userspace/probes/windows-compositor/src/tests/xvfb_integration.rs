@@ -158,3 +158,54 @@ fn xvfb_workarea_uses_generic_properties_without_window_manager_identity() {
     set(workarea,&[0,0,320,230]);assert_eq!(backend.monitor_snapshot().unwrap().work_area.bottom,230);
     unsafe { ffi::xcb_disconnect(conn); }
 }
+
+// 31fn desktop input routing: an X event names an X window, and every layer
+// above the bridge names an HWND. Feeding map_input an HWND directly, as the
+// keyboard test does, cannot observe that translation; only a real event
+// delivered by the server can.
+#[test]
+fn xvfb_desktop_input_events_carry_the_hwnd_not_the_x_window() {
+    let server = xvfb();
+    let mut backend = Backend::connect(Some(&server.display)).unwrap();
+    let hwnd = 0x91u32;
+    backend.handle_command(BridgeCommand::Create { hwnd, title: Vec::new(), rect: Rect { left: 0, top: 0, right: 120, bottom: 90 }, parent: 0, style: 0x1000_0000, ex_style: 0 }).unwrap();
+    let xid = backend.xid_for(hwnd).unwrap();
+    assert_ne!(xid, hwnd, "the test is meaningless unless the X window id differs from the HWND");
+    let (conn, _) = unsafe { connect(&server.display) };
+    let send_raw = |bytes: &[u8; 32], mask: u32| unsafe { ffi::xcb_send_event(conn, 0, xid, mask, bytes.as_ptr() as *const _); ffi::xcb_flush(conn); };
+
+    let mut button = [0u8; 32];
+    button[0] = ffi::BUTTON_PRESS; button[1] = 1;
+    button[8..12].copy_from_slice(&xid.to_ne_bytes()); button[12..16].copy_from_slice(&xid.to_ne_bytes());
+    button[24..26].copy_from_slice(&30i16.to_ne_bytes()); button[26..28].copy_from_slice(&40i16.to_ne_bytes());
+    send_raw(&button, ffi::EVENT_BUTTON_PRESS);
+
+    let mut motion = [0u8; 32];
+    motion[0] = ffi::MOTION_NOTIFY;
+    motion[8..12].copy_from_slice(&xid.to_ne_bytes()); motion[12..16].copy_from_slice(&xid.to_ne_bytes());
+    motion[24..26].copy_from_slice(&31i16.to_ne_bytes()); motion[26..28].copy_from_slice(&41i16.to_ne_bytes());
+    send_raw(&motion, ffi::EVENT_POINTER_MOTION);
+
+    let mut focus = [0u8; 32];
+    focus[0] = ffi::FOCUS_IN;
+    focus[4..8].copy_from_slice(&xid.to_ne_bytes());
+    send_raw(&focus, ffi::EVENT_FOCUS_CHANGE);
+
+    let mut seen = Vec::new();
+    for _ in 0..500 {
+        while let Some(event) = backend.poll_event() { seen.push(event); }
+        if seen.len() >= 3 { break; }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(seen.contains(&BridgeEvent::Input(InputEvent::Button { hwnd, press: true, button: 1, x: 30, y: 40, state: 0 })), "button event did not reach the bridge as an HWND: {seen:?}");
+    assert!(seen.contains(&BridgeEvent::Input(InputEvent::Motion { hwnd, x: 31, y: 41, state: 0 })), "motion event did not reach the bridge as an HWND: {seen:?}");
+    assert!(seen.contains(&BridgeEvent::Input(InputEvent::Focus { hwnd, focused: true })), "focus event did not reach the bridge as an HWND: {seen:?}");
+    // An event on a window this bridge does not own is dropped, not forwarded
+    // with a foreign identifier the GUI owner would have to reject.
+    let (other, root) = unsafe { connect(&server.display) };
+    unsafe { ffi::xcb_disconnect(other); }
+    let mut stray = button; stray[8..12].copy_from_slice(&root.to_ne_bytes()); stray[12..16].copy_from_slice(&root.to_ne_bytes());
+    unsafe { ffi::xcb_send_event(conn, 0, xid, ffi::EVENT_BUTTON_PRESS, stray.as_ptr() as *const _); ffi::xcb_flush(conn); }
+    for _ in 0..50 { assert_eq!(backend.poll_event(), None, "an event naming a foreign X window must not become a window event"); std::thread::sleep(Duration::from_millis(1)); }
+    unsafe { ffi::xcb_disconnect(conn); }
+}
