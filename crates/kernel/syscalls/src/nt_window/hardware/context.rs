@@ -4,7 +4,7 @@
 //! the parent chain a button-down notifies.
 use alloc::vec::Vec;
 use ipc::win32_window::hardware::{self, LadderContext, MouseContext, KeyContext, ProcCall, make_point, split_point};
-use ipc::win32_window::{MessageFilter, WinMessage, WindowId, WindowManager, GA_ROOT, GCL_STYLE, HTNOWHERE};
+use ipc::win32_window::{MessageFilter, WinMessage, WindowId, WindowManager, GA_ROOT, GCL_STYLE, HTCLIENT};
 
 /// Extended style of a child that declines to notify its parent.
 const WS_EX_NOPARENTNOTIFY: u32 = 0x0000_0004;
@@ -19,8 +19,11 @@ pub(super) fn client_origin(state: &WindowManager, window: WindowId) -> (i32, i3
 }
 
 /// The hit-test code the window procedure answered, as the reference reads an
-/// `LRESULT` that carries one. # C: O(1)
-pub(super) fn hit_code(result: Result<u64, ()>) -> i32 { result.map_or(HTNOWHERE, |value| value as i64 as i32) }
+/// `LRESULT` that carries one. A window that could not be asked is taken as a
+/// client hit, which is what the reference does for every window it declines
+/// to send the message to; only an answer can say the point is nowhere.
+/// # C: O(1)
+pub(super) fn hit_code(result: Result<u64, ()>) -> i32 { result.map_or(HTCLIENT, |value| value as i64 as i32) }
 
 /// # C: O(N_windows + N_classes)
 pub(super) fn mouse_context(state: &WindowManager, window: WindowId, hit_test: i32, menu_mode: bool, modal: bool,
