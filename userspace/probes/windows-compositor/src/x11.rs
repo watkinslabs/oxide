@@ -18,7 +18,7 @@ pub enum BackendError { DisplayUnavailable, X11, InvalidCommand, Transport(Trans
 
 struct Window { xid: Xid, parent: Xid, gc: ffi::Gcontext, rect: Rect, width: u32, height: u32, requested_visible: bool, suppress_backing_configure: bool, last_frame: Option<Frame>, caret: crate::caret::Surface }
 
-pub struct Backend { conn: *mut ffi::Connection, keymap: *mut ffi::XkbKeymap, state: *mut ffi::XkbState, context: *mut ffi::XkbContext, max_request_bytes: usize, root: Xid, visual: ffi::Visualid, depth: u8, screen: Rect, atoms: Atoms, windows: BTreeMap<u32, Window>, xid_to_hwnd: BTreeMap<Xid, u32>, down_keys: BTreeMap<u8, bool>, pending: VecDeque<BridgeEvent> }
+pub struct Backend { conn: *mut ffi::Connection, keymap: *mut ffi::XkbKeymap, state: *mut ffi::XkbState, context: *mut ffi::XkbContext, max_request_bytes: usize, root: Xid, visual: ffi::Visualid, depth: u8, screen: Rect, atoms: Atoms, windows: BTreeMap<u32, Window>, xid_to_hwnd: BTreeMap<Xid, u32>, down_keys: BTreeMap<u8, bool>, extra_buttons: u32, pending: VecDeque<BridgeEvent> }
 
 #[derive(Clone, Copy)] struct Atoms { wm_protocols: ffi::Atom, wm_delete: ffi::Atom, wm_transient_for: ffi::Atom, net_wm_name: ffi::Atom, utf8_string: ffi::Atom, net_workarea: ffi::Atom, net_current_desktop: ffi::Atom, net_active_window: ffi::Atom, net_wm_state: ffi::Atom, net_wm_state_above: ffi::Atom }
 
@@ -80,7 +80,7 @@ impl Backend {
         if state.is_null() { unsafe { ffi::xkb_keymap_unref(keymap); ffi::xkb_context_unref(context); ffi::xcb_disconnect(conn); } return Err(BackendError::X11); }
         Self::stage(started, "keymap-ready");
         let max_request_bytes = (unsafe { ffi::xcb_get_maximum_request_length(conn) } as usize).saturating_mul(4).min(64 * 1024);
-        Ok(Self { conn, keymap, state, context, max_request_bytes, root, visual: screen.root_visual, depth: screen.root_depth, screen: screen_rect, atoms, windows: BTreeMap::new(), xid_to_hwnd: BTreeMap::new(), down_keys: BTreeMap::new(), pending: VecDeque::new() })
+        Ok(Self { conn, keymap, state, context, max_request_bytes, root, visual: screen.root_visual, depth: screen.root_depth, screen: screen_rect, atoms, windows: BTreeMap::new(), xid_to_hwnd: BTreeMap::new(), down_keys: BTreeMap::new(), extra_buttons: 0, pending: VecDeque::new() })
     }
 
     /// `_NET_CURRENT_DESKTOP` and `_NET_WORKAREA` are published by a window
@@ -285,13 +285,14 @@ impl Backend {
         Some(position)
     }
     fn retarget_input(&self, input: InputEvent) -> Option<InputEvent> {
-        let xid = match input { InputEvent::Key { hwnd, .. } | InputEvent::Text { hwnd, .. } | InputEvent::Button { hwnd, .. } | InputEvent::Motion { hwnd, .. } | InputEvent::Focus { hwnd, .. } => hwnd };
+        let xid = match input { InputEvent::Key { hwnd, .. } | InputEvent::Text { hwnd, .. } | InputEvent::Button { hwnd, .. } | InputEvent::Motion { hwnd, .. } | InputEvent::Pointer { hwnd, .. } | InputEvent::Focus { hwnd, .. } => hwnd };
         let hwnd = self.xid_to_hwnd.get(&xid).copied()?;
         Some(match input {
             InputEvent::Key { press, virtual_key, scan_code, modifiers, .. } => InputEvent::Key { hwnd, press, virtual_key, scan_code, modifiers },
             InputEvent::Text { utf8, .. } => InputEvent::Text { hwnd, utf8 },
             InputEvent::Button { press, button, x, y, state, .. } => InputEvent::Button { hwnd, press, button, x, y, state },
             InputEvent::Motion { x, y, state, .. } => InputEvent::Motion { hwnd, x, y, state },
+            InputEvent::Pointer { x, y, buttons, wheel, hwheel, .. } => InputEvent::Pointer { hwnd, x, y, buttons, wheel, hwheel },
             InputEvent::Focus { focused, .. } => InputEvent::Focus { hwnd, focused },
         })
     }
@@ -315,7 +316,35 @@ impl Backend {
                 if n > 0 { let bytes = unsafe { std::slice::from_raw_parts(text.as_ptr() as *const u8, (n as usize).saturating_add(1).min(text.len())) }; if let Ok(Some(value)) = crate::keyboard::state_utf8(bytes, n, true) { self.pending.push_back(BridgeEvent::Input(InputEvent::Text { hwnd, utf8: value.as_bytes().to_vec() })); } }
             }
             Some(BridgeEvent::Input(InputEvent::Key { hwnd, press, virtual_key, scan_code: scan.code, modifiers }))
-        } else { Some(BridgeEvent::Input(input)) }
+        } else { self.map_pointer(input) }
+    }
+
+    /// X reports the modifier state in effect before the event's own
+    /// transition and names buttons by number; a window message carries a
+    /// complete Win32 button mask and a wheel axis. X publishes no state bit
+    /// for the fourth and fifth buttons, so their mask is carried here.
+    fn map_pointer(&mut self, input: InputEvent) -> Option<BridgeEvent> {
+        let (hwnd, x, y, state, transition) = match input {
+            InputEvent::Motion { hwnd, x, y, state } => (hwnd, x, y, state, None),
+            InputEvent::Button { hwnd, press, button, x, y, state } => (hwnd, x, y, state, Some((press, button))),
+            other => return Some(BridgeEvent::Input(other)),
+        };
+        const TRACKED: u32 = crate::pointer::MK_XBUTTON1 | crate::pointer::MK_XBUTTON2;
+        let mut wheel = 0; let mut hwheel = 0; let mut transitioned = 0; let mut released = 0;
+        if let Some((press, button)) = transition {
+            match (crate::pointer::button_mask(button), crate::pointer::wheel_for(button)) {
+                // The state X reports predates this event's own transition, so
+                // a press is not yet held there and a release still is.
+                (Some(mask), _) => { if press { transitioned = mask; } else { released = mask; }
+                    if mask & TRACKED != 0 { if press { self.extra_buttons |= mask; } else { self.extra_buttons &= !mask; } } }
+                // A wheel is a button press in X, and its release stands for
+                // no motion at all rather than for a second notch.
+                (None, Some((delta, horizontal))) => { if !press { return None; } if horizontal { hwheel = delta; } else { wheel = delta; } }
+                (None, None) => return None,
+            }
+        }
+        let buttons = ((crate::pointer::buttons_from_state(state) | (self.extra_buttons & TRACKED)) | transitioned) & !released;
+        Some(BridgeEvent::Input(InputEvent::Pointer { hwnd, x, y, buttons, wheel, hwheel }))
     }
 }
 

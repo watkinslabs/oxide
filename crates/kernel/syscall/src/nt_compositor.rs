@@ -114,7 +114,10 @@ impl Header {
             Opcode::Create => n == 32,
             Opcode::Destroy | Opcode::Close => n == 0,
             Opcode::Visibility | Opcode::Ack | Opcode::Focus => n == 4,
-            Opcode::Geometry | Opcode::Configure | Opcode::Key | Opcode::Pointer | Opcode::Position => n == 16,
+            Opcode::Geometry | Opcode::Configure | Opcode::Key | Opcode::Position => n == 16,
+            // Position, buttons, and both wheel axes: a tilt wheel is a
+            // separate axis, not a second reading of the vertical one.
+            Opcode::Pointer => n == 20,
             Opcode::Title | Opcode::Text => n <= MAX_TITLE,
             Opcode::Frame => n >= 16,
             Opcode::Caret => n >= caret::HEADER_BYTES && n <= caret::HEADER_BYTES + caret::MAX_MASK_BYTES,

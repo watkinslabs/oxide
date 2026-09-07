@@ -197,8 +197,8 @@ fn xvfb_desktop_input_events_carry_the_hwnd_not_the_x_window() {
         if seen.len() >= 3 { break; }
         std::thread::sleep(Duration::from_millis(2));
     }
-    assert!(seen.contains(&BridgeEvent::Input(InputEvent::Button { hwnd, press: true, button: 1, x: 30, y: 40, state: 0 })), "button event did not reach the bridge as an HWND: {seen:?}");
-    assert!(seen.contains(&BridgeEvent::Input(InputEvent::Motion { hwnd, x: 31, y: 41, state: 0 })), "motion event did not reach the bridge as an HWND: {seen:?}");
+    assert!(seen.contains(&BridgeEvent::Input(InputEvent::Pointer { hwnd, x: 30, y: 40, buttons: crate::pointer::MK_LBUTTON, wheel: 0, hwheel: 0 })), "button event did not reach the bridge as an HWND: {seen:?}");
+    assert!(seen.contains(&BridgeEvent::Input(InputEvent::Pointer { hwnd, x: 31, y: 41, buttons: 0, wheel: 0, hwheel: 0 })), "motion event did not reach the bridge as an HWND: {seen:?}");
     assert!(seen.contains(&BridgeEvent::Input(InputEvent::Focus { hwnd, focused: true })), "focus event did not reach the bridge as an HWND: {seen:?}");
     // An event on a window this bridge does not own is dropped, not forwarded
     // with a foreign identifier the GUI owner would have to reject.
@@ -237,5 +237,52 @@ fn xvfb_configure_under_a_reparenting_window_manager_reports_screen_position() {
         std::thread::sleep(Duration::from_millis(2));
     }
     assert_eq!(configure, Some(Rect { left: 43, top: 54, right: 103, bottom: 94 }), "a reparented window's configure must name its screen position");
+    unsafe { ffi::xcb_disconnect(conn); }
+}
+
+// 31fn: what leaves the bridge for a click and a wheel notch is a Win32 button
+// mask and a wheel axis, not the X modifier state and button number.
+#[test]
+fn xvfb_pointer_wire_carries_win32_buttons_and_wheel_not_x11_state() {
+    let server = xvfb();
+    let mut backend = Backend::connect(Some(&server.display)).unwrap();
+    let hwnd = 0xb1u32;
+    backend.handle_command(BridgeCommand::Create { hwnd, title: Vec::new(), rect: Rect { left: 0, top: 0, right: 60, bottom: 40 }, parent: 0, style: 0x1000_0000, ex_style: 0 }).unwrap();
+    let xid = backend.xid_for(hwnd).unwrap();
+    let (conn, _) = unsafe { connect(&server.display) };
+    // X reports the state that preceded the event: a press is not yet held,
+    // and a release still is.
+    const X_SHIFT: u16 = 1;
+    const X_BUTTON1: u16 = 1 << 8;
+    let mut send_button = |press: bool, button: u8, state: u16| {
+        let mut event = [0u8; 32];
+        event[0] = if press { ffi::BUTTON_PRESS } else { ffi::BUTTON_RELEASE }; event[1] = button;
+        event[8..12].copy_from_slice(&xid.to_ne_bytes()); event[12..16].copy_from_slice(&xid.to_ne_bytes());
+        event[24..26].copy_from_slice(&5i16.to_ne_bytes()); event[26..28].copy_from_slice(&6i16.to_ne_bytes());
+        event[28..30].copy_from_slice(&state.to_ne_bytes());
+        unsafe { ffi::xcb_send_event(conn, 0, xid, if press { ffi::EVENT_BUTTON_PRESS } else { ffi::EVENT_BUTTON_RELEASE }, event.as_ptr() as *const _); ffi::xcb_flush(conn); }
+    };
+    send_button(true, 1, X_SHIFT);
+    send_button(false, 1, X_SHIFT | X_BUTTON1);
+    send_button(true, 5, 0);
+    send_button(false, 5, 0);
+    send_button(true, 7, 0);
+
+    let mut seen = Vec::new();
+    for _ in 0..500 {
+        while let Some(event) = backend.poll_event() { seen.push(event); }
+        if seen.len() >= 4 { break; }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let pointer = |buttons, wheel, hwheel| BridgeEvent::Input(InputEvent::Pointer { hwnd, x: 5, y: 6, buttons, wheel, hwheel });
+    assert_eq!(seen, vec![
+        pointer(crate::pointer::MK_LBUTTON | crate::pointer::MK_SHIFT, 0, 0),
+        pointer(crate::pointer::MK_SHIFT, 0, 0),
+        pointer(0, -crate::pointer::WHEEL_DELTA, 0),
+        pointer(0, 0, crate::pointer::WHEEL_DELTA),
+    ], "the wheel's release is not a second notch and the X state is not the Win32 mask");
+    // Every one of these encodes; the raw X form never reaches the wire.
+    for event in &seen { assert!(crate::protocol::encode_event(event, 1).is_ok()); }
+    assert!(crate::protocol::encode_event(&BridgeEvent::Input(InputEvent::Button { hwnd, press: true, button: 1, x: 0, y: 0, state: X_BUTTON1 }), 1).is_err());
     unsafe { ffi::xcb_disconnect(conn); }
 }

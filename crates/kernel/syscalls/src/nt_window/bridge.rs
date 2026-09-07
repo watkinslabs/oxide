@@ -78,7 +78,7 @@ fn keyboard_target(state: &WindowManager, source: WindowId) -> WindowId {
 /// # C: O(windows + text + queued messages)
 pub(super) fn apply_event(
     state: &mut WindowManager, record: &Record,
-    pointer: impl FnOnce(&mut WindowManager, WindowId, i32, i32, u32, i32) -> bool,
+    pointer: impl FnOnce(&mut WindowManager, WindowId, i32, i32, u32, i32, i32) -> bool,
 ) -> bool {
     if record.validate().is_err() { return false; }
     let Some(id) = window(record.header.hwnd) else { return false; };
@@ -117,8 +117,9 @@ pub(super) fn apply_event(
             let y = wire::u32_at(p, 4).unwrap_or(0) as i32;
             let buttons = wire::u32_at(p, 8).unwrap_or(u32::MAX);
             let wheel = wire::u32_at(p, 12).unwrap_or(0) as i32;
-            if buttons & !POINTER_FLAGS != 0 || i16::try_from(wheel).is_err() { return false; }
-            pointer(state, id, x, y, buttons, wheel)
+            let hwheel = wire::u32_at(p, 16).unwrap_or(0) as i32;
+            if buttons & !POINTER_FLAGS != 0 || i16::try_from(wheel).is_err() || i16::try_from(hwheel).is_err() { return false; }
+            pointer(state, id, x, y, buttons, wheel, hwheel)
         }
         Opcode::Focus => state.compositor_focus(id, wire::u32_at(p, 0) == Ok(1)).is_ok(),
         Opcode::Close => post(state, id, gui::WM_CLOSE, 0, 0),
@@ -234,8 +235,8 @@ mod live {
         let (accepted, wait) = {
             let mut entries = super::super::GUI.lock();
             let Some(entry) = entries.iter_mut().find(|e| e.group.ptr_eq(&Arc::downgrade(group))) else { return false; };
-            let accepted = apply_event(&mut entry.state, record, |state, id, x, y, buttons, wheel| {
-                state.post_compositor_pointer(id, x, y, buttons, wheel).is_ok()
+            let accepted = apply_event(&mut entry.state, record, |state, id, x, y, buttons, wheel, hwheel| {
+                state.post_compositor_pointer(id, x, y, buttons, wheel, hwheel).is_ok()
             });
             if accepted && record.header.opcode == Opcode::Focus { entry.foreground = entry.state.active_window().is_some(); }
             (accepted, Arc::clone(&entry.wait))
