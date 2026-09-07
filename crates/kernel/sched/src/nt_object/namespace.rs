@@ -204,6 +204,29 @@ pub fn create_semaphore(path: &str, initial: i64, maximum: i64) -> (Arc<NtObject
     (object, NamedObjectState::Created)
 }
 
+/// Publish one keyed event in the canonical namespace or return the existing
+/// identity under that name. # C: O(N_namespace)
+pub fn create_keyed_event(path: &str) -> (Arc<NtObject>, NamedObjectState) {
+    let mut namespace = OBJECT_NAMESPACE.lock();
+    seed(&mut namespace);
+    if let Some(entry) = namespace.objects.iter().find(|entry| equal(&entry.path, path)) {
+        return (Arc::clone(&entry.object), if entry.object.kind() == NtObjectType::KeyedEvent {
+            NamedObjectState::Existing
+        } else { NamedObjectState::TypeMismatch });
+    }
+    let Some(parent_path) = parent(path) else {
+        return (NtObject::new_keyed_event(0), NamedObjectState::ParentMissing);
+    };
+    if !namespace.objects.iter().any(|entry| equal(&entry.path, parent_path)
+        && entry.object.kind() == NtObjectType::Directory) {
+        return (NtObject::new_keyed_event(0), NamedObjectState::ParentMissing);
+    }
+    let id = namespace.next_id.fetch_add(1, Ordering::Relaxed);
+    let object = NtObject::new_keyed_event(id);
+    namespace.objects.push(NamedObject { path: path.into(), object: Arc::clone(&object), permanent: false });
+    (object, NamedObjectState::Created)
+}
+
 /// Publish one section in the canonical namespace or return its existing identity. # C: O(N_namespace)
 pub fn publish_section(path: &str, object: Arc<NtObject>) -> (Arc<NtObject>, NamedObjectState) {
     let mut namespace = OBJECT_NAMESPACE.lock();

@@ -7,7 +7,7 @@
 
 use super::{CHKSTK_INDEX, C_SPECIFIC_HANDLER_INDEX, DBG_BREAK_POINT_INDEX};
 
-pub const NTDLL_EXPORTS: [&[u8]; 552] = [
+pub const NTDLL_EXPORTS: [&[u8]; 562] = [
     b"NtAllocateVirtualMemory", b"NtFreeVirtualMemory", b"NtProtectVirtualMemory", b"NtQueryVirtualMemory",
     b"NtTerminateProcess", b"NtCreateEvent", b"NtClose", b"NtSetEvent", b"NtResetEvent", b"NtWaitForSingleObject",
     b"NtCreateFile", b"NtOpenFile", b"NtReadFile", b"NtWriteFile", b"NtQueryInformationFile", b"NtSetInformationFile", b"NtQueryDirectoryFile", b"NtWaitForMultipleObjects",
@@ -282,6 +282,17 @@ pub const NTDLL_EXPORTS: [&[u8]; 552] = [
     // handling: user-mode control flow over user-mode data that enters
     // user-mode filters, so it is machine code on the page rather than a trap.
     b"__C_specific_handler",
+
+    b"NtAlertThreadByThreadId",
+    b"NtAlertMultipleThreadByThreadId",
+    b"NtWaitForAlertByThreadId",
+    b"NtCreateKeyedEvent",
+    b"NtOpenKeyedEvent",
+    b"NtWaitForKeyedEvent",
+    b"NtReleaseKeyedEvent",
+    b"NtGetCurrentProcessorNumber",
+    b"NtAreMappedFilesTheSame",
+    b"NtContinueEx",
 ];
 
 /// Service a catalog index selects, or `None` for the machine-code entries and
@@ -791,6 +802,16 @@ pub fn service_for_index(index: usize) -> Option<syscall::nt::NtService> {
             547 => Some(syscall::nt::NtService::RtlIsCurrentProcess),
             548 => Some(syscall::nt::NtService::Wcslwr),
             549 => Some(syscall::nt::NtService::RtlInitAnsiString),
+            552 => Some(syscall::nt::NtService::NtAlertThreadByThreadId),
+            553 => Some(syscall::nt::NtService::NtAlertMultipleThreadByThreadId),
+            554 => Some(syscall::nt::NtService::NtWaitForAlertByThreadId),
+            555 => Some(syscall::nt::NtService::NtCreateKeyedEvent),
+            556 => Some(syscall::nt::NtService::NtOpenKeyedEvent),
+            557 => Some(syscall::nt::NtService::NtWaitForKeyedEvent),
+            558 => Some(syscall::nt::NtService::NtReleaseKeyedEvent),
+            559 => Some(syscall::nt::NtService::NtGetCurrentProcessorNumber),
+            560 => Some(syscall::nt::NtService::NtAreMappedFilesTheSame),
+            561 => Some(syscall::nt::NtService::NtContinueEx),
             // Neither machine-code entry traps; their selectors are never encoded.
             DBG_BREAK_POINT_INDEX | CHKSTK_INDEX | C_SPECIFIC_HANDLER_INDEX => None,
             _ => None,

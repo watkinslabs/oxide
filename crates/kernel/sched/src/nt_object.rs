@@ -5,6 +5,7 @@
 //! - namespace: named-object namespace and publication.
 //! - handle: process-local handle allocation and generation checks.
 //! - file_share/file_delete: Windows file sharing and delete disposition.
+//! - keyed_event: keyed-event rendezvous pairing and its blocking half.
 //! - mutant/timer/completion/token/job/activation/pipe: typed object state.
 //! - tests: object identity, signaling, and handle lifetime coverage.
 
@@ -16,6 +17,7 @@ mod file_delete;
 mod file_share;
 mod handle;
 mod job;
+mod keyed_event;
 mod mutant;
 pub mod namespace;
 mod object;
@@ -31,8 +33,9 @@ pub use file_delete::NtDeleteOnClose;
 pub use file_share::NtFileShare;
 pub use handle::{NtHandle, NtHandleTable};
 pub use job::{NtJob, NtJobLimits};
+pub use keyed_event::{key_is_aligned, match_index, KeyedOutcome, KeyedWaiter, NtKeyedEvent};
 pub use mutant::NtMutant;
-pub use namespace::{create_event, create_semaphore, directory_entries, directory_path,
+pub use namespace::{create_event, create_keyed_event, create_semaphore, directory_entries, directory_path,
     lookup_directory, lookup_object, make_permanent, make_temporary, object_name, publish_mutant,
     publish_named_pipe, publish_section, publish_symbolic_link, publish_timer,
     release_temporary, resolve_symbolic_links, NamedObjectState, SymbolicLinkResolutionError,

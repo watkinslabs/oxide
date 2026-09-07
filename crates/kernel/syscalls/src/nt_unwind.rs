@@ -18,6 +18,13 @@ const CONTEXT_FLAGS_FULL: u32 = 0x0010_000f;
 /// Apply the non-local return described by the x64 `RtlUnwind` ABI.
 /// # C: O(1) plus one user read
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == NtService::NtContinueEx {
+        let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
+        if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
+        let Some(alertable) = crate::nt_continue_policy::continue_ex_alertable(call.args.a1,
+            |address| uaccess::get_user_u32(address).ok()) else { return Some(STATUS_INVALID_PARAMETER); };
+        return Some(restore_context(&cur, call.args.a0, alertable));
+    }
     if matches!(call.service, NtService::RtlCaptureContext | NtService::RtlRestoreContext | NtService::NtContinue) {
         let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
         if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }

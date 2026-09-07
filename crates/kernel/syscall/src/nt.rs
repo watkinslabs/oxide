@@ -416,6 +416,26 @@ pub enum NtService {
     RtlIsCurrentProcess = 587,
     /// Lower-case the ASCII letters of one NUL-terminated UTF-16 string in place.
     Wcslwr = 588,
+    /// Raise one thread's alert flag by its thread id.
+    NtAlertThreadByThreadId = 589,
+    /// Raise the alert flag of every thread in a caller-supplied id array.
+    NtAlertMultipleThreadByThreadId = 590,
+    /// Consume this thread's alert flag, blocking until it is raised.
+    NtWaitForAlertByThreadId = 591,
+    /// Create a keyed-event rendezvous object.
+    NtCreateKeyedEvent = 592,
+    /// Open an existing named keyed-event rendezvous object.
+    NtOpenKeyedEvent = 593,
+    /// Block on one key until a releaser names the same key.
+    NtWaitForKeyedEvent = 594,
+    /// Block on one key until a waiter names the same key.
+    NtReleaseKeyedEvent = 595,
+    /// Report the processor the calling thread is running on.
+    NtGetCurrentProcessorNumber = 596,
+    /// Report whether two addresses map the same image or data file.
+    NtAreMappedFilesTheSame = 597,
+    /// Resume from a context record, optionally delivering a pending user APC first.
+    NtContinueEx = 598,
 }
 impl NtService {
     /// Return the tagged entry selector emitted by an NTDLL syscall stub.
@@ -1102,6 +1122,16 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 586 { return Some(NtCall { service: NtService::RtlImageRvaToSection, args }); }
     if service == 587 { return Some(NtCall { service: NtService::RtlIsCurrentProcess, args }); }
     if service == 588 { return Some(NtCall { service: NtService::Wcslwr, args }); }
+    if service == 589 { return Some(NtCall { service: NtService::NtAlertThreadByThreadId, args }); }
+    if service == 590 { return Some(NtCall { service: NtService::NtAlertMultipleThreadByThreadId, args }); }
+    if service == 591 { return Some(NtCall { service: NtService::NtWaitForAlertByThreadId, args }); }
+    if service == 592 { return Some(NtCall { service: NtService::NtCreateKeyedEvent, args }); }
+    if service == 593 { return Some(NtCall { service: NtService::NtOpenKeyedEvent, args }); }
+    if service == 594 { return Some(NtCall { service: NtService::NtWaitForKeyedEvent, args }); }
+    if service == 595 { return Some(NtCall { service: NtService::NtReleaseKeyedEvent, args }); }
+    if service == 596 { return Some(NtCall { service: NtService::NtGetCurrentProcessorNumber, args }); }
+    if service == 597 { return Some(NtCall { service: NtService::NtAreMappedFilesTheSame, args }); }
+    if service == 598 { return Some(NtCall { service: NtService::NtContinueEx, args }); }
     let service = match service {
         0 => NtService::AllocateVirtualMemory,
         1 => NtService::FreeVirtualMemory,
@@ -1295,7 +1325,7 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
         NtService::RtlAddAccessDeniedObjectAce => Err(Errno::Enosys),
         NtService::RtlAddAuditAccessObjectAce => Err(Errno::Enosys),
         NtService::RtlAddMandatoryAce => Err(Errno::Enosys),
-        NtService::RtlAcquireSRWLockExclusive | NtService::RtlAcquireSRWLockShared | NtService::RtlReleaseSRWLockExclusive | NtService::RtlReleaseSRWLockShared | NtService::RtlTryAcquireSRWLockExclusive | NtService::RtlWakeConditionVariable | NtService::RtlAddFunctionTable | NtService::RtlDeleteFunctionTable | NtService::RtlInstallFunctionTableCallback | NtService::RtlCompareString | NtService::RtlCopyUnicodeString | NtService::RtlEqualUnicodeString | NtService::RtlComputeCrc32 | NtService::RtlImageRvaToSection | NtService::RtlIsCurrentProcess | NtService::Wcslwr => Err(Errno::Enosys),
+        NtService::RtlAcquireSRWLockExclusive | NtService::RtlAcquireSRWLockShared | NtService::RtlReleaseSRWLockExclusive | NtService::RtlReleaseSRWLockShared | NtService::RtlTryAcquireSRWLockExclusive | NtService::RtlWakeConditionVariable | NtService::RtlAddFunctionTable | NtService::RtlDeleteFunctionTable | NtService::RtlInstallFunctionTableCallback | NtService::RtlCompareString | NtService::RtlCopyUnicodeString | NtService::RtlEqualUnicodeString | NtService::RtlComputeCrc32 | NtService::RtlImageRvaToSection | NtService::RtlIsCurrentProcess | NtService::Wcslwr | NtService::NtAlertThreadByThreadId | NtService::NtAlertMultipleThreadByThreadId | NtService::NtWaitForAlertByThreadId | NtService::NtCreateKeyedEvent | NtService::NtOpenKeyedEvent | NtService::NtWaitForKeyedEvent | NtService::NtReleaseKeyedEvent | NtService::NtGetCurrentProcessorNumber | NtService::NtAreMappedFilesTheSame | NtService::NtContinueEx => Err(Errno::Enosys),
         NtService::RtlAddRefActivationContext => Err(Errno::Enosys),
         NtService::RtlAllocateAndInitializeSid => Err(Errno::Enosys),
         NtService::RtlAreAllAccessesGranted => Err(Errno::Enosys),

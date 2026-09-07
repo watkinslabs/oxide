@@ -142,6 +142,9 @@ pub struct Task {
     /// dispatcher resolves or terminates the exception.
     pub nt_exception: crate::nt_exception::State,
 
+    /// Per-thread alert flag behind the native alert-by-thread-id services.
+    pub nt_alert: crate::nt_alert::NtAlert,
+
     /// Task-owned terminal completion shared by NT process and thread handles.
     pub nt_termination: crate::nt_termination::NtTermination,
 
