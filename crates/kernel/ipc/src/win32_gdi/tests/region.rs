@@ -1,4 +1,5 @@
 use super::*;
+use crate::win32_gdi::{NULL_REGION, SIMPLE_REGION, COMPLEX_REGION};
 fn rect(left:i32,top:i32,right:i32,bottom:i32)->Rect { Rect { left,top,right,bottom } }
 fn region(left:i32,top:i32,right:i32,bottom:i32)->PaintRegion {
     PaintRegion::from_rect(WindowRect {left,top,right,bottom}).unwrap()
@@ -18,7 +19,7 @@ fn region_handles_share_typed_allocator_projection_and_generic_deletion() {
     assert_eq!(g.region_snapshot(handle),Err(GdiError::NoSuchObject));
     assert_eq!(copy.bounds(),Some(WindowRect {left:-1,top:-2,right:5,bottom:6}));
     let next = g.create_region(copy).unwrap(); assert_ne!(next,handle);
-    for bad in [1,0,dc,handle,(next&0xffff)|super::super::TYPE_FONT] {
+    for bad in [1,0,dc,handle,(next&0xffff)|crate::win32_gdi::TYPE_FONT] {
         assert_eq!(g.region_snapshot(bad),Err(GdiError::NoSuchObject));
         assert_eq!(g.delete_region(bad),Err(GdiError::NoSuchObject));
     }
@@ -50,7 +51,7 @@ fn region_snapshot_and_dc_paint_coverage_survive_owner_replacement_and_deletion(
 #[test]
 fn failed_handle_allocation_does_not_publish_region_or_change_existing_objects() {
     let mut g=GdiManager::new(); let h=g.create_rect_region(rect(0,0,1,1)).unwrap();
-    let handles=g.live_handles(); g.next=super::super::SLOT_LIMIT;
+    let handles=g.live_handles(); g.next=crate::win32_gdi::SLOT_LIMIT;
     assert_eq!(g.create_region(PaintRegion::default()),Err(GdiError::HandleLimit));
     assert_eq!(g.live_handles(),handles); assert_eq!(g.region_box(h),Ok((SIMPLE_REGION,rect(0,0,1,1))));
 }

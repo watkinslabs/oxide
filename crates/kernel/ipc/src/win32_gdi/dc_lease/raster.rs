@@ -43,7 +43,7 @@ impl GdiManager {
             right:(i64::from(backing.width)-i64::from(origin.0)).clamp(i64::from(i32::MIN),i64::from(i32::MAX))as i32,
             bottom:(i64::from(backing.height)-i64::from(origin.1)).clamp(i64::from(i32::MIN),i64::from(i32::MAX))as i32};
         region=region.clipped(clip).map_err(|_|GdiError::HandleLimit)?;
-        if let Some(r)=state.clip{region=region.clipped(WindowRect{left:r.left,top:r.top,right:r.right,bottom:r.bottom}).map_err(|_|GdiError::HandleLimit)?;}
+        for clip in [state.clip.as_ref(),state.meta_clip.as_ref()].into_iter().flatten(){intersect(&mut region,clip)?;}
         if let Some(paint)=&state.paint_clip{intersect(&mut region,paint)?;}
         Ok(region)
     }

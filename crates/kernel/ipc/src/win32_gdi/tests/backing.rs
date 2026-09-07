@@ -17,7 +17,7 @@ fn dirty_client_offset_preserves_all_other_pixels_and_ignores_backing_clips() {
     } }
     let target = &g.dcs.iter().find(|(id, _)| *id == dc).unwrap().1;
     assert_eq!(target.text, before);
-    assert_eq!(target.clip, Some(Rect { left: 0, top: 0, right: 1, bottom: 1 }));
+    assert_eq!(target.clip.as_ref().map(|r| r.rects()), Some(&[crate::win32_window::WindowRect { left: 0, top: 0, right: 1, bottom: 1 }][..]));
     assert!(target.paint_clip.as_ref().unwrap().is_empty());
     g.delete_object(paint).unwrap();
     assert_eq!(g.window_dc(7), Some(dc));
