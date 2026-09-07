@@ -135,25 +135,15 @@ impl Default for PathState {
 
 
 #[derive(Debug, PartialEq)]
-struct DeviceContext { width: i32, height: i32, attr: DcAttr, font: Option<u32>, brush: Option<u32>, dc_brush_color: u32, pen: u32, dc_pen_color: u32, text: TextAttributes, clip: Option<crate::win32_window::PaintRegion>, meta_clip: Option<crate::win32_window::PaintRegion>, paths: PathState, paint_clip: Option<crate::win32_window::PaintRegion>, pixels: Vec<u32>, lease: Option<DcLease>, pending_output: PendingOutput, saved: Vec<SavedDc> }
+struct DeviceContext { width: i32, height: i32, attr: DcAttr, font: Option<u32>, brush: Option<u32>, dc_brush_color: u32, pen: u32, dc_pen_color: u32, text: TextAttributes, clip: Option<crate::win32_window::PaintRegion>, meta_clip: Option<crate::win32_window::PaintRegion>, paths: PathState, paint_clip: Option<crate::win32_window::PaintRegion>, pixels: Vec<u32>, lease: Option<DcLease>, pending_output: PendingOutput, saved: Vec<SavedDc>, palette: Option<u32>, bitmap: Option<u32>, memory: bool }
 
-pub struct GdiManager { next: u32, dcs: Vec<(u32, DeviceContext)>, fonts: Vec<(u32, FontRecord)>, brushes: Vec<(u32, Brush)>, bitmaps: Vec<(u32, Bitmap)>, pens: Vec<(u32, Pen)>, system_brushes: SystemBrushes, window_dcs: Vec<(u32, u32)>, regions: Vec<(u32, crate::win32_window::PaintRegion)>, client_objs: Vec<u32> }
-
-struct DeviceContext { width: i32, height: i32, map_mode: u32, font: Option<u32>, brush: Option<u32>, dc_brush_color: u32, pen: u32, dc_pen_color: u32, text: TextAttributes, clip: Option<Rect>, paint_clip: Option<crate::win32_window::PaintRegion>, pixels: Vec<u32>, lease: Option<DcLease>, pending_output: PendingOutput,
-    palette: Option<u32> }
-
-    palette: Option<u32>, bitmap: Option<u32>, memory: bool }
-pub struct GdiManager { next: u32, dcs: Vec<(u32, DeviceContext)>, fonts: Vec<(u32, FontRecord)>, brushes: Vec<(u32, Brush)>, bitmaps: Vec<(u32, Bitmap)>, pens: Vec<(u32, Pen)>, system_brushes: SystemBrushes, window_dcs: Vec<(u32, u32)>, regions: Vec<(u32, crate::win32_window::PaintRegion)>,
-    palettes: Vec<(u32, Palette)>, system_palette_use: u32, primary_palette: Option<u32>, last_realized_palette: Option<u32> }
+pub struct GdiManager { next: u32, dcs: Vec<(u32, DeviceContext)>, fonts: Vec<(u32, FontRecord)>, brushes: Vec<(u32, Brush)>, bitmaps: Vec<(u32, Bitmap)>, pens: Vec<(u32, Pen)>, system_brushes: SystemBrushes, window_dcs: Vec<(u32, u32)>, regions: Vec<(u32, crate::win32_window::PaintRegion)>, client_objs: Vec<u32>, palettes: Vec<(u32, Palette)>, system_palette_use: u32, primary_palette: Option<u32>, last_realized_palette: Option<u32> }
 
 impl Default for GdiManager { fn default() -> Self { Self::new() } }
 
 impl GdiManager {
     /// Construct an empty process-local GDI object owner. # C: O(1)
-    pub fn new() -> Self { Self { next: FIRST_DYNAMIC_SLOT, dcs: Vec::new(), fonts: Vec::new(), brushes: Vec::new(), bitmaps: Vec::new(), pens: Vec::new(), system_brushes: SystemBrushes::default(), window_dcs: Vec::new(), regions: Vec::new(), client_objs: Vec::new() } }
-
-    pub fn new() -> Self { Self { next: FIRST_DYNAMIC_SLOT, dcs: Vec::new(), fonts: Vec::new(), brushes: Vec::new(), bitmaps: Vec::new(), pens: Vec::new(), system_brushes: SystemBrushes::default(), window_dcs: Vec::new(), regions: Vec::new(),
-        palettes: Vec::new(), system_palette_use: SYSPAL_STATIC, primary_palette: None, last_realized_palette: None } }
+    pub fn new() -> Self { Self { next: FIRST_DYNAMIC_SLOT, dcs: Vec::new(), fonts: Vec::new(), brushes: Vec::new(), bitmaps: Vec::new(), pens: Vec::new(), system_brushes: SystemBrushes::default(), window_dcs: Vec::new(), regions: Vec::new(), client_objs: Vec::new(), palettes: Vec::new(), system_palette_use: SYSPAL_STATIC, primary_palette: None, last_realized_palette: None } }
 
     /// Create a memory device context with bounded positive dimensions. # C: O(1)
     pub fn create_dc(&mut self, width: i32, height: i32) -> Result<u32, GdiError> {
