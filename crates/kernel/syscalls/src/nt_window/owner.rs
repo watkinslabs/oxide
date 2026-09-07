@@ -1,9 +1,12 @@
 //! Process GUI entry construction; every adapter uses the same initial state.
 use super::*;
 
+/// The queue wait list IS the process NT-object fanout list, so a thread
+/// parked in `MsgWaitForMultipleObjectsEx` is woken by a queue post and by an
+/// object another thread signals, from one wait.
 pub(super) fn new_entry(group: &Arc<sched::thread_group::ThreadGroup>) -> GuiEntry {
     GuiEntry { group: Arc::downgrade(group), state: ipc::win32_window::WindowManager::new(),
-        menus: ipc::win32_menu::MenuManager::new(), accelerators: ipc::win32_accel::AcceleratorTables::new(), dpi_context: 0, wait: Arc::new(sched::live::WaitList::new()),
+        menus: ipc::win32_menu::MenuManager::new(), accelerators: ipc::win32_accel::AcceleratorTables::new(), dpi_context: 0, wait: group.nt_handles().waiter_list(),
         foreground: false, next_create: 1, pending_creates: Vec::new(), pending_positions: Vec::new(), remote_positions: Vec::new(), retrievals: Vec::new(), sent: send::Queue::new(), redraw: redraw::Queue::new(), scroll_pending: scroll::pending::Queue::default(), paint_callbacks: paint_callbacks::Queue::new(), client_procs_w: 0, builtins_registered: false, init_callback_issued: false, contexts: ipc::win32_imc::InputContexts::new(), defer: ipc::win32_window::DeferBatches::new(), startup_info_flags: 0, process_layout: 0, menu_tracking: None }
 
 }

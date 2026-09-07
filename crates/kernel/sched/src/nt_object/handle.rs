@@ -54,8 +54,11 @@ struct Entry {
 pub struct NtHandleTable {
     entries: Spinlock<Vec<Entry>, TaskListClass>,
     next_object_id: AtomicU64,
+    /// The single per-process wait list: every synchronizable object this
+    /// table holds and every window queue of the same process signal here, so
+    /// one wait covers both (`31i§1` fanout).
     #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
-    waiters: WaitList,
+    waiters: Arc<WaitList>,
 }
 
 impl NtHandleTable {
@@ -63,7 +66,7 @@ impl NtHandleTable {
     pub fn new() -> Self {
         Self { entries: Spinlock::new(Vec::new()), next_object_id: AtomicU64::new(1),
             #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
-            waiters: WaitList::new() }
+            waiters: Arc::new(WaitList::new()) }
     }
 
     /// Allocate a fresh stable object identity from this process. # C: O(1)
@@ -416,6 +419,11 @@ impl NtHandleTable {
     /// Return the process-local fanout list used by wait-multiple predicates. # C: O(1)
     #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
     pub fn waiters(&self) -> &WaitList { &self.waiters }
+
+    /// Share the process wait list with another signaller of the same process,
+    /// so a window message queue and the objects wake one list. # C: O(1)
+    #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
+    pub fn waiter_list(&self) -> Arc<WaitList> { Arc::clone(&self.waiters) }
 }
 
 impl Drop for NtHandleTable {

@@ -34,6 +34,48 @@ pub(crate) const fn checks_before_waiting(flags: u32) -> bool { flags & MWMO_INP
 /// `WaitMessage` reports success for anything but an outright failure. # C: O(1)
 pub(crate) const fn wait_message_result(status: u32) -> u64 { (status != WAIT_FAILED) as u64 }
 
+/// What one pass of the message wait answers, before it parks again.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Step {
+    /// A named object at this wait index is signaled.
+    Object(u32),
+    /// The queue holds work in the named classes; it answers at its own slot.
+    Queue,
+    /// The timeout expired with nothing signaled.
+    TimedOut,
+    /// Nothing is ready: park on the process wait list.
+    Park,
+}
+
+/// Decide one pass of the wait over the objects and the queue, which shares
+/// the object wait list and occupies the slot after them. The lowest signaled
+/// wait index answers first, so a named object outranks the queue and both
+/// outrank the timeout. # C: O(N_objects)
+pub(crate) fn step(signaled: impl IntoIterator<Item = bool>, queue_ready: bool, expired: bool) -> Step {
+    for (index, ready) in signaled.into_iter().enumerate() {
+        if ready { return Step::Object(index as u32); }
+    }
+    if queue_ready { return Step::Queue; }
+    if expired { return Step::TimedOut; }
+    Step::Park
+}
+
+/// Encode the answer of one pass; a parked pass has no answer. # C: O(1)
+pub(crate) const fn step_result(step: Step, count: u32) -> Option<u32> {
+    match step {
+        Step::Object(index) => Some(object_result(index)),
+        Step::Queue => Some(queue_result(count)),
+        Step::TimedOut => Some(WAIT_TIMEOUT),
+        Step::Park => None,
+    }
+}
+
+/// The parked wait resumes for queue work in the named classes or for any
+/// named object, because both signal the one process wait list. # C: O(1)
+pub(crate) const fn wake_condition(queue_ready: bool, object_signaled: bool) -> bool {
+    queue_ready || object_signaled
+}
+
 #[cfg(test)]
 #[path = "../tests/queue_wait.rs"]
 mod tests;
