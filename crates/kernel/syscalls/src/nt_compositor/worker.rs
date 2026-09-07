@@ -24,7 +24,19 @@ pub(super) fn spawn(binding: &Arc<Binding>) -> Result<(), TransportError> {
 /// one of these reasons is otherwise indistinguishable from any other.
 /// One line per inbound desktop record and the GUI owner's verdict, so a
 /// click or key that never becomes a message can be placed at this boundary.
+///
+/// Bounded, because this is the input path: a key press is three records and a
+/// mouse motion is one, each about fifty bytes on a serial console, written
+/// inside the loop that delivers them. Unbounded, a burst of typing spends
+/// more time reporting input than delivering it, which is the instrument
+/// changing what it measures. The budget covers boot and the first
+/// interactions, which is what the boundary is read for.
+const EVENT_TRACE_BUDGET: u32 = 64;
+
 fn trace_event(opcode: Opcode, hwnd: u64, accepted: bool) {
+    use core::sync::atomic::{AtomicU32, Ordering};
+    static SPENT: AtomicU32 = AtomicU32::new(0);
+    if SPENT.fetch_add(1, Ordering::Relaxed) >= EVENT_TRACE_BUDGET { return; }
     klog::write_raw(b"[WINDOWS-BRIDGE-EVENT] op=");
     klog::write_hex_u64(opcode as u16 as u64);
     klog::write_raw(b" hwnd=");

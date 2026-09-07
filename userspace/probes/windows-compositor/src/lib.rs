@@ -19,6 +19,23 @@ pub use readiness::{parse_args, publish_then_notify, Options, UsageError, READY_
 pub use protocol::{BridgeCommand, BridgeEvent, Frame, Inbound, InputEvent, NativeTransport, StreamTransport, TransportError};
 pub use x11::{Backend, BackendError, Xid};
 
+/// Environment switch that turns the per-record bridge trace on.
+pub const TRACE_ENV: &str = "OXIDE_COMPOSITOR_TRACE";
+
+/// Whether every outbound bridge record is written to stderr.
+///
+/// The launcher streams this process's stderr to the serial console, and one
+/// line of it is about a hundred bytes: an input record per keystroke and a
+/// pointer record per motion event turn every burst of input into serial
+/// writes, inside the same loop that delivers that input. An instrument that
+/// stalls what it measures answers nothing, so it is off unless asked for.
+/// Read once; the value cannot change under a running compositor.
+pub fn trace_events() -> bool {
+    use std::sync::OnceLock;
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os(TRACE_ENV).is_some_and(|value| value != "0"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
