@@ -1,100 +1,33 @@
-# Notepad: loop dispatches, first paint presented, edit control now created — 2026-09-06
+# Notepad: surface closed by gate, not by boots — 2026-09-07
 
-First command: `git log --oneline -6 && tools/issues.sh --show KI-0434 && ls -t target/windows-notepad-acceptance/uart-*.log | head -1`
+First command: `git log --oneline -8 && make windows-surface-gate && cat target/windows-surface-audit.md | head -40 && git worktree list`
 
-Everything below is merged to `main` via PR #7520 (6 commits, branch deleted).
-The last commit adds two bounded klog traces (`[WINDOWS-WNDEXTRA]` in
-`nt_wine_window/long_raw/kernel.rs`, `[WINDOWS-HEAP]` in `nt_heap.rs`); the boot
-that used them is uart-109399 (read below). Start a fresh branch.
+## State (main 6060dbf2e + whatever the family lanes merged)
 
-## What got fixed today (each from the previous boot's log)
+Notepad boots, loads imm32 at runtime, creates/shows its three windows, paints, and runs its message loop (uart-1263402). Merged today (PRs #7521-#7535): NT free tears down page tables (KI-0436); callback continuations preserve the full entry frame + callee-saved FP (KI-0440); hardware exceptions dispatch to KiUserExceptionDispatcher and a refused delivery terminates (KI-0437/0469); builtin classes with cursors + InitBuiltinClasses callback (KI-0434); CreateBitmap/PatternBrush/OpenDCW/GetDeviceCaps; delay-load resolver (KI-0442) with the reference's signed thunk index; DOS drive mapping + default DLL load path + forwarder-chasing runtime resolver (KI-0480); 16550 transmit-edge stall (serial silence); acceptance harness: title-located token check, overview escape + window activation; static call-surface gate.
 
-| Defect | Commit |
+## The rule that now governs the campaign
+
+`make windows-surface-gate` (`crates/kernel/syscalls/tests/windows_call_surface/`, ~1.4 s) enumerates every win32u ordinal, ntdll export and import binding of Notepad's 27-module closure from the shipped Wine DLLs and ratchets against `baseline.txt`. Baseline at C1558 merge: 313 unadmitted win32u ordinals (129 gdi32, 176 user32, 8 imm32), 10 ntdll names, 10 unbindable imports. Work is fanned out per Wine source file, implemented from the reference bodies with hosted tests, baseline shrunk with `make windows-surface-gate-update`, then ONE acceptance boot. Never discover gaps by boot again (user rule; see auto-memory `windows-surface-from-wine-source`).
+
+## Lanes in flight at hand-off (check `git worktree list`; each is unpushed, integration owner merges)
+
+| Branch | Family |
 |---|---|
-| `NtUserCallHwnd`/`CallMsgFilter` unclaimed → fell to Linux tables → `-ENOSYS` read as TRUE → `IsDialogMessageW(NULL)` ate every message (KI-0427 mechanism, KI-0429) | cf258e94 |
-| Unclaimed win32u ids now answer `STATUS_INVALID_SYSTEM_SERVICE`, reported once as `[WINDOWS-RAW-UNCLAIMED]` | cf258e94 |
-| `NtUserMoveWindow` 0x14ba admitted (SetWindowPos + NOZORDER\|NOACTIVATE[\|NOREDRAW]) | c5b66ebb |
-| Default WM_ERASEBKGND fills clip box with class `hbrBackground` (now recorded at registration) | c5b66ebb |
-| Default WM_PAINT runs real BeginPaint/EndPaint (PAINTSTRUCT in kernel, `DefaultPaint` completion) — first `begin-paint`/`present` milestones | c5b66ebb |
-| `NtUserGet/SetProcessDpiAwarenessContext` 0x1435/0x1577 | d131fc0e |
-| Builtin classes (Button, Edit, Static, …) registered from user32's W procedure array at `NtUserInitializeClientPfnArrays` — before this **no edit control was ever created** | a3d5cdc7 |
+| F1610-gdi-paths-regions-clipping | path.c, region.c, clipping.c |
+| F1611-gdi-bitmaps-dib-blit-palette | bitmap.c, dib.c, bitblt.c, palette.c, brush.c |
+| F1612-gdi-fonts-text-ordinals | font.c |
+| F1613-gdi-dc-state-transform-draw-print | dc.c, mapping.c, painting.c, printdrv.c, opengl.c |
+| F1614-user-input-cursor-rawinput | input.c, cursoricon.c, rawinput.c |
+| F1615-user-window-desktop-clipboard-hook | window.c, winstation.c, clipboard.c, hook.c |
+| F1616-user-message-timer-scroll-menu-sysparams | message.c, scroll.c, menu.c, dce.c, sysparams.c |
+| F1617-ntdll-ip-strings-md4 | ntdll rtl.c IPv4/6 strings, MD4 |
+| C1559-acceptance-audits-uart-findings | harness fails on any UART finding (RAW-UNCLAIMED, LDR-FAIL, DELAYLOAD-FAIL, ...) |
 
-Boot history: uart-13548 (loop dispatches, no paint), uart-85330 (first present,
-crash in comctl32 status bar), uart-94582 (with `debug-faultdiag`; too slow, but
-gave module bases), uart-104368 (edit control created, crash in kernelbase).
+Integration per lane: rebase onto main; ledger conflicts → take main's ledger + archive, re-add the lane's genuinely new OPEN rows with fresh ids, re-`--fix` (ids collide across lanes; helper `/home/nd/oxide/tgt-B3525/readd.py`); `raw_args.rs`/`dispatch.rs`/`baseline.txt` conflicts → take main and re-apply the lane's additions, then `make windows-surface-gate-update`; hosted tests + both-arch `xtask kernel --check`; smoke only for boot-visible changes; one acceptance boot after the wave (`OXIDE_NOTEPAD_ACCEPTANCE_DIR=<short path>`; needs `target/lanes` symlink; QEMU window is visible — tell the user not to close it).
 
-## Current blocker: edit control's WM_CREATE crashes in kernelbase LocalLock (uart-109399)
+## Open after the wave
 
-`notepad.exe: segfault at 0 ip 17403a1f8 error 0` = kernelbase `LocalLock+0xa8`,
-the `__TRY { *p |= 0 }` probe on a *fixed* (low nibble 0) handle; address 0 with
-error 0 is a #GP, so the probed pointer was non-canonical garbage. Chain
-(reference): `EditWndProc_common` → `EDIT_LockBuffer(es)`; `es` comes from
-`GetWindowLongPtrW(hwnd,0)` set in WM_NCCREATE.
-
-Measured in the last boot with the two bounded traces:
-- `[WINDOWS-WNDEXTRA]` slot 0 round-trips correctly for hwnd 2
-  (set 7f1ac2c4d000, get 7f1ac2c4d000). Hypothesis 1 is dead.
-- `[WINDOWS-HEAP]`: the `es` block (alloc size 0x1000, flags 8 =
-  HEAP_ZERO_MEMORY, base 7f1ac2c4d000) is a REUSED extent: the same base was
-  freed at 50.247 and handed out again at 50.532. Nothing frees it before the
-  crash. A moveable LocalAlloc did run (alloc flags 0x308 → 7f1ac2c34000, then
-  RtlSetUserValueHeap), so `es->hloc32W` is a proper `&mem->ptr` handle
-  (nibble 8, never probed). The only fixed-handle LocalLock in
-  `EDIT_LockBuffer` is `LocalLock(es->hloc32A)`, which must be 0 in a
-  zero-initialised `es`.
-- Therefore the leading hypothesis: HEAP_ZERO_MEMORY is not honoured on a
-  reused extent, so `es->hloc32A` (and everything else) holds the previous
-  occupant's bytes. `nt_heap.rs` passes `committed=true` to
-  `elf_load::nt_memory::allocate` and never looks at flag 8; `free` munmaps the
-  extent, so fresh pages should be zero unless the VMM recycles the frame
-  without zeroing or the munmap/mmap pair keeps the mapping. Next: hosted
-  test on the VMM path (munmap then mmap the same range, read must be zero),
-  then make the heap honour HEAP_ZERO_MEMORY explicitly at the owner, per the
-  reference RtlAllocateHeap contract, rather than relying on fresh pages.
-
-Second independent defect found on the way: Windows exceptions never dispatch.
-The launcher (`userspace/probes/windows-runtime`, Rust) keeps Rust std's
-SIGSEGV/SIGBUS handler, which resets SIG_DFL and returns on any non-guard fault
-(that is the `rt_sigaction(SIGSEGV)`, `rt_sigreturn`, re-fault seen in every
-crash). `wine_oxide_attach_thread` (`dlls/ntdll/unix/oxide.c` in the source
-build under `target/lanes/wine-10.20-source`) never runs `signal_init_process`,
-so Wine's `segv_handler` is never installed; and the reference handler needs
-wineserver for `send_debug_event`. So a `__TRY/__EXCEPT_PAGE_FAULT` probe that
-faults kills the process. docs/31v says exception dispatch is runtime work.
-Needs a row + design; not filed yet.
-
-## Also open
-
-- KI-0433: unclaimed `NtGdiCreateBitmap` 0x10a7, `NtGdiCreatePatternBrushInternal`
-  0x10b9, `NtGdiOpenDCW` 0x1246 (user32 init, non-fatal so far).
-- KI-0434: builtin class registration deviations (trigger point, cursors,
-  `NtUserInitBuiltinClasses` callback/uxtheme).
-- KI-0435: the acceptance "token" check passes when the token is typed into
-  GNOME's overview search (no Notepad window on screen). Do not trust A3.
-- KI-0430 accelerator WM_SYSCOMMAND; KI-0431 edit system colours (red test on
-  main); KI-0432 flaky namespace test.
-- Gates red on main: KI-0287 lint-ratchet, KI-0318 hosted-gate, KI-0423
-  test-build-gate, KI-0019 stack-gate, KI-0319 feature-gate (73 dead-code lints,
-  none in touched files). Pushes used the five specific `SKIP_*` flags.
-
-## Method / tooling that worked
-
-- Symbolise a guest fault: bases from `[WINDOWS-PE-MODULE]` (needs
-  `OXIDE_NOTEPAD_FEATURES=debug-faultdiag`, ~3× slower boot) or anchor on a
-  class wndproc; `objdump -p` export table of the host's
-  `/usr/lib64/wine/x86_64-windows/*.dll` (system Wine 10.20 == reference tree);
-  `objdump -d --start-address` on kernelbase to read the faulting instruction.
-- Reference tree for everything Windows: `../reference-wine/wine-10.20`.
-- One acceptance boot per commit batch: `./tools/windows-notepad-acceptance.py`
-  (~8 min). Log triage: grep `GETMESSAGE`, `WINDOWS-RAW-UNCLAIMED`,
-  `WINDOWS-WINDOW-SHOW`, `USER32]`, `GDI]`, `PE-FAULT`, `segfault`.
-
-## Next steps
-
-1. Prove/disprove stale bytes on a reused heap extent with a hosted VMM test;
-   then honour HEAP_ZERO_MEMORY in `nt_heap.rs` (reference contract) and
-   verify with one acceptance boot. Also check why the extent was freed at
-   50.247 in the first place (user32 init churn is fine; a wrong free is not).
-2. File the exception-dispatch row; decide kernel-driven
-   `KiUserExceptionDispatcher` entry vs installing Wine's handlers in `oxide.c`.
-3. Drop or keep the two traces once the heap question is answered.
+- KI-0473 (noncontinuable RaiseException from DelayLoadFailureHook resumes the raiser) — exception second-chance path.
+- KI-0470 exit status truncation; KI-0475 ext4 has no case-insensitive lookup; KI-0474 acceptance headless mode; 31x spec gap (R lane); KI-0478/0479 IME default window + driver hooks; KI-0438 page-per-alloc heap (perf).
+- Semantic layer: build/run Wine's own user32/gdi32/ntdll conformance test executables under the launcher (next gate after the surface reads zero).
