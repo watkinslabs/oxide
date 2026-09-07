@@ -2,7 +2,6 @@
 use super::*;
 
 /// `UNICODE_STRING`: length in bytes, capacity in bytes, then the buffer.
-const UNICODE_STRING_LENGTH: u64 = 0;
 const UNICODE_STRING_MAXIMUM: u64 = 2;
 const UNICODE_STRING_BUFFER: u64 = 8;
 

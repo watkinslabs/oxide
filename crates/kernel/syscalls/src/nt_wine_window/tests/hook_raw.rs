@@ -24,18 +24,14 @@ fn every_admission_failure_maps_to_the_error_the_call_reports() {
 }
 
 #[test]
-fn a_procedure_stored_against_a_module_round_trips_through_its_base() {
+fn a_procedure_is_stored_relative_to_the_module_it_came_from() {
     let base = 0x7fff_0000_0000;
-    let target = base + 0x1234;
-    let stored = relative_proc(target, base).unwrap();
-    assert_eq!(stored, 0x1234);
-    assert_eq!(absolute_proc(stored, base), Some(target));
+    assert_eq!(relative_proc(base + 0x1234, base), Some(0x1234));
 }
 
 #[test]
 fn a_procedure_with_no_module_is_stored_as_it_arrived() {
     assert_eq!(relative_proc(0x1234, 0), Some(0x1234));
-    assert_eq!(absolute_proc(0x1234, 0), Some(0x1234));
 }
 
 #[test]

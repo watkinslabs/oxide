@@ -11,7 +11,6 @@ pub(crate) const UNHOOK_WINDOWS_HOOK: u64 = 0x15db;
 pub(crate) const UNHOOK_WINDOWS_HOOK_EX: u64 = 0x15dc;
 
 /// Win32 error codes the hook admission ladder reports through the TEB.
-pub(crate) const ERROR_INVALID_HANDLE: u32 = 6;
 pub(crate) const ERROR_INVALID_PARAMETER: u32 = 87;
 pub(crate) const ERROR_HOOK_NEEDS_HMOD: u32 = 1428;
 pub(crate) const ERROR_INVALID_FILTER_PROC: u32 = 1427;
@@ -46,12 +45,6 @@ pub(crate) const fn error_of(error: HookError) -> u32 {
 pub(crate) fn relative_proc(proc_address: u64, instance: u64) -> Option<u64> {
     if instance == 0 { return Some(proc_address); }
     proc_address.checked_sub(instance)
-}
-
-/// Undo the module-relative encoding for a call. # C: O(1)
-pub(crate) fn absolute_proc(stored: u64, instance: u64) -> Option<u64> {
-    if instance == 0 { return Some(stored); }
-    stored.checked_add(instance)
 }
 
 /// Which hook identifier a WinEvent installation uses. # C: O(1)

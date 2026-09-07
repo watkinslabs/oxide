@@ -20,12 +20,12 @@ pub(crate) const SET_DATA: u64 = 0x1541;
 pub(crate) const SET_VIEWER: u64 = 0x1542;
 
 /// `struct get_clipboard_params`: the caller's buffer, its size, the size the
-/// data actually needs, the sequence number and the data-only flag.
+/// data actually needs and the sequence number; the trailing data-only flag
+/// selects a client cache this store does not keep.
 pub(crate) const GET_PARAMS_DATA: u64 = 0;
 pub(crate) const GET_PARAMS_SIZE: u64 = 8;
 pub(crate) const GET_PARAMS_DATA_SIZE: u64 = 16;
 pub(crate) const GET_PARAMS_SEQNO: u64 = 24;
-pub(crate) const GET_PARAMS_DATA_ONLY: u64 = 28;
 
 /// `struct set_clipboard_params`: the bytes, their size, the cache-only flag
 /// and the sequence number the cache entry claims.

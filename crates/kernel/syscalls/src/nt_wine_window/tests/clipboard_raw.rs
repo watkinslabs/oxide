@@ -36,8 +36,7 @@ fn a_stored_format_fits_a_measuring_call_and_only_a_large_enough_buffer() {
 
 #[test]
 fn the_parameter_records_keep_their_field_order() {
-    assert_eq!((GET_PARAMS_DATA, GET_PARAMS_SIZE, GET_PARAMS_DATA_SIZE, GET_PARAMS_SEQNO, GET_PARAMS_DATA_ONLY),
-        (0, 8, 16, 24, 28));
+    assert_eq!((GET_PARAMS_DATA, GET_PARAMS_SIZE, GET_PARAMS_DATA_SIZE, GET_PARAMS_SEQNO), (0, 8, 16, 24));
     assert_eq!((SET_PARAMS_DATA, SET_PARAMS_SIZE, SET_PARAMS_CACHE_ONLY, SET_PARAMS_SEQNO), (0, 8, 16, 20));
 }
 

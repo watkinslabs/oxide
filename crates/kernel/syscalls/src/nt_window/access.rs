@@ -34,13 +34,6 @@ pub(crate) fn with_defer_mut<T>(f: impl FnOnce(&mut ipc::win32_window::DeferBatc
     Some(f(&mut entries[index].defer))
 }
 
-/// Search every NT process for one window, since the window tree spans them.
-/// # C: O(N_processes + N_windows)
-pub(crate) fn any_state<T>(f: impl Fn(&ipc::win32_window::WindowManager) -> Option<T>) -> Option<T> {
-    let entries = GUI.lock();
-    entries.iter().find_map(|entry| f(&entry.state))
-}
-
 /// Mutate whichever process owns one window; the window tree spans processes.
 /// # C: O(N_processes + N_windows)
 pub(crate) fn with_window_mut<T>(id: ipc::win32_window::WindowId,

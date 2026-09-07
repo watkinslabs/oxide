@@ -76,18 +76,9 @@ pub(crate) const PROPERTY_ENTRY_DATA: u64 = 0;
 pub(crate) const PROPERTY_ENTRY_ATOM: u64 = 8;
 pub(crate) const PROPERTY_ENTRY_STRING: u64 = 12;
 
-/// Both point searches take screen or client coordinates as two longs.
-pub(crate) const POINT_BYTES: u64 = 8;
-/// A rectangle is four longs.
-pub(crate) const RECT_BYTES: u64 = 16;
-
-/// Window flags this family reads and writes through the caret-blink state.
+/// The thread-information flag that marks a blinking caret. The move-size and
+/// menu-mode flags belong to states this owner does not enter.
 pub(crate) const GUI_CARETBLINKING: u32 = 0x0000_0001;
-pub(crate) const GUI_INMOVESIZE: u32 = 0x0000_0002;
-pub(crate) const GUI_INMENUMODE: u32 = 0x0000_0004;
-
-/// The window-update lock is a single window at a time; a zero window clears it.
-pub(crate) const LOCK_RELEASED: u64 = 0;
 
 /// Whether one ordinal belongs to this family. # C: O(1)
 pub(crate) const fn claims(ordinal: u64) -> bool {

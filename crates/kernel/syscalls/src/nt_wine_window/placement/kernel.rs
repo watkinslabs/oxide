@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 use ipc::win32_window::WindowRect;
 use syscall::{nt::{NtCall, NtService}, nt_compositor::Monitor, SyscallArgs};
-use super::{codec::{self, Context}, policy::{self, Owner}};
+use super::{codec::Context, policy::{self, Owner}};
 
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 const PEB_PARAMETERS: u64 = 0x20;

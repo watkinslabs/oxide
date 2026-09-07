@@ -2,8 +2,7 @@
 //! window owner decides; this module resolves the caller.
 use super::super::*;
 use alloc::vec::Vec;
-use ipc::win32_window::{DeferError, DeferredPosition, EnableOutcome, LayeredAttributes, WindowError,
-    WindowId, WindowRect};
+use ipc::win32_window::{DeferError, DeferredPosition, EnableOutcome, LayeredAttributes, WindowId, WindowRect};
 
 fn id(hwnd: u64) -> Option<WindowId> { valid_window(hwnd) }
 
@@ -207,9 +206,3 @@ pub(crate) fn report_last_error(error: u32) {
 }
 
 const TEB_LAST_ERROR_OFFSET: u64 = 0x68;
-
-/// Style edits used by the calls whose whole contract is one. # C: O(N_processes + N_windows)
-pub(crate) fn set_style_bits_for_current(hwnd: u64, set: u32, clear: u32) -> Result<u32, WindowError> {
-    let window = id(hwnd).ok_or(WindowError::NoSuchWindow)?;
-    access::with_state_mut(|state| state.set_style_bits(window, set, clear)).unwrap_or(Err(WindowError::NoSuchWindow))
-}

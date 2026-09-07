@@ -17,11 +17,9 @@ pub(crate) const SET_PROCESS_WINDOW_STATION: u64 = 0x157d;
 pub(crate) const SET_THREAD_DESKTOP: u64 = 0x158f;
 pub(crate) const SWITCH_DESKTOP: u64 = 0x15c9;
 
-/// `OBJECT_ATTRIBUTES`: its length, the root directory, the name and the
-/// attribute flags.
+/// `OBJECT_ATTRIBUTES`: its length, the root directory and the name.
 pub(crate) const OBJECT_ATTRIBUTES_ROOT: u64 = 8;
 pub(crate) const OBJECT_ATTRIBUTES_NAME: u64 = 16;
-pub(crate) const OBJECT_ATTRIBUTES_FLAGS: u64 = 24;
 
 /// Object-information classes.
 pub(crate) const UOI_FLAGS: i32 = 1;
@@ -96,6 +94,7 @@ pub(crate) const fn short_buffer_error(class: i32) -> u32 {
 /// Whether one information class is answerable. The user identity class is
 /// not carried by these objects. # C: O(1)
 pub(crate) const fn queryable(class: i32) -> bool {
+    if class == UOI_USER_SID { return false; }
     matches!(class, UOI_FLAGS | UOI_NAME | UOI_TYPE)
 }
 

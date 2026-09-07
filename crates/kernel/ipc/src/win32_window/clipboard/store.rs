@@ -10,9 +10,6 @@ impl ClipboardManager {
 
     fn find(&self, id: u32) -> Option<usize> { self.formats.iter().position(|format| format.id == id) }
 
-    /// Whether the existence bitmap records a standard format. # C: O(1)
-    fn has(&self, id: u32) -> bool { id < CF_MAX && self.format_map & (1 << id) != 0 }
-
     pub(super) fn add(&mut self, id: u32) -> Result<usize, ClipboardError> {
         self.formats.try_reserve(1).map_err(|_| ClipboardError::NoMemory)?;
         self.formats.push(ClipFormat { id, from: 0, seqno: 0, data: None });

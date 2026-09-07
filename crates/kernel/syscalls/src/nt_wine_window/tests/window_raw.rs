@@ -47,7 +47,6 @@ fn the_records_keep_their_field_order() {
         TITLEBARINFO_STATE as usize + ipc::win32_window::TITLE_BAR_ELEMENTS * 4);
     assert_eq!((PROPERTY_ENTRY_DATA, PROPERTY_ENTRY_ATOM, PROPERTY_ENTRY_STRING, PROPERTY_ENTRY_BYTES),
         (0, 8, 12, 16));
-    assert_eq!((POINT_BYTES, RECT_BYTES), (8, 16));
 }
 
 #[test]
@@ -68,7 +67,6 @@ fn a_flash_without_the_caption_flag_changes_no_state() {
 }
 
 #[test]
-fn the_thread_information_flags_are_the_ones_the_record_carries() {
-    assert_eq!((GUI_CARETBLINKING, GUI_INMOVESIZE, GUI_INMENUMODE), (1, 2, 4));
-    assert_eq!(LOCK_RELEASED, 0);
+fn the_caret_flag_is_the_one_the_thread_information_record_carries() {
+    assert_eq!(GUI_CARETBLINKING, 1);
 }

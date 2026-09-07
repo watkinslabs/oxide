@@ -71,7 +71,7 @@ fn only_the_flags_class_is_settable_and_only_with_a_whole_record() {
 
 #[test]
 fn the_records_keep_their_field_order() {
-    assert_eq!((OBJECT_ATTRIBUTES_ROOT, OBJECT_ATTRIBUTES_NAME, OBJECT_ATTRIBUTES_FLAGS), (8, 16, 24));
+    assert_eq!((OBJECT_ATTRIBUTES_ROOT, OBJECT_ATTRIBUTES_NAME), (8, 16));
     assert_eq!((USEROBJECTFLAGS_INHERIT, USEROBJECTFLAGS_FLAGS), (0, 8));
     assert_eq!(ERROR_FILENAME_EXCED_RANGE, 206);
     assert_eq!(ERROR_INVALID_PARAMETER, 87);

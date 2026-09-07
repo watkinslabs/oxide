@@ -7,7 +7,6 @@ use crate::nt_window as owner;
 
 const STATUS_SUCCESS: u64 = 0;
 const STATUS_INVALID_HANDLE: u64 = 0xc000_0008;
-const UNICODE_STRING_LENGTH: u64 = 0;
 const UNICODE_STRING_BUFFER: u64 = 8;
 
 fn win_bool(value: bool) -> u64 { value as u64 }
@@ -17,7 +16,7 @@ fn attribute_name(attributes: u64) -> Option<String> {
     if attributes == 0 { return None; }
     let name = uaccess::get_user_u64(attributes + OBJECT_ATTRIBUTES_NAME).ok()?;
     if name == 0 { return None; }
-    let length = uaccess::get_user_u16(name + UNICODE_STRING_LENGTH).ok()?;
+    let length = uaccess::get_user_u16(name).ok()?;
     if !name_length_ok(length) { owner::report_last_error(ERROR_FILENAME_EXCED_RANGE); return None; }
     let buffer = uaccess::get_user_u64(name + UNICODE_STRING_BUFFER).ok()?;
     if buffer == 0 { return None; }
@@ -88,7 +87,7 @@ fn station(ordinal: u64, args: &[u64]) -> u64 {
 
 fn create_desktop(args: &[u64]) -> u64 {
     let device_length = if args[1] == 0 { 0 } else {
-        uaccess::get_user_u16(args[1] + UNICODE_STRING_LENGTH).unwrap_or(0)
+        uaccess::get_user_u16(args[1]).unwrap_or(0)
     };
     let flags = args[3] as u32;
     if !admit_desktop_creation(device_length, args[2], flags) {
@@ -198,6 +197,3 @@ fn build_name_list(handle: u32, size: u32, list: u64, out_size: u64) -> u64 {
     }
     STATUS_SUCCESS
 }
-
-/// Kept for the user-identity class the query refuses. # C: O(1)
-pub(crate) const REFUSED_CLASS: i32 = UOI_USER_SID;

@@ -14,12 +14,6 @@ pub(crate) fn ancestor_for_current(hwnd: u64, kind: u32) -> u64 {
     raw(access::with_state(|state| state.ancestor(window, kind)).flatten())
 }
 
-/// The window a relationship query answers. # C: O(N_processes + N_windows²)
-pub(crate) fn window_relative_for_current(hwnd: u64, relationship: u32) -> u64 {
-    let Some(window) = id(hwnd) else { return 0; };
-    raw(access::with_state(|state| state.window_relative(window, relationship)).flatten())
-}
-
 /// ChildWindowFromPointEx. # C: O(N_processes + N_windows²)
 pub(crate) fn child_from_point_for_current(parent: u64, x: i32, y: i32, flags: u32) -> u64 {
     let Some(parent) = id(parent) else { return 0; };

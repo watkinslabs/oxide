@@ -34,6 +34,7 @@ impl ClipboardManager {
     /// delay-rendered entries were added. # C: O(N_synthesis * N_formats)
     fn synthesize(&mut self) -> usize {
         let map = self.format_map;
+        // The existence bitmap answers the standard formats in one test.
         let has = |id: u32| id < CF_MAX && map & (1 << id) != 0;
         if !has(CF_LOCALE) && (has(CF_TEXT) || has(CF_OEMTEXT) || has(CF_UNICODETEXT)) {
             let lcid = self.lcid;

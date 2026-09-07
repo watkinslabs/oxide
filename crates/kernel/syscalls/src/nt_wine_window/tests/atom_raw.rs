@@ -44,5 +44,4 @@ fn a_name_longer_than_the_buffer_is_truncated_to_leave_room_for_the_terminator()
 #[test]
 fn the_integral_boundary_matches_the_first_string_atom() {
     assert_eq!(MAXINTATOM, 0xc000);
-    assert_eq!(MAX_ATOM_LEN, 255);
 }

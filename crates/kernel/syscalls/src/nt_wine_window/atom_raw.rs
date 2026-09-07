@@ -6,8 +6,6 @@ pub(crate) const GET_ATOM_NAME: u64 = 0x13d1;
 
 /// Atoms below this are integers rather than table entries.
 pub(crate) const MAXINTATOM: u16 = 0xc000;
-/// Longest atom name, in UTF-16 units.
-pub(crate) const MAX_ATOM_LEN: usize = 255;
 /// An integral atom's name is its value in decimal behind a hash.
 const INTEGRAL_PREFIX: u16 = b'#' as u16;
 /// `#65535` is the longest integral name.
