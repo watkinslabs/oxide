@@ -1,6 +1,8 @@
 //! Raw Wine callback and message-loop entry points.
 
 use super::*;
+/// Message-call traces one boot emits before the marker goes quiet.
+const MESSAGE_CALL_TRACES: u32 = 64;
 
 /// Deliver one MSG through the registered window procedure.
 /// # C: O(1) plus bounded usercopy
@@ -49,20 +51,25 @@ pub(super) fn dispatch_message(pointer: u64) -> u64 {
     status
 }
 
+/// Which callback type DispatchMessage arrives with decides whether the window
+/// procedure is ever entered. Bounded: every console line costs milliseconds of
+/// serial time, and an unbounded per-message trace starves the pump it watches.
+fn trace_message_call(hwnd: u64, message: u64, callback_type: u64) {
+    use core::sync::atomic::{AtomicU32, Ordering};
+    static BUDGET: AtomicU32 = AtomicU32::new(0);
+    if BUDGET.fetch_add(1, Ordering::Relaxed) >= MESSAGE_CALL_TRACES { return; }
+    klog::write_raw(b"[WINDOWS-MESSAGE-CALL] hwnd="); klog::write_hex_u64(hwnd);
+    klog::write_raw(b" msg="); klog::write_hex_u64(message);
+    klog::write_raw(b" type="); klog::write_hex_u64(callback_type);
+    klog::write_raw(b"\n");
+}
+
 /// Execute a raw NtUserMessageCall using its Wine callback selector.
 /// # C: O(1) plus bounded usercopy
 pub(super) fn message_call(a: &[u64; 17]) -> u64 {
     let Some((callback_type, ansi)) = crate::nt_message_call_abi::tail(a[5], |index| a.get(index).copied()) else { return STATUS_INVALID_PARAMETER; };
     let callback_type = callback_type as u64;
-    // Which callback type DispatchMessage arrives with decides whether the
-    // window procedure is ever entered; name every one.
-    klog::write_raw(b"[WINDOWS-MESSAGE-CALL] hwnd=");
-    klog::write_hex_u64(a[0]);
-    klog::write_raw(b" msg=");
-    klog::write_hex_u64(a[1]);
-    klog::write_raw(b" type=");
-    klog::write_hex_u64(callback_type);
-    klog::write_raw(b"\n");
+    trace_message_call(a[0], a[1], callback_type);
     let hwnd = a[0];
     let message = a[1];
     let wparam = a[2];

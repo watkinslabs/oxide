@@ -490,3 +490,6 @@ mod lifecycle_tests;
 #[cfg(test)]
 #[path = "win32_window/tests/typed_text_paint.rs"]
 mod typed_text_paint_tests;
+#[cfg(test)]
+#[path = "win32_window/tests/edit_damage_paint.rs"]
+mod edit_damage_paint_tests;
