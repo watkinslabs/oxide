@@ -17,7 +17,8 @@ import time
 from pathlib import Path
 from notepad_qmp import QmpTransactions, QmpError
 from screenshot_evidence import screenshot_completed, record_screenshot
-from notepad_evidence import token_in_notepad_window
+from notepad_evidence import token_in_notepad_window, locate_notepad_window, image_size
+from gnome_overview import overview_visible, window_activated
 
 ROOT = Path(__file__).resolve().parents[1]
 IMAGES = ROOT.parent / "images"
@@ -36,7 +37,7 @@ DEFAULT_WINE_NTDLL = ROOT / "target/lanes/wine-10.20-build/dlls/ntdll/ntdll.so"
 DEFAULT_WINE_WIN32U = ROOT / "target/lanes/wine-10.20-build/dlls/win32u/win32u.so"
 MILESTONES = [
     "[WINDOWS-PE-START] entry=", "[WINDOWS-NT-UNIX] entry",
-    "[WINDOWS-USER32] create-window",
+    "[WINDOWS-USER32] create-window", "[WINDOWS-WINDOW-SHOW] hwnd=",
     "[WINDOWS-USER32] get-message", "[WINDOWS-GDI] begin-paint",
     "[WINDOWS-GDI] present", "[WINDOWS-DESKTOP] frame-ack",
 ]
@@ -193,6 +194,25 @@ def keys(conn, *names):
     qmp(conn, "send-key", {"keys": [{"type": "qcode", "data": name} for name in names]})
 
 
+# QEMU's input-send-event "abs" axis is normalized to [0, QMP_ABS_RANGE]
+# across the full display surface, independent of the guest's actual
+# framebuffer resolution -- the virtio-tablet-pci device the x86 profile
+# attaches (tools/xtask/src/image_qemu/x86_64.rs) reports absolute
+# pointer position on that same scale.
+QMP_ABS_RANGE = 0x7fff
+
+
+def click(conn, x, y, width, height):
+    axis_x = int(x * QMP_ABS_RANGE / max(1, width - 1))
+    axis_y = int(y * QMP_ABS_RANGE / max(1, height - 1))
+    qmp(conn, "input-send-event", {"events": [
+        {"type": "abs", "data": {"axis": "x", "value": axis_x}},
+        {"type": "abs", "data": {"axis": "y", "value": axis_y}},
+    ]})
+    qmp(conn, "input-send-event", {"events": [{"type": "btn", "data": {"down": True, "button": "left"}}]})
+    qmp(conn, "input-send-event", {"events": [{"type": "btn", "data": {"down": False, "button": "left"}}]})
+
+
 def type_token(conn):
     keys(conn, "ctrl", "a")
     for char in TOKEN:
@@ -203,18 +223,78 @@ def launch_on_desktop(uart, buffer, log, qmp_sock, deadline):
     wait_marker(uart, buffer, log, "sh-5.2#", deadline)
     wait_marker(uart, buffer, log, "Entering running state", deadline)
     wait_for_rendered_desktop(qmp_sock, deadline)
+    leave_overview(qmp_sock, deadline, "launch")
     screenshot(qmp_sock, "gnome-before-notepad")
     uart.sendall(DESKTOP_LAUNCH)
 
 
-def ocr(path):
+def ocr_raw(path):
+    """Whitespace-preserving OCR text, for phrase matching (KI-0472)."""
     try:
         result = subprocess.run(["tesseract", str(path), "stdout"], check=False,
                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                 text=True, timeout=20)
     except (OSError, subprocess.TimeoutExpired):
         return ""
-    return re.sub(r"[^a-z0-9-]", "", result.stdout.lower())
+    return result.stdout.lower()
+
+
+def ocr(path):
+    return re.sub(r"[^a-z0-9-]", "", ocr_raw(path))
+
+
+def screendump_probe(conn, path, deadline):
+    """One-off screendump not journaled as A1-A5 evidence; used for retries."""
+    path.unlink(missing_ok=True)
+    qmp(conn, "screendump", {"filename": str(path)})
+    wait_until = min(deadline, time.monotonic() + 10)
+    while time.monotonic() < wait_until and not (path.is_file() and path.stat().st_size > 16):
+        time.sleep(0.1)
+    return path.is_file() and path.stat().st_size > 16
+
+
+def leave_overview(conn, deadline, label):
+    """Escape the Activities overview until it clears (KI-0472).
+
+    The guest session starts with the overview open; Notepad launched
+    there renders only as an overview thumbnail, and injected input
+    lands in the overview's own search entry instead of the app.
+    """
+    probe = Path(f"{SCREEN}-{label}-overview-probe.ppm")
+    attempts = 0
+    while time.monotonic() < deadline and attempts < 10:
+        if screendump_probe(conn, probe, deadline) and not overview_visible(ocr_raw(probe)):
+            return
+        keys(conn, "esc")
+        time.sleep(0.5)
+        attempts += 1
+    die(f"GNOME overview still visible before {label}")
+
+
+def ensure_notepad_active(conn, deadline):
+    """Bring Notepad to front and click its client area before typing.
+
+    Runs after the kernel's [WINDOWS-WINDOW-SHOW] marker and before any
+    token injection (KI-0472): leaves the overview if the window manager
+    reopened it, locates the window by its OCR'd title bar (same helper
+    A3 uses), and clicks into its body via the QMP absolute-pointer path
+    so the desktop's focused window is Notepad, not whatever was focused
+    behind the overview.
+    """
+    leave_overview(conn, deadline, "activation")
+    probe = Path(f"{SCREEN}-locate-probe.ppm")
+    if not screendump_probe(conn, probe, deadline):
+        die("QMP did not produce a screenshot to locate the Notepad window")
+    rect = locate_notepad_window(probe)
+    if rect is None:
+        die("no Notepad window title located before activation click")
+    width, height = image_size(probe)
+    left, top, right, bottom = rect
+    click(conn, (left + right) // 2, (top + bottom) // 2, width, height)
+    time.sleep(0.5)
+    activated_path, _ = screenshot(conn, "activated")
+    if not window_activated(ocr_raw(activated_path), locate_notepad_window(activated_path)):
+        die(f"Notepad window not active after click; retained {activated_path}")
 
 
 def image_build_env(base=None):
@@ -309,6 +389,10 @@ def main():
         launch_on_desktop(uart, buffer, log, qmp_sock, deadline)
         for marker in MILESTONES:
             wait_marker(uart, buffer, log, marker, deadline)
+        # The kernel has reported the window shown; confirm it is also the
+        # active window on screen (not just present in a thumbnail behind a
+        # reopened overview) before any input is typed into it (KI-0472).
+        ensure_notepad_active(qmp_sock, deadline)
         _, before = screenshot(qmp_sock, "before-token")
         type_token(qmp_sock)
         time.sleep(2)

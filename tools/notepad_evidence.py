@@ -44,7 +44,7 @@ def _tsv_words(path):
         yield text, left, top, width, height, line_key
 
 
-def _image_size(path):
+def image_size(path):
     result = subprocess.run(["identify", "-format", "%w %h", str(path)], check=False,
                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=10)
     width, _, height = result.stdout.strip().partition(" ")
@@ -70,7 +70,7 @@ def locate_notepad_window(path):
     line_words = [word for word in words if word[5] == title_line]
     lefts = [word[1] for word in line_words]
     rights = [word[1] + word[3] for word in line_words]
-    width, height = _image_size(path)
+    width, height = image_size(path)
     left = max(0, min(lefts) - LEFT_MARGIN)
     right = min(width, max(rights) + RIGHT_MARGIN)
     top = max(0, title_top)
