@@ -17,7 +17,8 @@ pub static PROFILE: PumpProfile = PumpProfile::new();
 const TRACE_BUDGET: u32 = 400;
 /// Nanoseconds per millisecond, the unit the line reports.
 const NS_PER_MS: u64 = 1_000_000;
-/// Ordinals named on the line.
+/// Ordinals named on the counts line. The console truncates a long line, and
+/// a truncated instrument reports the cheap half of what it measured.
 const NAMED: usize = 6;
 /// Nanoseconds per microsecond, the unit per-ordinal costs report.
 const NS_PER_US: u64 = 1_000;
@@ -54,6 +55,13 @@ pub(crate) fn note_retrieval() {
         klog::write_raw(b":"); klog::write_hex_u64(entry.count);
         klog::write_raw(b":"); klog::write_hex_u64(entry.total_ns / NS_PER_US);
         klog::write_raw(b":"); klog::write_hex_u64(entry.max_ns / NS_PER_US);
+    }
+    klog::write_raw(b"\n");
+    klog::write_raw(b"[WINDOWS-PUMP-SLOW]");
+    for (ordinal, ns) in interval.slowest.iter() {
+        if *ns == 0 { continue; }
+        klog::write_raw(b" s="); klog::write_hex_u64(*ordinal);
+        klog::write_raw(b":"); klog::write_hex_u64(*ns / NS_PER_US);
     }
     klog::write_raw(b"\n");
 }

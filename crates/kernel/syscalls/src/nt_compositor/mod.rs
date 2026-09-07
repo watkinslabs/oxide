@@ -11,7 +11,7 @@ mod binding;
 #[cfg(target_os = "oxide-kernel")]
 mod worker;
 #[cfg(target_os = "oxide-kernel")]
-pub use binding::{bind_service, disconnect, enqueue, enqueue_current,
+pub use binding::{bind_service, disconnect, enqueue, enqueue_current, submit_current,
     monitors, monitors_current, wait_completion_current, set_event_handler};
 #[cfg(test)]
 #[path = "tests/transport.rs"]

@@ -53,3 +53,25 @@ fn a_second_interval_reuses_the_freed_slots_for_new_ordinals() {
     assert_eq!(interval.top[0].ordinal, 0x777);
     assert_eq!(interval.top[0].count, 4);
 }
+
+#[test]
+fn the_costliest_entries_are_retained_even_when_no_slot_is_free() {
+    use crate::win32_window::pump_profile::SLOW;
+    let profile = PumpProfile::new();
+    for ordinal in 1..=(SLOTS as u64) { profile.record(ordinal, 1_000); }
+    profile.record(0xfeed, 50_000_000);
+    let interval = profile.take();
+    assert_eq!(interval.other, 1, "the expensive ordinal found no slot");
+    assert!(interval.top.iter().all(|entry| entry.ordinal != 0xfeed));
+    assert_eq!(interval.slowest[0], (0xfeed, 50_000_000));
+    assert_eq!(interval.slowest.len(), SLOW);
+}
+
+#[test]
+fn the_slowest_table_is_emptied_with_its_interval() {
+    let profile = PumpProfile::new();
+    profile.record(0xabc, 9_000_000);
+    let _ = profile.take();
+    let interval = profile.take();
+    assert_eq!(interval.slowest[0], (0, 0));
+}

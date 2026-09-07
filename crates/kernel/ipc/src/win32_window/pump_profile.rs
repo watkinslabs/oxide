@@ -12,6 +12,10 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 /// Ordinals tracked by identity; everything past them lands in the overflow.
 pub const SLOTS: usize = 24;
+/// Individual entries retained by cost, whatever their ordinal. The slot table
+/// is claimed by the first ordinals an interval happens to use, so the one that
+/// spends the interval's time can be absent from it entirely.
+pub const SLOW: usize = 8;
 
 /// One ordinal's share of an interval.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -37,6 +41,9 @@ pub struct Interval {
     pub total_ns: u64,
     /// Occupied slots, costliest first.
     pub top: [Entry; SLOTS],
+    /// The interval's costliest individual entries, `(ordinal, ns)`, costliest
+    /// first, regardless of the slot table.
+    pub slowest: [(u64, u64); SLOW],
 }
 
 /// Lock-free ordinal histogram, reset by whoever reports it.
@@ -48,6 +55,8 @@ pub struct PumpProfile {
     total: AtomicU64,
     other: AtomicU64,
     total_ns: AtomicU64,
+    slow_ordinals: [AtomicU64; SLOW],
+    slow_ns: [AtomicU64; SLOW],
 }
 
 /// No ordinal occupies a slot yet. Zero is not a Win32 ordinal, so it doubles
@@ -67,6 +76,8 @@ impl PumpProfile {
             total: AtomicU64::new(0),
             other: AtomicU64::new(0),
             total_ns: AtomicU64::new(0),
+            slow_ordinals: [const { AtomicU64::new(EMPTY) }; SLOW],
+            slow_ns: [const { AtomicU64::new(0) }; SLOW],
         }
     }
 
@@ -77,12 +88,25 @@ impl PumpProfile {
         self.maxima[slot].fetch_max(ns, Ordering::Relaxed);
     }
 
+    /// Retain this entry if it is costlier than the cheapest one retained.
+    /// # C: O(SLOW)
+    fn note_slow(&self, ordinal: u64, ns: u64) {
+        let mut victim = 0;
+        for slot in 1..SLOW {
+            if self.slow_ns[slot].load(Ordering::Relaxed) < self.slow_ns[victim].load(Ordering::Relaxed) { victim = slot; }
+        }
+        if ns <= self.slow_ns[victim].load(Ordering::Relaxed) { return; }
+        self.slow_ns[victim].store(ns, Ordering::Relaxed);
+        self.slow_ordinals[victim].store(ordinal, Ordering::Relaxed);
+    }
+
     /// Charge one kernel entry of `ns` wall nanoseconds to `ordinal`, claiming
     /// a free slot for an ordinal not yet seen in this interval.
     /// # C: O(SLOTS)
     pub fn record(&self, ordinal: u64, ns: u64) {
         self.total.fetch_add(1, Ordering::Relaxed);
         self.total_ns.fetch_add(ns, Ordering::Relaxed);
+        self.note_slow(ordinal, ns);
         if ordinal == EMPTY { self.other.fetch_add(1, Ordering::Relaxed); return; }
         for slot in 0..SLOTS {
             let held = self.ordinals[slot].load(Ordering::Relaxed);
@@ -103,7 +127,12 @@ impl PumpProfile {
             other: self.other.swap(0, Ordering::Relaxed),
             total_ns: self.total_ns.swap(0, Ordering::Relaxed),
             top: [Entry::default(); SLOTS],
+            slowest: [(EMPTY, 0); SLOW],
         };
+        for slot in 0..SLOW {
+            out.slowest[slot] = (self.slow_ordinals[slot].swap(EMPTY, Ordering::Relaxed), self.slow_ns[slot].swap(0, Ordering::Relaxed));
+        }
+        out.slowest.sort_by(|a, b| b.1.cmp(&a.1));
         for slot in 0..SLOTS {
             out.top[slot] = Entry {
                 ordinal: self.ordinals[slot].swap(EMPTY, Ordering::Relaxed),

@@ -121,10 +121,25 @@ pub fn bind_service(fd: u64) -> u64 {
 /// Only canonical window owners may supply HWND mutations. No window state is retained here.
 /// # C: O(payload + bindings); # Sleeps: no socket I/O
 pub fn enqueue(group: &Arc<ThreadGroup>, opcode: Opcode, hwnd: u64, payload: Vec<u8>) -> Result<u64, TransportError> {
+    submit(group, opcode, hwnd, payload, true)
+}
+
+/// Hand one record to the desktop. `awaited` says whether the caller will wait
+/// for its completion; a submission nobody waits for is the shape of a drawing
+/// operation, which reaches the screen with the frames around it instead of
+/// stopping its thread until the desktop answers.
+/// # C: O(payload + bindings); # Sleeps: no socket I/O
+pub fn submit(group: &Arc<ThreadGroup>, opcode: Opcode, hwnd: u64, payload: Vec<u8>, awaited: bool) -> Result<u64, TransportError> {
     let binding = lookup(group)?;
     let mut prepared = Some(super::queue::Prepared::new(opcode, hwnd, payload)?);
-    let result = binding.state.lock().queue.enqueue_prepared(&mut prepared);
+    let result = binding.state.lock().queue.enqueue_prepared(&mut prepared, awaited);
     if result.is_ok() { binding.wait.wake_all(); } result
+}
+
+/// # C: O(payload + bindings)
+pub fn submit_current(opcode: Opcode, hwnd: u64, payload: Vec<u8>) -> Result<u64, TransportError> {
+    let cur = sched::live::current().ok_or(TransportError::Disconnected)?;
+    submit(&cur.thread_group, opcode, hwnd, payload, false)
 }
 /// # C: O(payload + bindings)
 pub fn enqueue_current(opcode: Opcode, hwnd: u64, payload: Vec<u8>) -> Result<u64, TransportError> {
