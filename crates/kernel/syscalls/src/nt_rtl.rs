@@ -718,6 +718,12 @@ pub(crate) fn begin_wndproc_callback_with_completion(hwnd: u64, message: u64, wp
     STATUS_PENDING
 }
 
+#[cfg(target_os = "oxide-kernel")]
+#[path = "nt_rtl/hook_callback.rs"]
+mod hook_callback;
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) use hook_callback::{begin_hook_callback, begin_win_event_callback};
+
 /// Report a create callback that could not be started. Each of these returns a
 /// status the caller turns into a NULL window, and an application whose main
 /// window is NULL exits at once, so an unnamed one looks like a crash.

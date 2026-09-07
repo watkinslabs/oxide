@@ -85,6 +85,14 @@ impl WindowManager {
         let entry = &mut self.windows.iter_mut().find(|(id, _)| *id == window).ok_or(WindowError::NoSuchWindow)?.1;
         Ok(entry.properties_mut().remove(atom))
     }
+    /// Every property of one window, as value, atom and whether the atom came
+    /// from a string name. # C: O(N_windows + N_properties)
+    pub fn property_list(&self, window: WindowId) -> Option<Vec<(u64, u16, bool)>> {
+        let entry = self.windows.iter().find(|(id, _)| *id == window)?;
+        Some(entry.1.properties().entries().iter()
+            .map(|property| (property.value, property.atom, property.origin == PropertyOrigin::String)).collect())
+    }
+
     pub fn property_atoms(&self, window: WindowId) -> Result<Vec<u16>, WindowError> {
         let entry = &self.windows.iter().find(|(id, _)| *id == window).ok_or(WindowError::NoSuchWindow)?.1;
         Ok(entry.properties().string_atoms())

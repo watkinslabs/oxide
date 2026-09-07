@@ -248,6 +248,13 @@ impl MessageQueue {
         self.messages.retain(|entry| entry.message.hwnd != Some(id));
         if self.caret.hwnd == Some(id) { self.caret.destroy(); self.caret_generation = self.caret_generation.saturating_add(1); }
     }
+    /// Window that owns the caret and the rectangle it occupies. # C: O(1)
+    pub fn caret_placement(&self) -> Option<(WindowId, WindowRect)> {
+        let hwnd = self.caret.hwnd?;
+        Some((hwnd, WindowRect { left: self.caret.x, top: self.caret.y,
+            right: self.caret.x.saturating_add(self.caret.width),
+            bottom: self.caret.y.saturating_add(self.caret.height) }))
+    }
     pub fn post_quit(&mut self, code: i32) { self.quit = Some(code); }
     fn quit_pending(&self) -> bool { self.quit.is_some() }
     fn quit_message(&mut self, filter: MessageFilter, remove: bool) -> Option<WinMessage> {
@@ -324,6 +331,16 @@ impl UserAtomTable {
         if index == self.names.len() { self.names.push(entry); } else { self.names[index] = entry; }
         USER_ATOM_BASE.checked_add(index as u16 + 1)
     }
+
+    /// Name of one string atom, absent when nothing holds that slot.
+    /// # C: O(1)
+    pub fn name(&self, atom: u16) -> Option<&[u16]> {
+        let index = atom.checked_sub(USER_ATOM_BASE)?.checked_sub(1)? as usize;
+        self.names.get(index)?.as_ref().map(|entry| entry.name.as_slice())
+    }
+
+    /// Whether one value can name a string atom at all. # C: O(1)
+    pub const fn is_string_atom(atom: u16) -> bool { atom > USER_ATOM_BASE }
 }
 
 impl Default for UserAtomTable { fn default() -> Self { Self::new() } }

@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 use ipc::win32_window::WindowRect;
 use syscall::{nt::{NtCall, NtService}, nt_compositor::Monitor, SyscallArgs};
-use super::{codec::Context, policy::{self, Owner}};
+use super::{codec::{self, Context}, policy::{self, Owner}};
 
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 const PEB_PARAMETERS: u64 = 0x20;
@@ -53,3 +53,27 @@ pub(crate) fn get(hwnd: u64, pointer: u64) -> u64 {
 
 /// Raw ShowWindow keeps previous-visibility BOOL and converts owner failures to FALSE. # C: O(GUI operations)
 pub(crate) fn show(hwnd: u64, command: u64) -> u64 { policy::show(&mut Current, hwnd, command as u32) }
+
+/// The placement record behind the internal-position query: it answers the
+/// show command and carries the normal rectangle and minimized point.
+/// # C: O(monitors)
+pub(crate) fn record(hwnd: u64) -> Option<super::codec::Placement> {
+    super::codec::Placement::decode(&policy::query(&mut Current, hwnd)?)
+}
+
+/// Apply a placement built from a show command with an optional normal
+/// rectangle and minimized point, leaving the rest as the window already has
+/// it. # C: O(monitors + GUI operations)
+pub(crate) fn apply_internal(hwnd: u64, command: u32, rect: Option<WindowRect>, min: Option<(i32, i32)>) -> u64 {
+    const WPF_SETMINPOSITION: u32 = 1;
+    let mut placement = match record(hwnd) {
+        Some(placement) => placement,
+        None => return 0,
+    };
+    placement.show = command;
+    placement.flags = 0;
+    if let Some(rect) = rect { placement.normal = rect; }
+    if let Some(min) = min { placement.min = min; placement.flags |= WPF_SETMINPOSITION; }
+    let bytes = placement.encode();
+    policy::read_apply(&mut Current, hwnd, 1, |out, _| { out.copy_from_slice(&bytes); true })
+}

@@ -20,7 +20,7 @@ pub(super) const WPF_SETMINPOSITION: u32 = 1;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Context { pub rect: WindowRect, pub style: u32, pub ex_style: u32 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct Placement { pub flags: u32, pub show: u32, pub min: (i32, i32), pub max: (i32, i32), pub normal: WindowRect }
+pub(crate) struct Placement { pub flags: u32, pub show: u32, pub min: (i32, i32), pub max: (i32, i32), pub normal: WindowRect }
 
 fn field(bytes: &[u8], offset: usize) -> Option<u32> {
     Some(u32::from_le_bytes(bytes.get(offset..offset+4)?.try_into().ok()?))

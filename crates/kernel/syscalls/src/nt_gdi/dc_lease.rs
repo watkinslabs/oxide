@@ -87,3 +87,11 @@ pub(crate) fn release_dc_lease_for_current(dc: u32) -> bool {
     }
     true
 }
+
+/// Window one device context's live lease draws into.
+/// # C: O(N_processes + N_dcs)
+pub(crate) fn lease_window_for_current(dc: u32) -> Option<u32> {
+    let cur = sched::live::current().filter(|task| task.is_nt_personality())?;
+    let entries = GDI.lock();
+    entries.iter().find(|entry| entry.group.ptr_eq(&Arc::downgrade(&cur.thread_group)))?.state.lease_window(dc)
+}

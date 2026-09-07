@@ -9,7 +9,7 @@ pub(crate) use codec::Context;
 #[path = "placement/kernel.rs"]
 mod kernel;
 #[cfg(target_os = "oxide-kernel")]
-pub(super) use kernel::{set, get, show};
+pub(crate) use kernel::{set, get, show, record, apply_internal};
 #[cfg(test)]
 #[path = "tests/placement.rs"]
 mod tests;

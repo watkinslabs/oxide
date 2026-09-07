@@ -9,6 +9,11 @@ pub fn dispatch(call: NtCall) -> u64 {
     let Some(args) = read_args(call.args.a1) else { return STATUS_INVALID_PARAMETER; };
     if let Some(result) = caret_raw::dispatch(ordinal, [args[0], args[1], args[2], args[3]]) { return result; }
     if let Some(result) = multiplexers(ordinal, &args) { return result; }
+    if let Some(result) = clipboard_raw::kernel::route(ordinal, &args) { return result; }
+    if let Some(result) = atom_raw::kernel::route(ordinal, &args) { return result; }
+    if let Some(result) = hook_raw::kernel::route(ordinal, &args) { return result; }
+    if let Some(result) = station_raw::kernel::route(ordinal, &args) { return result; }
+    if let Some(result) = window_raw::kernel::route(ordinal, &args) { return result; }
     if let Some(result) = crate::nt_window::scroll::dispatch(ordinal, [args[0], args[1], args[2], args[3]]) { return result; }
     if let Some(result) = crate::nt_visibility_raw::kernel::route(ordinal, &args) { return result; }
     if let Some(result) = crate::nt_region_raw::kernel::route(ordinal, &args) { return result; }
@@ -139,6 +144,9 @@ pub fn dispatch(call: NtCall) -> u64 {
         WINE_THUNKED_MENU_ITEM_INFO => crate::nt_window::thunked_menu_item_info(args[0], args[1], args[2], args[3], args[4]),
         WINE_UNREGISTER_CLASS => {
             let Some(name) = read_unicode_string(args[0]) else { return 0; };
+            // The call hands back the client-side menu name so the caller can
+            // free it. The class owner keeps none, so the record is cleared.
+            if args[2] != 0 && !clear_client_menu_name(args[2]) { return 0; }
             win_bool(crate::nt_window::unregister_class_for_current(&name).then_some(STATUS_SUCCESS).unwrap_or(STATUS_INVALID_PARAMETER))
         }
         WINE_REGISTER_CLASS_EX => raw_class::register_class(SyscallArgs { a0: args[0], a1: args[1], a2: args[2], a3: args[3], a4: args[4], a5: args[5] }),
@@ -408,6 +416,13 @@ fn font_family_stack(ordinal: u64, first: [u64; 6]) -> Option<u64> {
         args[index] = value;
     }
     crate::nt_wine_font_family_contract::kernel::route(ordinal, &args[..count])
+}
+
+/// Clear the three pointers of a `client_menu_name` record. # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+fn clear_client_menu_name(record: u64) -> bool {
+    (0..3u64).all(|slot| record.checked_add(slot * 8)
+        .is_some_and(|address| uaccess::put_user_u64(address, 0).is_ok()))
 }
 
 /// Decode a raw Wine syscall after the architectural entry has captured the

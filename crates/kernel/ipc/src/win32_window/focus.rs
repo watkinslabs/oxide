@@ -10,6 +10,13 @@ const ACTIVATE_MINIMIZED: u64 = 0x0020_0000;
 impl WindowManager {
     /// # C: O(1)
     pub fn active_window(&self) -> Option<WindowId> { self.active }
+    /// Window holding the mouse capture. # C: O(1)
+    pub fn capture_window(&self) -> Option<WindowId> { self.capture }
+    /// Window that owns the caret, and where the caret sits.
+    /// # C: O(N_queues)
+    pub fn caret_placement(&self) -> Option<(WindowId, super::WindowRect)> {
+        self.queues.iter().find_map(|(_, queue)| queue.caret_placement())
+    }
 
     fn descendant_of(&self, id: WindowId, root: WindowId) -> bool {
         let mut cursor = Some(id);
