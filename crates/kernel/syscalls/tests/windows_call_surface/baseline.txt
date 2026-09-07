@@ -71,7 +71,6 @@ win32u 0x11e8 NtGdiGetCharWidthInfo
 win32u 0x11e9 NtGdiGetCharWidthW
 win32u 0x11eb NtGdiGetColorAdjustment
 win32u 0x11f3 NtGdiGetDIBitsInternal
-win32u 0x11f4 NtGdiGetDeviceCaps
 win32u 0x11f6 NtGdiGetDeviceGammaRamp
 win32u 0x11ff NtGdiGetFontFileData
 win32u 0x1200 NtGdiGetFontFileInfo
