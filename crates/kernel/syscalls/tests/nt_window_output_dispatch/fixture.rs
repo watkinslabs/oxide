@@ -131,7 +131,7 @@ mod nt_window{
     mod caret{pub mod blink{pub fn expire_for_current(_:u64)->u64{0}pub fn retrieval_deadline_for_current()->Option<u64>{None}}}
     mod paint_cleanup{pub fn window_for_current(_:u64){}}
     // The pump profile reports to the console, which this fixture has none of.
-    mod pump_trace{pub fn note_retrieval(){}}
+    mod pump_profile{pub fn note_retrieval(){}}
     mod send{pub fn cancel_window<T>(_:&T,_:u64){}}
     mod position{pub fn cancel_position_window<T>(_:&T,_:u64){}}
     mod menu_raw{pub mod bar{

@@ -187,6 +187,7 @@ debug-taskdump = ["sched/debug-taskdump", "syscalls/debug-taskdump"]  # [TASKDUM
 debug-stack-guard = ["sched/debug-stack-guard"]  # C213: 0xa5 canary at each kernel-stack bottom, checked at every context switch. Non-masking (32B/stack, no layout/reuse change) — tests whether the ~90% disksize corruptor is a KERNEL-STACK OVERFLOW past a 16KB heap-Box stack into the adjacent static-heap block (zram compressor init deep frames). Never actually booted before.
 debug-polktrace = ["sched/debug-polktrace", "syscalls/debug-polktrace"]  # [POL] live per-syscall nr/ret stream for polkitd — authority-init stall hunt
 debug-startlat = ["syscalls/debug-startlat"]  # [SLOWSYS] single-call latency probe (>50ms dispatches, tid/tgid/exe)
+debug-winpump = ["syscalls/debug-winpump"]  # [WINDOWS-PUMP] per-retrieved-message attribution of the Win32 message pump
 debug-faultcost = ["pmm/debug-faultcost", "ext4/debug-faultcost", "drv-virtio-blk/debug-faultcost"]
 debug-blk-verify = ["drv-virtio-blk/debug-blk-verify"]  # [BLK-VERIFY] cross-check every block completion against the device's used-ring len  # [FAULTCOST] page-fault path profiler — the fault-side twin of debug-syscost
 debug-syscost = ["syscalls/debug-syscost", "pmm/debug-syscost", "vfs/debug-resolve-cost", "ext4/debug-resolve-cost"]  # [SYSCOST] low-distortion per-syscall profiler and munmap stage counters

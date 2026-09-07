@@ -7,6 +7,8 @@
 //! work inside the application, and system time belongs to the ordinals named
 //! here.
 
+#![cfg(feature = "debug-winpump")]
+
 use core::sync::atomic::{AtomicU64, Ordering};
 use ipc::win32_window::pump_profile::PumpProfile;
 
