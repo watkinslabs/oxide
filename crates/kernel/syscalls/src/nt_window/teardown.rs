@@ -3,6 +3,9 @@ use super::*;
 
 /// # C: O(windows³ + pending requests); # Sleeps: yes; no GUI lock across usercopy/transport.
 pub(crate) fn cleanup_thread_at_exit(task: &sched::Task) {
+    // Paints the exiting thread still owes to unfinished text runs end here,
+    // while their windows, sessions and device contexts are still alive.
+    crate::nt_text_order::cancel_for_current();
     paint_callbacks::cancel_current_thread();
     let group = &task.thread_group;
     let (removed, atoms, paint_dcs) = {

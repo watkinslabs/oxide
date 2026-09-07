@@ -25,17 +25,18 @@ pub(crate) fn begin(mut request: abi::TextRequest) -> u64 {
 
 /// Redirect a text run the kernel itself owns: the units are copied straight
 /// into the callback payload instead of fetched from the caller's address
-/// space. # C: O(text units)
-pub(crate) fn begin_kernel_text(mut request: abi::TextRequest, text: &[u16]) -> u64 {
-    request.count = match u32::try_from(text.len()) { Ok(count) => count, Err(_) => return 0 };
+/// space. `None` means no redirect was installed, so nothing will complete
+/// this run. # C: O(text units)
+pub(crate) fn begin_kernel_text(mut request: abi::TextRequest, text: &[u16]) -> Option<u64> {
+    request.count = match u32::try_from(text.len()) { Ok(count) => count, Err(_) => return None };
     request.advances = 0;
-    let Some(bytes) = request.payload_bytes() else { return 0; };
+    let Some(bytes) = request.payload_bytes() else { return None; };
     let mut copy = Vec::new();
-    if copy.try_reserve_exact(bytes).is_err() { return 0; }
+    if copy.try_reserve_exact(bytes).is_err() { return None; }
     copy.resize(bytes, 0);
     let head = core::mem::size_of::<abi::TextRequest>();
     for (index, unit) in text.iter().enumerate() { copy[head + index * 2..head + index * 2 + 2].copy_from_slice(&unit.to_le_bytes()); }
-    launch(&mut copy, |payload, copy| {
+    launch_checked(&mut copy, |payload, copy| {
         request.text = payload + head as u64;
         // SAFETY: repr(C) header contains initialized integer fields without padding.
         copy[..head].copy_from_slice(unsafe { core::slice::from_raw_parts((&request as *const abi::TextRequest).cast(), head) });
@@ -47,16 +48,22 @@ pub(super) fn launch(copy: &mut [u8], patch: impl FnOnce(u64, &mut [u8])) -> u64
 }
 
 pub(super) fn launch_or(copy: &mut [u8], failure: u64, patch: impl FnOnce(u64, &mut [u8])) -> u64 {
-    let Some(task) = sched::live::current() else { return failure; };
-    if !task.is_nt_personality() || task.nt_teb() == 0 { return failure; }
+    launch_checked(copy, patch).unwrap_or(failure)
+}
+
+/// `None` when no redirect was installed: the caller's frame is untouched and
+/// no completion will arrive for this payload. # C: O(payload bytes)
+pub(super) fn launch_checked(copy: &mut [u8], patch: impl FnOnce(u64, &mut [u8])) -> Option<u64> {
+    let Some(task) = sched::live::current() else { return None; };
+    if !task.is_nt_personality() || task.nt_teb() == 0 { return None; }
     let native_ready = match task.nt_native_thread.lock().child {
         Some(child) => child.phase == Phase::Running,
         None => task.tid == task.tgid.load(core::sync::atomic::Ordering::Acquire),
     };
-    if !native_ready || crate::nt_native_thread::factory(task).is_none() { return failure; }
-    let Some((entry, ret)) = super::service::registration(task) else { return failure; };
+    if !native_ready || crate::nt_native_thread::factory(task).is_none() { return None; }
+    let Some((entry, ret)) = super::service::registration(task) else { return None; };
     let regs = crate::arch_frame::current_user_regs();
-    if regs.is_null() { return failure; }
+    if regs.is_null() { return None; }
     // SAFETY: active syscall frame belongs exclusively to this current Task.
     let frame = unsafe { &mut *regs };
     #[cfg(target_arch = "x86_64")]
@@ -67,19 +74,19 @@ pub(super) fn launch_or(copy: &mut [u8], failure: u64, patch: impl FnOnce(u64, &
     let arch = abi::CallbackArch::X86_64;
     #[cfg(target_arch = "aarch64")]
     let arch = abi::CallbackArch::Aarch64;
-    let Some((payload, call_sp)) = abi::callback_storage_layout(sp, copy.len(), arch) else { return failure; };
+    let Some((payload, call_sp)) = abi::callback_storage_layout(sp, copy.len(), arch) else { return None; };
     patch(payload, copy);
-    if uaccess::copy_to_user(payload, copy).is_err() { return failure; }
+    if uaccess::copy_to_user(payload, copy).is_err() { return None; }
     #[cfg(target_arch = "x86_64")]
-    if uaccess::put_user_u64(call_sp, ret).is_err() { return failure; }
+    if uaccess::put_user_u64(call_sp, ret).is_err() { return None; }
     let saved = crate::nt_callback_frame::capture(frame, task, Completion { kind: abi::TOKEN, argument: link });
-    if !task.nt_callback_stack.lock().push(saved) { return failure; }
+    if !task.nt_callback_stack.lock().push(saved) { return None; }
     #[cfg(target_arch = "x86_64")]
     { frame.rip = entry; frame.rsp = call_sp; frame.rcx = payload; }
     #[cfg(target_arch = "aarch64")]
     { frame.elr_el1 = entry; frame.sp_el0 = call_sp; frame.gp[0] = payload; frame.retval = payload; frame.x30 = ret; }
-    #[cfg(target_arch = "x86_64")] { 0 }
-    #[cfg(target_arch = "aarch64")] { payload }
+    #[cfg(target_arch = "x86_64")] { Some(0) }
+    #[cfg(target_arch = "aarch64")] { Some(payload) }
 }
 
 pub(super) fn complete(task: &Task, result: u64) -> u64 {
@@ -97,6 +104,12 @@ pub(super) fn complete(task: &Task, result: u64) -> u64 {
         { (*regs).rax = result; }
         #[cfg(target_arch = "aarch64")]
         { (*regs).x30 = saved.completion.argument; (*regs).gp[0] = result; (*regs).retval = result; }
+    }
+    // The thread owns its own frame again only at depth zero: there the next
+    // kernel-owned run, or the paint that owes its present to the runs now
+    // finished, takes the frame this completion just restored.
+    if task.nt_callback_stack.lock().len() == 0 {
+        if let Some(status) = crate::nt_text_order::advance_for_current() { return status; }
     }
     result
 }
