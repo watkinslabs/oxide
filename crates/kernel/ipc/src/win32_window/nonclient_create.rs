@@ -15,10 +15,15 @@ pub const fn creation_nccalcsize(wndproc: u64, window: WindowRect) -> Option<Win
     Some(window)
 }
 
-/// The client rectangle a window adopts from that reply. An ill-formed reply
-/// leaves the client area equal to the window rectangle. # C: O(1)
-pub const fn creation_client_rect(window: WindowRect, returned: WindowRect) -> WindowRect {
-    if well_formed(returned) { returned } else { window }
+/// The client rectangle a window adopts from that reply. The reply states its
+/// insets off the rectangle the calculation was handed, so a window whose own
+/// rectangle moved while the calculation ran adopts those insets against the
+/// rectangle it has now instead of a client area in the previous space. An
+/// ill-formed reply leaves the client area equal to the window rectangle.
+/// # C: O(1)
+pub const fn creation_client_rect(handed: WindowRect, current: WindowRect, returned: WindowRect) -> WindowRect {
+    if !well_formed(returned) { return current; }
+    match inset_client(current, insets(handed, returned)) { Some(client) => client, None => current }
 }
 
 /// A child rectangle is kept relative to its parent's client area; presenting

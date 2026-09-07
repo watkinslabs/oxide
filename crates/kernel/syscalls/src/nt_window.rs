@@ -130,8 +130,10 @@ fn callback_index(argument: u64) -> usize { argument as u32 as usize }
 #[derive(Clone, Copy)]
 struct PendingCreate { token: u64, hwnd: u64, wndproc: u64, params: CreateStructArgs, convention: CreateReturnConvention,
     /// User address of the rectangle the creation-time WM_NCCALCSIZE is
-    /// computing into; zero until that callback is outstanding.
-    nccalc: u64 }
+    /// computing into; zero until that callback is outstanding, and the
+    /// window rectangle that calculation was handed, which its reply states
+    /// its insets against.
+    nccalc: u64, nccalc_handed: ipc::win32_window::WindowRect }
 struct GuiEntry { group: Weak<sched::thread_group::ThreadGroup>, state: ipc::win32_window::WindowManager, menus: ipc::win32_menu::MenuManager, accelerators: ipc::win32_accel::AcceleratorTables, dpi_context: u32, wait: Arc<sched::live::WaitList>, foreground: bool, next_create: u64, pending_creates: Vec<PendingCreate>, pending_positions: Vec<position::PendingPosition>, remote_positions: Vec<position::RemotePosition>, retrievals: Vec<retrieval::Retrieval>, sent: send::Queue, redraw: redraw::Queue, scroll_pending: scroll::pending::Queue, paint_callbacks: paint_callbacks::Queue,
     /// Client procedure array user32 published, and whether the builtin
     /// classes it names have already been registered for this process.

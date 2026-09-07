@@ -35,22 +35,22 @@ fn window_rect_for_current(hwnd: u64) -> Option<WindowRect> {
 /// Begin the creation-time nonclient calculation. Absent means this window
 /// runs none and keeps a client area equal to its window rectangle.
 /// # C: O(processes + windows); # Sleeps: yes
-pub(super) fn begin(hwnd: u64, wndproc: u64, token: u64) -> Option<(u64, u64)> {
+pub(super) fn begin(hwnd: u64, wndproc: u64, token: u64) -> Option<(u64, u64, WindowRect)> {
     let window = window_rect_for_current(hwnd)?;
     let handed = nonclient_create::creation_nccalcsize(wndproc, window)?;
     let completion = sched::nt_callback::Completion { kind: CALLBACK_CREATE_NCCALCSIZE, argument: token };
     match crate::nt_rtl::begin_wndproc_payload_callback(hwnd, WM_NCCALCSIZE, NCCALCSIZE_CREATE_WPARAM, wndproc, &encode(handed), &[], completion) {
-        Ok(pointer) => Some((STATUS_PENDING, pointer)),
+        Ok(pointer) => Some((STATUS_PENDING, pointer, handed)),
         Err(_) => None,
     }
 }
 
 /// Adopt the reply as the window's client rectangle. # C: O(processes + windows)
-pub(super) fn apply_for_current(hwnd: u64, pointer: u64) {
+pub(super) fn apply_for_current(hwnd: u64, pointer: u64, handed: WindowRect) {
     let Some(window) = window_rect_for_current(hwnd) else { return; };
     let mut bytes = [0u8; RECT_BYTES];
     if pointer == 0 || uaccess::copy_from_user(&mut bytes, pointer).is_err() { return; }
-    let client = nonclient_create::creation_client_rect(window, decode(bytes));
+    let client = nonclient_create::creation_client_rect(handed, window, decode(bytes));
     let Some(cur) = sched::live::current() else { return; };
     let Some(id) = u32::try_from(hwnd).ok().and_then(WindowId::from_raw) else { return; };
     let mut entries = GUI.lock();
