@@ -4,7 +4,7 @@ use syscall::{nt::{NtCall, NtService}, SyscallArgs};
 
 // PFN ABI normalization and table bounds, shared with the RTL entry.
 pub(crate) mod pfn;
-mod metrics;
+pub(crate) mod metrics;
 pub(crate) mod hwnd_call;
 mod msg_filter;
 mod two_param;
@@ -17,6 +17,10 @@ mod hwnd_param;
 mod long_raw;
 mod class_raw;
 mod cursor_raw;
+mod cursor_icon_raw;
+mod input_raw;
+mod keyboard_raw;
+mod rawinput_raw;
 #[cfg(target_os = "oxide-kernel")]
 mod message_send;
 pub(crate) mod placement;
@@ -110,6 +114,8 @@ const WINE_ENABLE_MENU_ITEM: u64 = 0x13a7;
 const WINE_SET_MENU: u64 = 0x1569;
 const WINE_THUNKED_MENU_ITEM_INFO: u64 = 0x15d0;
 const WINE_CALL_ONE_PARAM: u64 = 0x133d;
+const CALL_ONE_PARAM_CREATE_CURSOR_ICON: u64 = 0;
+const CALL_ONE_PARAM_GET_ICON_PARAM: u64 = 3;
 const CALL_ONE_PARAM_GET_MENU_ITEM_COUNT: u64 = 4;
 const CALL_NO_PARAM_GET_DESKTOP_WINDOW: u64 = 0;
 const CALL_NO_PARAM_GET_DIALOG_BASE_UNITS: u64 = 1;

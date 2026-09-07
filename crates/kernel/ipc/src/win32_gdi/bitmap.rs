@@ -131,6 +131,25 @@ impl GdiManager {
         Ok(BitmapPattern { width: bitmap.width, height: bitmap.height, bpp: bitmap.bpp, stride: bitmap.stride, bits })
     }
 
+    /// Duplicate one bitmap object. An icon query hands the caller bitmaps it
+    /// owns and deletes, never the icon object's own. Rows are repacked from
+    /// the stored stride to the caller stride `create_bitmap` expects.
+    /// # C: O(width*height)
+    pub fn copy_bitmap(&mut self, handle: u32) -> Result<u32, GdiError> {
+        let source = self.bitmap(handle)?;
+        let (width, height, planes, bpp) = (source.width, source.height, source.planes, source.bpp);
+        let (stride, width_bytes) = (source.stride as usize, source.width_bytes as usize);
+        let mut packed = Vec::new();
+        packed.try_reserve(width_bytes.saturating_mul(height as usize)).map_err(|_| GdiError::HandleLimit)?;
+        for row in 0..height as usize {
+            let start = row.saturating_mul(stride);
+            let end = start.saturating_add(width_bytes).min(source.bits.len());
+            if start >= end { break; }
+            packed.extend_from_slice(&source.bits[start..end]);
+        }
+        self.create_bitmap(width, height, planes, bpp, Some(&packed))
+    }
+
     /// A pattern brush holds its own copy of the bits, so deletion frees the
     /// bitmap immediately even while such a brush still paints. # C: O(bitmaps)
     pub fn delete_bitmap(&mut self, handle: u32) -> Result<(), GdiError> {

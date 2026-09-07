@@ -24,7 +24,7 @@ impl Default for KeyboardState { fn default() -> Self { Self { bytes: [0; KEY_CO
 #[derive(Clone, Copy)]
 pub(super) struct KeyTransition { key: u8, pressed: bool }
 #[derive(Clone, Copy)]
-pub(super) struct QueuedMessage { pub message: WinMessage, pub key: Option<KeyTransition> }
+pub(super) struct QueuedMessage { pub message: WinMessage, pub key: Option<KeyTransition>, pub bits: u32 }
 
 fn generic(key: u8) -> u8 {
     match key { VK_LSHIFT | VK_RSHIFT => VK_SHIFT, VK_LCONTROL | VK_RCONTROL => VK_CONTROL,
@@ -76,7 +76,8 @@ impl WindowManager {
         let queue = self.queues.iter_mut().find(|(tid, _)| *tid == owner).map(|(_, queue)| queue).ok_or(WindowError::NoSuchWindow)?;
         let transition = KeyTransition { key: sided(raw, message.lparam), pressed };
         message.wparam = generic(raw) as u64;
-        queue.messages.push_back(QueuedMessage { message, key: Some(transition) });
+        queue.changed |= super::queue_status::QS_KEY;
+        queue.messages.push_back(QueuedMessage { message, key: Some(transition), bits: super::queue_status::QS_KEY });
         self.keyboard.apply(transition, true);
         Ok(())
     }

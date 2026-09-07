@@ -35,7 +35,9 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x126e, 2), // NtGdiSelectFont
     (0x126f, 2), // NtGdiSelectPen
     (0x1287, 5), // NtGdiSetRectRgn
+    (0x1319, 2), // NtUserActivateKeyboardLayout
     (0x1321, 3), // NtUserAssociateInputContext
+    (0x1322, 3), // NtUserAttachThreadInput
     (0x1327, 2), // NtUserBeginPaint
     (0x132c, 4), // NtUserBuildHimcList
     (0x1332, 2), // NtUserCallHwnd
@@ -45,6 +47,7 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x133d, 2), // NtUserCallOneParam
     (0x133e, 3), // NtUserCallTwoParam
     (0x1347, 3), // NtUserCheckMenuItem
+    (0x1350, 1), // NtUserClipCursor
     (0x1351, 0), // NtUserCloseClipboard
     (0x135a, 3), // NtUserCopyAcceleratorTable
     (0x135c, 2), // NtUserCreateAcceleratorTable
@@ -56,6 +59,7 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x1378, 3), // NtUserDeleteMenu
     (0x137b, 1), // NtUserDestroyAcceleratorTable
     (0x137e, 0), // NtUserDestroyCaret
+    (0x137f, 2), // NtUserDestroyCursor
     (0x1381, 1), // NtUserDestroyInputContext
     (0x1382, 1), // NtUserDestroyMenu
     (0x1384, 1), // NtUserDestroyWindow
@@ -64,7 +68,10 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x139b, 1), // NtUserDrawMenuBar
     (0x139c, 5), // NtUserDrawMenuBarTemp
     (0x13a7, 3), // NtUserEnableMenuItem
+    (0x13a9, 1), // NtUserEnableMouseInPointer
+    (0x13aa, 0), // NtUserEnableMouseInPointerForThread
     (0x13bc, 2), // NtUserEndPaint
+    (0x13c5, 3), // NtUserFindExistingCursorIcon
     (0x13d0, 1), // NtUserGetAsyncKeyState
     (0x13d5, 0), // NtUserGetCaretBlinkTime
     (0x13d6, 1), // NtUserGetCaretPos
@@ -74,21 +81,44 @@ const RAW_CALLS: &[(u64, usize)] = &[
     // word that is outside the backend contract.
     (0x13d8, 4), // NtUserGetClassInfoEx
     (0x13d9, 3), // NtUserGetClassName
+    (0x13da, 1), // NtUserGetClipCursor
+    (0x13e6, 1), // NtUserGetCurrentInputMessageSource
     (0x13e7, 0), // NtUserGetCursor
+    (0x13e8, 4), // NtUserGetCursorFrameInfo
+    (0x13e9, 1), // NtUserGetCursorInfo
+    (0x13ea, 1), // NtUserGetCursorPos
     (0x13eb, 1), // NtUserGetDC
     (0x13ec, 3), // NtUserGetDCEx
+    (0x13f5, 0), // NtUserGetDoubleClickTime
+    (0x1403, 6), // NtUserGetIconInfo
+    (0x1404, 4), // NtUserGetIconSize
+    (0x140f, 3), // NtUserGetKeyNameText
     (0x1410, 1), // NtUserGetKeyState
+    (0x1411, 1), // NtUserGetKeyboardLayout
+    (0x1412, 2), // NtUserGetKeyboardLayoutList
+    (0x1413, 1), // NtUserGetKeyboardLayoutName
     (0x1414, 1), // NtUserGetKeyboardState
     (0x1418, 4), // NtUserGetMenuBarInfo
     (0x141a, 4), // NtUserGetMenuItemRect
     (0x141b, 4), // NtUserGetMessage
+    (0x141f, 5), // NtUserGetMouseMovePointsEx
     (0x1435, 1), // NtUserGetProcessDpiAwarenessContext
     (0x1438, 2), // NtUserGetProp
+    (0x143b, 1), // NtUserGetQueueStatus
+    (0x143d, 3), // NtUserGetRawInputBuffer
+    (0x143e, 5), // NtUserGetRawInputData
+    (0x143f, 4), // NtUserGetRawInputDeviceInfo
+    (0x1440, 3), // NtUserGetRawInputDeviceList
+    (0x1442, 3), // NtUserGetRegisteredRawInputDevices
     (0x144b, 1), // NtUserGetSystemDpiForProcess
+    (0x144e, 1), // NtUserGetThreadState
     (0x1463, 2), // NtUserGetWindowPlacement
     (0x146c, 1), // NtUserHideCaret
     (0x147a, 4), // NtUserInitializeClientPfnArrays
+    (0x1488, 2), // NtUserInternalGetWindowIcon
     (0x148c, 3), // NtUserInvalidateRect
+    (0x1490, 0), // NtUserIsMouseInPointerEnabled
+    (0x14b1, 3), // NtUserMapVirtualKeyEx
     (0x14b5, 7), // NtUserMessageCall
     (0x14ba, 6), // NtUserMoveWindow
     (0x14be, 2), // NtUserNotifyIMEStatus
@@ -99,17 +129,25 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x14df, 2), // NtUserQueryWindow
     (0x14e9, 4), // NtUserRedrawWindow
     (0x14eb, 7), // NtUserRegisterClassExWOW
+    (0x14f3, 4), // NtUserRegisterHotKey
+    (0x14fa, 3), // NtUserRegisterRawInputDevices
+    (0x1503, 1), // NtUserRegisterTouchPadCapable
     (0x1507, 1), // NtUserRegisterWindowMessage
+    (0x1508, 0), // NtUserReleaseCapture
     (0x1509, 2), // NtUserReleaseDC
     (0x151d, 3), // NtUserRemoveMenu
     (0x151e, 2), // NtUserRemoveProp
+    (0x152e, 3), // NtUserSendInput
     (0x1532, 1), // NtUserSetActiveWindow
+    (0x153a, 1), // NtUserSetCapture
     (0x153b, 1), // NtUserSetCaretBlinkTime
     (0x153c, 2), // NtUserSetCaretPos
     (0x153e, 4), // NtUserSetClassLong
     (0x153f, 4), // NtUserSetClassLongPtr
     (0x1540, 3), // NtUserSetClassWord
     (0x1546, 1), // NtUserSetCursor
+    (0x1548, 4), // NtUserSetCursorIconData
+    (0x154a, 2), // NtUserSetCursorPos
     (0x1557, 1), // NtUserSetFocus
     (0x1565, 1), // NtUserSetKeyboardState
     (0x1569, 2), // NtUserSetMenu
@@ -122,12 +160,17 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x15a7, 7), // NtUserSetWindowPos
     (0x15ad, 3), // NtUserSetWindowWord
     (0x15b7, 1), // NtUserShowCaret
+    (0x15b8, 1), // NtUserShowCursor
     (0x15bd, 2), // NtUserShowWindow
     (0x15cb, 4), // NtUserSystemParametersInfo
     (0x15d0, 6), // NtUserThunkedMenuItemInfo
+    (0x15d1, 7), // NtUserToUnicodeEx
+    (0x15d3, 1), // NtUserTrackMouseEvent
     (0x15d7, 3), // NtUserTranslateAccelerator
     (0x15d8, 2), // NtUserTranslateMessage
+    (0x15e0, 2), // NtUserUnregisterHotKey
     (0x15e5, 3), // NtUserUpdateInputContext
+    (0x15f4, 2), // NtUserVkKeyScanEx
 ];
 
 /// # C: O(log(number of admitted ordinals))

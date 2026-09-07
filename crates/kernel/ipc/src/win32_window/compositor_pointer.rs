@@ -58,7 +58,7 @@ impl WindowManager {
             append(WM_MOUSEWHEEL, buttons as u64 | (((wheel_delta as i16 as u16) as u64) << 16), screen);
         }
         if !self.queue_has_capacity(owner, count) { return Err(WindowError::QueueFull); }
-        for message in &messages[..count] { self.post_to_window(target, *message)?; }
+        for message in &messages[..count] { self.post_to_window_with_bits(target, *message, super::queue_status::hardware_bit(message.message))?; }
         self.cursor = screen; self.buttons = buttons;
         Ok(())
     }

@@ -32,3 +32,11 @@ pub(crate) fn create_pattern_brush_for_current(bitmap: u32) -> Result<u32, u64> 
 pub(crate) fn create_display_dc_for_current(width: i32, height: i32) -> Result<u32, u64> {
     lifecycle::create_dc_for_current(width, height).map_err(status)
 }
+
+/// Duplicate one bitmap for a caller that owns and deletes the copy.
+/// # C: O(processes + bitmap bytes)
+pub(crate) fn copy_bitmap_for_current(bitmap: u32) -> Result<u32, u64> {
+    lifecycle::create_object_for_current(
+        |state| state.copy_bitmap(bitmap),
+        |state, handle| state.delete_bitmap(handle)).map_err(status)
+}

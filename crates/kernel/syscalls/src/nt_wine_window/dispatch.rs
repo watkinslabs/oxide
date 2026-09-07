@@ -30,6 +30,10 @@ pub fn dispatch(call: NtCall) -> u64 {
     if let Some(result) = long_raw::dispatch(ordinal, [args[0], args[1], args[2], args[3]]) { return result; }
     if let Some(result) = class_raw::dispatch_set(ordinal, [args[0], args[1], args[2], args[3]]) { return result; }
     if let Some(result) = cursor_raw::route(ordinal, &args) { return result; }
+    if let Some(result) = cursor_icon_raw::kernel::route(ordinal, &args) { return result; }
+    if let Some(result) = input_raw::kernel::route(ordinal, &args) { return result; }
+    if let Some(result) = keyboard_raw::kernel::route(ordinal, &args) { return result; }
+    if let Some(result) = rawinput_raw::kernel::route(ordinal, &args) { return result; }
     if ordinal == hwnd_param::ORDINAL {
         if let Some(hwnd_param::Request::GetWindowLong { offset, width }) = hwnd_param::decode_request(args[2] as u32, args[1]) {
             return long_raw::get(args[0], offset, width);
@@ -318,6 +322,8 @@ pub fn dispatch_raw(ordinal: u64, args: SyscallArgs) -> Option<u64> {
         let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
         if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
         let code = args.a1 as u32 as u64;
+        if code == CALL_ONE_PARAM_CREATE_CURSOR_ICON { return Some(crate::nt_window::user_input::create_cursor_icon_for_current(args.a0 != 0)); }
+        if code == CALL_ONE_PARAM_GET_ICON_PARAM { return Some(crate::nt_window::user_input::icon_param_for_current(args.a0)); }
         if code == CALL_ONE_PARAM_GET_MENU_ITEM_COUNT { return Some(crate::nt_window::menu_item_count_for_current(args.a0)); }
         if code == crate::nt_window_policy::CALL_ONE_PARAM_GET_SYSTEM_METRICS {
             return Some(metrics::get(args.a0));

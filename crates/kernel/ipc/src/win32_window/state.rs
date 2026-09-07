@@ -1,7 +1,7 @@
 //! Canonical HWND lifetime, geometry, painting and message work.
 use super::*;
 impl WindowManager {
-    pub fn new() -> Self { Self { next: 1, next_atom: 1, classes: Vec::new(), windows: Vec::new(), rects: Vec::new(), texts: Vec::new(), dirty: Vec::new(), painting: Vec::new(), queues: Vec::new(), timers: Vec::new(), focus: None, capture: None, cursor: (0, 0), buttons: 0, destroying: Vec::new(), keyboard: KeyboardState::default(), active: None, cursors: Vec::new(), current_cursor: 0 } }
+    pub fn new() -> Self { Self { next: 1, next_atom: 1, classes: Vec::new(), windows: Vec::new(), rects: Vec::new(), texts: Vec::new(), dirty: Vec::new(), painting: Vec::new(), queues: Vec::new(), timers: Vec::new(), focus: None, capture: None, cursor: (0, 0), buttons: 0, destroying: Vec::new(), keyboard: KeyboardState::default(), active: None, cursors: cursor_object::CursorIcons::new(), current_cursor: 0, cursor_count: 0, cursor_clip: None, cursor_change: 0, cursor_history: [cursor_pos::CursorPos { x: 0, y: 0, time: 0, info: 0 }; cursor_pos::CURSOR_HISTORY], cursor_latest: 0, menu_owner: None, move_size: None, hotkeys: hotkey::Hotkeys::new(), inputs: thread_input::ThreadInputs::new(), tracks: mouse_track::MouseTracks::new(), raw_input: rawinput::RawRegistrations::new(), layouts: Vec::new(), icons: window_icon::WindowIconTable::new() } }
     pub fn create(&mut self, owner_tid: u64, parent: Option<WindowId>, wndproc: u64) -> Result<WindowId, WindowError> {
         if parent.is_some_and(|parent| self.get(parent).is_none()) { return Err(WindowError::InvalidParent); }
         let id = WindowId(self.next);
@@ -60,21 +60,16 @@ impl WindowManager {
     }
     /// Return the canonical focused window. # C: O(1)
     pub fn focused(&self) -> Option<WindowId> { self.focus }
-    /// Set pointer capture and return the previous window. # C: O(1)
+    /// Set pointer capture and return the previous window.
+    /// # C: O(N_windows + N_queues)
     pub fn set_capture(&mut self, tid: u64, id: WindowId) -> Result<Option<WindowId>, WindowError> {
-        let record = self.get(id).ok_or(WindowError::NoSuchWindow)?;
-        if record.owner_tid != tid { return Err(WindowError::WrongThread); }
-        let previous = self.capture;
-        self.capture = Some(id);
-        Ok(previous)
+        self.set_capture_window(tid, Some(id), 0)
     }
-    /// Release pointer capture from its owning thread. # C: O(1)
+    /// Release pointer capture, answering whether one was held. Clearing the
+    /// capture is admitted from any thread. # C: O(N_windows + N_queues)
     pub fn release_capture(&mut self, tid: u64) -> Result<bool, WindowError> {
-        let Some(id) = self.capture else { return Ok(false); };
-        let record = self.get(id).ok_or(WindowError::NoSuchWindow)?;
-        if record.owner_tid != tid { return Err(WindowError::WrongThread); }
-        self.capture = None;
-        Ok(true)
+        if self.capture.is_none() { return Ok(false); }
+        self.set_capture_window(tid, None, 0).map(|previous| previous.is_some())
     }
     /// Return the live pointer-capture window. # C: O(1)
     pub const fn captured(&self) -> Option<WindowId> { self.capture }
@@ -125,6 +120,7 @@ impl WindowManager {
         self.rects.retain(|(window, _)| *window != id);
         self.texts.retain(|(window, _)| *window != id);
         self.dirty.retain(|(window, _)| *window != id);
+        self.icons.remove(id);
         self.painting.retain(|(window, _)| *window != id);
         self.destroying.retain(|window| *window != id);
         if self.capture == Some(id) { self.capture = None; }
@@ -167,10 +163,15 @@ impl WindowManager {
         for child in children { self.append_destruction_order(child, order); }
     }
     pub fn post_to_window(&mut self, id: WindowId, message: WinMessage) -> Result<(), WindowError> {
+        self.post_to_window_with_bits(id, message, queue_status::QS_POSTED)
+    }
+    /// Enqueue on the owning thread's queue with the wake bits the origin sets.
+    /// # C: O(N_windows + N_queues)
+    pub fn post_to_window_with_bits(&mut self, id: WindowId, message: WinMessage, bits: u32) -> Result<(), WindowError> {
         let owner = self.get(id).ok_or(WindowError::NoSuchWindow)?.owner_tid;
         let queue = self.queues.iter_mut().find(|(tid, _)| *tid == owner).map(|(_, queue)| queue)
             .ok_or(WindowError::NoSuchWindow)?;
-        queue.post(message).map_err(|_| WindowError::QueueFull)
+        queue.post_with_bits(message, bits).map_err(|_| WindowError::QueueFull)
     }
     /// Enqueue one native keyboard transition on the focused window's owner queue. # C: O(N_windows)
     pub fn post_key(&mut self, tid: u64, key: u16, pressed: bool, repeat: bool) -> Result<(), WindowError> {
@@ -254,7 +255,7 @@ impl WindowManager {
             if now_ns < timer.due_ns { continue; }
             let owner = timer.hwnd.and_then(|window| self.get(window).map(|record| record.owner_tid)).unwrap_or(timer.owner_tid);
             let Some(queue) = self.queues.iter_mut().find(|(tid, _)| *tid == owner).map(|(_, queue)| queue) else { continue; };
-            if queue.post(WinMessage { hwnd: timer.hwnd, message: WM_TIMER, wparam: timer.id, lparam: timer.proc as i64 }).is_ok() { fired += 1; }
+            if queue.post_with_bits(WinMessage { hwnd: timer.hwnd, message: WM_TIMER, wparam: timer.id, lparam: timer.proc as i64 }, queue_status::QS_TIMER).is_ok() { fired += 1; }
             self.timers[index].due_ns = now_ns.saturating_add(timer.period_ns);
         }
         fired
