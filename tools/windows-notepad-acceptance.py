@@ -38,6 +38,8 @@ AUDIT_MD = OUT / f"audit-{RUN}.md"
 TIMEOUT = int(os.environ.get("WINDOWS_NOTEPAD_ACCEPTANCE_TIMEOUT", "900"))
 # Bound on the desktop framing the shown window before the activation click.
 LOCATE_SECONDS = 15
+# Bound on the guest painting the typed token into its edit control.
+TOKEN_SECONDS = 30
 TOKEN = os.environ.get("OXIDE_NOTEPAD_TOKEN", f"oxide-{RUN}").lower()
 DEFAULT_WINE_NTDLL = ROOT / "target/lanes/wine-10.20-build/dlls/ntdll/ntdll.so"
 DEFAULT_WINE_WIN32U = ROOT / "target/lanes/wine-10.20-build/dlls/win32u/win32u.so"
@@ -392,19 +394,26 @@ def run_desktop_checks(uart, reader, qmp_sock, deadline):
     ensure_notepad_active(qmp_sock, deadline)
     _, before = screenshot(qmp_sock, "before-token")
     type_token(qmp_sock)
-    time.sleep(2)
-    after_path, after = screenshot(qmp_sock, "after-token")
-    if before == after:
+    # The guest paints a typed character in its own time, so a fixed wait
+    # cannot tell a slow paint from a control that never draws: poll until
+    # the token is inside the located window, and report the last frame when
+    # the deadline passes. A screenshot diff plus a whole-frame OCR is
+    # satisfied by the token landing in GNOME's overview search box instead
+    # of Notepad (KI-0435), so the crop of the located window is what counts.
+    found, rect, after_path, after = False, None, None, before
+    token_deadline = min(deadline, time.monotonic() + TOKEN_SECONDS)
+    while True:
+        time.sleep(1)
+        after_path, after = screenshot(qmp_sock, "after-token")
+        found, rect = token_in_notepad_window(after_path, TOKEN, crop_path=Path(f"{SCREEN}-after-token-notepad-crop.png"))
+        if found or time.monotonic() >= token_deadline:
+            break
+    if before == after and not found:
         die("framebuffer did not change after token injection")
-    # A screenshot diff plus a whole-frame OCR is satisfied by the token
-    # landing in GNOME's overview search box instead of Notepad (KI-0435).
-    # Locate the Notepad window by its title-bar text and require the
-    # token inside that crop specifically.
-    found, rect = token_in_notepad_window(after_path, TOKEN, crop_path=Path(f"{SCREEN}-after-token-notepad-crop.png"))
     if rect is None:
         die(f"no Notepad window title located on screen; retained {after_path}")
     if not found:
-        die(f"token not found inside located Notepad window {rect}; retained {after_path}")
+        die(f"token not painted inside the Notepad window {rect} within {TOKEN_SECONDS}s; retained {after_path}")
     print("windows-notepad-acceptance: A1/A2/A3 PASS (PE, window, present, token)")
     # This fixture is an untitled scratch document. Delete our own token
     # through real input before testing close. Notepad's DoCloseFile prompts
