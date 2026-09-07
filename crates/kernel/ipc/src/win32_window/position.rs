@@ -9,6 +9,12 @@ const NOCOPYBITS:u32=0x0100;
 use super::styles::{WS_CHILD, WS_POPUP, WS_MINIMIZE, WS_EX_TOPMOST};
 const WM_CHILDACTIVATE:u32=0x0022;
 
+/// Translate one rectangle, answering nothing on overflow. # C: O(1)
+fn offset_rect(r:WindowRect,delta:(i32,i32))->Option<WindowRect> {
+    Some(WindowRect { left:r.left.checked_add(delta.0)?, top:r.top.checked_add(delta.1)?,
+        right:r.right.checked_add(delta.0)?, bottom:r.bottom.checked_add(delta.1)? })
+}
+
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum PositionOrder { Top,Bottom,Topmost,NotTopmost,After(WindowId) }
 #[derive(Clone,Copy,Debug)]
@@ -70,7 +76,15 @@ impl WindowManager {
         let visible=p.visible.unwrap_or(record.visible);
         let child=record.style&(WS_CHILD|WS_POPUP)==WS_CHILD;
         let activate=p.flags&(NOACTIVATE|HIDEWINDOW)==0&&record.style&WS_MINIMIZE==0;
-        let client=p.client.or(record.client_rect).unwrap_or(p.rect);
+        // A move carries the client rectangle with it: the nonclient insets do
+        // not change, so a request that names no client rectangle offsets the
+        // stored one by the same delta. Leaving it at the old position makes
+        // the window rectangle and the client rectangle name different spaces,
+        // and every later child invalidation crops to nothing against them.
+        let delta=(p.rect.left.checked_sub(old.left).ok_or(WindowError::InvalidParent)?,
+            p.rect.top.checked_sub(old.top).ok_or(WindowError::InvalidParent)?);
+        let carried=match record.client_rect { Some(c)=>Some(offset_rect(c,delta).ok_or(WindowError::InvalidParent)?), None=>None };
+        let client=p.client.or(carried).unwrap_or(p.rect);
         let repaint=p.flags&NOREDRAW==0&&visible&&width>0&&height>0&&client.right>client.left&&client.bottom>client.top
             &&(resized||client!=record.client_rect.unwrap_or(old)||p.flags&FRAMECHANGED!=0||!record.visible||p.flags&NOCOPYBITS!=0);
         let damage=if repaint{Some(self.position_damage(id,p,valid)?)}else{None};
@@ -93,7 +107,7 @@ impl WindowManager {
         let target=&mut self.windows.iter_mut().find(|(window,_)|*window==id).ok_or(WindowError::NoSuchWindow)?.1;
         target.visible=visible;
         if visible {target.style|=WS_VISIBLE;}else{target.style&=!WS_VISIBLE;}
-        if let Some(client)=p.client {target.client_rect=Some(client);}
+        if let Some(client)=p.client {target.client_rect=Some(client);} else if let Some(client)=carried {target.client_rect=Some(client);}
         if p.notify_geometry&&moved {self.post_to_window(id,WinMessage {hwnd:Some(id),message:WM_MOVE,wparam:0,lparam:mouse_lparam(p.rect.left,p.rect.top)})?;}
         if p.notify_geometry&&resized {self.post_to_window(id,WinMessage {hwnd:Some(id),message:WM_SIZE,wparam:0,lparam:mouse_lparam(width,height)})?;}
         if let Some(damage)=damage{

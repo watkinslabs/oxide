@@ -95,3 +95,58 @@ fn a_burst_of_keys_is_retrieved_before_the_paint_the_typing_damaged() {
     assert_eq!(painted, Some(Some(edit)), "the damaged control receives the paint");
     assert_eq!(state.begin_paint(edit), Ok(Some(LINE)));
 }
+
+/// Where the frame is created, before the window manager places it.
+const CREATED_FRAME: WindowRect = WindowRect { left: 0, top: 0, right: 321, bottom: 646 };
+/// The client area that creation's nonclient calculation leaves, in the same
+/// coordinates as the window rectangle it was computed from.
+const CREATED_CLIENT: WindowRect = WindowRect { left: 1, top: 30, right: 320, bottom: 645 };
+
+/// The same window before the window manager places it on the desktop.
+fn created_notepad() -> (WindowManager, WindowId, WindowId) {
+    let mut state = WindowManager::new();
+    let frame = state.create(TID, None, 0x1000).unwrap();
+    state.set_visible(frame, true).unwrap();
+    state.set_style_bits(frame, WS_VISIBLE, 0).unwrap();
+    state.set_rect(frame, CREATED_FRAME).unwrap();
+    state.set_client_rect(frame, CREATED_CLIENT).unwrap();
+    let edit = state.create(TID, Some(frame), 0x2000).unwrap();
+    state.set_visible(edit, true).unwrap();
+    state.set_style_bits(edit, WS_VISIBLE | WS_CHILD, 0).unwrap();
+    state.set_rect(edit, EDIT).unwrap();
+    (state, frame, edit)
+}
+
+#[test]
+fn a_moved_frame_carries_its_client_rectangle_so_the_control_still_takes_damage() {
+    let (mut state, frame, edit) = created_notepad();
+    drain(&mut state);
+    let request = crate::win32_window::WindowPosition { window: frame, rect: FRAME, client: None,
+        order: None, visible: None, flags: 0, notify_geometry: false };
+    state.apply_position(TID, request).unwrap();
+    // The client rectangle moves with the window it belongs to, so the two
+    // still name one space and the control's own client coordinates survive
+    // the crop through its parent.
+    assert_eq!(state.get(frame).unwrap().client_rect,
+        Some(WindowRect { left: 262, top: 152, right: 581, bottom: 767 }));
+    assert_eq!(state.visible_paint_rect(edit, false), Some(EDIT));
+    let region = PaintRegion::from_rect(LINE).unwrap();
+    state.redraw_tree(edit, Some(&region), RDW_INVALIDATE | RDW_ERASE, |_, _, region| region.try_copy()).unwrap();
+    assert!(state.dirty_windows().contains(&edit), "the typed line is damage the control still owes");
+    // The move exposes the frame, whose paint is offered root-before-child;
+    // the control's own paint follows it.
+    let mut painted = None;
+    for _ in 0..8 {
+        match state.take_for_thread(TID, ANY) {
+            QueueResult::Message(found) if found.message == WM_PAINT => {
+                let id = found.hwnd.unwrap();
+                if id == edit { painted = Some(id); break; }
+                state.begin_paint(id).unwrap(); state.end_paint(id).unwrap();
+            }
+            QueueResult::Message(_) => {}
+            other => panic!("the moved frame lost the control's paint: {other:?}"),
+        }
+    }
+    assert_eq!(painted, Some(edit), "the control's own paint follows its frame's");
+    assert_eq!(state.begin_paint(edit), Ok(Some(LINE)));
+}

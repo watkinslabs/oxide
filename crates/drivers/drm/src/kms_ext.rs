@@ -163,7 +163,7 @@ pub fn atomic_primary(card_id: u32, card: &Arc<dyn DrmDriver>, crtc_id: u32, fb_
         Some(v) => v, None => return einval(),
     };
     let presented = (ops.present)(ops.driver_key, res_id, width, height, crate::node::DamageRect::full(width, height));
-    if presented != true || trace_budget() {
+    if !presented || trace_budget() {
         klog::write_raw(b"[DRM-ATOMIC] resource="); klog::write_hex_u64(res_id as u64);
         klog::write_raw(if presented { b" present=ok\n" } else { b" present=fail\n" });
     }
