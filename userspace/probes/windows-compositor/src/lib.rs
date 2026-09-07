@@ -13,7 +13,7 @@ mod x11;
 mod caret;
 
 pub use geometry::{decode_cardinals, decode_work_area, MonitorSnapshot, Rect};
-pub use pointer::{buttons_from_state, button_mask, wheel_for, MK_ALL, WHEEL_DELTA};
+pub use pointer::{buttons_from_state, button_mask, wheel_for, MK_ALL, MK_LBUTTON, WHEEL_DELTA};
 pub use keyboard::{evdev_x11_scan, key_flags, key_lparam, keysym_to_vk, state_utf8, ModifierMasks, Modifiers, Scan};
 pub use readiness::{parse_args, publish_then_notify, Options, UsageError, READY_TOKEN};
 pub use protocol::{BridgeCommand, BridgeEvent, Frame, Inbound, InputEvent, NativeTransport, StreamTransport, TransportError};

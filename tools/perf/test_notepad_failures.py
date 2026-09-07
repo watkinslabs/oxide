@@ -15,6 +15,12 @@ TOOLS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOOLS))
 
 
+class _reader:
+    """Stand-in for the run's console reader holding already-arrived text."""
+    def __init__(self, data): self._data = data
+    def text(self): return self._data.decode("utf-8", "replace")
+
+
 class FailureTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="notepad-failures-")
@@ -30,12 +36,10 @@ class FailureTests(unittest.TestCase):
         for text in (b"[BUG] broken\nready\n", b"ready\n[FAULT] broken\n"):
             with self.subTest(text=text), self.assertRaises(SystemExit), \
                  patch("sys.stderr", new=io.StringIO()):
-                self.runner.wait_marker(None, bytearray(text), None, "ready",
-                                        time.monotonic() + 1)
+                self.runner.wait_marker(_reader(text), "ready", time.monotonic() + 1)
 
     def test_clean_buffered_marker_succeeds(self):
-        self.runner.wait_marker(None, bytearray(b"ready\n"), None, "ready",
-                                time.monotonic() + 1)
+        self.runner.wait_marker(_reader(b"ready\n"), "ready", time.monotonic() + 1)
 
     def test_connected_qmp_without_greeting_times_out_and_closes(self):
         path = Path(self.tmp.name) / "q.sock"

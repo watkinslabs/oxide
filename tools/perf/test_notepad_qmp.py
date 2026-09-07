@@ -121,7 +121,6 @@ class QmpTests(unittest.TestCase):
         waiting = threading.Event()
         finished = threading.Event()
         errors = []
-        pump = runner.uart_pump
         wait_socket = runner.wait_socket
 
         class SerialWaitComplete(Exception):
@@ -134,17 +133,14 @@ class QmpTests(unittest.TestCase):
                 return self.server.connect()
             return wait_socket(path, deadline, label)
 
-        def launch(serial, buffer, log, transport, deadline):
+        def launch(serial, reader, transport, deadline):
             # main constructs the production transport; no QMP session is opened
             # until this command. Keep the actual parent qmp and UART wait paths.
             self.assertEqual(self.server.commands, [])
             runner.qmp(transport, "query-status")
-            runner.wait_marker(serial, buffer, log, "desktop-ready", time.monotonic() + 5)
-            raise SerialWaitComplete()
-
-        def announce_wait(*args):
             waiting.set()
-            return pump(*args)
+            runner.wait_marker(reader, "desktop-ready", time.monotonic() + 5)
+            raise SerialWaitComplete()
 
         def wait_serial():
             try:
@@ -156,8 +152,7 @@ class QmpTests(unittest.TestCase):
             finally:
                 finished.set()
 
-        with patch.object(runner, "uart_pump", side_effect=announce_wait), \
-             patch.object(runner, "QMP", Path(self.tmp.name) / "runner-qmp.sock"), \
+        with patch.object(runner, "QMP", Path(self.tmp.name) / "runner-qmp.sock"), \
              patch.object(runner, "wait_socket", side_effect=connect), \
              patch.object(runner, "prepare_image"), \
              patch.object(runner.subprocess, "Popen"), \

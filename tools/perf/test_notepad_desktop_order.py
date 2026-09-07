@@ -18,10 +18,11 @@ class DesktopOrderTests(unittest.TestCase):
         events = []
         uart = Mock()
         uart.sendall.side_effect = lambda command: events.append(command)
-        with patch.object(runner, "wait_marker", side_effect=lambda *args: events.append(args[3])), \
+        with patch.object(runner, "wait_marker", side_effect=lambda *args: events.append(args[1])), \
              patch.object(runner, "wait_for_rendered_desktop", side_effect=lambda *args: events.append("rendered-desktop")), \
+             patch.object(runner, "leave_overview"), \
              patch.object(runner, "screenshot", side_effect=lambda _, label: events.append(label)):
-            runner.launch_on_desktop(uart, bytearray(), None, None, 1)
+            runner.launch_on_desktop(uart, None, None, 1)
         self.assertEqual(events, ["sh-5.2#", "Entering running state",
                                   "rendered-desktop",
                                   "gnome-before-notepad", runner.DESKTOP_LAUNCH])
@@ -33,7 +34,7 @@ class DesktopOrderTests(unittest.TestCase):
         with patch.object(runner, "wait_marker", side_effect=[None, SystemExit(1)]), \
              patch.object(runner, "screenshot") as frame:
             with self.assertRaises(SystemExit):
-                runner.launch_on_desktop(uart, bytearray(), None, None, 1)
+                runner.launch_on_desktop(uart, None, None, 1)
         uart.sendall.assert_not_called()
         frame.assert_not_called()
 
@@ -41,9 +42,10 @@ class DesktopOrderTests(unittest.TestCase):
         uart = Mock()
         with patch.object(runner, "wait_marker"), \
              patch.object(runner, "wait_for_rendered_desktop"), \
+             patch.object(runner, "leave_overview"), \
              patch.object(runner, "screenshot", side_effect=SystemExit(1)):
             with self.assertRaises(SystemExit):
-                runner.launch_on_desktop(uart, bytearray(), None, None, 1)
+                runner.launch_on_desktop(uart, None, None, 1)
         uart.sendall.assert_not_called()
 
 
