@@ -37,7 +37,7 @@ impl WindowManager {
         self.classes.try_reserve(1).map_err(|_| WindowError::NoMemory)?;
         self.classes.push(WindowClass { name: owned_name, wndproc: desc.wndproc, atom, cb_wnd_extra, unicode: desc.unicode,
             style: desc.style, background: desc.background, cursor: desc.cursor, icon: desc.icon, icon_sm: desc.icon_sm,
-            module: desc.module, extra: class_extra });
+            module: desc.module, menu_name: desc.menu_name, extra: class_extra });
         self.next_atom = next;
         Ok(atom)
     }
@@ -57,6 +57,18 @@ impl WindowManager {
     pub fn class_background(&self, id: WindowId) -> Option<u64> {
         let atom = self.get(id)?.class_atom?;
         self.classes.iter().find(|class| class.atom == atom).map(|class| class.background)
+    }
+    /// Class menu-name pointers of one registered atom. # C: O(N_classes)
+    pub fn class_menu_name_by_atom(&self, atom: u16) -> Option<ClassMenuName> {
+        self.classes.iter().find(|class| class.atom == atom).map(|class| class.menu_name)
+    }
+    /// Whole WNDCLASSEXW-shaped description of one registered atom, for the
+    /// class-information query. # C: O(N_classes)
+    pub fn class_description_by_atom(&self, atom: u16) -> Option<ClassDescription> {
+        let class = self.classes.iter().find(|class| class.atom == atom)?;
+        Some(ClassDescription { style: class.style, cb_wnd_extra: class.cb_wnd_extra, cb_cls_extra: class.extra.len(),
+            background: class.background, cursor: class.cursor, icon: class.icon, icon_sm: class.icon_sm,
+            module: class.module, menu_name: class.menu_name })
     }
     /// Resolve a registered class name from its atom. # C: O(N_classes)
     pub fn class_name_by_atom(&self, atom: u16) -> Option<&[u16]> {

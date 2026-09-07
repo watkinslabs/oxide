@@ -5,6 +5,17 @@ const INVALID: u64 = 0xc000_000d;
 /// Own all payload bytes before redirecting the current PE frame. # C: O(payload)
 pub(crate) fn begin(hwnd: u64, message: u64, wparam: u64, wndproc: u64, bytes: &[u8],
     relocations: &[(usize, usize)], completion: Completion) -> Result<u64, u64> {
+    // Every other entry into a window procedure announces itself. Without this
+    // one, a message delivered with a payload - the two nonclient size
+    // calculations among them - looked from the trace like a message that was
+    // never sent, and was twice read that way.
+    klog::write_raw(b"[WINDOWS-WNDPROC-ENTER] hwnd=");
+    klog::write_hex_u64(hwnd);
+    klog::write_raw(b" msg=");
+    klog::write_hex_u64(message);
+    klog::write_raw(b" wndproc=");
+    klog::write_hex_u64(wndproc);
+    klog::write_raw(b" payload=1\n");
     if hwnd == 0 || wndproc == 0 { return Err(INVALID); }
     let task = sched::live::current().filter(|task| task.is_nt_personality()).ok_or(INVALID)?;
     // SAFETY: the current Task retains its address space during callback preparation.

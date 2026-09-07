@@ -34,9 +34,28 @@ pub(super) fn register_class(args: SyscallArgs) -> u64 {
     let Ok(style) = uaccess::get_user_u32(style_address) else { return 0; };
     let Some(background_address) = args.a0.checked_add(CLASS_BACKGROUND_OFFSET) else { return 0; };
     let Ok(background) = uaccess::get_user_u64(background_address) else { return 0; };
-    let result = crate::nt_window::register_class_with_background_for_current(&name, wndproc, extra as i32, args.a5 as u32 == 0, style, background).unwrap_or(0);
-    wine_window_diag! { klog::write_raw(b"[WINDOWS-PE-WINE-CLASS] result="); klog::write_hex_u64(result); klog::write_raw(b" wndproc="); klog::write_hex_u64(wndproc); klog::write_raw(b"\n"); }
+    // The class menu name never travels inside WNDCLASSEXW across this
+    // boundary: the caller hands it over as its own record of client pointers,
+    // and window creation reads it back to load the class's menu.
+    let menu_name = client_menu_name(args.a3);
+    let result = crate::nt_window::register_class_desc_for_current(ipc::win32_window::ClassRegistration {
+        cb_wnd_extra: extra as i32, unicode: args.a5 as u32 == 0, style, background, menu_name,
+        ..ipc::win32_window::ClassRegistration::new(&name, wndproc) }).unwrap_or(0);
+    wine_window_diag! { klog::write_raw(b"[WINDOWS-PE-WINE-CLASS] result="); klog::write_hex_u64(result); klog::write_raw(b" wndproc="); klog::write_hex_u64(wndproc);
+        klog::write_raw(b" menu-name="); klog::write_hex_u64(menu_name.wide); klog::write_raw(b"\n"); }
     result
+}
+
+/// The registering client's menu-name record: ANSI pointer, wide pointer and
+/// counted-string pointer, in that order. A class registered without one
+/// carries no menu name. # C: O(1) plus bounded usercopy
+fn client_menu_name(pointer: u64) -> ipc::win32_window::ClassMenuName {
+    const NAME_ANSI: u64 = 0;
+    const NAME_WIDE: u64 = 8;
+    const NAME_COUNTED: u64 = 16;
+    let field = |offset: u64| pointer.checked_add(offset).and_then(|address| uaccess::get_user_u64(address).ok()).unwrap_or(0);
+    if pointer == 0 { return ipc::win32_window::ClassMenuName::default(); }
+    ipc::win32_window::ClassMenuName { ansi: field(NAME_ANSI), wide: field(NAME_WIDE), unicode_string: field(NAME_COUNTED) }
 }
 
 /// Both ordinal entries reach this with the same normalized argument array.

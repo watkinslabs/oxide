@@ -332,30 +332,6 @@ pub struct WindowRecord { pub owner_tid: u64, pub parent: Option<WindowId>, pub 
     pub imc: Option<crate::win32_imc::ImcId> }
 
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WindowClass { pub name: Vec<u16>, pub wndproc: u64, pub unicode: bool, pub atom: u16, pub cb_wnd_extra: u32, pub style: u32,
-    /// Raw WNDCLASSEX hbrBackground: a brush handle, or a system colour index plus one.
-    pub background: u64,
-    /// WNDCLASSEX hCursor. The default window procedure answers WM_SETCURSOR
-    /// over HTCLIENT with it, and a class registered without one declines.
-    pub cursor: u64,
-    pub icon: u64, pub icon_sm: u64, pub module: u64,
-    /// cbClsExtra bytes, shared by every window of the class.
-    pub extra: WindowExtra }
-
-/// One WNDCLASSEXW registration. The telescoping helpers below fill the
-/// fields a caller does not carry.
-pub struct ClassRegistration<'a> { pub name: &'a [u16], pub wndproc: u64, pub cb_cls_extra: i32, pub cb_wnd_extra: i32,
-    pub unicode: bool, pub style: u32, pub background: u64, pub cursor: u64, pub icon: u64, pub icon_sm: u64, pub module: u64 }
-
-impl<'a> ClassRegistration<'a> {
-    /// # C: O(1)
-    pub const fn new(name: &'a [u16], wndproc: u64) -> Self {
-        Self { name, wndproc, cb_cls_extra: 0, cb_wnd_extra: 0, unicode: true, style: 0, background: 0,
-            cursor: 0, icon: 0, icon_sm: 0, module: 0 }
-    }
-}
-
 const USER_ATOM_BASE: u16 = 0xc000;
 const USER_ATOM_CAPACITY: usize = 0x4000;
 const USER_ATOM_MAX_LENGTH: usize = 255;
@@ -431,6 +407,16 @@ impl Default for WindowManager { fn default() -> Self { Self::new() } }
 
 #[path = "win32_window/nonclient_menu.rs"]
 pub mod nonclient_menu;
+
+#[path = "win32_window/nonclient_create.rs"]
+pub mod nonclient_create;
+
+#[path = "win32_window/class_info_abi.rs"]
+pub mod class_info_abi;
+
+#[path = "win32_window/class_types.rs"]
+mod class_types;
+pub use class_types::{ClassDescription, ClassMenuName, ClassRegistration, WindowClass};
 #[path = "win32_window/state.rs"]
 mod state;
 #[path = "win32_window/timer.rs"]

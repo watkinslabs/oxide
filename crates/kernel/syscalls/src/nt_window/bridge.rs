@@ -28,13 +28,27 @@ fn wire_rect(rect: WindowRect) -> Option<wire::Rect> {
     rect.validate_window().ok()?; Some(rect)
 }
 
+/// A child rectangle is kept relative to its parent's client area, so it is
+/// presented at the parent's client origin. A parent whose client area starts
+/// at its window's top - one with nothing in its nonclient band - moves
+/// nothing. # C: O(N_windows)
+fn parent_client_origin(state: &WindowManager, record: gui::WindowRecord) -> (i32, i32) {
+    let Some(parent) = record.parent else { return (0, 0); };
+    let (Some(window), Some(client)) = (state.rect(parent), state.client_rect_raw(parent)) else { return (0, 0); };
+    gui::nonclient_create::client_origin(window, client)
+}
+
 /// Owned copy; caller releases GUI lock before encoding or transport. # C: O(windows + title)
 pub(super) fn snapshot(state: &WindowManager, hwnd: u64) -> Option<Snapshot> {
     let window = window(hwnd)?;
     let record = state.get(window)?;
     let title = String::from_utf16_lossy(state.text(window)?).into_bytes();
     if title.len() > wire::MAX_TITLE || title.contains(&0) { return None; }
-    Some(Snapshot { rect: wire_rect(state.rect(window)?)?,
+    let (dx, dy) = parent_client_origin(state, record);
+    let rect = state.rect(window)?;
+    let rect = WindowRect { left: rect.left.checked_add(dx)?, top: rect.top.checked_add(dy)?,
+        right: rect.right.checked_add(dx)?, bottom: rect.bottom.checked_add(dy)? };
+    Some(Snapshot { rect: wire_rect(rect)?,
         parent: record.parent.or(record.owner).map_or(0, |id| id.raw() as u64), title, visible: record.visible, ready: record.presentation_ready })
 }
 
