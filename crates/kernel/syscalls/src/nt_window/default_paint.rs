@@ -28,6 +28,9 @@ pub(crate) fn finish_for_current(prepared: paint_prepare::Prepared, result: Resu
 }
 
 fn end(hwnd: u64, dc: u64) -> u64 {
+    // A builtin class paints its own content between the begin and the end of
+    // the paint it did not open itself; the popup-menu class draws its items.
+    menu_raw::paint_popup_menu_window(hwnd, dc);
     let _ = crate::nt_wine_window::paint::end_paint_with_dc(hwnd, dc, gdi);
     0
 }

@@ -95,6 +95,18 @@ pub(crate) fn track_popup_menu(owner: u64, menu: u32, flags: u32, x: i32, y: i32
     drive()
 }
 
+/// Track a window's menu bar or system menu from its owner: the bar is drawn in
+/// place, so no popup opens for the top menu and the owner holds the capture.
+/// The pending report has the same meaning as for a popup.
+/// # C: O(N_messages * N_items); # Sleeps: yes
+pub(crate) fn track_bar_menu(owner: u64, menu: u32, flags: u32, point: (i32, i32)) -> u64 {
+    let Some(tid) = current_tid() else { return 0; };
+    let mut state = TrackLoop::new(flags & !TPM_POPUPMENU, owner as u32, menu, point);
+    state.begin();
+    put(PendingTrack { tid, state, session: MenuSession::new(owner), origin: point });
+    drive()
+}
+
 /// Perform steps until the loop suspends in a window procedure or reports its
 /// command. # C: O(N_messages * N_items); # Sleeps: yes
 fn drive() -> u64 {
@@ -147,6 +159,13 @@ fn show_top(track: &mut PendingTrack) {
     let flags = track.state.flags();
     let menu = track.state.top();
     let (x, y) = track.origin;
+    if flags & TPM_POPUPMENU == 0 {
+        // A bar is painted in its owner's nonclient band; nothing opens until
+        // an item is selected, and the owner holds the capture meanwhile.
+        track.state.set_current(menu, 0);
+        set_capture(Some(track.session.owner));
+        return;
+    }
     if popup_window::show_popup(&mut track.session, menu, flags, x, y, 0, 0).is_none() { track.state.abandon(); return; }
     let window = track.session.window_of(menu).unwrap_or(0);
     track.state.set_current(menu, window);

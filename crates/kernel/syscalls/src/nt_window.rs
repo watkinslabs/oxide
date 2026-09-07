@@ -145,6 +145,9 @@ struct GuiEntry { group: Weak<sched::thread_group::ThreadGroup>, state: ipc::win
     /// The resumable tracking loop of the thread running a modal menu, parked
     /// here while the window procedure one of its steps entered runs.
     menu_track: Option<menu_raw::session::PendingTrack>,
+    /// Alt and F10 open a menu bar on release, so the press is latched here
+    /// until the release or the key that cancels it arrives.
+    key_menu: ipc::win32_window::nonclient_menu::KeyMenuLatch,
     /// Latched once any thread of this process has drained its input, which is
     /// what an input-idle wait on the process waits for. Nothing clears it.
     idle: bool }
@@ -396,6 +399,9 @@ pub(crate) mod timer;
 #[path = "nt_window/update_region.rs"]
 pub(crate) mod update_region;
 
+#[cfg(target_os = "oxide-kernel")]
+#[path = "nt_window/menu_draw.rs"]
+pub(crate) mod menu_draw;
 #[path = "nt_window/caption.rs"]
 pub(crate) mod caption;
 

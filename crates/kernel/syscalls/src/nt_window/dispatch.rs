@@ -1,5 +1,8 @@
 use super::*;
 
+const WM_NCPAINT: u32 = 0x0085;
+const WM_NCCALCSIZE: u32 = 0x0083;
+
 /// Dispatch one GUI call against the current NT process. `None` means this is
 /// not a window service and lets the main NT dispatcher continue its ladder.
 /// # C: O(N_process_gui_states + N_windows + N_wakeups)
@@ -11,10 +14,20 @@ pub(super) fn dispatch_mode(call: NtCall, raw: bool) -> Option<u64> {
     let operation = nt::decode_window(call).ok()?;
     let cur = sched::live::current()?;
     if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
-    if let NtWindowCall::DefaultProc { hwnd, message, wparam, .. } = operation {
+    if let NtWindowCall::DefaultProc { hwnd, message, wparam, lparam } = operation {
         if let Some(result) = control_color::for_current(message, wparam) { return Some(result); }
         if let Some(result) = erase_background::kernel::for_current(message, hwnd, wparam) { return Some(result); }
         if message == ipc::win32_window::WM_PAINT { return Some(default_paint::for_current(hwnd)); }
+        // The menu bar owns its band of the nonclient area: its size, its
+        // pixels, and the two entries into menu tracking.
+        if message == WM_NCPAINT { menu_raw::bar::nc_paint_for_current(hwnd); }
+        if message == WM_NCCALCSIZE {
+            if let Some(result) = menu_raw::bar::nc_calc_size_for_current(hwnd, lparam as u64) { return Some(result); }
+        }
+        if message == ipc::win32_window::WM_NCHITTEST {
+            if let Some(hit) = menu_raw::bar::hit_test_for_current(hwnd, lparam) { return Some(hit as i64 as u64); }
+        }
+        if let Some(result) = menu_raw::bar::default_proc_for_current(hwnd, message, wparam, lparam) { return Some(result); }
     }
     if let NtWindowCall::BeginPaint { hwnd, rect } = operation { return Some(paint::begin(hwnd, rect)); }
     if crate::nt_compositor::monitors_current().is_none() {

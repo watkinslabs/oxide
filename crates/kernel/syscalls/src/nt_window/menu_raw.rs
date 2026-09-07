@@ -1,4 +1,6 @@
-// Module manifest: raw ordinal numbers and codecs (raw), the tracking session
+// Module manifest: raw ordinal numbers and codecs (raw), the menu bar of a
+// window and its two tracking entries (bar), the popup item painting
+// (popup_paint), the tracking session
 // and its message classification (session), the popup-menu window procedure
 // decisions (popup_proc), the live popup windows (popup_window), the modal
 // tracking loop driver (track_live), the effects it applies (track_effects), and the live ordinal routing (live).
@@ -16,6 +18,16 @@ pub(crate) mod popup_proc;
 #[cfg(target_os = "oxide-kernel")]
 #[path = "menu_raw/entry.rs"]
 mod entry;
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) use entry::with_entry;
+#[cfg(target_os = "oxide-kernel")]
+#[path = "menu_raw/bar.rs"]
+pub(crate) mod bar;
+#[cfg(target_os = "oxide-kernel")]
+#[path = "menu_raw/popup_paint.rs"]
+mod popup_paint;
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) use popup_paint::paint_popup_menu_window;
 #[cfg(target_os = "oxide-kernel")]
 #[path = "menu_raw/popup_window.rs"]
 mod popup_window;

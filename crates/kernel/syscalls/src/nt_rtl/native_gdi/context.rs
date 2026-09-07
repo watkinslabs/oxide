@@ -23,6 +23,25 @@ pub(crate) fn begin(mut request: abi::TextRequest) -> u64 {
     })
 }
 
+/// Redirect a text run the kernel itself owns: the units are copied straight
+/// into the callback payload instead of fetched from the caller's address
+/// space. # C: O(text units)
+pub(crate) fn begin_kernel_text(mut request: abi::TextRequest, text: &[u16]) -> u64 {
+    request.count = match u32::try_from(text.len()) { Ok(count) => count, Err(_) => return 0 };
+    request.advances = 0;
+    let Some(bytes) = request.payload_bytes() else { return 0; };
+    let mut copy = Vec::new();
+    if copy.try_reserve_exact(bytes).is_err() { return 0; }
+    copy.resize(bytes, 0);
+    let head = core::mem::size_of::<abi::TextRequest>();
+    for (index, unit) in text.iter().enumerate() { copy[head + index * 2..head + index * 2 + 2].copy_from_slice(&unit.to_le_bytes()); }
+    launch(&mut copy, |payload, copy| {
+        request.text = payload + head as u64;
+        // SAFETY: repr(C) header contains initialized integer fields without padding.
+        copy[..head].copy_from_slice(unsafe { core::slice::from_raw_parts((&request as *const abi::TextRequest).cast(), head) });
+    })
+}
+
 pub(super) fn launch(copy: &mut [u8], patch: impl FnOnce(u64, &mut [u8])) -> u64 {
     launch_or(copy, 0, patch)
 }

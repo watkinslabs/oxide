@@ -30,6 +30,8 @@ struct MenuRecord { popup: bool, items: Vec<MenuItem>, info: MenuInfo }
 
 #[path = "win32_menu/info.rs"]
 mod info;
+#[path = "win32_menu/draw.rs"]
+pub mod draw;
 #[path = "win32_menu/popup.rs"]
 pub mod popup;
 #[path = "win32_menu/track.rs"]
