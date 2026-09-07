@@ -206,7 +206,9 @@ fn bridge_pointer_reaches_canonical_capture_queue() {
         state.post_compositor_pointer(id, x, y, buttons, wheel, hwheel).is_ok()
     }));
     let motion = next(&mut state).unwrap();
-    assert_eq!((motion.hwnd, motion.message, motion.lparam), (Some(capture), gui::WM_MOUSEMOVE, gui::mouse_lparam(-79, -168)));
+    // Capture redirects delivery only: the point is queued where it is on
+    // screen, and the retrieval's hit test is what translates it.
+    assert_eq!((motion.hwnd, motion.message, motion.lparam), (Some(capture), gui::WM_MOUSEMOVE, gui::mouse_lparam(21, 32)));
     assert_eq!(next(&mut state).unwrap().message, gui::WM_LBUTTONDOWN);
     let wheel = next(&mut state).unwrap();
     assert_eq!((wheel.message, wheel.lparam), (gui::WM_MOUSEWHEEL, gui::mouse_lparam(21, 32)));

@@ -57,12 +57,7 @@ pub(super) fn dispatch_mode(call: NtCall, raw: bool) -> Option<u64> {
         }
         let (result, wake, sleep, cleanup, atoms, paint_dcs) = {
             let mut entries = GUI.lock();
-            entries.retain(|entry| entry.group.upgrade().is_some());
-            let index = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group)));
-            let index = index.unwrap_or_else(|| {
-                entries.push(new_entry(&group));
-                entries.len() - 1
-            });
+            let index = owner::entry_index(&mut entries, &group);
             let wait = Arc::clone(&entries[index].wait);
             let state = &mut entries[index].state;
             let mut cleanup = Vec::new();

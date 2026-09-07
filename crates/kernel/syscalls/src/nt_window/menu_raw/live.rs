@@ -155,6 +155,23 @@ fn thunked_menu_info(raw: u64, record: u64) -> u64 {
     1
 }
 
+/// Read the whole-menu properties one caller's mask names, leaving every
+/// other field of its record as it supplied it. A valid handle is what
+/// `IsMenu` is: the client asks for an empty mask and reads only the answer,
+/// and the resource menu loader will not attach a submenu to an item until it
+/// has. # C: O(N_menus) plus bounded usercopy
+pub(crate) fn get_menu_info(raw: u64, record: u64) -> u64 {
+    if record == 0 { crate::nt_rtl::set_last_win32_error(ERROR_INVALID_PARAMETER as u64); return 0; }
+    let mut bytes = [0u8; MENUINFO_BYTES as usize];
+    if uaccess::copy_from_user(&mut bytes, record).is_err() { crate::nt_rtl::set_last_win32_error(ERROR_INVALID_PARAMETER as u64); return 0; }
+    let Some((mask, mut info)) = decode_menu_info(bytes) else { crate::nt_rtl::set_last_win32_error(ERROR_INVALID_PARAMETER as u64); return 0; };
+    let Some(menu) = menu_of(raw) else { crate::nt_rtl::set_last_win32_error(ERROR_INVALID_PARAMETER as u64); return 0; };
+    let read = with_entry(|entry| entry.menus.info(menu, mask, &mut info).is_ok()).unwrap_or(false);
+    if !read { crate::nt_rtl::set_last_win32_error(ERROR_INVALID_PARAMETER as u64); return 0; }
+    if uaccess::copy_to_user(record, &encode_menu_info(bytes, info)).is_err() { crate::nt_rtl::set_last_win32_error(ERROR_INVALID_PARAMETER as u64); return 0; }
+    1
+}
+
 /// Show one popup for a window and run the modal loop that chooses a command
 /// from it. The chosen command is reported when the caller asked for it, and
 /// posted to the owner otherwise. # C: O(N_messages * N_items); # Sleeps: yes

@@ -9,6 +9,7 @@ use ipc::win32_window::WindowId;
 
 /// Apply one effect. Effects that open or close a popup queue the owner
 /// notification and the measuring step that follow it. # C: O(N_open * N_items)
+#[inline(never)]
 pub(crate) fn apply(track: &mut PendingTrack, effect: TrackEffect) {
     match effect {
         TrackEffect::Repaint { menu } => repaint(track, menu),
@@ -32,6 +33,7 @@ pub(crate) fn apply(track: &mut PendingTrack, effect: TrackEffect) {
 
 /// Show the submenu the owner has just been told to update, and follow it.
 /// # C: O(N_items + N_windows)
+#[inline(never)]
 pub(crate) fn show_sub(track: &mut PendingTrack, menu: u32, position: u32, submenu: u32, select_first: bool) {
     let flags = track.state.flags();
     let current = popup_window::open_sub_popup(&mut track.session, menu, position, submenu, flags);
@@ -42,6 +44,7 @@ pub(crate) fn show_sub(track: &mut PendingTrack, menu: u32, position: u32, subme
 
 /// Repaint the window showing one menu, or the owner's menu bar when the menu
 /// is not one the session has open. # C: O(N_windows)
+#[inline(never)]
 fn repaint(track: &PendingTrack, menu: u32) {
     let Some(window) = track.session.window_of(menu).and_then(|hwnd| u32::try_from(hwnd).ok()).and_then(WindowId::from_raw) else {
         let _ = crate::nt_window::draw_menu_bar_for_current(track.session.owner);
@@ -51,6 +54,7 @@ fn repaint(track: &PendingTrack, menu: u32) {
 }
 
 /// Post one command to the menu's owner. # C: O(N_windows)
+#[inline(never)]
 fn post(owner: u64, message: u32, wparam: u64, lparam: i64) {
     let _ = crate::nt_window::dispatch(syscall::nt::NtCall { service: syscall::nt::NtService::PostMessage,
         args: syscall::SyscallArgs { a0: owner, a1: message as u64, a2: wparam, a3: lparam as u64, a4: 0, a5: 0 } });

@@ -45,7 +45,11 @@ pub(crate) fn route(ordinal: u64, args: &[u64]) -> Option<u64> {
             let adjusted = adjust_window_rect(Rect::decode(&rect).unwrap(), AdjustParams::decode(&params).unwrap(), |index| metrics::get(index as u64) as i32);
             u64::from(uaccess::copy_to_user(arg1, &adjusted.encode()).is_ok())
         },
-        GET_DIALOG_PROC | GET_MENU_INFO | SET_ICON_PARAM | SET_IME_COMPOSITION_RECT | ALLOC_WINPROC => unhandled(code),
+        // The resource menu loader asks this of every submenu handle before
+        // it will attach one to an item, so an unanswered query costs every
+        // menu its dropdowns.
+        GET_MENU_INFO => crate::nt_window::menu_raw::get_menu_info(arg1, arg2),
+        GET_DIALOG_PROC | SET_ICON_PARAM | SET_IME_COMPOSITION_RECT | ALLOC_WINPROC => unhandled(code),
         other => unhandled(other),
     })
 }

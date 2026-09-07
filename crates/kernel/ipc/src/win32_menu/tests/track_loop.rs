@@ -340,3 +340,27 @@ fn button_up_on_the_bar_item_that_opened_the_popup_keeps_it_open() {
     state.message(&mut menus, message(WM_LBUTTONUP, 0, 0), Some(on_bar(bar, PopupHit::Item(0))));
     assert!(matches!(queued(&mut state, &mut menus).last().unwrap(), LoopStep::Done(_)));
 }
+
+/// The unwinding is ordered: the driver is handed the step that hides the open
+/// submenus, and only after that does the top menu lose its selection. Clearing
+/// it first would leave the driver nothing to find, and the last popup window
+/// would stay on the screen after the menu had been used.
+#[test]
+fn the_open_popups_are_hidden_before_the_top_menu_loses_its_selection() {
+    let (mut menus, bar, popup) = chain();
+    let mut state = TrackLoop::new(0, OWNER, bar, (0, 0));
+    let id = MenuId::from_raw(bar).unwrap();
+    menus.set_focused_item(id, 0).unwrap();
+    menus.item_mut_by_position(id, 0).unwrap().state |= MF_MOUSESELECT;
+    state.cancel();
+    assert_eq!(state.next(&mut menus), LoopStep::Effect(TrackEffect::HideSubPopups { menu: bar }));
+    assert_eq!(menus.focused_item(id), 0, "the selection the hide reads is still there");
+    // The driver applies the hide, which is what retires the popup window.
+    assert_eq!(crate::win32_menu::chain::sub_popup_chain(&mut menus, 1, bar), vec![popup]);
+    state.close_popups(&[popup]);
+    assert_eq!(state.next(&mut menus), LoopStep::Close { menu: popup });
+    assert_eq!(state.next(&mut menus), LoopStep::Send(ProcCall { hwnd: OWNER as u64, message: WM_UNINITMENUPOPUP, wparam: popup as u64, lparam: 0 }));
+    assert_eq!(state.next(&mut menus), LoopStep::Effect(TrackEffect::Repaint { menu: bar }), "the cleared bar repaints");
+    assert_eq!(state.next(&mut menus), LoopStep::Send(ProcCall { hwnd: OWNER as u64, message: WM_MENUSELECT, wparam: MENUSELECT_CLOSED, lparam: 0 }));
+    assert_eq!(menus.focused_item(id), NO_SELECTED_ITEM, "and only then is the top menu unselected");
+}

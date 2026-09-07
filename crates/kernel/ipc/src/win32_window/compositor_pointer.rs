@@ -22,8 +22,12 @@ const TRANSITIONS: [(u16, u32, u32, u32); 5] = [
 ];
 
 impl WindowManager {
-    /// Client-relative source coordinates become screen cursor state; capture
-    /// redirects delivery, not coordinate origin. Wheel lParam stays screen-relative.
+    /// Surface-relative source coordinates become screen cursor state; capture
+    /// redirects delivery, not coordinate origin. Every pointer message is
+    /// queued in screen coordinates, because the hit test that decides whether
+    /// this click is a client or a nonclient one has not run yet: the
+    /// retrieval sends `WM_NCHITTEST` on the screen point and translates to
+    /// client coordinates only for the answers that name the client area.
     /// Queue capacity is admitted before any cursor/button/message mutation.
     /// # C: O(windows + queues); # Sleeps: no
     pub fn post_compositor_pointer(&mut self, source: WindowId, x: i32, y: i32, buttons: u32, wheel_delta: i32, hwheel_delta: i32) -> Result<(), WindowError> {
@@ -34,9 +38,6 @@ impl WindowManager {
             origin.top.checked_add(y).ok_or(WindowError::InvalidParent)?);
         let target = self.capture.unwrap_or(source);
         let owner = self.get(target).ok_or(WindowError::NoSuchWindow)?.owner_tid;
-        let bounds = self.rect(target).ok_or(WindowError::NoSuchWindow)?;
-        let client = (screen.0.checked_sub(bounds.left).ok_or(WindowError::InvalidParent)?,
-            screen.1.checked_sub(bounds.top).ok_or(WindowError::InvalidParent)?);
         let buttons = buttons as u16;
         let mut flags = (self.buttons & BUTTONS) | (buttons & MODIFIERS);
         let mut messages = [WinMessage { hwnd: Some(target), message: 0, wparam: 0, lparam: 0 }; MAX_MESSAGES];
@@ -46,13 +47,13 @@ impl WindowManager {
             count += 1;
         };
         if screen != self.cursor || (self.buttons ^ buttons) & MODIFIERS != 0 {
-            append(WM_MOUSEMOVE, flags as u64, client);
+            append(WM_MOUSEMOVE, flags as u64, screen);
         }
         for (bit, down, up, xbutton) in TRANSITIONS {
             if (self.buttons ^ buttons) & bit == 0 { continue; }
             let pressed = buttons & bit != 0;
             if pressed { flags |= bit; } else { flags &= !bit; }
-            append(if pressed { down } else { up }, flags as u64 | ((xbutton as u64) << 16), client);
+            append(if pressed { down } else { up }, flags as u64 | ((xbutton as u64) << 16), screen);
         }
         if wheel_delta != 0 {
             append(WM_MOUSEWHEEL, buttons as u64 | (((wheel_delta as i16 as u16) as u64) << 16), screen);

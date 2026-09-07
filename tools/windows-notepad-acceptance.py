@@ -20,7 +20,7 @@ from uart_reader import UartReader
 from notepad_fault_drain import drain as drain_fault
 import notepad_cadence
 from screenshot_evidence import screenshot_completed, record_screenshot
-from notepad_evidence import token_in_notepad_window, locate_notepad_window, image_size
+from notepad_evidence import token_in_notepad_window, locate_notepad_window, image_size, crop_image, menu_bar_word
 from gnome_overview import overview_showing, pill_stats, window_activated
 from notepad_uart_audit import audit as uart_audit, render_table as uart_audit_table, \
     render_markdown as uart_audit_markdown, load_win32u_ordinals
@@ -463,6 +463,59 @@ def report_cadence(reader):
     CADENCE_MD.write_text(table + "\n")
 
 
+def pointer_to(conn, x, y, width, height):
+    """Place the absolute pointer without pressing anything."""
+    qmp(conn, "input-send-event", {"events": [
+        {"type": "abs", "data": {"axis": "x", "value": int(x * QMP_ABS_RANGE / max(1, width - 1))}},
+        {"type": "abs", "data": {"axis": "y", "value": int(y * QMP_ABS_RANGE / max(1, height - 1))}}]})
+
+
+def button(conn, down):
+    qmp(conn, "input-send-event", {"events": [{"type": "btn", "data": {"down": down, "button": "left"}}]})
+
+
+# The menu of a dropdown that opened, cropped from the item that opened it.
+MENU_CROP_WIDTH = 340
+MENU_CROP_HEIGHT = 320
+# Items of the File menu that must appear underneath it.
+MENU_ITEMS = ("new", "open", "save", "exit")
+
+
+def drive_menu(conn):
+    """A6: press File on the menu bar and read the dropdown that opens.
+
+    A menu that opens nothing looks exactly like a menu bar that was never
+    clicked, so this is checked by what is on the screen under the item and
+    not by any marker the guest prints.
+    """
+    path, _ = screenshot(conn, "before-menu")
+    width, height = image_size(path)
+    rect = locate_notepad_window(path)
+    if rect is None:
+        die("no Notepad window located before the menu press")
+    item = menu_bar_word(path, rect, "File")
+    if item is None:
+        die(f"no File item on the menu bar of the window at {rect}; retained {path}")
+    left, top, item_width, item_height = item
+    centre = (left + item_width // 2, top + item_height // 2)
+    box = (max(0, left - 30), max(0, top - 12), min(width, left + MENU_CROP_WIDTH), min(height, top + MENU_CROP_HEIGHT))
+    pointer_to(conn, centre[0], centre[1], width, height)
+    button(conn, True)
+    time.sleep(1.5)
+    opened, _ = screenshot(conn, "menu-open")
+    crop = Path(f"{SCREEN}-menu-open-crop.png")
+    crop_image(opened, box, crop)
+    text = " ".join(ocr_raw(crop).split())
+    button(conn, False)
+    print(f"menu: item={item} crop={crop} text={text!r}")
+    missing = [name for name in MENU_ITEMS if name not in text]
+    if missing:
+        die(f"the File menu did not open: {missing} absent from the crop under the item; retained {crop}")
+    keys(conn, "esc")
+    time.sleep(0.5)
+    print("windows-notepad-acceptance: A6 PASS (menu opens under the item that was pressed)")
+
+
 def run_desktop_checks(uart, reader, qmp_sock, deadline, guest=None):
     """Drive the desktop checks; the caller owns the reader and the log."""
     launch_on_desktop(uart, reader, qmp_sock, deadline, guest)
@@ -498,6 +551,7 @@ def run_desktop_checks(uart, reader, qmp_sock, deadline, guest=None):
     if not found:
         die(f"token not painted inside the Notepad window {rect} within {TOKEN_SECONDS}s; retained {after_path}")
     print("windows-notepad-acceptance: A1/A2/A3 PASS (PE, window, present, token)")
+    drive_menu(qmp_sock)
     report_cadence(reader)
     # This fixture is an untitled scratch document. Delete our own token
     # through real input before testing close. Notepad's DoCloseFile prompts

@@ -2,7 +2,8 @@
 //! nonclient renumbering, double-click synthesis, the retrieval filter, and
 //! which of the four outcomes the retrieval takes.
 use super::uapi::*;
-use super::super::{MessageFilter, WinMessage, HTCLIENT, HTERROR, HTNOWHERE};
+use super::ladder::ProcCall;
+use super::super::{MessageFilter, WinMessage, HTCLIENT, HTERROR, HTNOWHERE, WM_NCHITTEST};
 
 /// The click a window last saw, kept so the next one can be recognised as the
 /// second half of a double click.
@@ -26,6 +27,14 @@ pub enum ClickUpdate {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MouseContext {
     pub hit_test: i32,
+    /// Screen origin of the target window's client area. A client hit is
+    /// reported in client coordinates, and this is what the screen point the
+    /// queue carries is measured from.
+    pub client_origin: (i32, i32),
+    /// Menu tracking is running, which leaves every point in screen
+    /// coordinates: the tracking loop resolves them against the screen
+    /// rectangles of the windows its menus are shown in.
+    pub menu_mode: bool,
     /// A window holds the pointer capture, which suppresses hit-testing and
     /// the whole activation ladder.
     pub captured: bool,
@@ -73,6 +82,17 @@ pub struct MousePrepared {
     pub click: ClickUpdate,
 }
 
+/// The nonclient hit test one queued pointer message must have before
+/// anything else about it can be decided. The reference resolves the code by
+/// sending `WM_NCHITTEST` to the window the point landed on, carrying the
+/// point in screen coordinates; a window holding the capture takes every
+/// click as a client one and is never asked. Absent means the answer is
+/// already known and is `HTCLIENT`. # C: O(1)
+pub const fn hit_test_call(hwnd: u32, screen: i64, captured: bool) -> Option<ProcCall> {
+    if captured { return None; }
+    Some(ProcCall { hwnd, message: WM_NCHITTEST, wparam: 0, lparam: screen })
+}
+
 /// Whether two clicks are the halves of one double click. Both must name the
 /// same window, message and button state, fall inside the double-click time,
 /// and land within half the double-click rectangle of each other. # C: O(1)
@@ -98,10 +118,17 @@ pub fn prepare(queued: WinMessage, previous: Option<ClickRecord>, ctx: &MouseCon
     let hwnd = queued.hwnd.map_or(0, |window| window.raw());
     let mut message = origin;
     let mut wparam = queued.wparam;
-    // The wheel has no nonclient form, so it is never renumbered.
-    if message != WM_MOUSEWHEEL && ctx.hit_test != HTCLIENT {
-        message = message - (WM_MOUSEMOVE - WM_NCMOUSEMOVE);
-        wparam = ctx.hit_test as i16 as u16 as u64;
+    let mut lparam = queued.lparam;
+    // The wheel has no nonclient form, so it is neither renumbered nor
+    // translated: it is reported in screen coordinates.
+    if message != WM_MOUSEWHEEL {
+        if ctx.hit_test != HTCLIENT {
+            message = message - (WM_MOUSEMOVE - WM_NCMOUSEMOVE);
+            wparam = ctx.hit_test as i16 as u16 as u64;
+        } else if !ctx.menu_mode {
+            let (x, y) = split_point(queued.lparam);
+            lparam = make_point(x - ctx.client_origin.0, y - ctx.client_origin.1);
+        }
     }
     let mut click = ClickUpdate::Keep;
     if is_button_down(origin) {
@@ -111,7 +138,7 @@ pub fn prepare(queued: WinMessage, previous: Option<ClickRecord>, ctx: &MouseCon
             if ctx.remove { click = ClickUpdate::Clear; }
         } else if ctx.remove { click = ClickUpdate::Store(current); }
     }
-    let prepared = WinMessage { hwnd: queued.hwnd, message, wparam, lparam: queued.lparam };
+    let prepared = WinMessage { hwnd: queued.hwnd, message, wparam, lparam };
     let outcome = outcome_of(message, ctx);
     MousePrepared { outcome, message: prepared, origin, hit_test: ctx.hit_test,
         click: if matches!(outcome, MouseOutcome::Filtered) { ClickUpdate::Keep } else { click } }

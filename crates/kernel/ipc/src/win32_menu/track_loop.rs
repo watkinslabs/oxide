@@ -134,6 +134,14 @@ pub enum LoopStep {
     Done(i32),
 }
 
+/// How far the end of tracking has got. The unwinding is ordered — the open
+/// submenus are hidden and their windows retired before the top menu's
+/// selection is cleared — and the driver is what retires a window, so the
+/// clearing cannot be performed until the steps that hide them have been
+/// handed over and applied.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum Teardown { Running, Hiding, Done }
+
 /// The tracking loop's resumable position: the tracked menus, the steps still
 /// owed to the driver, and the result of the call it last made.
 pub struct TrackLoop {
@@ -144,7 +152,7 @@ pub struct TrackLoop {
     steps: VecDeque<LoopStep>,
     current_window: u64,
     enter_idle_sent: bool,
-    tearing_down: bool,
+    teardown: Teardown,
     result: Result<u64, ()>,
 }
 
@@ -154,7 +162,7 @@ impl TrackLoop {
         let mut tracker = Tracker::new(flags, owner, menu, pt);
         if flags & TF_ENDMENU != 0 { tracker.exit = true; }
         Self { tracker, flags, popup: flags & TPM_POPUPMENU != 0, executed: EXEC_NOTHING, steps: VecDeque::new(),
-            current_window: 0, enter_idle_sent: false, tearing_down: false, result: Ok(0) }
+            current_window: 0, enter_idle_sent: false, teardown: Teardown::Running, result: Ok(0) }
     }
 
     /// # C: O(1)
@@ -203,7 +211,7 @@ impl TrackLoop {
     /// # C: O(1)
     pub fn abandon(&mut self) {
         self.tracker.exit = true;
-        self.tearing_down = true;
+        self.teardown = Teardown::Done;
         self.steps.clear();
         self.exit_steps();
         if self.popup { self.close_top(); }
@@ -214,8 +222,13 @@ impl TrackLoop {
     pub fn next(&mut self, menus: &mut MenuManager) -> LoopStep {
         if let Some(step) = self.steps.pop_front() { return step; }
         if !self.tracker.exit { return LoopStep::NextMessage; }
-        if !self.tearing_down { self.tearing_down = true; self.teardown(menus); return self.next(menus); }
-        LoopStep::Done(if self.flags & TPM_RETURNCMD == 0 { 1 } else if self.executed == EXEC_NOTHING { 0 } else { self.executed })
+        match self.teardown {
+            Teardown::Running => { self.teardown = Teardown::Hiding; self.hide_open(); self.next(menus) }
+            // Only once the driver has applied the hide is the top menu's own
+            // selection cleared: reading it is how the hide finds the windows.
+            Teardown::Hiding => { self.teardown = Teardown::Done; self.unselect_top(menus); self.next(menus) }
+            Teardown::Done => LoopStep::Done(if self.flags & TPM_RETURNCMD == 0 { 1 } else if self.executed == EXEC_NOTHING { 0 } else { self.executed }),
+        }
     }
 
     /// The queue is empty: the owner is told the menu is idle once, and only
@@ -317,15 +330,20 @@ impl TrackLoop {
 
     fn push_front(&mut self, step: LoopStep) { self.steps.push_front(step); }
 
-    /// Unwind the chain, clear the highlight and tell the owner tracking is
-    /// over, in the order the reference unwinds them. # C: O(N_items)
-    fn teardown(&mut self, menus: &mut MenuManager) {
+    /// Hide every submenu the top menu has open and retire the top menu's own
+    /// window, which is the first half of the unwinding. # C: O(1)
+    fn hide_open(&mut self) {
         let top = self.tracker.top_menu;
         self.steps.push_back(LoopStep::Effect(TrackEffect::HideSubPopups { menu: top }));
         if self.popup { self.close_top(); }
+    }
+
+    /// Clear the top menu's highlight and tell the owner tracking is over,
+    /// which is the second half. # C: O(N_items)
+    fn unselect_top(&mut self, menus: &mut MenuManager) {
         let mut effects = Vec::new();
         let tracker = self.tracker;
-        tracker.select_item(menus, &mut effects, top, NO_SELECTED_ITEM, false, 0);
+        tracker.select_item(menus, &mut effects, self.tracker.top_menu, NO_SELECTED_ITEM, false, 0);
         self.queue_effects(effects);
         self.send(self.tracker.owner as u64, WM_MENUSELECT, MENUSELECT_CLOSED, 0);
         self.exit_steps();

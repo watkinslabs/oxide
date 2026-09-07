@@ -82,17 +82,9 @@ pub(super) fn message_call(a: &[u64; 17]) -> u64 {
     if callback_type == WINE_DEF_WINDOW_PROC {
         if message == WM_NCCREATE { return (lparam != 0) as u64; }
         if message == WM_NCDESTROY { return STATUS_SUCCESS; }
-        if message == WM_NCHITTEST {
-            if hwnd > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
-            let Some((rect, _)) = crate::nt_window::window_rect_for_current(hwnd as u32) else { return STATUS_INVALID_PARAMETER; };
-            return match ipc::win32_window::default_window_proc_for_rect(WM_NCHITTEST as u32, rect, lparam as i64) {
-                ipc::win32_window::DefaultWindowResult::Return(value) => value as u64,
-                ipc::win32_window::DefaultWindowResult::RequestDestroy => STATUS_SUCCESS,
-                // This asks specifically about a hit test, which never
-                // validates a window.
-                ipc::win32_window::DefaultWindowResult::ValidatePaint => STATUS_SUCCESS,
-            };
-        }
+        // WM_NCHITTEST is not answered here: the canonical default window
+        // procedure answers it, and it is the only one that knows about the
+        // menu bar's band of the nonclient area.
         if message == WM_SETCURSOR { return cursor_raw::default_set_cursor(wparam, lparam); }
         if message == WM_NCACTIVATE { return 1; }
         if message == WM_SETTEXT {
