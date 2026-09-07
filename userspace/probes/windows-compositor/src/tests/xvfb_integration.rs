@@ -28,6 +28,12 @@ unsafe fn connect(display: &str) -> (*mut ffi::Connection, ffi::Window) {
     (conn, (*it.data).root)
 }
 
+unsafe fn override_redirect(conn: *mut ffi::Connection, window: ffi::Window) -> bool {
+    let cookie = ffi::xcb_get_window_attributes(conn, window); let mut err = ptr::null_mut();
+    let reply = ffi::xcb_get_window_attributes_reply(conn, cookie, &mut err); assert!(!reply.is_null());
+    let value = (*reply).override_redirect != 0; libc::free(reply as *mut _); value
+}
+
 unsafe fn child_order(conn: *mut ffi::Connection, parent: ffi::Window) -> Vec<ffi::Window> {
     let cookie = ffi::xcb_query_tree(conn, parent); let mut err = ptr::null_mut(); let reply = ffi::xcb_query_tree_reply(conn, cookie, &mut err); assert!(!reply.is_null());
     let count = ffi::xcb_query_tree_children_length(reply); let children = std::slice::from_raw_parts(ffi::xcb_query_tree_children(reply), count as usize).to_vec(); libc::free(reply as *mut _); children
@@ -309,5 +315,41 @@ fn xvfb_pointer_wire_carries_win32_buttons_and_wheel_not_x11_state() {
     // Every one of these encodes; the raw X form never reaches the wire.
     for event in &seen { assert!(crate::protocol::encode_event(event, 1).is_ok()); }
     assert!(crate::protocol::encode_event(&BridgeEvent::Input(InputEvent::Button { hwnd, press: true, button: 1, x: 0, y: 0, state: X_BUTTON1 }), 1).is_err());
+    unsafe { ffi::xcb_disconnect(conn); }
+}
+
+/// The server itself is asked what it holds: a dropdown menu is a bare popup,
+/// which the window manager does not manage, so its window is override-redirect
+/// and no desktop frame, placement or focus grab can reach it. The application's
+/// own captioned window stays managed alongside it.
+#[test]
+fn xvfb_a_bare_popup_is_override_redirect_and_a_captioned_window_is_not() {
+    use crate::styles::{WS_CAPTION, WS_CHILD, WS_POPUP, WS_SYSMENU, WS_VISIBLE};
+    let server = xvfb();
+    let mut backend = Backend::connect(Some(&server.display)).unwrap();
+    let create = |backend: &mut Backend, hwnd: u32, parent: u64, style: u32| {
+        backend.handle_command(BridgeCommand::Create { hwnd, title: Vec::new(), rect: Rect { left: 4, top: 5, right: 44, bottom: 25 }, parent, style, ex_style: 0 }).unwrap();
+    };
+    let frame = 0x91; let menu = 0x92; let dialog = 0x93; let child = 0x94; let owned = 0x95;
+    create(&mut backend, frame, 0, WS_CAPTION | WS_SYSMENU | WS_VISIBLE);
+    create(&mut backend, menu, frame as u64, WS_POPUP | WS_VISIBLE);
+    create(&mut backend, dialog, frame as u64, WS_POPUP | WS_CAPTION | WS_VISIBLE);
+    create(&mut backend, child, frame as u64, WS_CHILD | WS_VISIBLE);
+    create(&mut backend, owned, frame as u64, WS_CAPTION | WS_VISIBLE);
+
+    let (conn, _) = unsafe { connect(&server.display) };
+    let attribute = |hwnd: u32| unsafe { override_redirect(conn, backend.xid_for(hwnd).unwrap()) };
+    assert!(!attribute(frame), "a captioned application window is managed");
+    assert!(attribute(menu), "a bare popup menu must be override-redirect");
+    assert!(!attribute(dialog), "a captioned popup is still managed");
+    // A child window is not the window manager's either.
+    assert!(attribute(child));
+    // The owner still travels as WM_TRANSIENT_FOR for the windows that are
+    // parented to it in the window-manager sense.
+    assert_eq!(backend.transient_xid_for(menu), backend.xid_for(frame));
+    assert_eq!(backend.transient_xid_for(dialog), backend.xid_for(frame));
+    // An owned window names its owner whether or not it is a popup.
+    assert_eq!(backend.transient_xid_for(owned), backend.xid_for(frame));
+    assert_eq!(backend.transient_xid_for(frame), None);
     unsafe { ffi::xcb_disconnect(conn); }
 }

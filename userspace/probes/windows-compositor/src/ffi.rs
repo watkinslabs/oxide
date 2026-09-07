@@ -24,6 +24,8 @@ pub struct Screen { pub root: Window, pub default_colormap: u32, pub white_pixel
 #[repr(C)] pub struct GetImageReply { pub response_type: u8, pub depth: u8, pub sequence: u16, pub length: u32, pub visual: Visualid, pub pad0: [u8; 20] }
 #[repr(C)] pub struct VoidCookie { pub sequence: c_uint }
 #[repr(C)] pub struct QueryTreeCookie { pub sequence: c_uint }
+#[repr(C)] pub struct GetWindowAttributesCookie { pub sequence: c_uint }
+#[repr(C)] pub struct GetWindowAttributesReply { pub response_type: u8, pub backing_store: u8, pub sequence: u16, pub length: u32, pub visual: Visualid, pub class: u16, pub bit_gravity: u8, pub win_gravity: u8, pub backing_planes: u32, pub backing_pixel: u32, pub save_under: u8, pub map_is_installed: u8, pub map_state: u8, pub override_redirect: u8, pub colormap: u32, pub all_event_masks: u32, pub your_event_mask: u32, pub do_not_propagate_mask: u16, pub pad0: [u8; 2] }
 #[repr(C)] pub struct QueryTreeReply { pub response_type: u8, pub pad0: u8, pub sequence: u16, pub length: u32, pub root: Window, pub parent: Window, pub children_len: u16, pub pad1: [u8; 14] }
 #[repr(C)] pub struct TranslateCoordinatesCookie { pub sequence: c_uint }
 #[repr(C)] pub struct TranslateCoordinatesReply { pub response_type: u8, pub same_screen: u8, pub sequence: u16, pub length: u32, pub child: Window, pub dst_x: i16, pub dst_y: i16 }
@@ -32,7 +34,7 @@ pub struct Screen { pub root: Window, pub default_colormap: u32, pub white_pixel
 pub const KEY_PRESS: u8 = 2; pub const KEY_RELEASE: u8 = 3; pub const BUTTON_PRESS: u8 = 4; pub const BUTTON_RELEASE: u8 = 5; pub const MOTION_NOTIFY: u8 = 6; pub const FOCUS_IN: u8 = 9; pub const FOCUS_OUT: u8 = 10; pub const EXPOSE: u8 = 12; pub const CONFIGURE_NOTIFY: u8 = 22; pub const PROPERTY_NOTIFY: u8 = 28; pub const CLIENT_MESSAGE: u8 = 33;
 pub const PROP_MODE_REPLACE: u8 = 0; pub const ATOM_NONE: Atom = 0; pub const ATOM_ATOM: Atom = 4; pub const ATOM_CARDINAL: Atom = 6; pub const ATOM_WINDOW: Atom = 33;
 pub const WINDOW_CLASS_INPUT_OUTPUT: u16 = 1; pub const IMAGE_FORMAT_Z_PIXMAP: u8 = 2;
-pub const CW_EVENT_MASK: u32 = 1 << 11;
+pub const CW_OVERRIDE_REDIRECT: u32 = 1 << 9; pub const CW_EVENT_MASK: u32 = 1 << 11;
 pub const EVENT_KEY_PRESS: u32 = 1; pub const EVENT_KEY_RELEASE: u32 = 1 << 1; pub const EVENT_BUTTON_PRESS: u32 = 1 << 2; pub const EVENT_BUTTON_RELEASE: u32 = 1 << 3; pub const EVENT_POINTER_MOTION: u32 = 1 << 6; pub const EVENT_EXPOSURE: u32 = 1 << 15; pub const EVENT_STRUCTURE_NOTIFY: u32 = 1 << 17; pub const EVENT_FOCUS_CHANGE: u32 = 1 << 21; pub const EVENT_PROPERTY_CHANGE: u32 = 1 << 22;
 /// Focus-change `detail` and `mode` values. A pointer-boundary focus event is
 /// not a focus change, and a grab's focus event describes the grab, not the
@@ -54,6 +56,8 @@ extern "C" {
     pub fn xcb_create_window(c: *mut Connection, depth: u8, wid: Window, parent: Window, x: i16, y: i16, width: u16, height: u16, border_width: u16, class: u16, visual: Visualid, value_mask: u32, value_list: *const u32) -> u32;
     pub fn xcb_create_gc(c: *mut Connection, cid: Gcontext, drawable: Window, value_mask: u32, value_list: *const u32) -> u32;
     pub fn xcb_change_window_attributes(c: *mut Connection, window: Window, value_mask: u32, value_list: *const u32) -> u32;
+    pub fn xcb_get_window_attributes(c: *mut Connection, window: Window) -> GetWindowAttributesCookie;
+    pub fn xcb_get_window_attributes_reply(c: *mut Connection, cookie: GetWindowAttributesCookie, e: *mut *mut GenericError) -> *mut GetWindowAttributesReply;
     pub fn xcb_change_property(c: *mut Connection, mode: u8, window: Window, property: Atom, type_: Atom, format: u8, data_len: u32, data: *const c_void) -> u32;
     pub fn xcb_map_window(c: *mut Connection, window: Window) -> u32;
     pub fn xcb_map_window_checked(c: *mut Connection, window: Window) -> VoidCookie;

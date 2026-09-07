@@ -170,13 +170,13 @@ impl Backend {
     fn set_topmost(&self, xid: Xid, top_level: bool, enabled: bool) -> Result<(), BackendError> {
         if !top_level { return Ok(()); }
         let mut event = [0u8; 32]; event[0] = ffi::CLIENT_MESSAGE; event[1] = 32; event[4..8].copy_from_slice(&xid.to_ne_bytes()); event[8..12].copy_from_slice(&self.atoms.net_wm_state.to_ne_bytes()); event[12..16].copy_from_slice(&(if enabled { 1u32 } else { 0u32 }).to_ne_bytes()); event[16..20].copy_from_slice(&self.atoms.net_wm_state_above.to_ne_bytes());
-        let error = unsafe { ffi::xcb_request_check(self.conn, ffi::xcb_send_event(self.conn, 0, self.root, ffi::SUBSTRUCTURE_REDIRECT | ffi::SUBSTRUCTURE_NOTIFY, event.as_ptr() as *const i8)) };
+        let error = unsafe { ffi::xcb_request_check(self.conn, ffi::xcb_send_event(self.conn, 0, self.root, ffi::SUBSTRUCTURE_REDIRECT | ffi::SUBSTRUCTURE_NOTIFY, event.as_ptr() as *const libc::c_char)) };
         if error.is_null() { Ok(()) } else { unsafe { libc::free(error as *mut _); } Err(BackendError::X11) }
     }
 
     fn request_activation(&self, xid: Xid) -> Result<(), BackendError> {
         let mut event = [0u8; 32]; event[0] = ffi::CLIENT_MESSAGE; event[1] = 32; event[4..8].copy_from_slice(&xid.to_ne_bytes()); event[8..12].copy_from_slice(&self.atoms.net_active_window.to_ne_bytes()); event[12..16].copy_from_slice(&2u32.to_ne_bytes());
-        let error = unsafe { ffi::xcb_request_check(self.conn, ffi::xcb_send_event(self.conn, 0, self.root, ffi::SUBSTRUCTURE_REDIRECT | ffi::SUBSTRUCTURE_NOTIFY, event.as_ptr() as *const i8)) };
+        let error = unsafe { ffi::xcb_request_check(self.conn, ffi::xcb_send_event(self.conn, 0, self.root, ffi::SUBSTRUCTURE_REDIRECT | ffi::SUBSTRUCTURE_NOTIFY, event.as_ptr() as *const libc::c_char)) };
         if error.is_null() { Ok(()) } else { unsafe { libc::free(error as *mut _); } Err(BackendError::X11) }
     }
 
@@ -243,8 +243,8 @@ impl Backend {
         transport.send(event).map_err(BackendError::Transport)
     }
 
-    fn create(&mut self, hwnd: u32, title: &[u16], rect: Rect, parent: u64, style: u32, _ex_style: u32) -> Result<(), BackendError> {
-        const WS_CHILD: u32 = 0x4000_0000; const WS_POPUP: u32 = 0x8000_0000; const WS_VISIBLE: u32 = 0x1000_0000;
+    fn create(&mut self, hwnd: u32, title: &[u16], rect: Rect, parent: u64, style: u32, ex_style: u32) -> Result<(), BackendError> {
+        use crate::styles::{WS_CHILD, WS_POPUP, WS_VISIBLE};
         let width = u32::try_from(rect.right - rect.left).map_err(|_| BackendError::InvalidCommand)?; let height = u32::try_from(rect.bottom - rect.top).map_err(|_| BackendError::InvalidCommand)?;
         if self.windows.contains_key(&hwnd) || width > u16::MAX as u32 || height > u16::MAX as u32 { return Err(BackendError::InvalidCommand); }
         // WS_POPUP takes precedence when both bits are present.  Such a
@@ -253,11 +253,20 @@ impl Backend {
         let is_child = style & (WS_CHILD | WS_POPUP) == WS_CHILD;
         let (x_parent, x, y) = if is_child { let parent_hwnd = u32::try_from(parent).map_err(|_| BackendError::InvalidCommand)?; let parent_window = self.windows.get(&parent_hwnd).ok_or(BackendError::InvalidCommand)?; (parent_window.xid, rect.left, rect.top) } else { (self.root, rect.left, rect.top) };
         let xid = unsafe { ffi::xcb_generate_id(self.conn) }; let gc = unsafe { ffi::xcb_generate_id(self.conn) };
-        let values = [ffi::EVENT_KEY_PRESS | ffi::EVENT_KEY_RELEASE | ffi::EVENT_BUTTON_PRESS | ffi::EVENT_BUTTON_RELEASE | ffi::EVENT_POINTER_MOTION | ffi::EVENT_EXPOSURE | ffi::EVENT_STRUCTURE_NOTIFY | ffi::EVENT_FOCUS_CHANGE];
-        unsafe { ffi::xcb_create_window(self.conn, self.depth, xid, x_parent, x as i16, y as i16, width.max(1) as u16, height.max(1) as u16, 0, ffi::WINDOW_CLASS_INPUT_OUTPUT, self.visual, 0, ptr::null()); ffi::xcb_create_gc(self.conn, gc, xid, 0, ptr::null()); ffi::xcb_change_window_attributes(self.conn, xid, ffi::CW_EVENT_MASK, values.as_ptr()); }
+        // A window the window manager does not manage is override-redirect: no
+        // frame, no placement of the manager's choosing, no focus taken from
+        // whoever holds it. A dropdown menu is exactly that window, and the
+        // attribute is settled before the window is mapped because a manager
+        // reads it when the map request arrives. The value list is ordered by
+        // its mask bit, override-redirect before the event mask.
+        let values = [u32::from(!crate::managed::at_creation(style, ex_style)), ffi::EVENT_KEY_PRESS | ffi::EVENT_KEY_RELEASE | ffi::EVENT_BUTTON_PRESS | ffi::EVENT_BUTTON_RELEASE | ffi::EVENT_POINTER_MOTION | ffi::EVENT_EXPOSURE | ffi::EVENT_STRUCTURE_NOTIFY | ffi::EVENT_FOCUS_CHANGE];
+        unsafe { ffi::xcb_create_window(self.conn, self.depth, xid, x_parent, x as i16, y as i16, width.max(1) as u16, height.max(1) as u16, 0, ffi::WINDOW_CLASS_INPUT_OUTPUT, self.visual, ffi::CW_OVERRIDE_REDIRECT | ffi::CW_EVENT_MASK, values.as_ptr()); ffi::xcb_create_gc(self.conn, gc, xid, 0, ptr::null()); }
         let title = String::from_utf16_lossy(title); let bytes = title.as_bytes();
         unsafe { ffi::xcb_change_property(self.conn, ffi::PROP_MODE_REPLACE, xid, self.atoms.net_wm_name, self.atoms.utf8_string, 8, bytes.len() as u32, bytes.as_ptr() as *const _); ffi::xcb_change_property(self.conn, ffi::PROP_MODE_REPLACE, xid, self.atoms.wm_protocols, ffi::ATOM_ATOM, 32, 1, &self.atoms.wm_delete as *const _ as *const _); ffi::xcb_flush(self.conn); }
-        if !is_child && style & WS_POPUP != 0 && parent != 0 { let owner = self.windows.get(&u32::try_from(parent).map_err(|_| BackendError::InvalidCommand)?).ok_or(BackendError::InvalidCommand)?.xid; unsafe { ffi::xcb_change_property(self.conn, ffi::PROP_MODE_REPLACE, xid, self.atoms.wm_transient_for, ffi::ATOM_WINDOW, 32, 1, &owner as *const _ as *const _); ffi::xcb_flush(self.conn); } }
+        // The owner travels in the parent field for a window that is not an X
+        // child, whatever its style: an owned window names its owner here, not
+        // only a popup.
+        if !is_child && parent != 0 { let owner = self.windows.get(&u32::try_from(parent).map_err(|_| BackendError::InvalidCommand)?).ok_or(BackendError::InvalidCommand)?.xid; unsafe { ffi::xcb_change_property(self.conn, ffi::PROP_MODE_REPLACE, xid, self.atoms.wm_transient_for, ffi::ATOM_WINDOW, 32, 1, &owner as *const _ as *const _); ffi::xcb_flush(self.conn); } }
         if width == 0 || height == 0 { unsafe { ffi::xcb_unmap_window(self.conn, xid); } }
         let requested_visible = style & WS_VISIBLE != 0;
         if requested_visible && width != 0 && height != 0 { unsafe { ffi::xcb_map_window(self.conn, xid); } }
@@ -360,8 +369,8 @@ impl Backend {
             let modifiers = key_flags(scan, press, was_down, alt);
             if press { self.down_keys.insert(keycode, true); } else { self.down_keys.remove(&keycode); }
             if press {
-                let mut text = [0i8; 32]; let n = unsafe { ffi::xkb_state_key_get_utf8(self.state, keycode as u32, text.as_mut_ptr(), text.len()) };
-                if n > 0 { let bytes = unsafe { std::slice::from_raw_parts(text.as_ptr() as *const u8, (n as usize).saturating_add(1).min(text.len())) }; if let Ok(Some(value)) = crate::keyboard::state_utf8(bytes, n, true) { self.pending.push_back(BridgeEvent::Input(InputEvent::Text { hwnd, utf8: value.as_bytes().to_vec() })); } }
+                let mut text = [0u8; 32]; let n = unsafe { ffi::xkb_state_key_get_utf8(self.state, keycode as u32, text.as_mut_ptr() as *mut libc::c_char, text.len()) };
+                if n > 0 { let bytes = &text[..(n as usize).saturating_add(1).min(text.len())]; if let Ok(Some(value)) = crate::keyboard::state_utf8(bytes, n, true) { self.pending.push_back(BridgeEvent::Input(InputEvent::Text { hwnd, utf8: value.as_bytes().to_vec() })); } }
             }
             Some(BridgeEvent::Input(InputEvent::Key { hwnd, press, virtual_key, scan_code: scan.code, modifiers }))
         } else { self.map_pointer(input) }
