@@ -54,6 +54,8 @@ pub mod win32_menu;
 pub mod win32_accel;
 /// Win32 GDI device-context and font state used by the native NT GUI layer.
 pub mod win32_gdi;
+/// Win32 input contexts (HIMC) used by the native NT GUI layer.
+pub mod win32_imc;
 pub use signal::{
     SigAction, SigInfo, Signal, SignalSet, SignalState, SIG_DFL, SIG_IGN,
 };
