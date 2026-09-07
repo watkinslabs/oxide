@@ -1,33 +1,24 @@
-# Notepad: surface closed by gate, not by boots — 2026-09-07
+# Notepad: on screen, surface at zero, desktop input is the last link — 2026-09-07
 
-First command: `git log --oneline -8 && make windows-surface-gate && cat target/windows-surface-audit.md | head -40 && git worktree list`
+First command: `git log --oneline -8 && make windows-surface-gate && git worktree list && tools/issues.sh --query status=OPEN grep='Notepad\|bridge\|menu'`
 
-## State (main 6060dbf2e + whatever the family lanes merged)
+## State (main ec81273c1)
 
-Notepad boots, loads imm32 at runtime, creates/shows its three windows, paints, and runs its message loop (uart-1263402). Merged today (PRs #7521-#7535): NT free tears down page tables (KI-0436); callback continuations preserve the full entry frame + callee-saved FP (KI-0440); hardware exceptions dispatch to KiUserExceptionDispatcher and a refused delivery terminates (KI-0437/0469); builtin classes with cursors + InitBuiltinClasses callback (KI-0434); CreateBitmap/PatternBrush/OpenDCW/GetDeviceCaps; delay-load resolver (KI-0442) with the reference's signed thunk index; DOS drive mapping + default DLL load path + forwarder-chasing runtime resolver (KI-0480); 16550 transmit-edge stall (serial silence); acceptance harness: title-located token check, overview escape + window activation; static call-surface gate.
+- Static call surface closed: `crates/kernel/syscalls/tests/windows_call_surface/baseline.txt` has zero entries (134 → 0 this session: PRs #7546 window/desktop/clipboard/hook, #7547 message/timer/scroll/menu/sysparams, #7551 drag/icon/idle; #7548 warning fix). KI-0473 fixed.
+- Serial "stall" was never the UART: the scheduler's cpufreq hook spun on a process-held plain spinlock inside the wakeup IRQ (PR #7545, KI-0521).
+- Notepad window never reached the GNOME screen because `shmctl` answered EIDRM on segments marked SHM_DEST, which is the normal state of a GTK MIT-SHM segment; XWayland turned it into BadAccess and `mutter-x11-frames` died on every map (PR #7550, KI-0540). Acceptance run `/home/nd/oxide/acc2/` (uart-193559.log, screen-193559-after-token.ppm): Notepad is framed, titled, raised on click, paints white client + status bar.
+- One wait list carries the message queue and NT objects (PR #7549, KI-0535).
 
-## The rule that now governs the campaign
+## What acceptance still fails on (measured, acc2)
 
-`make windows-surface-gate` (`crates/kernel/syscalls/tests/windows_call_surface/`, ~1.4 s) enumerates every win32u ordinal, ntdll export and import binding of Notepad's 27-module closure from the shipped Wine DLLs and ratchets against `baseline.txt`. Baseline at C1558 merge: 313 unadmitted win32u ordinals (129 gdi32, 176 user32, 8 imm32), 10 ntdll names, 10 unbindable imports. Work is fanned out per Wine source file, implemented from the reference bodies with hosted tests, baseline shrunk with `make windows-surface-gate-update`, then ONE acceptance boot. Never discover gaps by boot again (user rule; see auto-memory `windows-surface-from-wine-source`).
+1. Desktop input never becomes Windows messages: zero WM_MOUSEACTIVATE/ACTIVATE/SETFOCUS/LBUTTON*/MOUSEMOVE/KEY*/CHAR in `[WINDOWS-MESSAGE-CALL]` after the harness click + typed token; paint/size messages flow. Lane `B…-desktop-input-reaches-notepad` (running at hand-off): bridge X event mask/focus/reparent → bridge frame → kernel compositor worker → GUI owner → queue wake.
+2. No menu bar drawn under the title (Notepad's File/Edit/… bar). Menu-bar nonclient painting (reference `dlls/win32u/nonclient.c` nc_paint → menu.c draw_menu_bar_temp) is not implemented; spawn a lane AFTER `F1619-popup-menu-tracking-loop` merges (same files).
+3. `F1619-popup-menu-tracking-loop` (KI-0538, running): popup menu window class + modal tracking loop.
 
-## Lanes in flight at hand-off (check `git worktree list`; each is unpushed, integration owner merges)
+## Integration recipe (unchanged; see auto-memory `union-merge-damage-checklist`)
 
-| Branch | Family |
-|---|---|
-| F1610-gdi-paths-regions-clipping | path.c, region.c, clipping.c |
-| F1611-gdi-bitmaps-dib-blit-palette | bitmap.c, dib.c, bitblt.c, palette.c, brush.c |
-| F1612-gdi-fonts-text-ordinals | font.c |
-| F1613-gdi-dc-state-transform-draw-print | dc.c, mapping.c, painting.c, printdrv.c, opengl.c |
-| F1614-user-input-cursor-rawinput | input.c, cursoricon.c, rawinput.c |
-| F1615-user-window-desktop-clipboard-hook | window.c, winstation.c, clipboard.c, hook.c |
-| F1616-user-message-timer-scroll-menu-sysparams | message.c, scroll.c, menu.c, dce.c, sysparams.c |
-| F1617-ntdll-ip-strings-md4 | ntdll rtl.c IPv4/6 strings, MD4 |
-| C1559-acceptance-audits-uart-findings | harness fails on any UART finding (RAW-UNCLAIMED, LDR-FAIL, DELAYLOAD-FAIL, ...) |
+Squash the lane to one commit (`git reset --soft $(git merge-base HEAD origin/main)`), rebase once; ledger conflict → `git checkout origin/main -- scratch/known_issues.md scratch/archive/fixed-issues.md`, re-add the lane's rows with `/home/nd/oxide/tgt-B3525/readd.py`, `--fix` again; `raw_args.rs`/tests conflicts → `union.py`, `sortraw.py`, `dedupetest.py`, `mergeasserts.py`; then hosted suites + `make windows-surface-gate` + BOTH `xtask kernel --arch … --check` (the only gates compiling target-gated files); push with the five SKIP flags (KI-0287/0318/0423/0319/0019) + SKIP_SMOKE; PR; merge; remove worktree. Acceptance: `OXIDE_NOTEPAD_ACCEPTANCE_DIR=/home/nd/oxide/accN ./tools/windows-notepad-acceptance.py` (visible QEMU window; do not close it); `native_process_identity` fails on any reused target dir (three sched rlibs), not a regression.
 
-Integration per lane: rebase onto main; ledger conflicts → take main's ledger + archive, re-add the lane's genuinely new OPEN rows with fresh ids, re-`--fix` (ids collide across lanes; helper `/home/nd/oxide/tgt-B3525/readd.py`); `raw_args.rs`/`dispatch.rs`/`baseline.txt` conflicts → take main and re-apply the lane's additions, then `make windows-surface-gate-update`; hosted tests + both-arch `xtask kernel --check`; smoke only for boot-visible changes; one acceptance boot after the wave (`OXIDE_NOTEPAD_ACCEPTANCE_DIR=<short path>`; needs `target/lanes` symlink; QEMU window is visible — tell the user not to close it).
+## Open follow-ups worth a lane
 
-## Open after the wave
-
-- KI-0473 (noncontinuable RaiseException from DelayLoadFailureHook resumes the raiser) — exception second-chance path.
-- KI-0470 exit status truncation; KI-0475 ext4 has no case-insensitive lookup; KI-0474 acceptance headless mode; 31x spec gap (R lane); KI-0478/0479 IME default window + driver hooks; KI-0438 page-per-alloc heap (perf).
-- Semantic layer: build/run Wine's own user32/gdi32/ntdll conformance test executables under the launcher (next gate after the surface reads zero).
+KI-0522 clipboard delay render, KI-0523 hooks not consulted by message paths, KI-0524 class keyed by name, KI-0530/0532 display config + single device, KI-0541..0545 drag/idle details, KI-0520 block test workspace-only failure, KI-0355/0356/0359 FIXED rows never archived (`issues.sh --check` noise). Then: Wine's own user32/gdi32 conformance executables under the launcher as the semantic gate.
