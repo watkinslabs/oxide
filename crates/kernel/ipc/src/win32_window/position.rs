@@ -107,7 +107,7 @@ impl WindowManager {
         let target=&mut self.windows.iter_mut().find(|(window,_)|*window==id).ok_or(WindowError::NoSuchWindow)?.1;
         target.visible=visible;
         if visible {target.style|=WS_VISIBLE;}else{target.style&=!WS_VISIBLE;}
-        if let Some(client)=p.client {target.client_rect=Some(client);} else if let Some(client)=carried {target.client_rect=Some(client);}
+        if let Some(client)=p.client {target.client_rect=Some(client);}
         if p.notify_geometry&&moved {self.post_to_window(id,WinMessage {hwnd:Some(id),message:WM_MOVE,wparam:0,lparam:mouse_lparam(p.rect.left,p.rect.top)})?;}
         if p.notify_geometry&&resized {self.post_to_window(id,WinMessage {hwnd:Some(id),message:WM_SIZE,wparam:0,lparam:mouse_lparam(width,height)})?;}
         if let Some(damage)=damage{

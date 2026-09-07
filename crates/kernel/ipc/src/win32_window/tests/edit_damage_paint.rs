@@ -150,3 +150,20 @@ fn a_moved_frame_carries_its_client_rectangle_so_the_control_still_takes_damage(
     assert_eq!(painted, Some(edit), "the control's own paint follows its frame's");
     assert_eq!(state.begin_paint(edit), Ok(Some(LINE)));
 }
+
+#[test]
+fn a_compositor_move_carries_the_client_rectangle_the_same_way() {
+    let (mut state, frame, edit) = created_notepad();
+    drain(&mut state);
+    // The compositor places the window through the configure path, which is a
+    // different door onto the same geometry: it must carry the client
+    // rectangle exactly as a position request does.
+    state.configure_compositor_window(frame, FRAME).unwrap();
+    assert_eq!(state.get(frame).unwrap().client_rect,
+        Some(WindowRect { left: 262, top: 152, right: 581, bottom: 767 }));
+    assert_eq!(state.visible_paint_rect(edit, false), Some(EDIT));
+    let region = PaintRegion::from_rect(LINE).unwrap();
+    state.redraw_tree(edit, Some(&region), RDW_INVALIDATE | RDW_ERASE, |_, _, region| region.try_copy()).unwrap();
+    assert!(state.dirty_windows().contains(&edit), "the typed line is damage the control still owes");
+    assert_eq!(state.update_rect(edit), Ok(Some(LINE)));
+}

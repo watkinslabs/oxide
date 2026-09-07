@@ -98,10 +98,23 @@ impl WindowManager {
     }
     /// Read geometry from the canonical HWND record. # C: O(N_windows)
     pub fn rect(&self, id: WindowId) -> Option<WindowRect> { self.rects.iter().find(|(window, _)| *window == id).map(|(_, rect)| *rect) }
-    /// Update geometry in the canonical HWND record. # C: O(N_windows)
+    /// Update geometry in the canonical HWND record. A move carries the client
+    /// rectangle with it: the nonclient insets are unchanged by a move, and a
+    /// client rectangle left at the old position names a different space than
+    /// the window rectangle, against which a child's own client coordinates
+    /// crop to nothing. A resize leaves the client rectangle to the nonclient
+    /// size calculation that follows it. # C: O(N_windows)
     pub fn set_rect(&mut self, id: WindowId, rect: WindowRect) -> Result<(), WindowError> {
         let Some((_, current)) = self.rects.iter_mut().find(|(window, _)| *window == id) else { return Err(WindowError::NoSuchWindow); };
-        *current = rect; Ok(())
+        let (dx, dy) = (rect.left.wrapping_sub(current.left), rect.top.wrapping_sub(current.top));
+        *current = rect;
+        if (dx, dy) == (0, 0) { return Ok(()); }
+        let Some((_, record)) = self.windows.iter_mut().find(|(window, _)| *window == id) else { return Ok(()); };
+        if let Some(client) = record.client_rect {
+            record.client_rect = Some(WindowRect { left: client.left.wrapping_add(dx), top: client.top.wrapping_add(dy),
+                right: client.right.wrapping_add(dx), bottom: client.bottom.wrapping_add(dy) });
+        }
+        Ok(())
     }
     /// Return the client rectangle in client coordinates. # C: O(N_windows)
     pub fn client_rect(&self, id: WindowId) -> Option<WindowRect> {
