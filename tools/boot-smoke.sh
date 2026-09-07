@@ -155,6 +155,16 @@ SHUTDOWN_TIMEOUT="${SMOKE_SHUTDOWN_TIMEOUT:-45}"
 # it will not run its shutdown path, so it gets a token wait rather than the
 # full budget three times over.
 SHUTDOWN_TIMEOUT_WEDGED="${SMOKE_SHUTDOWN_TIMEOUT_WEDGED:-8}"
+# A guest that is going to shut down starts saying so within seconds. One that
+# never handled the power button at all says nothing, and waiting out the full
+# budget for it costs every run of this gate that time for no information.
+# After this grace we require EVIDENCE the shutdown began; without it the guest
+# is killed immediately and reported as having ignored the request -- which is a
+# different fact from "too slow", and both are different from a shutdown.
+SHUTDOWN_GRACE="${SMOKE_SHUTDOWN_GRACE:-10}"
+# Serial evidence that the guest acted on the power button. Any one of these
+# means the shutdown path is running and deserves the full budget.
+SHUTDOWN_MARKER="${SMOKE_SHUTDOWN_MARKER-Powering off|Power-Off|systemd-shutdown|Unmounting |Deactivated successfully.*shutdown|reboot: Power down|Stopping .*target}"
 # Set by stop_boot: powered-off | killed | already-exited | no-guest.
 SHUTDOWN_OUTCOME="no-guest"
 QMP_SOCK=""
@@ -208,6 +218,7 @@ stop_boot() {
     fi
     started="$(date +%s)"
     deadline=$(( started + budget ))
+    local acting=0
     while [ "$(date +%s)" -lt "$deadline" ]; do
         if ! kill -0 "$qemu_pid" 2>/dev/null; then
             echo "boot-smoke: shutdown=powered-off — guest powered itself off in $(( $(date +%s) - started ))s"
@@ -215,9 +226,19 @@ stop_boot() {
             kill_boot
             return 0
         fi
+        if [ "$acting" -eq 0 ] && [ -n "$SHUTDOWN_MARKER" ] && [ -n "$LOG" ] \
+           && grep -qaE "$SHUTDOWN_MARKER" "$LOG" 2>/dev/null; then
+            acting=1
+        fi
+        if [ "$acting" -eq 0 ] && [ $(( $(date +%s) - started )) -ge "$SHUTDOWN_GRACE" ]; then
+            echo "boot-smoke: shutdown=killed — guest IGNORED the power button (no shutdown activity on serial in ${SHUTDOWN_GRACE}s); KILLING it. The root image is left unclean." >&2
+            SHUTDOWN_OUTCOME="killed"
+            kill_boot
+            return 0
+        fi
         sleep 1
     done
-    echo "boot-smoke: shutdown=killed — guest did not power off within ${budget}s; KILLING it. The root image is left unclean." >&2
+    echo "boot-smoke: shutdown=killed — guest began shutting down but did not finish within ${budget}s; KILLING it. The root image is left unclean." >&2
     SHUTDOWN_OUTCOME="killed"
     kill_boot
     return 0

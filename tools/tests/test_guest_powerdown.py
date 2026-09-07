@@ -95,6 +95,11 @@ class StopBootFallbackTests(unittest.TestCase):
 
     SCRIPT = TOOLS / "boot-smoke.sh"
 
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="stop-boot-qmp-")
+        self.addCleanup(self.tmp.cleanup)
+        self.sock = Path(self.tmp.name) / "q.sock"
+
     def source_stop_boot(self, script):
         return subprocess.run(["bash", "-c", script], capture_output=True, text=True,
                               cwd=str(TOOLS.parent))
@@ -131,6 +136,50 @@ class StopBootFallbackTests(unittest.TestCase):
         '''
         out = self.source_stop_boot(harness)
         self.assertIn("outcome=already-exited", out.stdout, out.stderr)
+
+    def run_stop_boot(self, *, qmp_sock, log_text, grace=1, budget=4, guest_alive=True):
+        """Drive the real stop_boot against a live sleeper as the guest."""
+        with tempfile.TemporaryDirectory(prefix="stop-boot-") as tmp:
+            log = Path(tmp) / "serial.log"
+            log.write_text(log_text)
+            harness = f'''
+                set -u
+                SMOKE_ROOT="{TOOLS.parent}"
+                LOG="{log}"
+                PIDFILE=$(mktemp)
+                QEMU_PIDFILE=$(mktemp)
+                QMP_SOCK="{qmp_sock}"
+                SHUTDOWN_TIMEOUT={budget}
+                SHUTDOWN_GRACE={grace}
+                SHUTDOWN_MARKER="Powering off|systemd-shutdown"
+                killed=0
+                kill_boot() {{ killed=1; }}
+                if [ {int(guest_alive)} -eq 1 ]; then
+                    sleep 30 & guest=$!; echo $guest > "$QEMU_PIDFILE"
+                fi
+                {self.stop_boot_body()}
+                stop_boot {budget}
+                [ -n "${{guest:-}}" ] && kill "$guest" 2>/dev/null
+                echo "outcome=$SHUTDOWN_OUTCOME killed=$killed"
+            '''
+            return self.source_stop_boot(harness)
+
+    def test_a_guest_that_ignores_the_button_is_killed_at_the_grace_not_the_budget(self):
+        server = RecordingQmp(self.sock)
+        self.addCleanup(server.close)
+        out = self.run_stop_boot(qmp_sock=self.sock, log_text="Reached target basic.target\n")
+        self.assertIn("outcome=killed killed=1", out.stdout, out.stderr)
+        self.assertIn("IGNORED the power button", out.stderr)
+        self.assertIn("system_powerdown", server.commands)
+
+    def test_a_guest_that_started_shutting_down_gets_the_whole_budget(self):
+        server = RecordingQmp(self.sock)
+        self.addCleanup(server.close)
+        out = self.run_stop_boot(qmp_sock=self.sock,
+                                 log_text="systemd-shutdown[1]: Powering off.\n")
+        self.assertIn("outcome=killed killed=1", out.stdout, out.stderr)
+        self.assertIn("began shutting down but did not finish", out.stderr)
+        self.assertNotIn("IGNORED", out.stderr)
 
     def stop_boot_body(self):
         """Extract stop_boot from the harness so the test runs the real function."""
