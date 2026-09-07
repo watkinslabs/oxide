@@ -41,12 +41,10 @@ fn with_entry<R>(f: impl FnOnce(&mut GuiEntry, u64) -> R) -> Option<R> {
     Some(f(&mut entries[index], cur.tid as u64))
 }
 
-/// Wake both the window wait list and the process handle table, so a thread
-/// parked on either sees the new queue work. # C: O(N_waiters)
-fn wake_queue_waiters(wait_list: &Arc<sched::live::WaitList>) {
-    wait_list.wake_all();
-    if let Some(cur) = sched::live::current() { cur.thread_group.nt_handles().wake_waiters(); }
-}
+/// Wake the process wait list, which the window queue and the process NT
+/// objects share, so a thread parked on either sees the new queue work.
+/// # C: O(N_waiters)
+fn wake_queue_waiters(wait_list: &Arc<sched::live::WaitList>) { wait_list.wake_all(); }
 
 /// The quit request reports success, including for a thread owning no window.
 /// # C: O(N_queues)
@@ -112,7 +110,8 @@ fn foreground_boost() -> u64 {
 
 /// Wait until the queue holds work in one of the named classes, one of the
 /// named objects signals, or the timeout expires. The queue occupies the wait
-/// slot after the caller's objects.
+/// slot after the caller's objects and shares their process wait list, so an
+/// object another thread signals releases this wait at once.
 /// # C: O(N_objects + N_queued); # Sleeps: yes
 fn msg_wait(count: u32, handles: u64, timeout_ms: u32, mask: u32) -> u32 {
     if !wait::count_admitted(count) {
@@ -134,19 +133,20 @@ fn msg_wait(count: u32, handles: u64, timeout_ms: u32, mask: u32) -> u32 {
             let sent = mask & queue_status::QS_SENDMESSAGE != 0 && entry.sent.has_for_tid(tid);
             (entry.state.queue_satisfies(tid, mask) || sent, entry.state.next_retrieval_deadline(tid), Arc::clone(&entry.wait))
         }) else { return wait::WAIT_FAILED; };
-        for (index, object) in objects.iter().enumerate() {
-            if object.is_signaled_at(tid, now) { return wait::object_result(index as u32); }
-        }
-        if ready { return wait::queue_result(count); }
-        if deadline.is_some_and(|limit| now >= limit) { return wait::WAIT_TIMEOUT; }
+        let expired = deadline.is_some_and(|limit| now >= limit);
+        let signaled = objects.iter().map(|object| object.is_signaled_at(tid, now));
+        if let Some(status) = wait::step_result(wait::step(signaled, ready, expired), count) { return status; }
         let park = sched::nt_object::merge_wait_deadline(deadline.unwrap_or(0), queue_deadline);
         // SAFETY: msg_wait holds owned wait-list and object references and rechecks
         // queue status plus object state after every wake, before answering.
         let outcome = unsafe { sched::live::wait_event_interruptible_until(&wait_list, park, timekeeper::monotonic_ns, || {
+            let now = timekeeper::monotonic_ns();
+            let object_signaled = objects.iter().any(|object| object.is_signaled_at(tid, now));
             let mut entries = GUI.lock();
             entries.retain(|entry| entry.group.upgrade().is_some());
-            entries.iter_mut().find(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group)))
-                .is_some_and(|entry| entry.state.queue_satisfies(tid, mask) || entry.sent.has_for_tid(tid))
+            let queue_ready = entries.iter_mut().find(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group)))
+                .is_some_and(|entry| entry.state.queue_satisfies(tid, mask) || entry.sent.has_for_tid(tid));
+            wait::wake_condition(queue_ready, object_signaled)
         }) };
         if outcome == sched::task::WaitOutcome::Ready || outcome == sched::task::WaitOutcome::TimedOut { continue; }
         return wait::WAIT_IO_COMPLETION;
