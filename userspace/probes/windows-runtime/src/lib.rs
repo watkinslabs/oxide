@@ -384,7 +384,7 @@ impl RuntimeRequest {
             .into_iter().map(|name| (dependency_name(name).to_ascii_lowercase(), false)));
         let mut seen = HashSet::new();
         while let Some((name, required)) = pending.pop() {
-            if name.eq_ignore_ascii_case(b"ntdll.dll") || seen.contains(&name) { continue; }
+            if seen.contains(&name) { continue; }
             let path = match available.get(&name) {
                 Some(path) => path,
                 // Not admitted: leave it unseen so a later static import of
@@ -618,7 +618,6 @@ fn stage_module_paths_from_admitted_dirs(dll_dirs: &[&Path], component_paths: &[
     let mut available = HashMap::new();
     for path in paths {
         let name = path.file_name().ok_or(BuildError::InvalidUtf8Path)?.as_bytes();
-        if name.eq_ignore_ascii_case(b"ntdll.dll") { continue; }
         let key = name.to_ascii_lowercase();
         if let Some(first) = available.insert(key.clone(), path.clone()) {
             return Err(BuildError::AmbiguousModule { name: key, first, second: path });
@@ -713,7 +712,6 @@ fn validate_import_closure(root: &[u8], modules: &[ModuleBuffer]) -> Result<(), 
         let parsed = pe::parse(image).map_err(|error| BuildError::InvalidModule { path: PathBuf::from(String::from_utf8_lossy(module_name).into_owned()), error })?;
         for import in parsed.imports().map_err(|error| BuildError::InvalidModule { path: PathBuf::from(String::from_utf8_lossy(module_name).into_owned()), error })? {
             let dependency_name = pe::apiset::target(import.name).unwrap_or(import.name);
-            if dependency_name.eq_ignore_ascii_case(b"ntdll.dll") { continue; }
             let Some(dependency) = images.get(&dependency_name.to_ascii_lowercase()) else {
                 return Err(BuildError::MissingModule { name: import.name.to_vec() });
             };
@@ -921,7 +919,10 @@ mod tests {
         assert!(request.module_count() >= 8);
         assert!(request.module_count() < 64, "Notepad closure must fit the kernel catalog limit");
         assert_eq!(request.abi().module_count as usize, request.module_count());
-        assert!(!request.modules.iter().any(|module| module.name.eq_ignore_ascii_case(b"ntdll.dll")));
+        // The kernel takes the handover path only when the catalog carries the
+        // runtime module, so its presence is the contract, not its absence.
+        assert!(request.modules.iter().any(|module| module.name.eq_ignore_ascii_case(b"ntdll.dll")),
+            "the catalog must carry the runtime module the kernel hands over to");
         // A catalog-only launch declines a registry rather than inheriting one.
         assert_eq!(request.registry_socket(), syscall::nt_exec::NO_REGISTRY_ENDPOINT);
         assert_eq!(std::mem::size_of::<NtExecRequest>(), 120);
