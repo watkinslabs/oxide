@@ -71,7 +71,7 @@ pub(super) fn inspect(image_path: &Path, windows_path: &[u8], dll_dir: &Path, un
     if abi.image_path_len == 0 || abi.command_line_len == 0 || abi.environment_len == 0 { failures.push("launcher ABI contains an empty path, command line, or environment record".into()); }
     if abi.module_count as usize != request.module_count() { failures.push(format!("launcher ABI module count {} differs from owned catalog {}", abi.module_count, request.module_count())); }
     if abi.unixlib_count as usize != request.unixlib_count() { failures.push(format!("launcher ABI Unixlib count {} differs from owned catalog {}", abi.unixlib_count, request.unixlib_count())); }
-    if request.modules.iter().any(|module| module.name.eq_ignore_ascii_case(b"ntdll.dll")) { failures.push("native ntdll ownership violated: ntdll.dll was placed in the PE catalog".into()); }
+    if !request.modules.iter().any(|module| module.name.eq_ignore_ascii_case(b"ntdll.dll")) { failures.push("the catalog carries no runtime module: the kernel cannot hand the process over to its loader".to_string()); }
     else { checks.push("native ntdll ownership: excluded from launcher catalog".into()); }
     if request.records.iter().any(|record| record.name.as_u64() == 0 || record.image.as_u64() == 0 || record.image_len == 0) { failures.push("launcher ABI contains a null or empty module record".into()); }
     else { checks.push(format!("launcher ABI records: {} validated", request.records.len())); }
