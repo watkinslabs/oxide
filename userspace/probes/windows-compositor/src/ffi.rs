@@ -62,6 +62,7 @@ extern "C" {
     pub fn xcb_configure_window_checked(c: *mut Connection, window: Window, value_mask: u16, value_list: *const u32) -> VoidCookie;
     pub fn xcb_send_event(c: *mut Connection, propagate: u8, destination: Window, event_mask: u32, event: *const c_char) -> VoidCookie;
     pub fn xcb_destroy_window(c: *mut Connection, window: Window) -> u32;
+    pub fn xcb_put_image(c: *mut Connection, format: u8, drawable: Window, gc: Gcontext, width: u16, height: u16, dst_x: i16, dst_y: i16, left_pad: u8, depth: u8, data_len: u32, data: *const u8) -> u32;
     pub fn xcb_put_image_checked(c: *mut Connection, format: u8, drawable: Window, gc: Gcontext, width: u16, height: u16, dst_x: i16, dst_y: i16, left_pad: u8, depth: u8, data_len: u32, data: *const u8) -> VoidCookie;
     pub fn xcb_request_check(c: *mut Connection, cookie: VoidCookie) -> *mut GenericError;
     pub fn xcb_get_maximum_request_length(c: *mut Connection) -> u32;

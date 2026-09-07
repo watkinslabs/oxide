@@ -28,6 +28,10 @@ pub(crate) mod text_output;
 #[path = "gdi_raw/kernel.rs"]
 pub(crate) mod kernel;
 
+#[cfg(target_os = "oxide-kernel")]
+#[path = "gdi_raw/text_trace.rs"]
+pub(crate) mod text_trace;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TextMetricW {
     pub height: i32,

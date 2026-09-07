@@ -117,7 +117,11 @@ fn decode_command(opcode: Opcode, hwnd: u64, p: &[u8]) -> Result<BridgeCommand, 
         Opcode::Title => { let text = std::str::from_utf8(p).map_err(|_| TransportError::InvalidTitle)?; BridgeCommand::SetTitle { hwnd: id, title: text.encode_utf16().collect() } },
         Opcode::Geometry | Opcode::Configure => BridgeCommand::Configure { hwnd: id, rect: window_rect_from_wire(p)? },
         Opcode::Position => { let after = wire::u64_at(p, 0).map_err(|_| TransportError::Unsupported)?; let flags = wire::u32_at(p, 8).map_err(|_| TransportError::Unsupported)?; if flags & ! (wire::POSITION_ORDER | wire::POSITION_ACTIVATE) != 0 || wire::u32_at(p, 12).map_err(|_| TransportError::Unsupported)? != 0 || flags & wire::POSITION_ORDER == 0 && after != 0 || id == 0 { return Err(TransportError::Unsupported); } BridgeCommand::Position { hwnd: id, insertion: (flags & wire::POSITION_ORDER != 0).then_some(after), activate: flags & wire::POSITION_ACTIVATE != 0 } },
-        Opcode::Frame => { let width = wire::u32_at(p, 0).map_err(|_| TransportError::Unsupported)?; let height = wire::u32_at(p, 4).map_err(|_| TransportError::Unsupported)?; let stride = wire::u32_at(p, 8).map_err(|_| TransportError::Unsupported)?; let format = wire::u32_at(p, 12).map_err(|_| TransportError::Unsupported)?; let bytes = &p[16..]; if wire::pixel_len(width, height, stride, format).map_err(|_| TransportError::InvalidFrame)? != bytes.len() || bytes.len() % 4 != 0 { return Err(TransportError::InvalidFrame); } let pixels = bytes.chunks_exact(4).map(|v| u32::from_le_bytes(v.try_into().unwrap())).collect(); BridgeCommand::Frame { hwnd: id, frame: Frame::new(width, height, stride / 4, pixels, Rect { left: 0, top: 0, right: width as i32, bottom: height as i32 }).map_err(|_| TransportError::InvalidFrame)? } },
+        // The damage the sender measured travels with the surface. Repainting
+        // the whole window instead costs one server request per tile of it on
+        // every paint, which is what a caret blink or a typed character used
+        // to pay.
+        Opcode::Frame => { let width = wire::u32_at(p, 0).map_err(|_| TransportError::Unsupported)?; let height = wire::u32_at(p, 4).map_err(|_| TransportError::Unsupported)?; let stride = wire::u32_at(p, 8).map_err(|_| TransportError::Unsupported)?; let format = wire::u32_at(p, 12).map_err(|_| TransportError::Unsupported)?; if p.len() < wire::FRAME_HEADER_BYTES { return Err(TransportError::InvalidFrame); } let damage = wire::Damage::decode(&p[16..wire::FRAME_HEADER_BYTES]).map_err(|_| TransportError::InvalidFrame)?; let bytes = &p[wire::FRAME_HEADER_BYTES..]; if wire::pixel_len(width, height, stride, format).map_err(|_| TransportError::InvalidFrame)? != bytes.len() || bytes.len() % 4 != 0 { return Err(TransportError::InvalidFrame); } let pixels = bytes.chunks_exact(4).map(|v| u32::from_le_bytes(v.try_into().unwrap())).collect(); BridgeCommand::Frame { hwnd: id, frame: Frame::new(width, height, stride / 4, pixels, Rect { left: damage.left, top: damage.top, right: damage.right, bottom: damage.bottom }).map_err(|_| TransportError::InvalidFrame)? } },
         _ => return Err(TransportError::Unsupported),
     })
 }
@@ -147,3 +151,7 @@ pub(crate) fn encode_event(event: &BridgeEvent, next: u64) -> Result<(Opcode, u6
 }
 
 fn wire_rect(r: Rect) -> Result<Vec<u8>, TransportError> { let w = u32::try_from(r.right.checked_sub(r.left).ok_or(TransportError::InvalidFrame)?).map_err(|_| TransportError::InvalidFrame)?; let h = u32::try_from(r.bottom.checked_sub(r.top).ok_or(TransportError::InvalidFrame)?).map_err(|_| TransportError::InvalidFrame)?; wire::Rect { x: r.left, y: r.top, width: w, height: h }.encode().map(|v| v.to_vec()).map_err(|_| TransportError::InvalidFrame) }
+
+#[cfg(test)]
+#[path = "tests/frame_damage.rs"]
+mod tests;

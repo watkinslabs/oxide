@@ -65,7 +65,9 @@ pub(crate) fn publish_prepared(prepared:PreparedFrame,publish:impl FnOnce(Record
 pub(crate) fn snapshot(state:&GdiManager,token:OutputToken)->Result<Record,()>{
     if state.pending_output(token.hwnd,token.dc)!=Some(token){return Err(());}
     let (width,height,pixels)=state.surface(token.dc).ok_or(())?;
-    crate::nt_gdi_frame::snapshot(token.hwnd,1,width,height,pixels).map_err(|_|())
+    let d=token.damage;
+    crate::nt_gdi_frame::snapshot(token.hwnd,1,width,height,pixels,
+        syscall::nt_compositor::Damage{left:d.left,top:d.top,right:d.right,bottom:d.bottom}).map_err(|_|())
 }
 
 /// Reservation and serialization share one owner lock; allocation failure releases reservation.

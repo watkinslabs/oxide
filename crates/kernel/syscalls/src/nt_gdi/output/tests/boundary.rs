@@ -22,11 +22,11 @@ fn frame_publication_owns_pixels_and_releases_capture_lock_before_transport(){
     let owner=Mutex::new(g);let completed=Cell::new(false);
     let result=flush_one(||{
         let state=owner.lock().unwrap();let (w,h,pixels)=state.surface(dc).unwrap();
-        Ok::<_,()>(Some((dc,crate::nt_gdi_frame::snapshot(7,1,w,h,pixels).unwrap())))
+        Ok::<_,()>(Some((dc,crate::nt_gdi_frame::snapshot(7,1,w,h,pixels,whole(w,h)).unwrap())))
     },|frame|{
         let mut state=owner.try_lock().expect("capture must release the canonical owner before transport");
         state.fill_rect(dc,Rect{left:0,top:0,right:2,bottom:2},0xabcdef).unwrap();
-        assert_eq!(&frame.payload[16..20],&0xff123456u32.to_le_bytes());true
+        assert_eq!(&frame.payload[PIXELS..PIXELS+4],&0xff123456u32.to_le_bytes());true
     },|ticket,presented|{assert_eq!(ticket,dc);assert!(presented);assert!(owner.try_lock().is_ok());completed.set(true);});
     assert_eq!(result,Ok(FlushOutcome::Presented));assert!(completed.get());
 }
@@ -38,7 +38,7 @@ fn clean_and_failed_capture_never_publish_or_complete_a_nonexistent_ticket(){
 #[test]
 fn failed_transport_completes_failure_once_without_retrying_in_this_call(){
     let calls=Cell::new(0);let completed=Cell::new(0);
-    let frame=crate::nt_gdi_frame::snapshot(7,1,1,1,&[1]).unwrap();
+    let frame=crate::nt_gdi_frame::snapshot(7,1,1,1,&[1],whole(1,1)).unwrap();
     assert_eq!(flush_one(||Ok::<_,()>(Some((42,frame))),|_|{calls.set(calls.get()+1);false},
         |ticket,presented|{assert_eq!(ticket,42);assert!(!presented);completed.set(completed.get()+1);}),Ok(FlushOutcome::Retry));
     assert_eq!((calls.get(),completed.get()),(1,1));
@@ -46,3 +46,11 @@ fn failed_transport_completes_failure_once_without_retrying_in_this_call(){
 
 #[path="canonical.rs"]
 mod canonical;
+
+/// Whole-surface coverage, the damage a fixture with no narrower one sends.
+fn whole(width: i32, height: i32) -> syscall::nt_compositor::Damage {
+    syscall::nt_compositor::Damage { left: 0, top: 0, right: width, bottom: height }
+}
+
+/// First pixel byte of a frame payload, after the extent, format and damage.
+const PIXELS: usize = syscall::nt_compositor::FRAME_HEADER_BYTES;

@@ -18,6 +18,24 @@ fn trace_open_failure(hwnd: u64, step: &'static [u8]) {
     klog::write_raw(b" step="); klog::write_raw(step); klog::write_raw(b"\n");
 }
 
+/// What one paint end did with the pixels the window procedure drew. A paint
+/// whose region was empty submits nothing, and a submitted region that the
+/// canonical owner refuses reaches no screen: both leave the last presented
+/// pixels standing, which reads as a control that never drew. Bounded so a
+/// running desktop stays quiet.
+fn trace_end(hwnd: u64, hdc: u64, submitted: bool, present: u64, status: u64) {
+    use core::sync::atomic::{AtomicU32, Ordering};
+    const BUDGET: u32 = 48;
+    static SPENT: AtomicU32 = AtomicU32::new(0);
+    if SPENT.fetch_add(1, Ordering::Relaxed) >= BUDGET { return; }
+    klog::write_raw(b"[WINDOWS-PAINT-END] hwnd="); klog::write_hex_u64(hwnd);
+    klog::write_raw(b" dc="); klog::write_hex_u64(hdc);
+    klog::write_raw(b" submitted="); klog::write_hex_u64(submitted as u64);
+    klog::write_raw(b" present="); klog::write_hex_u64(present);
+    klog::write_raw(b" status="); klog::write_hex_u64(status);
+    klog::write_raw(b"\n");
+}
+
 /// Bind the live owners to the paint-open order. # C: O(owner work)
 struct Open<F, G> { hwnd: u64, hwnd32: u32, native: F, gdi: G, size: Option<(u64, u64)> }
 
@@ -102,6 +120,7 @@ where G: Fn(NtService, SyscallArgs) -> u64 {
     if result == STATUS_SUCCESS { let _ = gdi(NtService::DeleteGdiObject, SyscallArgs { a0: hdc, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 }); }
     let accepted = if present == STATUS_PENDING_OUTPUT { STATUS_SUCCESS } else { present };
     let status = win_bool(if result == STATUS_SUCCESS { accepted } else { result });
+    trace_end(args[0], hdc, submitted, present, status);
     if status != 0 && submitted && present == STATUS_SUCCESS { crate::nt_milestone::paint_present(); }
     status
 }
