@@ -80,7 +80,7 @@ mod create_lifecycle;
 #[path = "nt_window/create.rs"]
 mod create;
 #[path = "nt_window/bridge.rs"]
-mod bridge;
+pub(crate) mod bridge;
 #[path = "nt_window/geom_trace.rs"]
 mod geom_trace;
 #[path = "nt_window/keyboard.rs"]

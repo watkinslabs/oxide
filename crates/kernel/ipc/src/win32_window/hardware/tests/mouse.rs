@@ -1,12 +1,13 @@
 use super::mouse::*;
 use super::uapi::*;
 use super::super::{MessageFilter, WinMessage, WindowId, HTCLIENT, HTERROR, HTNOWHERE};
+use super::ladder::ProcCall;
 
 const WINDOW: u32 = 0x21;
 const HTCAPTION: i32 = 2;
 
 fn ctx() -> MouseContext {
-    MouseContext { hit_test: HTCLIENT, captured: false, modal: false, class_dbl_clks: false,
+    MouseContext { hit_test: HTCLIENT, client_origin: (0, 0), menu_mode: false, captured: false, modal: false, class_dbl_clks: false,
         double_click_ms: 500, double_click_width: 4, double_click_height: 4, time_ms: 1_000,
         remove: true, filter: range(0, u32::MAX) }
 }
@@ -143,4 +144,35 @@ fn a_retrieval_naming_neither_end_of_the_range_admits_every_pointer_message() {
         assert_ne!(prepared.outcome, MouseOutcome::Filtered, "pointer message dropped by an unrestricted retrieval");
     }
     assert_eq!(prepare(click(WM_LBUTTONDOWN, 3, 4), None, &context).outcome, MouseOutcome::Ladder);
+}
+
+/// A client hit is handed over in client coordinates, and the queue carries
+/// the screen point: the retrieval is where the two are reconciled. A
+/// nonclient hit keeps the screen point, and so does every point taken while
+/// a menu is being tracked, because the tracking loop resolves them against
+/// screen rectangles.
+#[test]
+fn the_hit_test_decides_whether_the_point_is_translated_out_of_screen_space() {
+    let mut context = ctx();
+    context.client_origin = (100, 120);
+    assert_eq!(prepare(click(WM_LBUTTONDOWN, 140, 190), None, &context).message.lparam, make_point(40, 70));
+    context.hit_test = HTCAPTION;
+    let nonclient = prepare(click(WM_LBUTTONDOWN, 140, 190), None, &context).message;
+    assert_eq!(nonclient.lparam, make_point(140, 190), "a nonclient click is reported where it is on screen");
+    assert_eq!(nonclient.message, crate::win32_window::nonclient_menu::WM_NCLBUTTONDOWN);
+    assert_eq!(nonclient.wparam, HTCAPTION as u64);
+    context.hit_test = HTCLIENT;
+    context.menu_mode = true;
+    assert_eq!(prepare(click(WM_LBUTTONDOWN, 140, 190), None, &context).message.lparam, make_point(140, 190),
+        "menu tracking reads screen points");
+}
+
+/// The window is asked for the code with a WM_NCHITTEST send on the screen
+/// point; a capture answers the question without one.
+#[test]
+fn the_hit_test_is_a_send_to_the_window_unless_the_capture_answers_it() {
+    let screen = make_point(140, 190);
+    assert_eq!(hit_test_call(WINDOW, screen, false),
+        Some(ProcCall { hwnd: WINDOW, message: crate::win32_window::WM_NCHITTEST, wparam: 0, lparam: screen }));
+    assert_eq!(hit_test_call(WINDOW, screen, true), None);
 }

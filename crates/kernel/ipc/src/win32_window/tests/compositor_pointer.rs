@@ -18,7 +18,9 @@ fn absolute_motion_updates_existing_cursor_without_duplicate_snapshot_events() {
     let (mut state, id) = setup();
     state.post_compositor_pointer(id, -4, 8, 0, 0, 0).unwrap();
     let messages = drain(&mut state, 11);
-    assert_eq!(messages, alloc::vec![WinMessage { hwnd: Some(id), message: WM_MOUSEMOVE, wparam: 0, lparam: mouse_lparam(-4, 8) }]);
+    // The queue carries the screen point; the hit test at retrieval is what
+    // translates a client hit into client coordinates.
+    assert_eq!(messages, alloc::vec![WinMessage { hwnd: Some(id), message: WM_MOUSEMOVE, wparam: 0, lparam: mouse_lparam(96, 208) }]);
     assert_eq!(state.cursor, (96, 208));
     state.post_compositor_pointer(id, -4, 8, 0, 0, 0).unwrap();
     assert!(drain(&mut state, 11).is_empty());
@@ -42,7 +44,7 @@ fn transitions_emit_down_and_up_once_with_progressive_modifier_and_button_flags(
 }
 
 #[test]
-fn capture_routes_to_capture_thread_and_converts_client_coordinates_but_not_wheel() {
+fn capture_routes_to_capture_thread_and_queues_the_screen_point() {
     let (mut state, source) = setup();
     let capture = state.create(22, None, 0).unwrap();
     state.set_rect(capture, WindowRect { left: 400, top: 500, right: 600, bottom: 700 }).unwrap();
@@ -52,8 +54,10 @@ fn capture_routes_to_capture_thread_and_converts_client_coordinates_but_not_whee
     let messages = drain(&mut state, 22);
     assert_eq!(messages.len(), 3);
     assert!(messages.iter().all(|m| m.hwnd == Some(capture)));
-    assert_eq!((messages[0].message, messages[0].lparam), (WM_MOUSEMOVE, mouse_lparam(-290, -280)));
-    assert_eq!((messages[1].message, messages[1].lparam), (WM_LBUTTONDOWN, mouse_lparam(-290, -280)));
+    // Capture redirects delivery, not the space the point is in: the screen
+    // point stands whichever window the message is handed to.
+    assert_eq!((messages[0].message, messages[0].lparam), (WM_MOUSEMOVE, mouse_lparam(110, 220)));
+    assert_eq!((messages[1].message, messages[1].lparam), (WM_LBUTTONDOWN, mouse_lparam(110, 220)));
     assert_eq!((messages[2].message, messages[2].lparam, messages[2].wparam),
         (WM_MOUSEWHEEL, mouse_lparam(110, 220), MK_LBUTTON as u64 | ((-120i16 as u16 as u64) << 16)));
 }

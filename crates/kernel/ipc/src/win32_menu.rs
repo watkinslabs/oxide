@@ -43,6 +43,8 @@ pub mod mnemonic;
 pub mod draw;
 #[path = "win32_menu/popup.rs"]
 pub mod popup;
+#[path = "win32_menu/chain.rs"]
+pub mod chain;
 #[path = "win32_menu/track.rs"]
 pub mod track;
 #[path = "win32_menu/track_loop.rs"]

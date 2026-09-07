@@ -14,10 +14,31 @@ use ipc::win32_window::{MessageFilter, WinMessage, WindowId};
 use syscall::nt::{NtCall, NtWindowCall};
 
 /// The ladder one thread has parked while a window procedure runs.
-pub(crate) struct PendingHardware { pub(crate) tid: u64, ladder: Ladder, prepared: WinMessage, queued: WinMessage,
+pub(crate) struct PendingLadder { ladder: Ladder, prepared: WinMessage, queued: WinMessage,
     /// The queued message was already taken off the queue, so the end of the
     /// ladder has nothing left to deliver or drop.
     dropped: bool }
+
+/// The nonclient hit test of one pointer message, parked while the window
+/// procedure answers it. Nothing about the message is decided until it does:
+/// the answer picks the nonclient renumbering, the client translation, the
+/// double-click eligibility and the filter the message is tested against.
+pub(crate) struct HitProbe { queued: WinMessage, window: WindowId, remove: bool, filter: MessageFilter,
+    modal: bool, menu_mode: bool, time_ms: u32, double_click_ms: u32, answer: Option<Result<u64, ()>> }
+
+/// What one thread has parked in the retrieval-time hardware stage.
+pub(crate) enum PendingHardware {
+    /// The `WM_NCHITTEST` send that has to answer before a pointer message
+    /// can be prepared.
+    HitTest { tid: u64, probe: HitProbe },
+    /// The notify/activate/cursor ladder of a message already prepared.
+    Ladder { tid: u64, state: PendingLadder },
+}
+
+impl PendingHardware {
+    /// # C: O(1)
+    fn tid(&self) -> u64 { match self { Self::HitTest { tid, .. } | Self::Ladder { tid, .. } => *tid } }
+}
 
 /// What the retrieval does once the stage has had its turn.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -44,7 +65,7 @@ fn with_entry<R>(f: impl FnOnce(&mut super::super::GuiEntry) -> R) -> Option<R> 
 fn take() -> Option<PendingHardware> {
     let tid = current_tid()?;
     let parked = with_entry(|entry| entry.hardware.take()).flatten()?;
-    if parked.tid == tid { return Some(parked); }
+    if parked.tid() == tid { return Some(parked); }
     let _ = with_entry(|entry| entry.hardware = Some(parked));
     None
 }
@@ -55,7 +76,10 @@ fn put(parked: PendingHardware) { let _ = with_entry(|entry| entry.hardware = So
 /// # C: O(N_process_gui_states)
 fn record(result: Result<u64, ()>) {
     let Some(mut parked) = take() else { return; };
-    parked.ladder.call_result(result);
+    match &mut parked {
+        PendingHardware::HitTest { probe, .. } => probe.answer = Some(result),
+        PendingHardware::Ladder { state, .. } => state.ladder.call_result(result),
+    }
     put(parked);
 }
 
@@ -68,7 +92,7 @@ fn exact(message: WinMessage) -> MessageFilter {
 /// Process the message at the front of this thread's queue before the
 /// retrieval hands it over. # C: O(N_windows + N_sends); # Sleeps: yes
 pub(crate) fn process_for_current(call: NtCall, raw: bool, operation: NtWindowCall) -> Stage {
-    if take().is_some_and(|parked| { put(parked); true }) { return drive(call, raw); }
+    if let Some(parked) = take() { put(parked); return drive(call, raw); }
     match begin(operation) {
         Some(Stage::Ready) | None => Stage::Ready,
         Some(Stage::Again) => Stage::Again,
@@ -95,11 +119,12 @@ fn begin(operation: NtWindowCall) -> Option<Stage> {
         let queued = entry.state.peek_for_thread(tid, filter, false)?;
         let window = queued.hwnd?;
         if !hardware::is_hardware_message(queued.message) { return None; }
-        let modal = entry.menu_tracking.is_some() || entry.state.move_size_window().is_some();
+        let menu_mode = entry.menu_tracking.is_some();
+        let modal = menu_mode || entry.state.move_size_window().is_some();
         if hardware::is_keyboard_message(queued.message) {
             return Some(keyboard(entry, tid, window, queued, modal, remove, filter));
         }
-        Some(pointer(entry, tid, window, queued, modal, remove, filter, time_ms, double_click_ms))
+        Some(pointer(entry, tid, window, queued, modal, menu_mode, remove, filter, time_ms, double_click_ms))
     })??;
     if let Some(parked) = parked { put(parked); }
     Some(stage)
@@ -124,11 +149,25 @@ fn keyboard(entry: &mut super::super::GuiEntry, tid: u64, window: WindowId, queu
     (replace(entry, tid, queued, prepared.message), None)
 }
 
-/// A pointer message runs the notify/activate/cursor ladder unless the
-/// preparation already decided its fate. # C: O(N_windows + N_classes)
+/// A pointer message is hit-tested before anything else: the reference sends
+/// `WM_NCHITTEST` on the screen point the queue carries and decides the rest
+/// from the answer. Only a window holding the capture skips the send, taking
+/// the click as a client one. # C: O(N_windows)
 fn pointer(entry: &mut super::super::GuiEntry, tid: u64, window: WindowId, queued: WinMessage, modal: bool,
-    remove: bool, filter: MessageFilter, time_ms: u32, double_click_ms: u32) -> (Stage, Option<PendingHardware>) {
-    let ctx = context::mouse_context(&entry.state, window, queued.lparam, modal, time_ms, double_click_ms, remove, filter);
+    menu_mode: bool, remove: bool, filter: MessageFilter, time_ms: u32, double_click_ms: u32) -> (Stage, Option<PendingHardware>) {
+    let probe = HitProbe { queued, window, remove, filter, modal, menu_mode, time_ms, double_click_ms, answer: None };
+    let captured = entry.state.capture_window().is_some();
+    if hardware::hit_test_call(window.raw(), queued.lparam, captured).is_none() {
+        return decide(entry, tid, probe, ipc::win32_window::HTCLIENT);
+    }
+    (Stage::Pending(0), Some(PendingHardware::HitTest { tid, probe }))
+}
+
+/// Prepare one pointer message against the hit-test code its window answered.
+/// # C: O(N_windows + N_classes)
+fn decide(entry: &mut super::super::GuiEntry, tid: u64, probe: HitProbe, hit_test: i32) -> (Stage, Option<PendingHardware>) {
+    let HitProbe { queued, window, remove, filter, modal, menu_mode, time_ms, double_click_ms, .. } = probe;
+    let ctx = context::mouse_context(&entry.state, window, hit_test, menu_mode, modal, time_ms, double_click_ms, remove, filter);
     let prepared = hardware::prepare_mouse(queued, entry.last_click, &ctx);
     match prepared.click {
         ClickUpdate::Keep => {}
@@ -147,7 +186,8 @@ fn pointer(entry: &mut super::super::GuiEntry, tid: u64, window: WindowId, queue
         MouseOutcome::Ladder => {
             let Some(ladder) = context::ladder_context(&entry.state, &prepared.message, prepared.origin,
                 prepared.hit_test, queued.lparam) else { return (Stage::Ready, None); };
-            (Stage::Pending(0), Some(PendingHardware { tid, ladder: Ladder::new(ladder), prepared: prepared.message, queued, dropped: false }))
+            (Stage::Pending(0), Some(PendingHardware::Ladder { tid,
+                state: PendingLadder { ladder: Ladder::new(ladder), prepared: prepared.message, queued, dropped: false } }))
         }
     }
 }
@@ -155,7 +195,7 @@ fn pointer(entry: &mut super::super::GuiEntry, tid: u64, window: WindowId, queue
 /// A ladder that exists only to make one call and then deliver, which is what
 /// an error hit and a sent keyboard extra both are. # C: O(1)
 fn sent_extra(tid: u64, queued: WinMessage, prepared: WinMessage, call: ProcCall, dropped: bool) -> PendingHardware {
-    PendingHardware { tid, ladder: Ladder::single(call), prepared, queued, dropped }
+    PendingHardware::Ladder { tid, state: PendingLadder { ladder: Ladder::single(call), prepared, queued, dropped } }
 }
 
 /// Put the prepared form of the message back where the queued one was, so the
@@ -176,14 +216,34 @@ fn post(entry: &mut super::super::GuiEntry, call: ProcCall) {
 /// ladder ends. # C: O(N_steps * (N_windows + N_sends)); # Sleeps: yes
 fn drive(call: NtCall, raw: bool) -> Stage {
     loop {
-        let Some(mut parked) = take() else { return Stage::Ready; };
-        let step = parked.ladder.next();
+        let Some(parked) = take() else { return Stage::Ready; };
+        let (tid, mut state) = match parked {
+            PendingHardware::HitTest { tid, probe } => {
+                match probe.answer {
+                    // The window procedure has not been entered yet.
+                    None => {
+                        let Some(proc_call) = hardware::hit_test_call(probe.window.raw(), probe.queued.lparam, false) else { return Stage::Ready; };
+                        put(PendingHardware::HitTest { tid, probe });
+                        if let Some(pending) = enter(proc_call, call, raw) { return Stage::Pending(pending); }
+                        continue;
+                    }
+                    Some(result) => {
+                        let hit = context::hit_code(result);
+                        let Some((stage, parked)) = with_entry(|entry| decide(entry, tid, probe, hit)) else { return Stage::Ready; };
+                        match parked { Some(parked) => put(parked), None => { let _ = with_entry(|entry| entry.hardware = None); return stage; } }
+                        continue;
+                    }
+                }
+            }
+            PendingHardware::Ladder { tid, state } => (tid, state),
+        };
+        let step = state.ladder.next();
         match step {
-            LadderStep::Done { eat } => return finish(parked, eat),
-            LadderStep::Send(proc_call) => { put(parked); if let Some(pending) = enter(proc_call, call, raw) { return Stage::Pending(pending); } }
+            LadderStep::Done { eat } => return finish(state, eat),
+            LadderStep::Send(proc_call) => { put(PendingHardware::Ladder { tid, state }); if let Some(pending) = enter(proc_call, call, raw) { return Stage::Pending(pending); } }
             LadderStep::Activate(root) => {
                 let activated = activate(root);
-                put(parked);
+                put(PendingHardware::Ladder { tid, state });
                 record(Ok(activated as u64));
             }
         }
@@ -226,9 +286,9 @@ fn resume(token: u64, result: Result<u64, ()>) -> u64 {
 
 /// Retire the ladder and say what the retrieval does with the message.
 /// # C: O(N_queued)
-fn finish(parked: PendingHardware, eat: bool) -> Stage {
+fn finish(parked: PendingLadder, eat: bool) -> Stage {
     let Some(tid) = current_tid() else { return Stage::Ready; };
-    let PendingHardware { queued, prepared, dropped, .. } = parked;
+    let PendingLadder { queued, prepared, dropped, .. } = parked;
     let _ = with_entry(|entry| entry.hardware = None);
     if dropped { return Stage::Again; }
     let stage = with_entry(|entry| {
@@ -240,5 +300,5 @@ fn finish(parked: PendingHardware, eat: bool) -> Stage {
 
 /// Drop a parked ladder whose thread is gone. # C: O(1)
 pub(crate) fn cancel_thread(entry: &mut super::super::GuiEntry, tid: u64) {
-    if entry.hardware.as_ref().is_some_and(|parked| parked.tid == tid) { entry.hardware = None; }
+    if entry.hardware.as_ref().is_some_and(|parked| parked.tid() == tid) { entry.hardware = None; }
 }

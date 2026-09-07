@@ -4,8 +4,8 @@
 use super::entry::{current_tid, with_entry};
 use super::session::MenuSession;
 use alloc::vec::Vec;
+use ipc::win32_menu::chain;
 use ipc::win32_menu::popup::{popup_origin, PopupLayout, PopupMetrics};
-use ipc::win32_menu::track::MF_MOUSESELECT;
 use ipc::win32_menu::{MenuId, MenuRect, MF_BYPOSITION};
 use ipc::win32_window::{WindowId, WindowRect};
 
@@ -34,6 +34,13 @@ pub(crate) fn create_popup_window(owner: u64, menu: u32) -> Option<u64> {
         Some(window.raw() as u64)
     }).flatten()?;
     let _ = crate::nt_window::set_creation_metadata_current(hwnd, WS_POPUP, 0, owner, 0);
+    // The desktop has to learn about the window before anything is drawn into
+    // it, the same way it learns about an application's own: a window the
+    // compositor never heard of is a menu nobody can see.
+    if crate::nt_window::bridge::publish_create_current(hwnd, WS_POPUP, 0).is_err() {
+        if let Some(window) = WindowId::from_raw(u32::try_from(hwnd).ok()?) { with_entry(|entry| { let _ = entry.state.destroy(window); }); }
+        return None;
+    }
     Some(hwnd)
 }
 
@@ -56,6 +63,10 @@ pub(crate) fn show_popup(session: &mut MenuSession, menu: u32, flags: u32, x: i3
         let _ = entry.state.show(tid, window, true);
         let _ = entry.state.invalidate(window, None);
     });
+    // Placement and visibility are projected outside the GUI lock, as every
+    // other geometry and show mutation is.
+    let _ = crate::nt_window::bridge::publish_geometry_current(hwnd);
+    let _ = crate::nt_window::bridge::publish_visibility_current(hwnd);
     Some(hwnd)
 }
 
@@ -80,44 +91,23 @@ pub(crate) fn close_popup(session: &mut MenuSession, menu: u32) {
     let Some(hwnd) = session.closed(menu) else { return; };
     let Some(window) = u32::try_from(hwnd).ok().and_then(WindowId::from_raw) else { return; };
     with_entry(|entry| { let _ = entry.state.destroy(window); });
+    // The desktop drops the window it was told about, and the device context
+    // the class painted into goes with it.
+    let _ = crate::nt_window::bridge::publish_destroy_current(hwnd);
+    crate::nt_gdi::destroy_window_dc_for_current(window.raw());
 }
 
 /// The submenus open under one menu's focused item, innermost first, with
 /// their highlight and mouse-select state already cleared. The windows are
 /// retired by the `Close` step each one earns. # C: O(N_open * N_items)
 pub(crate) fn sub_popup_chain(session: &MenuSession, menu: u32) -> Vec<u32> {
-    let mut chain = Vec::new();
-    let mut current = menu;
-    for _ in 0..session.innermost_first().len() {
-        let Some(id) = MenuId::from_raw(current) else { break; };
-        let Some(submenu) = with_entry(|entry| {
-            let focused = entry.menus.focused_item(id);
-            if focused == ipc::win32_menu::popup::NO_SELECTED_ITEM { return None; }
-            let item = entry.menus.item(id, focused, MF_BYPOSITION).ok()?;
-            if item.state & MF_MOUSESELECT == 0 { return None; }
-            let submenu = item.submenu?;
-            if let Ok(item) = entry.menus.item_mut_by_position(id, focused as usize) { item.state &= !MF_MOUSESELECT; }
-            Some(submenu)
-        }).flatten() else { break; };
-        if let Some(submenu_id) = MenuId::from_raw(submenu) {
-            with_entry(|entry| { let _ = entry.menus.set_focused_item(submenu_id, ipc::win32_menu::popup::NO_SELECTED_ITEM); });
-        }
-        chain.push(submenu);
-        current = submenu;
-    }
-    chain.reverse();
-    chain
+    let depth = session.innermost_first().len();
+    with_entry(|entry| chain::sub_popup_chain(&mut entry.menus, depth, menu)).unwrap_or_default()
 }
 
 /// The item of one menu whose submenu the loop is about to open. # C: O(N_items)
 pub(crate) fn submenu_target(menu: u32) -> Option<(u32, u32)> {
-    let id = MenuId::from_raw(menu)?;
-    with_entry(|entry| {
-        let focused = entry.menus.focused_item(id);
-        if focused == ipc::win32_menu::popup::NO_SELECTED_ITEM { return None; }
-        let submenu = entry.menus.item(id, focused, MF_BYPOSITION).ok()?.submenu?;
-        Some((focused, submenu))
-    }).flatten()
+    with_entry(|entry| chain::submenu_target(&entry.menus, menu)).flatten()
 }
 
 /// Open one item's submenu beside the item, and report the menu tracking now
@@ -127,14 +117,13 @@ pub(crate) fn open_sub_popup(session: &mut MenuSession, menu: u32, position: u32
     let Some(hwnd) = session.window_of(menu) else { return menu; };
     let (Some(rect), Some(layout)) = (window_rect(hwnd), layout_of(menu)) else { return menu; };
     let Some(item_rect) = layout.items.get(position as usize).copied() else { return menu; };
-    with_entry(|entry| { if let Ok(item) = entry.menus.item_mut_by_position(id, position as usize) { item.state |= MF_MOUSESELECT; } });
+    with_entry(|entry| chain::mark_mouse_select(&mut entry.menus, id.raw(), position));
     // A submenu opens at the item's right edge, and never inherits the
     // caller's alignment.
-    let x = rect.left + item_rect.right;
-    let y = rect.top + item_rect.top;
+    let ((x, y), (xanchor, yanchor)) = chain::sub_popup_origin(rect, item_rect);
     let plain = flags & !(ipc::win32_menu::popup::TPM_CENTERALIGN | ipc::win32_menu::popup::TPM_RIGHTALIGN
         | ipc::win32_menu::popup::TPM_VCENTERALIGN | ipc::win32_menu::popup::TPM_BOTTOMALIGN);
-    if show_popup(session, submenu, plain, x, y, item_rect.right - item_rect.left, item_rect.bottom - item_rect.top).is_none() { return menu; }
+    if show_popup(session, submenu, plain, x, y, xanchor, yanchor).is_none() { return menu; }
     submenu
 }
 

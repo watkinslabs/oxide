@@ -210,10 +210,12 @@ use super::tests::message;
         manager.post_hardware_mouse(EV_KEY, BTN_LEFT, 1).unwrap();
         manager.post_hardware_mouse(EV_KEY, BTN_LEFT, 0).unwrap();
         let any = MessageFilter { hwnd: Some(window), first: WM_MOUSEMOVE, last: WM_MOUSEWHEEL };
-        assert_eq!(manager.take_for_thread(9, any), QueueResult::Message(WinMessage { hwnd: Some(window), message: WM_MOUSEMOVE, wparam: 0, lparam: mouse_lparam(160, -50) }));
+        // Every pointer message is queued in screen coordinates: the client
+        // translation belongs to the retrieval that hit-tests the point.
+        assert_eq!(manager.take_for_thread(9, any), QueueResult::Message(WinMessage { hwnd: Some(window), message: WM_MOUSEMOVE, wparam: 0, lparam: mouse_lparam(200, 0) }));
         assert_eq!(manager.take_for_thread(9, any), QueueResult::Message(WinMessage { hwnd: Some(window), message: WM_MOUSEWHEEL, wparam: ((-120i16 as u16) as u64) << 16, lparam: mouse_lparam(200, 0) }));
-        assert_eq!(manager.take_for_thread(9, any), QueueResult::Message(WinMessage { hwnd: Some(window), message: WM_LBUTTONDOWN, wparam: MK_LBUTTON as u64, lparam: mouse_lparam(160, -50) }));
-        assert_eq!(manager.take_for_thread(9, any), QueueResult::Message(WinMessage { hwnd: Some(window), message: WM_LBUTTONUP, wparam: 0, lparam: mouse_lparam(160, -50) }));
+        assert_eq!(manager.take_for_thread(9, any), QueueResult::Message(WinMessage { hwnd: Some(window), message: WM_LBUTTONDOWN, wparam: MK_LBUTTON as u64, lparam: mouse_lparam(200, 0) }));
+        assert_eq!(manager.take_for_thread(9, any), QueueResult::Message(WinMessage { hwnd: Some(window), message: WM_LBUTTONUP, wparam: 0, lparam: mouse_lparam(200, 0) }));
     }
 
     #[test]

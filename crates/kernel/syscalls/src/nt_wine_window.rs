@@ -143,7 +143,6 @@ const WM_GETTEXT: u64 = 0x000d;
 const WM_GETTEXTLENGTH: u64 = 0x000e;
 const WM_NCCREATE: u64 = 0x0081;
 const WM_NCDESTROY: u64 = 0x0082;
-const WM_NCHITTEST: u64 = 0x0084;
 const WM_NCACTIVATE: u64 = 0x0086;
 const WM_SETCURSOR: u64 = 0x0020;
 // `struct win_proc_params` from Wine's ntuser.h.  The layout is stable for

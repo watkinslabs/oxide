@@ -272,10 +272,10 @@ impl WindowManager {
             (self.cursor.0 >= rect.left && self.cursor.0 < rect.right && self.cursor.1 >= rect.top && self.cursor.1 < rect.bottom).then_some(*id)
         }));
         let Some(window) = window else { return Err(WindowError::NoFocus); };
-        let rect = self.rect(window).ok_or(WindowError::NoSuchWindow)?;
-        let point = if message == WM_MOUSEWHEEL { self.cursor }
-            else { (self.cursor.0.saturating_sub(rect.left), self.cursor.1.saturating_sub(rect.top)) };
-        self.post_input_to_window(window, WinMessage { hwnd: Some(window), message, wparam: wparam as u64, lparam: mouse_lparam(point.0, point.1) })
+        // Raw input is queued in screen coordinates: the hit test that decides
+        // whether the point is over the client area or the frame runs at
+        // retrieval, and it is what translates the ones that are.
+        self.post_input_to_window(window, WinMessage { hwnd: Some(window), message, wparam: wparam as u64, lparam: mouse_lparam(self.cursor.0, self.cursor.1) })
     }
     pub fn peek_for_thread(&mut self, tid: u64, filter: MessageFilter, remove: bool) -> Option<WinMessage> {
         let queue_index = self.queues.iter().position(|(owner, _)| *owner == tid)?;

@@ -12,8 +12,10 @@ use super::track_effects;
 use crate::nt_window::send::{self, Continuation, SendOutcome};
 use crate::nt_window::STATUS_PENDING;
 use alloc::sync::Arc;
-use ipc::win32_menu::bar_hit::{bar_hit_test, BarMetrics};
-use ipc::win32_menu::popup::{hit_test, PopupHit, TPM_POPUPMENU};
+use alloc::vec::Vec;
+use ipc::win32_menu::bar_hit::BarMetrics;
+use ipc::win32_menu::chain::{self, BarChain, OpenMenu};
+use ipc::win32_menu::popup::{PopupHit, TPM_POPUPMENU};
 use ipc::win32_menu::track::PointerEvent;
 use ipc::win32_menu::track_loop::{classify, LoopAction, LoopStep, ProcCall, RetrievedMessage, TrackLoop};
 use ipc::win32_menu::{MenuId, MenuRect};
@@ -56,34 +58,39 @@ fn set_capture(hwnd: Option<u64>) {
 /// Whether the session was told to stop. # C: O(N_process_gui_states)
 fn cancelled() -> bool { with_entry(|entry| entry.menu_tracking.as_ref().is_some_and(|tracking| tracking.exit)).unwrap_or(true) }
 
+/// The chain the tracked menus form right now: every open popup with its
+/// window rectangle and layout, innermost first, and the top menu as a bar on
+/// its owner's window when it is not a popup. # C: O(N_open * N_items)
+fn chain_of(session: &MenuSession, top: u32) -> (Vec<OpenMenu>, Option<BarChain>) {
+    let mut open = Vec::new();
+    for (menu, hwnd) in session.innermost_first() {
+        let (Some(rect), Some(layout)) = (window_rect(hwnd), layout_of(menu)) else { continue; };
+        open.push(OpenMenu { menu, rect, layout });
+    }
+    (open, bar_chain(session.owner, top))
+}
+
+/// The top menu resolved as a menu bar: it opens no window of its own, so it
+/// is tested against its owner's window rectangle and the item rectangles the
+/// bar is drawn with, in the metrics the bar was measured with. A popup top
+/// menu owns no bar and is refused by the chain resolution itself.
+/// # C: O(N_windows)
+fn bar_chain(owner: u64, top: u32) -> Option<BarChain> {
+    MenuId::from_raw(top)?;
+    let window = u32::try_from(owner).ok().and_then(WindowId::from_raw)?;
+    let rect = with_entry(|entry| entry.state.rect(window)).flatten()?;
+    Some(BarChain { menu: top, bounds: MenuRect { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom },
+        metrics: bar_metrics() })
+}
+
 /// Which menu of the tracked chain a screen point falls on, and where in it.
 /// The innermost popup wins, as the reference walks the chain from the open
 /// submenu outwards; only once no open popup claims the point does the top
 /// menu get its turn, as a bar drawn on the owner's own window.
 /// # C: O(N_open * N_items)
 fn menu_from_point(session: &MenuSession, top: u32, point: (i32, i32)) -> (Option<u32>, PopupHit) {
-    for (menu, hwnd) in session.innermost_first() {
-        let (Some(rect), Some(layout)) = (window_rect(hwnd), layout_of(menu)) else { continue; };
-        let hit = hit_test(&layout, rect, point);
-        if hit != PopupHit::Nowhere { return (Some(menu), hit); }
-    }
-    bar_from_point(session.owner, top, point)
-}
-
-/// The top menu resolved as a menu bar: it opens no window of its own, so the
-/// point is tested against its owner's window rectangle and the item
-/// rectangles the bar is drawn with. A popup top menu owns no bar and claims
-/// nothing here. # C: O(N_items^2)
-fn bar_from_point(owner: u64, top: u32, point: (i32, i32)) -> (Option<u32>, PopupHit) {
-    let Some(menu) = MenuId::from_raw(top) else { return (None, PopupHit::Nowhere); };
-    let Some(window) = u32::try_from(owner).ok().and_then(WindowId::from_raw) else { return (None, PopupHit::Nowhere); };
-    let hit = with_entry(|entry| {
-        if entry.menus.is_popup(menu).unwrap_or(true) { return PopupHit::Nowhere; }
-        let Some(rect) = entry.state.rect(window) else { return PopupHit::Nowhere; };
-        let bounds = MenuRect { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
-        bar_hit_test(&entry.menus, menu, bounds, point, bar_metrics())
-    }).unwrap_or(PopupHit::Nowhere);
-    if hit == PopupHit::Nowhere { (None, hit) } else { (Some(top), hit) }
+    let (open, bar) = chain_of(session, top);
+    with_entry(|entry| chain::menu_from_point(&entry.menus, &open, bar, point)).unwrap_or((None, PopupHit::Nowhere))
 }
 
 /// One pointer event resolved against the open chain. # C: O(N_open * N_items)
