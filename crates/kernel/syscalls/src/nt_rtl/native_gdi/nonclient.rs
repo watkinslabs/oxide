@@ -19,7 +19,8 @@ fn begin(output: u64, size: u32, metric: Option<u32>) -> u64 {
     let head = core::mem::size_of::<abi::QueryRequest>();
     let mut request = abi::QueryRequest { version: abi::VERSION, size: head as u32, dc: 0,
         kind: abi::QUERY_NONCLIENT, flags: 0, height: 0, width: 0, weight: 0, italic: 0,
-        first: 0, count: abi::NONCLIENT_BYTES / 2, input: 0, output, table: 0, offset: 0, capacity: size, reserved: 0 };
+        first: 0, count: abi::NONCLIENT_BYTES / 2, input: 0, output, table: 0, offset: 0, capacity: size, reserved: 0,
+        aux: 0, value: 0, aux_bytes: 0, reserved2: 0 };
     if let Some(index) = metric { request.kind = abi::QUERY_SYSTEM_METRIC; request.first = index; request.capacity = 0; }
     if !request.valid() { return 0; }
     let mut copy = Vec::new();

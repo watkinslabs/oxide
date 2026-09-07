@@ -32,6 +32,10 @@ pub(super) fn prepare_fonts() -> Result<(), String> {
             let size = font_height::pixel_size(&bytes[style], 16).ok_or("native GDI font height metadata is invalid")?;
             let font = RasterFont::from_bytes(&bytes[style], size).map_err(|_| "native GDI font is invalid")?;
             sizes.insert((16, 0, style), Arc::new(font));
+            let path = std::path::Path::new(FONT_DIRECTORY).join(name);
+            super::registry::install(bytes[style].clone(), &path.to_string_lossy(),
+                if style & 1 != 0 { 700 } else { 400 }, style & 2 != 0, 0)
+                .ok_or("native GDI font registry rejected an installed face")?;
         }
         let _ = FONTS.set(Fonts { bytes, sizes: Mutex::new(sizes) });
     }

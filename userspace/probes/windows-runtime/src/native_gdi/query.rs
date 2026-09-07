@@ -34,7 +34,7 @@ pub(super) fn execute(font: &RasterFont, bytes: &[u8], request: &abi::QueryReque
             if request.output == 0 { Some((output.len() as u32, Vec::new())) }
             else { output.truncate(request.capacity as usize); Some((output.len() as u32, output)) }
         }
-        _ => None,
+        _ => super::family::execute(font, bytes, request, input),
     }
 }
 

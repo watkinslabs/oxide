@@ -12,6 +12,9 @@ pub struct MeasureRequest {
     pub height: i32, pub width: i32, pub weight: i32, pub italic: u32,
     pub max_extent: i32, pub flags: u32, pub text: u64, pub metrics: u64,
     pub extent: u64, pub fit: u64, pub cumulative: u64,
+    // Justification state selected into the device context; applied per break
+    // character to every cumulative position the measurement reports.
+    pub break_extra: i32, pub break_rem: i32,
 }
 
 #[repr(C)]
@@ -46,7 +49,7 @@ impl MeasureRequest {
         self.version == VERSION && self.size as usize == core::mem::size_of::<Self>() && self.dc != 0
             && self.count <= MAX_UNITS && self.width.checked_abs().is_some_and(|w| w <= MAX_WIDTH)
             && self.height.checked_abs().is_some_and(|h| h <= MAX_HEIGHT)
-            && (0..=1000).contains(&self.weight) && self.italic <= 1
+            && (0..=1000).contains(&self.weight) && self.italic <= 1 && self.break_rem >= 0
             && match self.kind {
                 MEASURE_METRICS => self.count == 0 && self.metrics != 0 && self.metrics.checked_add(TEXTMETRIC_BYTES as u64).is_some(),
                 MEASURE_EXTENT => self.extent != 0 && (self.count == 0 || self.text != 0)

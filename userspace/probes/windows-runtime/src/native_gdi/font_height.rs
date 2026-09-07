@@ -16,7 +16,7 @@ pub(crate) fn table<'a>(bytes: &'a [u8], tag: &[u8; 4]) -> Option<&'a [u8]> {
     None
 }
 
-pub(super) fn pixel_size(bytes: &[u8], height: i32) -> Option<f32> {
+pub(crate) fn pixel_size(bytes: &[u8], height: i32) -> Option<f32> {
     if height.checked_abs()? > MAX_HEIGHT { return None; }
     if height < 0 { return Some((-height) as f32); }
     let height = if height == 0 { 16 } else { height } as u64;

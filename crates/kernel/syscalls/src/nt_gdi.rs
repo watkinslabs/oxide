@@ -74,7 +74,7 @@ pub(crate) use brush::{create_solid_brush_for_current, select_brush_for_current,
 #[path = "nt_gdi/text.rs"]
 mod text;
 pub(crate) use text::{text_snapshot_for_current, text_metrics_for_current,
-    set_text_attribute_for_current, set_text_position_for_current, blend_surface_for_current};
+    set_text_attribute_for_current, set_text_position_for_current, set_justification_for_current, blend_surface_for_current};
 
 const STATUS_SUCCESS: u64 = 0;
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;

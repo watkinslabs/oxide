@@ -36,7 +36,11 @@ pub(super) fn copy_result(task: &sched::Task, request: u64, output: u64) -> u64 
     let mut bytes = Vec::new();
     if bytes.try_reserve_exact(out.length as usize).is_err() { return abi::INVALID; }
     bytes.resize(out.length as usize, 0);
-    if out.length != 0 && (uaccess::copy_from_user(&mut bytes, out.data).is_err()
-        || uaccess::copy_to_user(req.output, &bytes).is_err()) { return abi::INVALID; }
+    if out.length != 0 && uaccess::copy_from_user(&mut bytes, out.data).is_err() { return abi::INVALID; }
+    let prefix = abi::aux_prefix(&req) as usize;
+    if out.length as usize >= prefix && prefix != 0
+        && uaccess::copy_to_user(req.aux, &bytes[..prefix]).is_err() { return abi::INVALID; }
+    let body = &bytes[prefix.min(bytes.len())..];
+    if !body.is_empty() && uaccess::copy_to_user(req.output, body).is_err() { return abi::INVALID; }
     0
 }

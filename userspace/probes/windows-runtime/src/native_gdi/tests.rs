@@ -3,15 +3,15 @@ use syscall::nt_native_gdi as abi;
 use windows_gdi::{RasterFont, RasterSurface, Rect};
 
 fn request() -> abi::TextRequest {
-    abi::TextRequest { version: abi::VERSION, size: 112, dc: 1, x: 4, y: 3, flags: 0, count: 0,
+    abi::TextRequest { version: abi::VERSION, size: std::mem::size_of::<abi::TextRequest>() as u32, dc: 1, x: 4, y: 3, flags: 0, count: 0,
         text: 1, advances: 0, rect: [0, 0, 200, 60], height: 16,
         width: 0, weight: 400, italic: 0, foreground: 0, background: 0xffffff, has_rect: 1, reserved: 0,
-        background_mode: abi::BACKGROUND_OPAQUE, alignment: 0, current_x: 0, current_y: 0 }
+        background_mode: abi::BACKGROUND_OPAQUE, alignment: 0, current_x: 0, current_y: 0, break_extra: 0, break_rem: 0 }
 }
 
 #[test]
 fn callback_abi_bounds_precede_any_pointer_dereference() {
-    assert_eq!(std::mem::size_of::<abi::TextRequest>(), 112);
+    assert_eq!(std::mem::size_of::<abi::TextRequest>(), 120);
     assert_eq!(std::mem::offset_of!(abi::TextRequest, text), 32);
     assert_eq!(std::mem::offset_of!(abi::TextRequest, advances), 40);
     assert_eq!(std::mem::offset_of!(abi::TextRequest, rect), 48);
@@ -24,7 +24,7 @@ fn callback_abi_bounds_precede_any_pointer_dereference() {
         abi::TextRequest { height: i32::MIN, ..valid }, abi::TextRequest { flags: 0x80000000, ..valid },
         abi::TextRequest { flags: abi::CLIPPED, has_rect: 0, ..valid },
         abi::TextRequest { count: 1, text: u64::MAX, ..valid }] { assert!(!bad.valid()); assert!(bad.payload_bytes().is_none()); }
-    assert_eq!(abi::TextRequest { count: 3, advances: 8, ..valid }.payload_bytes(), Some(132));
+    assert_eq!(abi::TextRequest { count: 3, advances: 8, ..valid }.payload_bytes(), Some(std::mem::size_of::<abi::TextRequest>() + 20));
 }
 
 #[test]
@@ -70,7 +70,7 @@ fn callback_layout_preserves_shadow_space_alignment_and_copied_array_bounds() {
             assert!(arm.stack + 16 <= arm.payload);
             for layout in [x86, arm] {
                 assert_eq!(layout.payload % 16, 0);
-                assert_eq!(layout.text, layout.payload + 112);
+                assert_eq!(layout.text, layout.payload + std::mem::size_of::<abi::TextRequest>() as u64);
                 assert_eq!(layout.advances % 4, 0);
                 assert!(layout.advances >= layout.text + count as u64 * 2);
                 assert_eq!(layout.advances + count as u64 * 4, layout.payload + layout.bytes as u64);

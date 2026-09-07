@@ -19,7 +19,10 @@ impl Default for TextAttributes {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct TextState { pub font: Option<Font>, pub attributes: TextAttributes, pub width: i32, pub height: i32 }
+pub struct TextState { pub font: Option<Font>, pub attributes: TextAttributes, pub width: i32, pub height: i32,
+    /// Justification amount per break character and the remainder distributed
+    /// one unit at a time over the leading break characters.
+    pub break_extra: i32, pub break_rem: i32 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TextAttribute { Foreground, Background, BackgroundMode, Alignment }
@@ -30,7 +33,8 @@ impl GdiManager {
     pub fn text_state(&self, dc: u32) -> Result<TextState, GdiError> {
         let (_, state) = self.dcs.iter().find(|(handle, _)| *handle == dc).ok_or(GdiError::NoSuchObject)?;
         state.ensure_active()?;
-        Ok(TextState { font: self.font_for(dc)?, attributes: state.text, width: state.width, height: state.height })
+        Ok(TextState { font: self.font_for(dc)?, attributes: state.text, width: state.width, height: state.height,
+            break_extra: state.justification.0, break_rem: state.justification.1 })
     }
 
     /// Return the previous value; invalid input leaves the DC unchanged.
@@ -46,6 +50,14 @@ impl GdiManager {
             _ => return Err(GdiError::InvalidText),
         };
         Ok(core::mem::replace(field, value))
+    }
+
+    /// Store the justification split already computed for this device context. # C: O(DCs)
+    pub fn set_justification(&mut self, dc: u32, split: (i32, i32)) -> Result<(), GdiError> {
+        let (_, state) = self.dcs.iter_mut().find(|(handle, _)| *handle == dc).ok_or(GdiError::NoSuchObject)?;
+        state.ensure_active()?;
+        state.justification = split;
+        Ok(())
     }
 
     /// MoveTo/current-position updates use the same DC owner. # C: O(DCs)
@@ -81,6 +93,23 @@ mod tests {
         assert_eq!(gdi.text_state(dc).unwrap().font, Some(font));
         gdi.select_font(dc, super::super::DEFAULT_DC_FONT_HANDLE).unwrap();
         assert_eq!(gdi.text_state(dc).unwrap().font, old.font);
+    }
+
+    #[test]
+    fn justification_is_device_context_state_read_back_with_the_text_snapshot() {
+        let mut gdi = GdiManager::new();
+        let dc = gdi.create_dc(4, 4).unwrap();
+        let state = gdi.text_state(dc).unwrap();
+        assert_eq!((state.break_extra, state.break_rem), (0, 0));
+        assert_eq!(gdi.set_justification(dc, (3, 1)), Ok(()));
+        let state = gdi.text_state(dc).unwrap();
+        assert_eq!((state.break_extra, state.break_rem), (3, 1));
+        // A second device context keeps its own justification.
+        let other = gdi.create_dc(4, 4).unwrap();
+        assert_eq!(gdi.text_state(other).unwrap().break_extra, 0);
+        assert_eq!(gdi.set_justification(0, (1, 0)), Err(GdiError::NoSuchObject));
+        gdi.delete_object(dc).unwrap();
+        assert_eq!(gdi.set_justification(dc, (1, 0)), Err(GdiError::NoSuchObject));
     }
 
     #[test]

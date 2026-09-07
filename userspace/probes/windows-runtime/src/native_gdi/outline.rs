@@ -1,20 +1,13 @@
 //! Serialize native 64-bit outline metrics; strings contain relative byte offsets.
 use super::native::font_height::{table, word};
+use super::registry::face_name;
 use windows_gdi::RasterFont;
 const FIXED: usize = 232;
 fn put(bytes: &mut [u8], offset: usize, value: i32) { bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes()); }
 fn name(bytes: &[u8], id: u16) -> Option<Vec<u8>> {
-    let table = table(bytes, b"name")?;
-    let count = word(table, 2)? as usize;
-    let start = word(table, 4)? as usize;
-    let entries = table.get(6..6usize.checked_add(count.checked_mul(12)?)?)?;
-    let entry = entries.chunks_exact(12).filter(|e| word(e, 0) == Some(3) && word(e, 6) == Some(id))
-        .max_by_key(|e| usize::from(word(e, 4) == Some(0x409)))?;
-    let offset = start.checked_add(word(entry, 10)? as usize)?;
-    let data = table.get(offset..offset.checked_add(word(entry, 8)? as usize)?)?;
-    if data.len() % 2 != 0 { return None; }
-    let mut out = Vec::with_capacity(data.len() + 2);
-    for unit in data.chunks_exact(2) { out.extend_from_slice(&[unit[1], unit[0]]); }
+    let units = face_name(bytes, id)?;
+    let mut out = Vec::with_capacity(units.len() * 2 + 2);
+    for unit in units { out.extend_from_slice(&unit.to_le_bytes()); }
     out.extend_from_slice(&[0, 0]);
     Some(out)
 }

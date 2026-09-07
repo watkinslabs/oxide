@@ -18,9 +18,9 @@ fn system_metrics_return_real_normalized_font_height_without_user_output() {
     let font = super::native::selected_font(-30, 400, 0).unwrap();
     let bytes = super::native::selected_bytes(400, 0).unwrap();
     for (index, offset, extra) in [(4,20,1), (15,220,1), (31,20,0), (51,120,1), (53,120,0), (55,220,0), (57,20,6)] {
-        let req = abi::QueryRequest { version: abi::VERSION, size: 80, dc: 0, kind: abi::QUERY_SYSTEM_METRIC,
+        let req = abi::QueryRequest { version: abi::VERSION, size: std::mem::size_of::<abi::QueryRequest>() as u32, dc: 0, kind: abi::QUERY_SYSTEM_METRIC,
             flags: 0, height: 0, width: 0, weight: 0, italic: 0, first: index, count: 252, input: 0x1000,
-            output: 0, table: 0, offset: 0, capacity: 0, reserved: 0 };
+            output: 0, table: 0, offset: 0, capacity: 0, reserved: 0, aux: 0, value: 0, aux_bytes: 0, reserved2: 0 };
         assert!(req.valid());
         let (result, output) = super::query::execute(&font, bytes, &req, &input).unwrap();
         assert_eq!(result, (integer(&normalized, offset) + extra) as u32);
@@ -60,9 +60,9 @@ fn nonclient_heights_use_real_native_font_and_legacy_copy_bound() {
 }
 #[test]
 fn nonclient_callback_copy_policy_requires_exact_complete_profile_output() {
-    let req = abi::QueryRequest { version: abi::VERSION, size: 80, dc: 0, kind: abi::QUERY_NONCLIENT,
+    let req = abi::QueryRequest { version: abi::VERSION, size: std::mem::size_of::<abi::QueryRequest>() as u32, dc: 0, kind: abi::QUERY_NONCLIENT,
         flags: 0, height: 0, width: 0, weight: 0, italic: 0, first: 0, count: 252, input: 0x1000,
-        output: 0x2000, table: 0, offset: 0, capacity: 500, reserved: 0 };
+        output: 0x2000, table: 0, offset: 0, capacity: 500, reserved: 0, aux: 0, value: 0, aux_bytes: 0, reserved2: 0 };
     assert!(req.valid());
     let out = abi::QueryOutput { result: 1, length: 500, data: 0x3000, reserved: 0 };
     assert!(req.accepts(&out));

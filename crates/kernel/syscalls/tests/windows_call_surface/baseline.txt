@@ -1,22 +1,4 @@
 # Windows call-surface gaps still open. Ratchet: entries only leave.
-win32u 0x1087 NtGdiAddFontMemResourceEx
-win32u 0x1088 NtGdiAddFontResourceW
-win32u 0x11be NtGdiEnumFonts
-win32u 0x11d6 NtGdiFontIsLinked
-win32u 0x11e8 NtGdiGetCharWidthInfo
-win32u 0x11e9 NtGdiGetCharWidthW
-win32u 0x11ff NtGdiGetFontFileData
-win32u 0x1200 NtGdiGetFontFileInfo
-win32u 0x1202 NtGdiGetFontUnicodeRanges
-win32u 0x1206 NtGdiGetGlyphOutline
-win32u 0x1207 NtGdiGetKerningPairs
-win32u 0x121b NtGdiGetRasterizerCaps
-win32u 0x121c NtGdiGetRealizationInfo
-win32u 0x1228 NtGdiGetTextFaceW
-win32u 0x123b NtGdiMakeFontDir
-win32u 0x125a NtGdiRemoveFontMemResourceEx
-win32u 0x125b NtGdiRemoveFontResourceW
-win32u 0x128a NtGdiSetTextJustification
 win32u 0x131a NtUserAddClipboardFormatListener
 win32u 0x131e NtUserAlterWindowStyle
 win32u 0x1320 NtUserArrangeIconicWindows

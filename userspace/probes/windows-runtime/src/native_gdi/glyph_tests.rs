@@ -18,11 +18,11 @@ impl Sink for Surface {
     }
 }
 fn request(dc: u32, count: usize) -> abi::TextRequest {
-    abi::TextRequest { version: abi::VERSION, size: 112, dc: dc as u64, x: 10, y: 10,
+    abi::TextRequest { version: abi::VERSION, size: std::mem::size_of::<abi::TextRequest>() as u32, dc: dc as u64, x: 10, y: 10,
         flags: abi::GLYPH_INDEX | abi::IGNORE_LANGUAGE | abi::PDY, count: count as u32,
         text: 1, advances: 1, rect: [0, 0, 200, 100], height: 16, width: 7, weight: 700, italic: 0,
         foreground: 0xffad21, background: 0x102030, has_rect: 0, reserved: 0,
-        background_mode: abi::TRANSPARENT, alignment: 0, current_x: 0, current_y: 0 }
+        background_mode: abi::TRANSPARENT, alignment: 0, current_x: 0, current_y: 0, break_extra: 0, break_rem: 0 }
 }
 
 #[test]
@@ -71,7 +71,7 @@ fn glyph_and_pdy_admission_precede_opaque_fill_and_callback_stack_copy() {
     assert_eq!((sink.fills, sink.uploads), (0, 0));
     assert!(sink.owner.surface(dc).unwrap().2.iter().all(|p| *p == 0));
     let req = abi::TextRequest { count: abi::MAX_UNITS, ..req };
-    assert_eq!(req.payload_bytes(), Some(112 + abi::MAX_UNITS as usize * 10));
+    assert_eq!(req.payload_bytes(), Some(std::mem::size_of::<abi::TextRequest>() + abi::MAX_UNITS as usize * 10));
     for arch in [abi::CallbackArch::X86_64, abi::CallbackArch::Aarch64] {
         let layout = req.callback_layout(0x100000, arch).unwrap();
         assert_eq!(layout.advances + req.advance_count() as u64 * 4, layout.payload + layout.bytes as u64);
@@ -87,7 +87,7 @@ fn raw_gdi_to_query_payload_to_renderer_preserves_glyph_index_and_pdy() {
     let text: Vec<u16> = "Notepad".encode_utf16().collect();
     let query = abi::QueryRequest { version: abi::VERSION, size: std::mem::size_of::<abi::QueryRequest>() as u32,
         dc: 1, kind: abi::QUERY_GLYPHS, flags: 1, height: 16, width: 7, weight: 700, italic: 0,
-        first: 0, count: text.len() as u32, input: 1, output: 2, table: 0, offset: 0, capacity: 0, reserved: 0 };
+        first: 0, count: text.len() as u32, input: 1, output: 2, table: 0, offset: 0, capacity: 0, reserved: 0, aux: 0, value: 0, aux_bytes: 0, reserved2: 0 };
     let glyph_bytes = super::query::execute(&font, bytes, &query, &text).unwrap().1;
     let glyphs: Vec<u16> = glyph_bytes.chunks_exact(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]])).collect();
     assert_eq!(glyphs.len(), text.len());
@@ -101,7 +101,7 @@ fn raw_gdi_to_query_payload_to_renderer_preserves_glyph_index_and_pdy() {
         dc: 1, x, y, flags: admitted.flags, count: admitted.count, text: admitted.text,
         advances: admitted.advances.unwrap(), rect: [0, 0, 0, 0], height: 16, width: 7, weight: 700, italic: 0,
         foreground: 0xffad21, background: 0x102030, has_rect: u32::from(admitted.rect.is_some()), reserved: 0,
-        background_mode: abi::TRANSPARENT, alignment: 0, current_x: 0, current_y: 0 };
+        background_mode: abi::TRANSPARENT, alignment: 0, current_x: 0, current_y: 0, break_extra: 0, break_rem: 0 };
     assert!(request.valid());
     assert_eq!(request.flags, flags);
     assert_eq!(request.advance_count(), text.len() * 2);
@@ -129,7 +129,7 @@ fn raw_gdi_null_rect_normalizes_rectangle_flags_for_native_payload() {
     let request = abi::TextRequest { version: abi::VERSION, size: std::mem::size_of::<abi::TextRequest>() as u32,
         dc: 1, x: 0, y: 0, flags: admitted.flags, count: admitted.count, text: admitted.text, advances: 0,
         rect: [0, 0, 0, 0], height: 16, width: 7, weight: 700, italic: 0, foreground: 0, background: 0xffffff,
-        has_rect: 0, reserved: 0, background_mode: abi::BACKGROUND_OPAQUE, alignment: 0, current_x: 0, current_y: 0 };
+        has_rect: 0, reserved: 0, background_mode: abi::BACKGROUND_OPAQUE, alignment: 0, current_x: 0, current_y: 0, break_extra: 0, break_rem: 0 };
     assert_eq!(admitted.flags, abi::GLYPH_INDEX);
     assert!(request.valid());
     assert!(!abi::TextRequest { alignment: 1, ..request }.valid());

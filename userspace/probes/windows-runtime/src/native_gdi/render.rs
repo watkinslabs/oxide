@@ -21,11 +21,30 @@ impl Sink for NativeSink {
     }
 }
 
+/// Per-unit advances that reproduce the justified character positions the
+/// extent query reports; no justification synthesizes nothing. # C: O(count)
+pub(super) fn justified_advances(font: &RasterFont, flags: u32, weight: i32, italic: u32,
+    extra: i32, remainder: i32, text: &[u16]) -> Result<Option<Vec<i32>>, ()> {
+    if (extra == 0 && remainder == 0) || text.is_empty() { return Ok(None); }
+    let metrics = font.text_metrics_w(weight, italic).map_err(|_| ())?;
+    let glyph_form = flags & abi::GLYPH_INDEX != 0;
+    let measured = if glyph_form { font.measure_glyphs(text, i32::MAX) } else { font.measure_utf16(text, i32::MAX) }.map_err(|_| ())?;
+    let mut positions = measured.cumulative;
+    super::measure::justify(font, &metrics, text, glyph_form, &mut positions, extra, remainder);
+    let mut previous = 0;
+    Ok(Some(positions.iter().map(|position| { let delta = position - previous; previous = *position; delta }).collect()))
+}
+
 pub(super) fn draw(font: &RasterFont, request: &abi::TextRequest, text: &[u16], advances: Option<&[i32]>, sink: &mut impl Sink) -> Result<(), ()> {
     if !request.valid() || text.len() != request.count as usize
         || advances.is_some_and(|a| a.len() != request.advance_count())
         || (request.advances != 0) != advances.is_some() { return Err(()); }
     let rect = Rect { left: request.rect[0], top: request.rect[1], right: request.rect[2], bottom: request.rect[3] };
+    // Justified text without caller advances carries the same per-character
+    // positions the extent query reports, turned back into per-unit advances.
+    let justified = match advances { Some(_) => None, None => justified_advances(font, request.flags,
+        request.weight, request.italic, request.break_extra, request.break_rem, text)? };
+    let advances = justified.as_deref().or(advances);
     // Raster admission precedes mutation; malformed text cannot partially fill the DC.
     let raster = if text.is_empty() { None } else {
         Some(font.rasterize_positioned(text, advances, request.flags, request.foreground,

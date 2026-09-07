@@ -27,7 +27,8 @@ pub(crate) fn decode(ordinal: u64, args: &[u64]) -> Option<Result<abi::QueryRequ
     let (kind, count) = signature(ordinal)?;
     let mut request = abi::QueryRequest { version: abi::VERSION, size: core::mem::size_of::<abi::QueryRequest>() as u32,
         dc: 0, kind, flags: 0, height: 0, width: 0, weight: 0, italic: 0,
-        first: 0, count: 0, input: 0, output: 0, table: 0, offset: 0, capacity: 0, reserved: 0 };
+        first: 0, count: 0, input: 0, output: 0, table: 0, offset: 0, capacity: 0, reserved: 0,
+        aux: 0, value: 0, aux_bytes: 0, reserved2: 0 };
     let failure = request.failure();
     if args.len() < count { return Some(Err(failure)); }
     request.dc = args[0];

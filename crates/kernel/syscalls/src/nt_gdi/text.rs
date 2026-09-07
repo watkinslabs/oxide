@@ -62,6 +62,12 @@ pub(crate) fn set_text_position_for_current(dc: u64, position: (i32, i32)) -> Re
     with_dc(dc, |state, dc| state.set_text_position(dc, position))
 }
 
+/// Justification is device-context state read back by every measurement and
+/// text-output request on that same device context. # C: O(processes + DCs)
+pub(crate) fn set_justification_for_current(dc: u64, split: (i32, i32)) -> Result<(), u64> {
+    with_dc(dc, |state, dc| state.set_justification(dc, split))
+}
+
 /// Validate and copy glyph bytes without the GDI lock, then blend atomically
 /// into that process's existing DC. # C: O(source pixels + processes + DCs)
 pub(crate) fn blend_surface_for_current(dc: u64, source: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {

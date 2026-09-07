@@ -5,6 +5,8 @@ mod measure;
 mod query;
 mod resource;
 mod outline;
+mod registry;
+mod family;
 mod nonclient;
 mod platform;
 pub use native::install;
