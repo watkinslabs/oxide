@@ -46,8 +46,13 @@ pub(super) fn snapshot(state: &WindowManager, hwnd: u64) -> Option<Snapshot> {
     if title.len() > wire::MAX_TITLE || title.contains(&0) { return None; }
     let (dx, dy) = parent_client_origin(state, record);
     let rect = state.rect(window)?;
+    let own = rect;
     let rect = WindowRect { left: rect.left.checked_add(dx)?, top: rect.top.checked_add(dy)?,
         right: rect.right.checked_add(dx)?, bottom: rect.bottom.checked_add(dy)? };
+    let parent_rects = record.parent.and_then(|parent| state.rect(parent).zip(state.client_rect_raw(parent)));
+    super::geom_trace::line(b"snapshot", hwnd, &[(b"own", own), (b"presented", rect),
+        (b"parent", parent_rects.map_or(own, |(window, _)| window)),
+        (b"parentclient", parent_rects.map_or(own, |(_, client)| client))]);
     Some(Snapshot { rect: wire_rect(rect)?,
         parent: record.parent.or(record.owner).map_or(0, |id| id.raw() as u64), title, visible: record.visible, ready: record.presentation_ready })
 }

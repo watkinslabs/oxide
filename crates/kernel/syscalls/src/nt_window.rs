@@ -81,6 +81,8 @@ mod create_lifecycle;
 mod create;
 #[path = "nt_window/bridge.rs"]
 mod bridge;
+#[path = "nt_window/geom_trace.rs"]
+mod geom_trace;
 #[path = "nt_window/keyboard.rs"]
 mod keyboard;
 #[path = "nt_window/query.rs"]

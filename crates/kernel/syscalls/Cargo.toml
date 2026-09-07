@@ -162,6 +162,7 @@ debug-dbus = []  # [PEERCRED]/[GETSESSBYPID]/[OPENCG] D-Bus creds + login1 sessi
 debug-uevent = []  # [UEV-*] NETLINK_KOBJECT_UEVENT monitor trace: bind/setsockopt group subscription + cooked-uevent send (unicast worker→manager, broadcast manager→group2) with action/devpath + reach count — gdm greeter "udev never re-notified" hunt (G9)
 debug-udevdb = []  # [UDEVDB] /run/udev/data + /run/udev/tags syscall trace for seat DB materialization
 debug-menubar = []  # [WINDOWS-MENU-BAR] one line per menu text run: placement, sizing and the launch status it took
+debug-wingeom = []  # [WINDOWS-GEOM] window/client rectangles at presentation: which coordinate space each layer used
 debug-heappoison = ["kalloc/debug-heappoison", "vfs/debug-heappoison"]  # [KALLOC-BISECT] per-execve free-list validation checkpoint; [DENTRY] periodic dcache d_op sanity sweep
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]

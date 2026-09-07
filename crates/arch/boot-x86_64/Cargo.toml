@@ -58,6 +58,7 @@ debug-smp = ["kmain/debug-smp"]
 # Heap poison+quarantine UAF localizer (`kalloc` debug-heappoison). Rides kmain
 # so `--features debug-heappoison` reaches kalloc and prints [UAF-WRITE*]/[UAF].
 debug-menubar = ["kmain/debug-menubar"]
+debug-wingeom = ["kmain/debug-wingeom"]
 debug-heappoison = ["kmain/debug-heappoison"]
 debug-dealloc-diag = ["kmain/debug-dealloc-diag"]
 # C213 electric-fence UAF-writer localizer. Rides kmain so xtask

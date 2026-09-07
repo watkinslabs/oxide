@@ -28,6 +28,22 @@ pub const fn client_origin(window: WindowRect, client: WindowRect) -> (i32, i32)
     (client.left - window.left, client.top - window.top)
 }
 
+/// The four nonclient insets one client rectangle takes off its window
+/// rectangle, in that rectangle's own coordinates. # C: O(1)
+pub const fn insets(window: WindowRect, client: WindowRect) -> (i32, i32, i32, i32) {
+    (client.left - window.left, client.top - window.top, window.right - client.right, window.bottom - client.bottom)
+}
+
+/// The client rectangle those insets name inside a new window rectangle: what
+/// a nonclient size calculation answers again after a geometry change, so the
+/// client area follows its window instead of naming the previous one.
+/// # C: O(1)
+pub const fn inset_client(window: WindowRect, insets: (i32, i32, i32, i32)) -> Option<WindowRect> {
+    let (left, top, right, bottom) = (window.left + insets.0, window.top + insets.1, window.right - insets.2, window.bottom - insets.3);
+    let client = WindowRect { left, top, right, bottom };
+    if well_formed(client) { Some(client) } else { None }
+}
+
 #[cfg(test)]
 #[path = "tests/nonclient_create.rs"]
 mod tests;

@@ -51,6 +51,7 @@ debug-stack-guard = ["kmain/debug-stack-guard"]  # C213 kernel-stack-overflow pr
 debug-smp = ["kmain/debug-smp"]
 # Heap poison+quarantine UAF localizer (`kalloc` debug-heappoison). Rides kmain.
 debug-menubar = ["kmain/debug-menubar"]
+debug-wingeom = ["kmain/debug-wingeom"]
 debug-heappoison = ["kmain/debug-heappoison"]
 debug-dealloc-diag = ["kmain/debug-dealloc-diag"]
 # C213 electric-fence UAF-writer localizer (lockstep: builds on both arches).

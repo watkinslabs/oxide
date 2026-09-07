@@ -27,6 +27,8 @@ const DOS_C_WINDOWS: &str = "/windows/c/windows";
 const DOS_SYSTEM32: &str = "/windows/c/windows/system32";
 const DOS_DRIVE_Z: &str = "/windows/z";
 const UNIX_ROOT: &str = "/";
+/// The image path the launch script names, which only its test reads back.
+#[cfg(test)]
 const IMAGE_WINDOWS_PATH: &str = r"C:\windows\system32\notepad.exe";
 const REGISTRY_DB: &str = "/var/lib/oxide/registry.db";
 const REGISTRY_SOCKET: &str = "/run/oxide/registry.sock";

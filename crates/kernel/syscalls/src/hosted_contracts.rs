@@ -110,6 +110,8 @@ pub(crate) mod nt_gdi_transaction_contract;
 pub(crate) mod nt_gdi_object_transfer_contract;
 #[path = "nt_wine_window/gdi_route.rs"]
 pub(crate) mod nt_wine_gdi_route_contract;
+#[path = "nt_window/geom_trace.rs"]
+pub(crate) mod geom_trace;
 #[path = "nt_window/bridge.rs"]
 pub(crate) mod nt_window_bridge_contract;
 #[path = "nt_rtl/wndproc_payload.rs"]
