@@ -1,6 +1,5 @@
 //! Untargeted Windows DLL search-policy decisions.
 
-#[cfg(target_arch = "x86_64")]
 use alloc::vec::Vec;
 
 pub const LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR: u32 = 0x0000_0100;
@@ -12,6 +11,8 @@ pub const LOAD_WITH_ALTERED_SEARCH_PATH: u32 = 0x0000_0008;
 
 /// Canonical native system directory, in the reference spelling.
 pub const SYSTEM_DIRECTORY: &[u8] = b"C:\\windows\\system32";
+/// Legacy 16-bit system directory, second entry of the reference default path.
+pub const SYSTEM_LEGACY_DIRECTORY: &[u8] = b"C:\\windows\\system";
 /// Canonical native Windows directory, used when no other directory applies.
 pub const WINDOWS_DIRECTORY: &[u8] = b"C:\\windows";
 
@@ -87,6 +88,31 @@ where F: FnMut(&[u8]) -> Option<Vec<u8>> {
         if let Some(blob) = read(candidate) { return Some((candidate.clone(), blob)); }
     }
     None
+}
+
+/// Reference default DLL load path, used whenever neither the request nor the
+/// process defaults name a `LOAD_LIBRARY_SEARCH_*` set: the image directory,
+/// the DLL-directory override or else the current directory, system32, the
+/// legacy system directory, the Windows directory, then every `PATH` entry in
+/// order. Inputs and outputs are UTF-16LE byte strings; empty inputs and
+/// duplicates contribute nothing. # C: O(len(PATH))
+pub fn legacy_search_order(image_dir: &[u8], dll_directory: Option<&[u8]>, current_dir: &[u8], path_env: &[u8]) -> Vec<Vec<u8>> {
+    fn wide(value: &[u8]) -> Vec<u8> { value.iter().flat_map(|byte| [*byte, 0]).collect() }
+    fn push(out: &mut Vec<Vec<u8>>, dir: &[u8]) {
+        if dir.is_empty() || out.iter().any(|known| known == dir) { return; }
+        out.push(dir.to_vec());
+    }
+    let mut out = Vec::new();
+    push(&mut out, image_dir);
+    match dll_directory { Some(dir) if !dir.is_empty() => push(&mut out, dir), _ => push(&mut out, current_dir) }
+    push(&mut out, &wide(SYSTEM_DIRECTORY));
+    push(&mut out, &wide(SYSTEM_LEGACY_DIRECTORY));
+    push(&mut out, &wide(WINDOWS_DIRECTORY));
+    for entry in path_env.chunks(2).collect::<Vec<_>>().split(|unit| unit == &[b';', 0]) {
+        let bytes: Vec<u8> = entry.iter().flat_map(|unit| unit.iter().copied()).collect();
+        push(&mut out, &bytes);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -186,4 +212,18 @@ mod tests {
         assert_eq!(found.0, candidates[0]);
     }
 
+
+    #[test]
+    fn legacy_order_is_image_current_system32_system_windows_then_path() {
+        fn wide(value: &[u8]) -> Vec<u8> { value.iter().flat_map(|byte| [*byte, 0]).collect() }
+        let order = legacy_search_order(&wide(b"C:\\windows\\system32"), None, &wide(b"C:\\users\\me"),
+            &wide(b"C:\\windows\\system32;D:\\tools;;C:\\windows"));
+        let expect: Vec<Vec<u8>> = [b"C:\\windows\\system32".as_slice(), b"C:\\users\\me", b"C:\\windows\\system",
+            b"C:\\windows", b"D:\\tools"].iter().map(|dir| wide(dir)).collect();
+        assert_eq!(order, expect);
+        let with_override = legacy_search_order(&wide(b"C:\\app"), Some(&wide(b"C:\\dlls")), &wide(b"C:\\cwd"), &[]);
+        assert_eq!(with_override[1], wide(b"C:\\dlls"));
+        assert!(!with_override.contains(&wide(b"C:\\cwd")));
+        assert_eq!(legacy_search_order(&[], None, &[], &[]).len(), 3);
+    }
 }

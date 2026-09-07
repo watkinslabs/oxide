@@ -39,6 +39,7 @@ use crate::nt_loader_dir_policy::{self,
     LOAD_WITH_ALTERED_SEARCH_PATH};
 
 mod dynamic;
+mod legacy_path;
 
 /// Load the module a delay-load descriptor names and publish its handle into
 /// the descriptor's module slot. The ASCII name is the descriptor's own.
@@ -215,6 +216,11 @@ pub(super) fn search_directories(cur: &sched::Task, module_name: &[u8], flags: u
     if search_flags & LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR != 0
         && !nt_loader_dir_policy::dll_load_directory_path_valid(module_name) {
         return Err(STATUS_INVALID_PARAMETER);
+    }
+    // No search set in force anywhere: the reference's default load path
+    // (image directory, current directory, system32, system, windows, PATH).
+    if search_flags & (nt_loader_dir_policy::SEARCH_DIRECTORY_FLAGS | LOAD_WITH_ALTERED_SEARCH_PATH) == 0 {
+        return Ok(legacy_path::directories(cur));
     }
     let mut directories = Vec::new();
     if search_flags & LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR != 0
