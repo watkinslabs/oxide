@@ -1,8 +1,9 @@
 use super::*;
+use std::vec::Vec;
 
 #[test]
 fn arguments_the_caller_holds_are_never_read_from_the_stack() {
-    let mut reads = alloc::vec::Vec::new();
+    let mut reads = Vec::new();
     let full = collect(&[1, 2, 3], 3, |index| { reads.push(index); Some(0) }).unwrap();
     assert!(reads.is_empty());
     assert_eq!(&full[..3], &[1, 2, 3]);
@@ -10,7 +11,7 @@ fn arguments_the_caller_holds_are_never_read_from_the_stack() {
 
 #[test]
 fn the_tail_continues_at_the_logical_index_the_signature_gives_it() {
-    let mut reads = alloc::vec::Vec::new();
+    let mut reads = Vec::new();
     let full = collect(&[1, 2, 3, 4, 5, 6], 10, |index| { reads.push(index); Some(0x7000 + index as u64) }).unwrap();
     assert_eq!(reads, [6, 7, 8, 9]);
     assert_eq!(&full[..10], &[1, 2, 3, 4, 5, 6, 0x7006, 0x7007, 0x7008, 0x7009]);
