@@ -315,25 +315,33 @@ pub(crate) fn argument_count(ordinal: u64) -> Option<usize> {
     RAW_CALLS.binary_search_by_key(&ordinal, |entry| entry.0).ok().map(|index| RAW_CALLS[index].1)
 }
 
+/// Widest Windows argument list any admitted ordinal carries.
+pub(crate) const MAX_ARGS: usize = 17;
+
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum Decoded {
+pub(crate) enum Normalized {
     Unclaimed,
     StackFault(usize),
-    Ready([u64; 6]),
+    Ready([u64; MAX_ARGS]),
 }
 
-/// Linux snapshot is RDI,RSI,RDX,R10,R8,R9. Read logical stack indexes 4/5
-/// only when present in the admitted signature. Reader owns checked usercopy
-/// at saved entry RSP+0x28/0x30. No tagged selector is admitted or converted.
-/// # C: O(log(number of admitted ordinals)) plus at most two stack reads
-pub(crate) fn decode_x64(ordinal: u64, linux: [u64; 6], mut stack: impl FnMut(usize) -> Option<u64>) -> Decoded {
-    let Some(count) = argument_count(ordinal) else { return Decoded::Unclaimed; };
-    let mut args = [linux[3], linux[2], linux[4], linux[5], 0, 0];
-    for index in 4..count.min(args.len()) {
-        let Some(value) = stack(index) else { return Decoded::StackFault(index); };
+/// Turn one raw thunk's state into the Windows-order array the chain walks.
+/// The Linux snapshot is RDI,RSI,RDX,R10,R8,R9 and Wine's direct `syscall`
+/// path leaves the first four Windows arguments in R10,RDX,R8,R9; everything
+/// from logical index four on is a stack word. Admission precedes every stack
+/// read, so an unrelated ordinal never touches user memory, and a faulting
+/// word fails the call rather than routing a partial list. No tagged selector
+/// is admitted or converted.
+/// # C: O(log(number of admitted ordinals)) plus at most thirteen stack reads
+pub(crate) fn normalize(ordinal: u64, linux: [u64; 6], mut stack: impl FnMut(usize) -> Option<u64>) -> Normalized {
+    let Some(count) = argument_count(ordinal) else { return Normalized::Unclaimed; };
+    let mut args = [0u64; MAX_ARGS];
+    args[..4].copy_from_slice(&[linux[3], linux[2], linux[4], linux[5]]);
+    for index in 4..count.min(MAX_ARGS) {
+        let Some(value) = stack(index) else { return Normalized::StackFault(index); };
         args[index] = value;
     }
-    Decoded::Ready(args)
+    Normalized::Ready(args)
 }
 
 #[cfg(test)]

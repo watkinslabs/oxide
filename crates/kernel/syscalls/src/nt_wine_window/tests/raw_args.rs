@@ -3,11 +3,16 @@ extern crate alloc;
 use self::alloc::vec::Vec;
 
 const LINUX: [u64; 6] = [0xdead, 0xbeef, 0x7f65_0000_2222, 0x7f65_0000_1111, 0x7f65_0000_3333, 0x7f65_0000_4444];
-const WINDOWS: [u64; 6] = [LINUX[3], LINUX[2], LINUX[4], LINUX[5], 0, 0];
+/// The four register arguments in Windows order, with every stack word zero.
+fn windows() -> [u64; MAX_ARGS] {
+    let mut args = [0u64; MAX_ARGS];
+    args[..4].copy_from_slice(&[LINUX[3], LINUX[2], LINUX[4], LINUX[5]]);
+    args
+}
 
 #[test]
 fn pfn_four_register_arguments_need_no_stack() {
-    assert_eq!(decode_x64(0x147a, LINUX, |_| { assert!(false, "PFN read stack"); None }), Decoded::Ready(WINDOWS));
+    assert_eq!(normalize(0x147a, LINUX, |_| { assert!(false, "PFN read stack"); None }), Normalized::Ready(windows()));
 }
 
 #[test]
@@ -78,33 +83,55 @@ fn installed_signature_counts_and_admission_are_exact() {
 }
 
 #[test]
-fn every_signature_reads_only_its_first_six_parameters() {
+fn every_signature_reads_exactly_the_stack_words_it_names() {
     for &(ordinal, count) in RAW_CALLS {
         let mut reads = Vec::new();
-        let result = decode_x64(ordinal, LINUX, |index| { reads.push(index); Some(0x7000 + index as u64) });
-        let mut expected = WINDOWS;
-        for index in 4..count.min(6) { expected[index] = 0x7000 + index as u64; }
-        assert_eq!(result, Decoded::Ready(expected));
-        assert_eq!(reads, (4..count.min(6)).collect::<Vec<_>>());
+        let result = normalize(ordinal, LINUX, |index| { reads.push(index); Some(0x7000 + index as u64) });
+        let mut expected = windows();
+        for index in 4..count.min(MAX_ARGS) { expected[index] = 0x7000 + index as u64; }
+        assert_eq!(result, Normalized::Ready(expected));
+        assert_eq!(reads, (4..count.min(MAX_ARGS)).collect::<Vec<_>>());
     }
+}
+
+/// The chain walks one array whatever the entry, so a seventeen-argument
+/// signature must arrive whole rather than truncated at the register count.
+#[test]
+fn the_widest_signature_arrives_whole() {
+    let mut reads = Vec::new();
+    let result = normalize(0x136b, LINUX, |index| { reads.push(index); Some(index as u64) });
+    assert_eq!(reads, (4..17).collect::<Vec<_>>());
+    let Normalized::Ready(args) = result else { panic!("create-window normalization refused") };
+    assert_eq!(args[16], 16);
+    assert_eq!(&args[..4], &[LINUX[3], LINUX[2], LINUX[4], LINUX[5]]);
+}
+
+/// The seven-argument message call carries its ANSI flag in the last word.
+#[test]
+fn the_message_call_tail_reaches_the_array() {
+    let Normalized::Ready(args) = normalize(0x14b5, LINUX, |index| Some(index as u64 + 1)) else {
+        panic!("message call normalization refused")
+    };
+    assert_eq!(args[6], 7);
+    assert_eq!(args[7], 0);
 }
 
 #[test]
 fn five_parameter_calls_do_not_probe_sixth_slot() {
     for ordinal in [0x139c, 0x14ca] {
-        let mut expected = WINDOWS;
+        let mut expected = windows();
         expected[4] = u64::MAX;
-        assert_eq!(decode_x64(ordinal, LINUX, |index| if index == 4 { Some(u64::MAX) } else { None }), Decoded::Ready(expected));
+        assert_eq!(normalize(ordinal, LINUX, |index| if index == 4 { Some(u64::MAX) } else { None }), Normalized::Ready(expected));
     }
 }
 
 #[test]
 fn stack_fault_reports_index_and_stops_before_dispatch() {
     let mut reads = Vec::new();
-    assert_eq!(decode_x64(0x136b, LINUX, |index| { reads.push(index); None }), Decoded::StackFault(4));
+    assert_eq!(normalize(0x136b, LINUX, |index| { reads.push(index); None }), Normalized::StackFault(4));
     assert_eq!(reads, [4]);
     reads.clear();
-    assert_eq!(decode_x64(0x15d0, LINUX, |index| { reads.push(index); (index == 4).then_some(0x1234) }), Decoded::StackFault(5));
+    assert_eq!(normalize(0x15d0, LINUX, |index| { reads.push(index); (index == 4).then_some(0x1234) }), Normalized::StackFault(5));
     assert_eq!(reads, [4, 5]);
 }
 
@@ -112,7 +139,7 @@ fn stack_fault_reports_index_and_stops_before_dispatch() {
 fn unclaimed_linux_and_tagged_calls_never_probe_or_convert() {
     for ordinal in [0, 1, 0x131b, 0x1395, 0x1604,
         0x4e54_0000_0000_147a, 0x4e54_0000_0000_0217, u64::MAX] {
-        assert_eq!(decode_x64(ordinal, LINUX, |_| { assert!(false, "unclaimed call read stack"); None }), Decoded::Unclaimed);
+        assert_eq!(normalize(ordinal, LINUX, |_| { assert!(false, "unclaimed call read stack"); None }), Normalized::Unclaimed);
     }
     assert_eq!(LINUX[0..2], [0xdead, 0xbeef]);
 }

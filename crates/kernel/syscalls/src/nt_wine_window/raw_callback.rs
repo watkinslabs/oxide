@@ -51,23 +51,23 @@ pub(super) fn dispatch_message(pointer: u64) -> u64 {
 
 /// Execute a raw NtUserMessageCall using its Wine callback selector.
 /// # C: O(1) plus bounded usercopy
-pub(super) fn message_call(args: SyscallArgs) -> u64 {
-    let Some((callback_type, ansi)) = crate::nt_message_call_abi::tail(args.a5, crate::nt_dispatch::stack_argument) else { return STATUS_INVALID_PARAMETER; };
+pub(super) fn message_call(a: &[u64; 17]) -> u64 {
+    let Some((callback_type, ansi)) = crate::nt_message_call_abi::tail(a[5], |index| a.get(index).copied()) else { return STATUS_INVALID_PARAMETER; };
     let callback_type = callback_type as u64;
     // Which callback type DispatchMessage arrives with decides whether the
     // window procedure is ever entered; name every one.
     klog::write_raw(b"[WINDOWS-MESSAGE-CALL] hwnd=");
-    klog::write_hex_u64(args.a0);
+    klog::write_hex_u64(a[0]);
     klog::write_raw(b" msg=");
-    klog::write_hex_u64(args.a1);
+    klog::write_hex_u64(a[1]);
     klog::write_raw(b" type=");
     klog::write_hex_u64(callback_type);
     klog::write_raw(b"\n");
-    let hwnd = args.a0;
-    let message = args.a1;
-    let wparam = args.a2;
-    let lparam = args.a3;
-    if let Some(result) = super::message_send::prepare_current(hwnd, message as u32, wparam, lparam, args.a4, ansi, callback_type) { return result; }
+    let hwnd = a[0];
+    let message = a[1];
+    let wparam = a[2];
+    let lparam = a[3];
+    if let Some(result) = super::message_send::prepare_current(hwnd, message as u32, wparam, lparam, a[4], ansi, callback_type) { return result; }
     if callback_type == crate::nt_message_params::SEND_MESSAGE { return crate::nt_window::send::send_for_current(hwnd, message as u32, wparam, lparam); }
     if callback_type == WINE_POPUP_MENU_WND_PROC {
         return crate::nt_window::menu_raw::popup_menu_window_proc(hwnd, message as u32, wparam, lparam);
@@ -98,7 +98,7 @@ pub(super) fn message_call(args: SyscallArgs) -> u64 {
         return native(NtService::DefaultWindowProc, SyscallArgs { a0: hwnd, a1: message, a2: wparam, a3: lparam, a4: 0, a5: 0 });
     }
     if callback_type != WINE_CALL_WINDOW_PROC { return STATUS_NOT_IMPLEMENTED; }
-    super::initialize_window_proc_params(args.a4, hwnd, message, wparam, lparam,
+    super::initialize_window_proc_params(a[4], hwnd, message, wparam, lparam,
                                          ansi as u64)
 }
 

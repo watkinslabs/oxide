@@ -68,37 +68,3 @@ fn calls_whose_arguments_the_owner_never_consults_decode_to_a_bare_operation() {
     assert_eq!(decode(CREATE_HALFTONE_PALETTE, &args), Some(Operation::CreateHalftonePalette));
 }
 
-#[test]
-fn collection_reads_only_the_stack_words_the_signature_names() {
-    let (mut read, mut count) = ([0usize; MAX_ARGUMENTS], 0usize);
-    let out = collect(BIT_BLT, [1, 2, 3, 4, 5, 6], |index| { read[count] = index; count += 1; Some(index as u64 * 10) });
-    assert_eq!(&read[..count], &[6, 7, 8, 9, 10]);
-    let args = out.unwrap().unwrap();
-    assert_eq!(&args[..6], &[1, 2, 3, 4, 5, 6]);
-    assert_eq!(args[8], 80);
-    assert_eq!(args[11], 0);
-}
-
-#[test]
-fn a_signature_inside_the_registers_reads_no_stack_word_at_all() {
-    let mut read = 0;
-    let out = collect(SET_PIXEL, [1, 2, 3, 4, 5, 6], |_| { read += 1; Some(0) });
-    assert_eq!(read, 0);
-    assert_eq!(&out.unwrap().unwrap()[..4], &[1, 2, 3, 4]);
-}
-
-#[test]
-fn an_unadmitted_ordinal_never_touches_the_stack_and_a_fault_fails_the_call() {
-    let mut read = 0;
-    assert!(collect(0x1096, [0; 6], |_| { read += 1; Some(0) }).is_none());
-    assert_eq!(read, 0);
-    assert_eq!(collect(BIT_BLT, [0; 6], |_| None), Some(Err(())));
-}
-
-#[test]
-fn the_widest_signature_fits_the_collected_argument_list() {
-    let out = collect(SET_DIBITS_TO_DEVICE, [1, 2, 3, 4, 5, 6], |index| Some(index as u64));
-    let args = out.unwrap().unwrap();
-    assert_eq!(args[15], 15);
-    assert!(decode(SET_DIBITS_TO_DEVICE, &args).is_some());
-}

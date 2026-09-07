@@ -59,11 +59,14 @@ mod raw_class;
 mod raw_callback;
 #[path = "nt_wine_window/raw_gather.rs"]
 pub(crate) mod raw_gather;
-#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 pub(crate) mod raw_args;
 
 #[path = "nt_wine_window/queue_raw.rs"]
 pub(crate) mod queue_raw;
+
+// The one routing chain both ordinal entries walk.
+#[path = "nt_wine_window/chain.rs"]
+pub(crate) mod chain;
 
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 const STATUS_NOT_IMPLEMENTED: u64 = 0xc000_0002;
@@ -219,7 +222,7 @@ fn raw_ordinal_claimed(ordinal: u64) -> bool {
         WINE_REMOVE_MENU | WINE_GET_MENU_BAR_INFO | WINE_GET_MENU_ITEM_RECT | WINE_DRAW_MENU_BAR |
         WINE_DRAW_MENU_BAR_TEMP | WINE_SET_ACTIVE_WINDOW | WINE_SET_FOCUS | WINE_TRANSLATE_MESSAGE |
         WINE_DESTROY_MENU | WINE_ENABLE_MENU_ITEM | WINE_SET_MENU | WINE_THUNKED_MENU_ITEM_INFO |
-        WINE_CALL_ONE_PARAM)
+        WINE_CALL_ONE_PARAM | WINE_UNREGISTER_CLASS)
 }
 
 #[cfg(target_os = "oxide-kernel")]
@@ -260,6 +263,13 @@ fn read_optional_unicode_string(pointer: u64) -> Option<alloc::vec::Vec<u16>> {
     Some(value)
 }
 
+/// Clear the three pointers of a `client_menu_name` record. # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+fn clear_client_menu_name(record: u64) -> bool {
+    (0..3u64).all(|slot| record.checked_add(slot * 8)
+        .is_some_and(|address| uaccess::put_user_u64(address, 0).is_ok()))
+}
+
 #[cfg(target_os = "oxide-kernel")]
 fn read_user_u16(address: u64) -> Option<u16> {
     let mut bytes = [0u8; 2];
@@ -271,7 +281,7 @@ fn read_user_u16(address: u64) -> Option<u16> {
 #[path = "nt_wine_window/dispatch.rs"]
 mod dispatch;
 #[cfg(target_os = "oxide-kernel")]
-pub use dispatch::{dispatch, dispatch_raw, dispatch_raw_linux};
+pub use dispatch::{dispatch, dispatch_raw_linux};
 
 #[cfg(target_os = "oxide-kernel")]
 fn draw_menu_bar_temp(args: &[u64; 17]) -> u64 {
@@ -407,6 +417,7 @@ mod tests {
         assert!(raw_ordinal_claimed(WINE_CLOSE_CLIPBOARD));
         assert!(raw_ordinal_claimed(WINE_GET_CLASS_INFO_EX));
         assert!(raw_ordinal_claimed(WINE_GET_CLASS_NAME));
+        assert!(raw_ordinal_claimed(WINE_UNREGISTER_CLASS));
         assert!(!raw_ordinal_claimed(0x131b));
         assert!(!raw_ordinal_claimed(u64::MAX));
     }
