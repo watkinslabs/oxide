@@ -38,16 +38,24 @@ def window_activated(text, window_rect):
     return window_rect is not None and not overview_visible(text)
 
 
-# The overview's search entry is a uniform dark rounded box at the top centre
-# of the frame; its grey placeholder text defeats OCR at the guest's 1024x768,
-# so the pixel statistics of that box are the reliable marker. Fractions of
-# the frame so any resolution maps to the same spot.
-SEARCH_PILL_LEFT = 326 / 1024
-SEARCH_PILL_TOP = 44 / 768
-SEARCH_PILL_WIDTH = 372 / 1024
-SEARCH_PILL_HEIGHT = 40 / 768
-# A wallpaper or a window under that spot is neither this dark nor this flat.
-PILL_MEAN_MAX = 0.25
+# The overview's search entry is a uniform rounded box at the top centre of
+# the frame; its grey placeholder text defeats OCR at the guest's 1024x768, so
+# the pixel statistics of that box are the marker. The crop is the entry's
+# right-hand interior, past the magnifier icon and past the placeholder text:
+# measuring the whole entry measures its own text, whose contrast makes the
+# box read as neither flat nor uniformly grey and made this decision one that
+# could never say "overview" at all. Fractions of the frame so any resolution
+# maps to the same spot.
+SEARCH_PILL_LEFT = 660 / 1024
+SEARCH_PILL_TOP = 52 / 768
+SEARCH_PILL_WIDTH = 30 / 1024
+SEARCH_PILL_HEIGHT = 24 / 768
+# The entry's own grey, as a band: a wallpaper or a window under that spot is
+# darker or brighter than the entry, and neither is this flat. A ceiling alone
+# admits every dark window, and a ceiling below the entry's grey admits
+# nothing at all.
+PILL_MEAN_MIN = 0.20
+PILL_MEAN_MAX = 0.32
 PILL_STD_MAX = 0.03
 
 
@@ -58,12 +66,12 @@ def search_pill_rect(width, height):
 
 
 def overview_visible_pixels(mean, std):
-    """True when the search-entry spot is a flat dark box (overview showing).
+    """True when the search-entry spot is the entry's own flat grey.
 
     `mean`/`std` are the grey-level mean and standard deviation, in [0, 1],
     of the `search_pill_rect` crop of a full-frame screenshot.
     """
-    return mean <= PILL_MEAN_MAX and std <= PILL_STD_MAX
+    return PILL_MEAN_MIN <= mean <= PILL_MEAN_MAX and std <= PILL_STD_MAX
 
 
 def overview_showing(text, mean, std):

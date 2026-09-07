@@ -216,15 +216,26 @@ done
 # status is preserved.
 # The runtime state directory is a tmpfs that does not survive the guest, so
 # the log goes beside the prefix, which does. The launch writes its stderr
-# there and the file is replayed to the real stderr once it returns, so a
-# console run still sees everything and a desktop run leaves it on disk.
-# A fifo and tee were tried first and lost the compositor's output entirely.
+# there, and a follower copies the file to the real stderr *while the launch
+# runs*: an acceptance run stops the guest with Notepad still up, so a replay
+# that only happens once the launch returns never happens at all, and the
+# bridge's own diagnostics -- the whole reason this capture exists -- were
+# absent from every console log. The follower is used rather than a pipeline
+# so the launch's own exit status is preserved.
 oxide_log="$OXIDE_WINDOWS_PREFIX/windows-launch.log"
 : > "$oxide_log" 2>/dev/null || oxide_log=/dev/null
+follower=""
+if [ "$oxide_log" != /dev/null ]; then tail -n +1 -f "$oxide_log" >&2 & follower=$!; fi
 status=0
 /usr/local/bin/windows-runtime --launch "$OXIDE_WINDOWS_DLL_CATALOG/notepad.exe" 'C:\windows\system32\notepad.exe' 'C:\windows\system32\notepad.exe' x86_64 "$OXIDE_WINDOWS_PREFIX" "$OXIDE_WINDOWS_RUNTIME" "$OXIDE_WINDOWS_DLL_CATALOG" "$OXIDE_WINDOWS_UNIXLIB" "$OXIDE_WINDOWS_NLS" "$OXIDE_WINDOWS_REGISTRY_SOCKET" "$OXIDE_WINDOWS_REGISTRY_DATABASE" 2>"$oxide_log" || status=$?
-# Replay to the real stderr so a console run is unchanged by the capture.
-cat "$oxide_log" >&2 2>/dev/null || true
+if [ -n "$follower" ]; then
+    # Let the follower drain what the launch wrote last, then stop it.
+    sleep 1
+    kill "$follower" 2>/dev/null || true
+    wait "$follower" 2>/dev/null || true
+else
+    cat "$oxide_log" >&2 2>/dev/null || true
+fi
 printf '[WINDOWS-NOTEPAD] runtime-exit status=%s\n' "$status"
 exit "$status"
 "#
