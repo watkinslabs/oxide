@@ -27,6 +27,8 @@ mod bitmap_raw;
 mod device_caps;
 pub(crate) mod input_context;
 pub(crate) mod query_window;
+
+pub(crate) mod device_caps;
 mod brush_raw;
 mod clip_raw;
 #[cfg(target_os = "oxide-kernel")]
@@ -42,8 +44,10 @@ mod create_context;
 mod raw_class;
 #[cfg(target_os = "oxide-kernel")]
 mod raw_callback;
+#[path = "nt_wine_window/raw_gather.rs"]
+pub(crate) mod raw_gather;
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
-mod raw_args;
+pub(crate) mod raw_args;
 
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 const STATUS_NOT_IMPLEMENTED: u64 = 0xc000_0002;

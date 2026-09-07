@@ -16,6 +16,10 @@ pub fn dispatch(call: NtCall) -> u64 {
     if let Some(result) = crate::nt_pen_raw::kernel::route(ordinal, &args) { return result; }
     if let Some(result) = crate::nt_set_rect_rgn_raw::kernel::route(ordinal, &args) { return result; }
     if let Some(result) = crate::nt_dc_raw::kernel::route(ordinal, &args) { return result; }
+    if let Some(result) = crate::nt_dc_state_raw::kernel::route(ordinal, &args) { return result; }
+    if let Some(result) = crate::nt_xform_raw::kernel::route(ordinal, &args) { return result; }
+    if let Some(result) = crate::nt_draw_raw::kernel::route(ordinal, &args) { return result; }
+    if let Some(result) = crate::nt_print_raw::kernel::route(ordinal, &args) { return result; }
     if ordinal == crate::nt_window::redraw::ORDINAL { return crate::nt_window::redraw::for_current(args[0], args[1], args[2], args[3] as u32); }
     if let Some(result) = crate::nt_system_color_raw::route(ordinal, &args, crate::nt_gdi::system_color_brush_for_current) { return result; }
     if let Some(result) = crate::nt_nonclient_raw::route(ordinal, &args, |pointer| uaccess::get_user_u32(pointer).ok(), crate::nt_native_gdi::begin_nonclient) { return result; }
@@ -203,6 +207,11 @@ pub fn dispatch_raw(ordinal: u64, args: SyscallArgs) -> Option<u64> {
     if let Some(result) = class_raw::dispatch_set(ordinal, [args.a0, args.a1, args.a2, args.a3]) { return Some(result); }
     if let Some(result) = cursor_raw::route(ordinal, &[args.a0]) { return Some(result); }
     if let Some(query) = object_raw::decode(ordinal, &[args.a0, args.a1, args.a2]) { return Some(object_raw::kernel::dispatch(query)); }
+    let registers = [args.a0, args.a1, args.a2, args.a3, args.a4, args.a5];
+    if let Some(result) = crate::nt_dc_state_raw::kernel::route(ordinal, &registers) { return Some(result); }
+    if let Some(result) = crate::nt_xform_raw::kernel::route(ordinal, &registers) { return Some(result); }
+    if let Some(result) = crate::nt_draw_raw::kernel::route(ordinal, &registers) { return Some(result); }
+    if let Some(result) = crate::nt_print_raw::kernel::route(ordinal, &registers) { return Some(result); }
     if let Some(result) = gdi_route::raw(ordinal, args) { return Some(result); }
     if let Some(result) = bitmap_raw::kernel::route(ordinal, &[args.a0, args.a1, args.a2, args.a3, args.a4, args.a5]) { return Some(result); }
     if let Some(result) = device_caps::kernel::route(ordinal, &[args.a0, args.a1]) { return Some(result); }

@@ -20,6 +20,8 @@ fn answer(dc: u64, cap: i32) -> u64 {
 /// Read every field from its canonical owner on each call; a desktop that
 /// changes resolution changes the reported capabilities with it.
 /// # C: O(monitors)
+pub(crate) fn current_device() -> Device { device() }
+
 fn device() -> Device {
     let screen = super::super::metrics::screen_size(crate::nt_compositor::monitors_current).unwrap_or((0, 0));
     let desktop = super::super::metrics::virtual_screen_size(crate::nt_compositor::monitors_current).unwrap_or((0, 0));
