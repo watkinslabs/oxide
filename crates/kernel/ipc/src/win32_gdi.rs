@@ -30,10 +30,13 @@ mod handles;
 mod projection;
 #[path = "win32_gdi/clip.rs"]
 mod clip;
-pub use clip::{CLIP_ERROR, NULL_REGION, SIMPLE_REGION, COMPLEX_REGION};
+pub use clip::{CLIP_ERROR, NULL_REGION, SIMPLE_REGION, COMPLEX_REGION, RGN_CODE_CLIP, RGN_CODE_META, RGN_CODE_RAO, RGN_CODE_SYS};
 #[path = "win32_gdi/region.rs"]
-mod region;
-pub use region::TYPE_REGION;
+pub mod region;
+pub use region::{TYPE_REGION, RGN_AND, RGN_COPY, RGN_DIFF, RGN_OR, RGN_XOR};
+#[path = "win32_gdi/path.rs"]
+pub mod path;
+pub use path::{GdiPath, PT_BEZIERTO, PT_CLOSEFIGURE, PT_LINETO, PT_MOVETO};
 #[path = "win32_gdi/stock.rs"]
 mod stock;
 #[path = "win32_gdi/bitmap.rs"]
@@ -89,8 +92,17 @@ pub struct Rect { pub left: i32, pub top: i32, pub right: i32, pub bottom: i32 }
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum GdiError { NoSuchObject, InvalidDimensions, InvalidText, HandleLimit }
 
+/// Path recording and polygon attributes owned by one device context.
 #[derive(Debug, Eq, PartialEq)]
-struct DeviceContext { width: i32, height: i32, map_mode: u32, font: Option<u32>, brush: Option<u32>, dc_brush_color: u32, pen: u32, dc_pen_color: u32, text: TextAttributes, clip: Option<Rect>, paint_clip: Option<crate::win32_window::PaintRegion>, pixels: Vec<u32>, lease: Option<DcLease>, pending_output: PendingOutput }
+pub(crate) struct PathState { open: Option<GdiPath>, closed: Option<GdiPath>, poly_fill_mode: i32, arc_clockwise: bool }
+
+impl Default for PathState {
+    /// Alternate fill and counter-clockwise arcs are the initial device-context attributes. # C: O(1)
+    fn default() -> Self { Self { open: None, closed: None, poly_fill_mode: path::ALTERNATE, arc_clockwise: false } }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct DeviceContext { width: i32, height: i32, map_mode: u32, font: Option<u32>, brush: Option<u32>, dc_brush_color: u32, pen: u32, dc_pen_color: u32, text: TextAttributes, clip: Option<crate::win32_window::PaintRegion>, meta_clip: Option<crate::win32_window::PaintRegion>, paths: PathState, paint_clip: Option<crate::win32_window::PaintRegion>, pixels: Vec<u32>, lease: Option<DcLease>, pending_output: PendingOutput }
 
 pub struct GdiManager { next: u32, dcs: Vec<(u32, DeviceContext)>, fonts: Vec<(u32, FontRecord)>, brushes: Vec<(u32, Brush)>, bitmaps: Vec<(u32, Bitmap)>, pens: Vec<(u32, Pen)>, system_brushes: SystemBrushes, window_dcs: Vec<(u32, u32)>, regions: Vec<(u32, crate::win32_window::PaintRegion)> }
 

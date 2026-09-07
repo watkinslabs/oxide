@@ -94,7 +94,7 @@ impl GdiManager {
             let handle = self.allocate(TYPE_DC)?;
             self.dcs.push((handle, DeviceContext { width: request.width, height: request.height, map_mode: MM_TEXT,
                 font: Some(DEFAULT_DC_FONT_HANDLE), brush: None, dc_brush_color: 0xffffff, pen: super::DEFAULT_DC_PEN_HANDLE, dc_pen_color: 0, text: TextAttributes::default(),
-                clip: None, paint_clip: None, pixels: Vec::new(), lease: None, pending_output:Default::default() }));
+                clip: None, meta_clip: None, paths: Default::default(), paint_clip: None, pixels: Vec::new(), lease: None, pending_output:Default::default() }));
             (handle, self.dcs.len() - 1)
         };
         let old_clip = self.dcs[index].1.lease.as_ref().and_then(|lease| lease.clip_handle);
@@ -144,7 +144,8 @@ impl GdiManager {
             None => (dc, Some(x), Some(y)),
         };
         if state.lease.is_some() {
-            if state.clip.is_some_and(|r| x < r.left || x >= r.right || y < r.top || y >= r.bottom)
+            if state.clip.as_ref().is_some_and(|r| !contains(r, x, y))
+                || state.meta_clip.as_ref().is_some_and(|r| !contains(r, x, y))
                 || state.paint_clip.as_ref().is_some_and(|r| !contains(r, x, y)) { return Ok(None); }
         } else if !state.clip_contains(i64::from(x), i64::from(y)) { return Ok(None); }
         let (Some(dx), Some(dy)) = (dx, dy) else { return Ok(None); };

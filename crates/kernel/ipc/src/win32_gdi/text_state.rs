@@ -50,6 +50,8 @@ impl GdiManager {
 
     /// MoveTo/current-position updates use the same DC owner. # C: O(DCs)
     pub fn set_text_position(&mut self, dc: u32, position: (i32, i32)) -> Result<(i32, i32), GdiError> {
+        // An open path takes the new position as the origin of its next stroke.
+        if self.path_recording(dc).unwrap_or(false) { self.path_move_to(dc, position.0, position.1)?; }
         let (_, state) = self.dcs.iter_mut().find(|(handle, _)| *handle == dc).ok_or(GdiError::NoSuchObject)?;
         state.ensure_active()?;
         Ok(core::mem::replace(&mut state.text.current_position, position))

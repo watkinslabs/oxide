@@ -41,6 +41,7 @@ pub fn dispatch(call: NtCall) -> u64 {
     if let Some(result) = device_caps::kernel::route(ordinal, &args) { return result; }
     if let Some(operation) = brush_raw::decode(ordinal, &args) { return brush_raw::kernel::dispatch(operation); }
     if let Some(operation) = clip_raw::decode(ordinal, &args) { return clip_raw::kernel::dispatch(operation); }
+    if let Some(operation) = crate::nt_wine_gdi_shape::decode::decode(ordinal, &args) { return crate::nt_wine_gdi_shape::kernel::dispatch(operation); }
     if let Some(result) = keyboard_query(ordinal, args[0]) { return result; }
     let native = |service: NtService, args: SyscallArgs| crate::nt_window::dispatch(NtCall { service, args }).unwrap_or(STATUS_INVALID_PARAMETER);
     let gdi = |service: NtService, args: SyscallArgs| crate::nt_gdi::dispatch(NtCall { service, args }).unwrap_or(STATUS_INVALID_PARAMETER);
@@ -185,6 +186,7 @@ pub fn dispatch_raw(ordinal: u64, args: SyscallArgs) -> Option<u64> {
         |dc| crate::nt_gdi::text_snapshot_for_current(dc).ok().and_then(|state| state.font), crate::nt_native_gdi::begin_query) { return Some(result); }
     if let Some(result) = property_raw::dispatch(ordinal, [args.a0, args.a1, args.a2]) { return Some(result); }
     if let Some(operation) = clip_raw::decode(ordinal, &[args.a0, args.a1, args.a2, args.a3, args.a4]) { return Some(clip_raw::kernel::dispatch(operation)); }
+    if let Some(operation) = crate::nt_wine_gdi_shape::decode::decode(ordinal, &[args.a0, args.a1, args.a2, args.a3, args.a4, args.a5]) { return Some(crate::nt_wine_gdi_shape::kernel::dispatch(operation)); }
     if ordinal == object_raw::GET_DC_OBJECT { return Some(crate::nt_gdi::selected_object_current(args.a0, args.a1 as u32)); }
     if let Some(result) = long_raw::dispatch(ordinal, [args.a0, args.a1, args.a2, args.a3]) { return Some(result); }
     if ordinal == hwnd_param::ORDINAL {

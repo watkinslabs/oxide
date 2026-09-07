@@ -33,6 +33,8 @@ mod paint_seed;
 mod position_preserve;
 pub(crate) use position_preserve::position_preserve_for_current;
 mod region;
+#[path = "nt_gdi/shape.rs"]
+pub(crate) mod shape;
 pub(crate) use region::set_rect_region_for_current;
 pub(crate) use region::{create_region_for_current, create_rect_region_for_current, combine_region_for_current,
     region_snapshot_for_current, replace_region_for_current, region_box_for_current, delete_region_for_current};

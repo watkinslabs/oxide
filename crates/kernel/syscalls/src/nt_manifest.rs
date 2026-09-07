@@ -110,6 +110,8 @@ mod nt_nonclient_raw;
 mod nt_visibility_raw;
 #[path = "nt_wine_window/region_raw.rs"]
 mod nt_region_raw;
+#[path = "nt_wine_window/gdi_shape_raw.rs"]
+pub(crate) mod nt_wine_gdi_shape;
 #[path = "nt_wine_window/set_rect_rgn_raw.rs"]
 mod nt_set_rect_rgn_raw;
 #[path = "nt_wine_window/dc_query_raw.rs"]
