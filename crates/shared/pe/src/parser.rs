@@ -93,6 +93,33 @@ pub fn discover_owned_modules<'a, S: ModuleSource<'a>>(root_name: &[u8], root_bl
     discover_owned_modules_with_builtins(root_name, root_blob, source, |_| false)
 }
 
+/// Why a dependency graph could not be discovered.
+///
+/// A source that cannot supply a named module is the one failure a caller can
+/// act on, and it is the only one that identifies something outside the
+/// images themselves, so it carries the name and the module that asked for
+/// it. Flattening it into a bare parse error destroys the only fact that
+/// says which catalog entry is absent.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DiscoverFailure {
+    /// An image in the graph could not be parsed or read.
+    Image(Error),
+    /// `needed` was reached from `requested_by` and no source supplies it.
+    MissingModule { needed: Vec<u8>, requested_by: Vec<u8>, forwarded: bool },
+}
+
+impl DiscoverFailure {
+    /// The status this failure presents to a caller that has no channel for
+    /// the detail. # C: O(1)
+    pub fn error(&self) -> Error {
+        match self { Self::Image(error) => *error, Self::MissingModule { .. } => Error::Unsupported }
+    }
+}
+
+impl From<Error> for DiscoverFailure {
+    fn from(error: Error) -> Self { Self::Image(error) }
+}
+
 /// Discover owned dependencies while allowing the caller to identify modules
 /// already supplied by a runtime bootstrap (for example native NTDLL stubs).
 /// Built-ins are not loaded into the returned graph, but their imports remain
@@ -100,29 +127,47 @@ pub fn discover_owned_modules<'a, S: ModuleSource<'a>>(root_name: &[u8], root_bl
 pub fn discover_owned_modules_with_builtins<'a, S: ModuleSource<'a>, F: Fn(&[u8]) -> bool>(
     root_name: &[u8], root_blob: &[u8], source: &S, is_builtin: F,
 ) -> Result<Vec<OwnedModule>, Error> {
+    discover_owned_modules_detailed(root_name, root_blob, source, is_builtin).map_err(|failure| failure.error())
+}
+
+/// The same discovery, reporting which module a source could not supply.
+///
+/// The graph a loader must map is every statically imported module plus every
+/// module a forwarded export redirects into: a forwarder makes its target a
+/// load-time dependency of the importer, even though no import descriptor
+/// names it. A source that supplies the descriptors but not the forwarded
+/// targets therefore holds a strictly smaller set than this walk requires.
+/// # C: O(total blob bytes)
+pub fn discover_owned_modules_detailed<'a, S: ModuleSource<'a>, F: Fn(&[u8]) -> bool>(
+    root_name: &[u8], root_blob: &[u8], source: &S, is_builtin: F,
+) -> Result<Vec<OwnedModule>, DiscoverFailure> {
     let mut modules = vec![OwnedModule { name: root_name.to_vec(), blob: root_blob.to_vec() }];
     let mut index = 0;
     while index < modules.len() {
-        let dependencies: Vec<Vec<u8>> = {
+        let dependencies: Vec<(Vec<u8>, bool)> = {
             let image = parse(&modules[index].blob)?;
             let imports = image.imports()?;
-            let mut names: Vec<Vec<u8>> = imports.iter().map(|import| import.name.to_vec()).collect();
+            let mut names: Vec<(Vec<u8>, bool)> = imports.iter().map(|import| (import.name.to_vec(), false)).collect();
             for import in imports {
                 let resolved = crate::apiset::target(import.name).unwrap_or(import.name);
                 if is_builtin(resolved) { continue; }
-                let dependency = source.load(resolved).ok_or(Error::Unsupported)?;
+                let dependency = source.load(resolved).ok_or_else(|| DiscoverFailure::MissingModule {
+                    needed: resolved.to_vec(), requested_by: modules[index].name.clone(), forwarded: false,
+                })?;
                 let dependency = parse(dependency)?;
                 for thunk in image.import_thunks(&import)? {
-                    if let Some(name) = dependency.forwarder_dependency(&thunk)? { names.push(name); }
+                    if let Some(name) = dependency.forwarder_dependency(&thunk)? { names.push((name, true)); }
                 }
             }
             names
         };
-        for dependency in dependencies {
+        for (dependency, forwarded) in dependencies {
             let resolved = crate::apiset::target(&dependency).unwrap_or(&dependency);
             if is_builtin(resolved) { continue; }
             if modules.iter().any(|module| crate::loader_name::matches_ascii(&module.name, resolved)) { continue; }
-            let blob = source.load(resolved).ok_or(Error::Unsupported)?;
+            let blob = source.load(resolved).ok_or_else(|| DiscoverFailure::MissingModule {
+                needed: resolved.to_vec(), requested_by: modules[index].name.clone(), forwarded,
+            })?;
             modules.push(OwnedModule { name: resolved.to_vec(), blob: blob.to_vec() });
         }
         index += 1;
@@ -144,6 +189,21 @@ impl<'a> Image<'a> {
             }
         }
         Err(Error::Einval)
+    }
+    /// Whether the image's virtual layout carries an address at `rva`.
+    ///
+    /// A section's virtual extent may exceed the bytes the file supplies; the
+    /// tail is zero-filled when the image is mapped. An address there is a
+    /// real image address that no file byte backs, so a validity check that
+    /// demands file bytes rejects it — which is what makes a data export in
+    /// the zero-filled tail of a section look like a malformed image.
+    /// # C: O(N_sections)
+    pub fn rva_mapped(&self, rva: u32) -> bool {
+        if rva < self.size_of_headers { return true; }
+        self.sections.iter().any(|section| {
+            section.virtual_address.checked_add(section.virtual_size.max(section.raw_size))
+                .is_some_and(|end| rva >= section.virtual_address && rva < end)
+        })
     }
     /// # C: O(N_sections + SizeOfImage)
     pub fn materialize(&self) -> Result<Vec<u8>, Error> {
@@ -305,7 +365,7 @@ impl<'a> Image<'a> {
         if rva >= directory.rva && rva < directory.rva.checked_add(directory.size).ok_or(Error::Einval)? {
             return Ok(Some(ExportTarget::Forwarder(self.c_string(rva)?)));
         }
-        self.rva_range(rva, 1)?;
+        if !self.rva_mapped(rva) { return Err(Error::Einval); }
         Ok(Some(ExportTarget::Rva(rva)))
     }
 

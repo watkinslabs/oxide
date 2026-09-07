@@ -1132,6 +1132,24 @@ pub fn load_pe_process_with_catalog_and_params(blob: &[u8], as_: &AddressSpace,
     params: Option<&process_env::NtProcessParameters<'_>>) -> Result<PeProcess, pe::Error> {
     load_pe_process_with_catalog_with_stack_bounds(blob, as_, input, 0, stack_top, runtime, runtime, catalog, params)
 }
+/// Name what stopped the module graph before the status that reaches the
+/// caller erases it. A catalog that cannot supply a module is a fact about
+/// the set the launcher handed over, and it is invisible in the single
+/// image-format status the execution boundary is allowed to return.
+fn report_discover_failure(failure: pe::DiscoverFailure) -> pe::Error {
+    match &failure {
+        pe::DiscoverFailure::Image(_) => klog::write_raw(b"[WINDOWS-PE-CATALOG] outcome=unparsable-image\n"),
+        pe::DiscoverFailure::MissingModule { needed, requested_by, forwarded } => {
+            klog::write_raw(b"[WINDOWS-PE-CATALOG] outcome=missing-module needed=");
+            klog::write_raw(needed);
+            klog::write_raw(b" requested-by=");
+            klog::write_raw(requested_by);
+            klog::write_raw(if *forwarded { b" reached=forwarded-export\n" } else { b" reached=import-descriptor\n" });
+        }
+    }
+    failure.error()
+}
+
 pub fn load_pe_process_with_catalog_and_params_with_stack_bounds(blob: &[u8], as_: &AddressSpace,
     input: &process_env::EnvironmentInput<'_>, stack_base: u64, stack_top: u64, runtime: &NtRuntime,
     catalog: &pe::catalog::ModuleCatalog,
@@ -1142,8 +1160,9 @@ fn load_pe_process_with_catalog_with_stack_bounds<R: ImportResolver>(blob: &[u8]
     input: &process_env::EnvironmentInput<'_>, stack_base: u64, stack_top: u64, runtime: &NtRuntime, fallback: &R,
     catalog: &pe::catalog::ModuleCatalog, params: Option<&process_env::NtProcessParameters<'_>>) -> Result<PeProcess, pe::Error> {
     let source = catalog;
-    let owned = pe::discover_owned_modules_with_builtins(input.image_path.as_bytes(), blob, &source,
-        |name| ascii_eq_ignore_case(name, b"ntdll.dll") && source.load(name).is_none())?;
+    let owned = pe::discover_owned_modules_detailed(input.image_path.as_bytes(), blob, &source,
+        |name| ascii_eq_ignore_case(name, b"ntdll.dll") && source.load(name).is_none())
+        .map_err(report_discover_failure)?;
     let loaded = load_owned_pe_module_graph(&owned, as_, fallback, runtime.relay_call)?;
     let mut environment_input = input.clone();
     environment_input.image_base = loaded[0].image.base;

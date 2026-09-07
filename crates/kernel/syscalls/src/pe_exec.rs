@@ -285,9 +285,9 @@ fn build_pe_address_space(cur: &sched::Task, stack_bytes: usize, replace_current
 pub fn prepare_pe_process(cur: &sched::Task, path: &[u8], blob: &[u8], command_line: Option<&str>, environment: &[(&str, &str)], params: Option<&elf_load::process_env::NtProcessParameters<'_>>, _exec_vp: Option<&vfs::VfsPath>, catalog: Option<&pe::catalog::ModuleCatalog>, process_id: u32, thread_id: u32, replace_current: bool, bootstrap: Option<&[u8]>) -> Result<PreparedPeProcess, i64> {
     const STACK_BYTES: usize = 8 * 1024 * 1024;
     let enoexec = || -(syscall::errno::Errno::Enoexec.as_i32() as i64);
-    let path = core::str::from_utf8(path).map_err(|_| enoexec())?;
+    let path = core::str::from_utf8(path).map_err(|_| refused(b"image-path-not-utf8", None))?;
     let (as_, stack, stack_top) = build_pe_address_space(cur, STACK_BYTES, replace_current)?;
-    let runtime = map_nt_runtime_box(&as_).map_err(|_| enoexec())?;
+    let runtime = map_nt_runtime_box(&as_).map_err(|error| refused(b"map-nt-runtime", Some(error)))?;
     let runtime_module = elf_load::process_env::NtModuleInput {
         base: runtime.base.as_u64(), entry: 0, size: runtime.bytes as u32,
         full_name: "C:\\Windows\\System32\\ntdll.dll", base_name: "ntdll.dll",
@@ -301,9 +301,9 @@ pub fn prepare_pe_process(cur: &sched::Task, path: &[u8], blob: &[u8], command_l
         |catalog| elf_load::pe_loader::load_pe_process_with_catalog_and_params_with_stack_bounds(blob, &as_, &input, stack.as_u64(), stack_top, &runtime, catalog, params),
     ) {
         Ok(process) => process,
-        Err(_) => {
+        Err(error) => {
             let _ = as_.munmap(runtime.base, runtime.bytes);
-            return Err(enoexec());
+            return Err(refused(b"load-pe-process", Some(error)));
         }
     };
     let startup = process.startup.facts();
@@ -401,6 +401,27 @@ fn log_bootstrap_failure(stage: &'static [u8], error: elf_load::LoadError) {
         elf_load::LoadError::Enomem => b"enomem",
     });
     klog::write_raw(b"\n");
+}
+
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+/// Report why a PE launch was refused before the single image-format status
+/// the execution boundary returns erases the distinction. Every refusal
+/// leaves the same status; without this line the serial log cannot tell an
+/// unloadable image from an incomplete catalog from a failed mapping.
+/// # C: O(1)
+fn refused(stage: &'static [u8], error: Option<pe::Error>) -> i64 {
+    klog::write_raw(b"[WINDOWS-PE-REFUSED] stage=");
+    klog::write_raw(stage);
+    if let Some(error) = error {
+        klog::write_raw(b" error=");
+        klog::write_raw(match error {
+            pe::Error::Enoexec => b"enoexec".as_slice(),
+            pe::Error::Einval => b"einval".as_slice(),
+            pe::Error::Unsupported => b"unsupported".as_slice(),
+        });
+    }
+    klog::write_raw(b"\n");
+    -(syscall::errno::Errno::Enoexec.as_i32() as i64)
 }
 
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
