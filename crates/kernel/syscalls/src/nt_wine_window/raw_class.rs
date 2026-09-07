@@ -15,15 +15,6 @@ macro_rules! wine_window_diag {
     };
 }
 
-fn raw_arg(args: SyscallArgs, index: usize) -> Option<u64> {
-    let value = match index {
-        0 => Some(args.a0), 1 => Some(args.a1), 2 => Some(args.a2),
-        3 => Some(args.a3), 4 => Some(args.a4), 5 => Some(args.a5),
-        _ => crate::nt_dispatch::stack_argument(index),
-    }?;
-    Some(create_abi::argument(index, value))
-}
-
 /// Register a raw Wine WNDCLASSEXW through the process-local canonical owner.
 /// # C: O(N_process_gui_states + N_classes) plus bounded usercopy
 pub(super) fn register_class(args: SyscallArgs) -> u64 {
@@ -48,14 +39,8 @@ pub(super) fn register_class(args: SyscallArgs) -> u64 {
     result
 }
 
-/// Create a raw Wine window after resolving its class in the canonical owner.
+/// Both ordinal entries reach this with the same normalized argument array.
 /// # C: O(N_process_gui_states + N_classes + N_windows) plus bounded usercopy
-pub(super) fn create_window(args: SyscallArgs) -> u64 {
-    create_window_with(args, |index| raw_arg(args, index))
-}
-
-/// Descriptor and raw entries share the same creation transaction.
-/// # C: same as create_window
 pub(super) fn create_window_descriptor(values: &[u64; 17]) -> u64 {
     let args = SyscallArgs { a0: values[0], a1: values[1], a2: values[2], a3: values[3], a4: values[4], a5: values[5] };
     create_window_with(args, |index| values.get(index).copied().map(|value| create_abi::argument(index, value)))

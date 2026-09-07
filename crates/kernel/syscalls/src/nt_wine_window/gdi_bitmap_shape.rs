@@ -174,22 +174,6 @@ pub fn decode(ordinal: u64, args: &[u64]) -> Option<Operation> {
     })
 }
 
-/// Gather one admitted call's whole logical argument list: the first six from
-/// registers, the rest from the caller's stack. Admission precedes every stack
-/// read, so an unrelated ordinal never touches user memory. A faulting stack
-/// word fails the call rather than decoding a partial list. # C: O(arguments)
-pub fn collect(ordinal: u64, first: [u64; 6], mut stack: impl FnMut(usize) -> Option<u64>)
-    -> Option<Result<[u64; MAX_ARGUMENTS], ()>> {
-    let count = argument_count(ordinal)?;
-    let mut args = [0; MAX_ARGUMENTS];
-    args[..6].copy_from_slice(&first);
-    for index in 6..count.min(MAX_ARGUMENTS) {
-        let Some(value) = stack(index) else { return Some(Err(())); };
-        args[index] = value;
-    }
-    Some(Ok(args))
-}
-
 #[cfg(test)]
 #[path = "gdi_bitmap_raw/tests.rs"]
 mod tests;
