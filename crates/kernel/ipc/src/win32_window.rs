@@ -110,6 +110,12 @@ pub mod mouse_track;
 pub use mouse_track::{track_action, MouseTracking, MouseTracks, TrackAction, DEFAULT_HOVER_TIME, HOVER_DEFAULT, TME_CANCEL, TME_HOVER, TME_LEAVE, TME_NONCLIENT, TME_QUERY};
 #[path = "win32_window/rawinput.rs"]
 pub mod rawinput;
+#[path = "win32_window/msg_time.rs"]
+pub mod msg_time;
+pub use msg_time::{tick_ms, tick_ms_from_ns};
+#[path = "win32_window/in_send.rs"]
+pub mod in_send;
+pub use in_send::{receive_flags, ReceivedSend, ISMEX_NOSEND, ISMEX_REPLIED, ISMEX_SEND};
 #[path = "win32_window/queue_status.rs"]
 pub mod queue_status;
 pub use queue_status::{hardware_bit, queue_status_result, thread_state, ThreadState, QS_ALLINPUT, QS_ALLPOSTMESSAGE, QS_INPUT, QS_KEY, QS_MOUSEBUTTON, QS_PAINT, QS_POSTED, QS_SENDMESSAGE, QS_SMRESULT, QS_TIMER};
@@ -236,13 +242,19 @@ pub struct MessageQueue { messages: VecDeque<QueuedMessage>, quit: Option<i32>, 
     /// Wake bits set since the last query that reported them.
     changed: u32,
     /// Descending windowless-timer id allocator; zero means untouched.
-    next_timer_id: u64 }
+    next_timer_id: u64,
+    /// Tick count of the message this thread last read.
+    message_time: u32 }
 
 impl MessageQueue {
     /// Post one hardware message, which contributes its own input class. # C: O(1)
     pub fn post_input(&mut self, message: WinMessage) -> Result<(), QueueError> {
+        self.post_input_at(message, msg_time::tick_ms())
+    }
+    /// # C: O(1)
+    pub fn post_input_at(&mut self, message: WinMessage, time: u32) -> Result<(), QueueError> {
         if self.messages.len() >= MESSAGE_QUEUE_LIMIT { return Err(QueueError::Full); }
-        self.messages.push_back(QueuedMessage { message, key: None, bits: queue_status::hardware_bit(message.message) });
+        self.messages.push_back(QueuedMessage { message, key: None, bits: queue_status::hardware_bit(message.message), time });
         Ok(())
     }
     pub fn post(&mut self, message: WinMessage) -> Result<(), QueueError> {
@@ -250,9 +262,13 @@ impl MessageQueue {
     }
     /// Enqueue one message carrying the wake bits its origin sets. # C: O(1)
     pub fn post_with_bits(&mut self, message: WinMessage, bits: u32) -> Result<(), QueueError> {
+        self.post_with_bits_at(message, bits, msg_time::tick_ms())
+    }
+    /// Enqueue one message with the tick count it is stamped with. # C: O(1)
+    pub fn post_with_bits_at(&mut self, message: WinMessage, bits: u32, time: u32) -> Result<(), QueueError> {
         if self.messages.len() >= MESSAGE_QUEUE_LIMIT { return Err(QueueError::Full); }
         self.changed |= bits;
-        self.messages.push_back(QueuedMessage { message, key: None, bits });
+        self.messages.push_back(QueuedMessage { message, key: None, bits, time });
         Ok(())
     }
     pub fn peek(&mut self, filter: MessageFilter, remove: bool) -> Option<WinMessage> {
@@ -292,6 +308,7 @@ impl MessageQueue {
         let message = WinMessage { hwnd: None, message: WM_QUIT, wparam: code as u64, lparam: 0 };
         if !filter.matches(message) { return None; }
         if remove { self.quit = None; }
+        self.note_message_time(msg_time::tick_ms());
         Some(message)
     }
     fn take_quit_matching<F>(&mut self, matches: F) -> Option<i32>
@@ -300,6 +317,7 @@ impl MessageQueue {
         let message = WinMessage { hwnd: None, message: WM_QUIT, wparam: code as u64, lparam: 0 };
         if !matches(message) { return None; }
         self.quit = None;
+        self.note_message_time(msg_time::tick_ms());
         Some(code)
     }
 }

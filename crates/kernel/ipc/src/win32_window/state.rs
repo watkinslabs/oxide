@@ -167,6 +167,13 @@ impl WindowManager {
     pub fn post_to_window(&mut self, id: WindowId, message: WinMessage) -> Result<(), WindowError> {
         self.post_to_window_with_bits(id, message, queue_status::QS_POSTED)
     }
+    /// Enqueue one post stamped with the tick count it carries. # C: O(N_windows + N_queues)
+    pub fn post_to_window_at(&mut self, id: WindowId, message: WinMessage, time: u32) -> Result<(), WindowError> {
+        let owner = self.get(id).ok_or(WindowError::NoSuchWindow)?.owner_tid;
+        let queue = self.queues.iter_mut().find(|(tid, _)| *tid == owner).map(|(_, queue)| queue)
+            .ok_or(WindowError::NoSuchWindow)?;
+        queue.post_with_bits_at(message, queue_status::QS_POSTED, time).map_err(|_| WindowError::QueueFull)
+    }
     /// Enqueue on the owning thread's queue with the wake bits the origin sets.
     /// # C: O(N_windows + N_queues)
     pub fn post_to_window_with_bits(&mut self, id: WindowId, message: WinMessage, bits: u32) -> Result<(), WindowError> {
@@ -244,8 +251,12 @@ impl WindowManager {
         let windows = &self.windows;
         let matches = |message| message_matches_in_windows(windows, filter, message);
         let queue = &mut self.queues[queue_index].1;
-        queue.peek_matching(matches, remove).or_else(|| queue.quit_message(filter, remove))
-            .or_else(|| self.take_pending_paint(tid, filter, remove))
+        if let Some(message) = queue.peek_matching(matches, remove).or_else(|| queue.quit_message(filter, remove)) { return Some(message); }
+        // A deferred paint is synthesised by the retrieval, so it carries the
+        // tick count of the retrieval rather than a queued stamp.
+        let message = self.take_pending_paint(tid, filter, remove)?;
+        self.note_thread_message_time(tid, msg_time::tick_ms());
+        Some(message)
     }
     /// Replace one queued message with the form a retrieval prepared: the
     /// nonclient renumbering and the double-click promotion belong to the
@@ -293,7 +304,10 @@ impl WindowManager {
         let queue = &mut self.queues[queue_index].1;
         if let Some(message) = queue.peek_matching(matches, true) { QueueResult::Message(message) }
         else if let Some(code) = queue.take_quit_matching(matches) { QueueResult::Quit(code) }
-        else if let Some(message) = self.take_pending_paint(tid, filter, true) { QueueResult::Message(message) }
+        else if let Some(message) = self.take_pending_paint(tid, filter, true) {
+            self.note_thread_message_time(tid, msg_time::tick_ms());
+            QueueResult::Message(message)
+        }
         else { QueueResult::Empty }
     }
     pub fn quit_pending(&self, tid: u64) -> bool { self.queues.iter().find(|(owner, _)| *owner == tid).is_some_and(|(_, queue)| queue.quit_pending()) }

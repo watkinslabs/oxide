@@ -9,18 +9,29 @@ pub(crate) fn queue_status_for_current(flags: u32) -> Option<u32> {
     with_state_mut(|state| state.queue_status(tid, flags))?
 }
 
-/// Answer one thread-state class. Classes naming state this owner does not
-/// keep answer zero, as an unsupported class does. # C: O(N_nt_processes)
+/// Answer one thread-state class. The default IME window class answers zero
+/// because no thread owns one until an IME window is created; the extra-info
+/// class answers zero because no message this owner queues carries hardware
+/// extra information; the foreground class answers zero, as an unsupported
+/// class does. # C: O(N_nt_processes)
 pub(crate) fn thread_state_for_current(class: ThreadState) -> u64 {
     let Some(tid) = current_tid() else { return 0; };
-    with_state(|state| match class {
-        ThreadState::FocusWindow => state.focused().map_or(0, |id| id.raw() as u64),
-        ThreadState::ActiveWindow => state.active_window().map_or(0, |id| id.raw() as u64),
-        ThreadState::CaptureWindow => state.capture_window().map_or(0, |id| id.raw() as u64),
-        ThreadState::InputState => state.input_state(tid) as u64,
-        ThreadState::Cursor => state.current_cursor(),
-        _ => 0,
-    }).unwrap_or(0)
+    match class {
+        // The input context and the received send live beside the window
+        // manager on the same process record, not inside it.
+        ThreadState::DefaultInputContext => super::super::imc::default_input_context_for_current(),
+        ThreadState::InSendMessage => super::super::owner::with_entry(
+            |entry| ipc::win32_window::receive_flags(entry.sent.received_send(tid)) as u64).unwrap_or(0),
+        _ => with_state(|state| match class {
+            ThreadState::FocusWindow => state.focused().map_or(0, |id| id.raw() as u64),
+            ThreadState::ActiveWindow => state.active_window().map_or(0, |id| id.raw() as u64),
+            ThreadState::CaptureWindow => state.capture_window().map_or(0, |id| id.raw() as u64),
+            ThreadState::InputState => state.input_state(tid) as u64,
+            ThreadState::Cursor => state.current_cursor(),
+            ThreadState::MessageTime => state.message_time(tid) as u64,
+            _ => 0,
+        }).unwrap_or(0),
+    }
 }
 
 /// # C: O(N_nt_processes + N_threads)

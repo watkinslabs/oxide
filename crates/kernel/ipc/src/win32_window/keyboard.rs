@@ -24,7 +24,9 @@ impl Default for KeyboardState { fn default() -> Self { Self { bytes: [0; KEY_CO
 #[derive(Clone, Copy)]
 pub(super) struct KeyTransition { key: u8, pressed: bool }
 #[derive(Clone, Copy)]
-pub(super) struct QueuedMessage { pub message: WinMessage, pub key: Option<KeyTransition>, pub bits: u32 }
+pub(super) struct QueuedMessage { pub message: WinMessage, pub key: Option<KeyTransition>, pub bits: u32,
+    /// Tick count at which the message was queued, which its retrieval reports.
+    pub time: u32 }
 
 fn generic(key: u8) -> u8 {
     match key { VK_LSHIFT | VK_RSHIFT => VK_SHIFT, VK_LCONTROL | VK_RCONTROL => VK_CONTROL,
@@ -56,8 +58,13 @@ impl KeyboardState {
 
 impl MessageQueue {
     pub(super) fn read_entry(&mut self, index: usize, remove: bool) -> Option<WinMessage> {
-        if !remove { return self.messages.get(index).map(|entry| entry.message); }
+        if !remove {
+            let (message, time) = self.messages.get(index).map(|entry| (entry.message, entry.time))?;
+            self.note_message_time(time);
+            return Some(message);
+        }
         let entry = self.messages.remove(index)?;
+        self.note_message_time(entry.time);
         if let Some(transition) = entry.key { self.keyboard.apply(transition, false); }
         Some(entry.message)
     }
@@ -77,7 +84,7 @@ impl WindowManager {
         let transition = KeyTransition { key: sided(raw, message.lparam), pressed };
         message.wparam = generic(raw) as u64;
         queue.changed |= super::queue_status::QS_KEY;
-        queue.messages.push_back(QueuedMessage { message, key: Some(transition), bits: super::queue_status::QS_KEY });
+        queue.messages.push_back(QueuedMessage { message, key: Some(transition), bits: super::queue_status::QS_KEY, time: super::msg_time::tick_ms() });
 
         self.keyboard.apply(transition, true);
         Ok(())

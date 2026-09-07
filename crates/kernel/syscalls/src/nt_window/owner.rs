@@ -11,6 +11,20 @@ pub(super) fn new_entry(group: &Arc<sched::thread_group::ThreadGroup>) -> GuiEnt
 
 }
 
+/// Run one closure against the calling NT process's whole GUI record,
+/// creating it on first use. State that lives beside the window manager on the
+/// record — the input contexts, the send queue — is reached through this.
+/// # C: O(N_nt_processes)
+pub(crate) fn with_entry<T>(f: impl FnOnce(&mut GuiEntry) -> T) -> Option<T> {
+    let cur = sched::live::current().filter(|task| task.is_nt_personality())?;
+    let group = Arc::clone(&cur.thread_group);
+    let mut entries = GUI.lock();
+    entries.retain(|entry| entry.group.upgrade().is_some());
+    let index = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group)))
+        .unwrap_or_else(|| { entries.push(new_entry(&group)); entries.len() - 1 });
+    Some(f(&mut entries[index]))
+}
+
 /// Run one closure against the calling NT process's mutable GUI state,
 /// creating the entry on first use. # C: O(N_nt_processes)
 pub(super) fn with_state_mut<T>(f: impl FnOnce(&mut ipc::win32_window::WindowManager) -> T) -> Option<T> {
