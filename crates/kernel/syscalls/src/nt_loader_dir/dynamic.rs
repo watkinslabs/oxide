@@ -180,6 +180,17 @@ pub(super) fn load_unixlib(name_descriptor: u64, module_output: u64) -> u64 {
     }
 }
 
+
+/// Bounded trace naming which loader step refused a dynamic load: a delay
+/// import that fails is otherwise indistinguishable from a missing file.
+fn ldr_fail(step: &'static [u8], name: &[u8]) {
+    use core::sync::atomic::{AtomicU32, Ordering};
+    static BUDGET: AtomicU32 = AtomicU32::new(0);
+    if BUDGET.fetch_add(1, Ordering::Relaxed) >= 64 { return; }
+    klog::write_raw(b"[WINDOWS-LDR-FAIL] step="); klog::write_raw(step);
+    klog::write_raw(b" name="); klog::write_raw(name); klog::write_raw(b"\n");
+}
+
 #[cfg(target_arch = "x86_64")]
 fn load_locked(cur: &sched::Task, name_descriptor: u64, module_output: u64) -> u64 {
     if name_descriptor == 0 { return STATUS_INVALID_PARAMETER; }
@@ -205,10 +216,10 @@ fn load_wide_locked(cur: &sched::Task, wanted: &[u8], module_output: u64) -> u64
         Err(status) => return status,
     };
     let mut filesystem = FilesystemCatalog::new(seed.as_deref(), directories);
-    if filesystem.ensure_root(&narrow_wanted, &narrow_wanted).is_err() { return STATUS_DLL_NOT_FOUND; }
-    if filesystem.populate_dependencies().is_err() { return STATUS_DLL_NOT_FOUND; }
+    if let Err(status) = filesystem.ensure_root(&narrow_wanted, &narrow_wanted) { ldr_fail(b"root", &narrow_wanted); return status; }
+    if let Err(status) = filesystem.populate_dependencies() { ldr_fail(b"dependencies", &narrow_wanted); return status; }
     let Some(root) = filesystem.catalog.modules().iter()
-        .find(|module| pe::loader_name::matches_ascii(&narrow_wanted, &module.name)) else { return STATUS_DLL_NOT_FOUND; };
+        .find(|module| pe::loader_name::matches_ascii(&narrow_wanted, &module.name)) else { ldr_fail(b"catalog", &narrow_wanted); return STATUS_DLL_NOT_FOUND; };
     let name = root.name.clone();
     let blob = root.blob.clone();
     let (exports, ntdll) = match loaded_exports(peb, &filesystem.catalog) { Ok(value) => value, Err(status) => return status };
@@ -217,11 +228,11 @@ fn load_wide_locked(cur: &sched::Task, wanted: &[u8], module_output: u64) -> u64
     let modules = match pe::discover_owned_modules_with_builtins(&name, &blob, &catalog_source,
         |candidate| pe::loader_name::matches_ascii(candidate, b"ntdll.dll") || loaded_module(peb, candidate)) {
         Ok(modules) => modules,
-        Err(_) => return STATUS_DLL_NOT_FOUND,
+        Err(_) => { ldr_fail(b"discover", &narrow_wanted); return STATUS_DLL_NOT_FOUND; }
     };
     let loaded = match elf_load::pe_loader::load_owned_pe_module_graph(&modules, &as_, &resolver, 0) {
         Ok(loaded) => loaded,
-        Err(_) => return STATUS_DLL_NOT_FOUND,
+        Err(_) => { ldr_fail(b"map", &narrow_wanted); return STATUS_DLL_NOT_FOUND; }
     };
     let mut names = Vec::new();
     let mut inputs = Vec::new();
