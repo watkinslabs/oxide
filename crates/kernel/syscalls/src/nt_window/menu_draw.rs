@@ -3,6 +3,7 @@
 //! the font backend the same way any other kernel-owned text run is.
 use alloc::vec::Vec;
 use ipc::win32_menu::draw::MenuDrawOp;
+use ipc::win32_menu::mnemonic::{display_text, DisplayText};
 use ipc::win32_menu::{MenuId, MenuRect, MF_BYPOSITION};
 use ipc::win32_gdi::SystemColor;
 
@@ -30,14 +31,20 @@ fn fill(dc: u64, rect: MenuRect, color: SystemColor) {
 }
 
 /// Queue one item's text for the font backend, centred in its rectangle both
-/// ways for a bar item and left-aligned in a popup. The run is measured with
+/// ways for a bar item and left-aligned in a popup. An item that marks a
+/// mnemonic gets the rule under that character first, in the text colour. The run is measured with
 /// the same cell metrics the layout was built from. `Some` is the redirect
 /// status the syscall this pass runs under must return, so the backend enters
 /// its callback with the payload the launch placed. # C: O(text units)
-fn text(dc: u64, rect: MenuRect, units: &[u16], color: SystemColor, centered: bool) -> Option<u64> {
+fn text(dc: u64, rect: MenuRect, drawn: &DisplayText, color: SystemColor, centered: bool) -> Option<u64> {
+    let units = &drawn.units[..];
     if units.is_empty() { return None; }
     let state = crate::nt_gdi::text_snapshot_for_current(dc).ok()?;
     let metrics = crate::nt_gdi::text_metrics_for_current(dc).ok()?;
+    if let Some(mnemonic) = drawn.mnemonic {
+        let rule = crate::nt_menu_text::underline(rect, units.len(), mnemonic, centered, metrics.height, metrics.ascent);
+        fill(dc, rule, color);
+    }
     let foreground = crate::nt_gdi::system_color_value(color);
     let saved = crate::nt_gdi::set_text_attribute_for_current(dc, ipc::win32_gdi::TextAttribute::Foreground, foreground).ok();
     let saved_mode = crate::nt_gdi::set_text_attribute_for_current(dc, ipc::win32_gdi::TextAttribute::BackgroundMode, TRANSPARENT).ok();
@@ -62,15 +69,12 @@ fn text(dc: u64, rect: MenuRect, units: &[u16], color: SystemColor, centered: bo
     status
 }
 
-/// The displayed text of one item of one menu. # C: O(N_items + text units)
-fn item_text(menu: MenuId, position: u32) -> Option<Vec<u16>> {
+/// The displayed text of one item of one menu, under the prefix rules its
+/// stored label carries. # C: O(N_items + text units)
+fn item_text(menu: MenuId, position: u32) -> Option<DisplayText> {
     super::menu_raw::with_entry(|entry| {
         let item = entry.menus.item(menu, position, MF_BYPOSITION).ok()?;
-        let end = item.text.iter().position(|unit| *unit == 0).unwrap_or(item.text.len());
-        let mut owned = Vec::new();
-        owned.try_reserve(end).ok()?;
-        owned.extend_from_slice(&item.text[..end]);
-        Some(owned)
+        Some(display_text(&item.text))
     }).flatten()
 }
 
@@ -90,8 +94,8 @@ pub(crate) fn run(dc: u64, menu: MenuId, ops: &[MenuDrawOp], origin: (i32, i32))
                 let _ = crate::nt_gdi::fill_polygon_for_current(dc, &run, crate::nt_gdi::system_color_value(*color));
             }
             MenuDrawOp::Text { rect, position, color, centered, .. } => {
-                let Some(units) = item_text(menu, *position) else { continue; };
-                let status = text(dc, shifted(*rect, origin), &units, *color, *centered);
+                let Some(drawn) = item_text(menu, *position) else { continue; };
+                let status = text(dc, shifted(*rect, origin), &drawn, *color, *centered);
                 if launched.is_none() { launched = status; }
             }
         }

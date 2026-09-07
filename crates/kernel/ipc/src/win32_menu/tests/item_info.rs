@@ -137,9 +137,10 @@ fn a_bar_appended_from_a_template_draws_one_text_run_per_item() {
         let item = menus.item(menu, position as u32, MF_BYPOSITION).unwrap();
         assert_eq!(item.text, wide(label));
         let cell = menus.bar_item_rect(menu, position, origin, MENU_CHAR_WIDTH, MENU_CHAR_HEIGHT, MENU_BAR_HEIGHT).unwrap();
-        // Every cell is wider than the one-character-wide gap an empty label
-        // would have left, and its run sits inside it.
-        assert_eq!(cell.right - cell.left, (label.len() as i32 + 2) * MENU_CHAR_WIDTH);
+        // The cell is measured from the label as it is drawn, so the prefix
+        // that marks the mnemonic costs no column, and the run sits inside it.
+        assert_eq!(cell.right - cell.left, (crate::win32_menu::mnemonic::display_len(&item.text) as i32 + 2) * MENU_CHAR_WIDTH);
+        assert_eq!(cell.right - cell.left, (label.len() as i32 + 1) * MENU_CHAR_WIDTH, "one prefix per label is consumed");
         assert_eq!(runs[position], (position as u32, MenuRect { left: cell.left + MENU_CHAR_WIDTH, top: cell.top, right: cell.right - MENU_CHAR_WIDTH, bottom: cell.bottom }));
     }
     let bar = menus.bar_rect(menu, origin, MENU_CHAR_WIDTH, MENU_CHAR_HEIGHT, MENU_BAR_HEIGHT).unwrap();

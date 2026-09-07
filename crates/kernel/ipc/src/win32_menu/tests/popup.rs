@@ -88,7 +88,7 @@ fn the_hit_test_names_the_item_under_a_screen_point() {
 
 #[test]
 fn text_length_stops_at_the_terminator() {
-    assert_eq!(text_len(&[65, 66, 0, 67]), 2);
-    assert_eq!(text_len(&[65, 66]), 2);
-    assert_eq!(text_len(&[]), 0);
+    assert_eq!(crate::win32_menu::mnemonic::stored_len(&[65, 66, 0, 67]), 2);
+    assert_eq!(crate::win32_menu::mnemonic::stored_len(&[65, 66]), 2);
+    assert_eq!(crate::win32_menu::mnemonic::stored_len(&[]), 0);
 }

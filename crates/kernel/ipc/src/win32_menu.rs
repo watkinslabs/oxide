@@ -33,6 +33,8 @@ pub mod bar_hit;
 mod info;
 #[path = "win32_menu/item_info.rs"]
 pub mod item_info;
+#[path = "win32_menu/mnemonic.rs"]
+pub mod mnemonic;
 #[path = "win32_menu/draw.rs"]
 pub mod draw;
 #[path = "win32_menu/popup.rs"]
@@ -72,7 +74,7 @@ impl MenuManager {
     pub fn bar_item_rect(&self, menu: MenuId, position: usize, origin: MenuRect, char_width: i32, char_height: i32, bar_height: i32) -> Result<MenuRect, MenuError> {
         let record = self.menus.get(self.index(menu).ok_or(MenuError::NoSuchMenu)?).ok_or(MenuError::NoSuchMenu)?;
         let item = record.1.items.get(position).ok_or(MenuError::NoSuchItem)?;
-        let text_len = item.text.iter().position(|unit| *unit == 0).unwrap_or(item.text.len()) as i32;
+        let text_len = mnemonic::display_len(&item.text) as i32;
         let width = text_len.checked_mul(char_width).ok_or(MenuError::InvalidPosition)?.checked_add(char_width.checked_mul(2).ok_or(MenuError::InvalidPosition)?).ok_or(MenuError::InvalidPosition)?;
         let height = char_height.max(bar_height.saturating_sub(1));
         let left = if position == 0 { origin.left } else { self.bar_item_rect(menu, position - 1, origin, char_width, char_height, bar_height)?.right };

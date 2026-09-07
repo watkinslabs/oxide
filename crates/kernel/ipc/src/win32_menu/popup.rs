@@ -2,6 +2,7 @@
 //! window, the popup's own size, where that popup lands against the work
 //! area, and which item a screen point names.
 use alloc::vec::Vec;
+use super::mnemonic::display_len;
 use super::{MenuError, MenuId, MenuManager, MenuRect, MF_BYPOSITION, MF_SEPARATOR};
 
 /// Track-popup flags. `TPM_LEFTALIGN`, `TPM_TOPALIGN` and `TPM_LEFTBUTTON`
@@ -47,9 +48,6 @@ pub struct PopupLayout { pub width: i32, pub height: i32, pub items: Vec<MenuRec
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum PopupHit { Nowhere, Border, Item(u32) }
 
-/// Displayed length of an item's text, stopping at the terminator. # C: O(len)
-pub fn text_len(text: &[u16]) -> usize { text.iter().position(|unit| *unit == 0).unwrap_or(text.len()) }
-
 impl MenuManager {
     /// Measure one popup: a single column of items, each a text line except a
     /// separator, clipped to `max_height` rows. The check and arrow columns
@@ -65,7 +63,7 @@ impl MenuManager {
             let item = self.item(menu, position as u32, MF_BYPOSITION)?;
             let separator = item.state & MF_SEPARATOR != 0;
             let height = if separator { SEPARATOR_HEIGHT } else { metrics.char_height };
-            let width = CHECK_WIDTH.saturating_add((text_len(&item.text) as i32).saturating_mul(metrics.char_width)).saturating_add(ARROW_WIDTH);
+            let width = CHECK_WIDTH.saturating_add((display_len(&item.text) as i32).saturating_mul(metrics.char_width)).saturating_add(ARROW_WIDTH);
             if width > widest { widest = width; }
             items.push(MenuRect { left: POPUP_BORDER, top: y, right: POPUP_BORDER, bottom: y.saturating_add(height) });
             y = y.saturating_add(height);

@@ -93,21 +93,14 @@ impl MenuManager {
         Some((low as u64 & 0xffff) | (((item.state | popup | sysmenu) as u64 & 0xffff) << 16))
     }
 
-    /// Position of the first item whose text carries `&key`, the close report
-    /// when none does. # C: O(N_items * len)
+    /// Position of the first item whose own first mnemonic is `key`, none when
+    /// no item marks it. # C: O(N_items * len)
     pub fn item_by_key(&self, menu: MenuId, key: u16) -> Option<u32> {
         let count = self.count(menu).ok()?;
         let wanted = fold_case(key);
         for position in 0..count {
             let item = self.item(menu, position as u32, MF_BYPOSITION).ok()?;
-            let mut index = 0;
-            while index + 1 < item.text.len() {
-                if item.text[index] == '&' as u16 {
-                    if item.text[index + 1] == '&' as u16 { index += 2; continue; }
-                    if fold_case(item.text[index + 1]) == wanted { return Some(position as u32); }
-                }
-                index += 1;
-            }
+            if crate::win32_menu::mnemonic::mnemonic_char(&item.text).map(fold_case) == Some(wanted) { return Some(position as u32); }
         }
         None
     }
