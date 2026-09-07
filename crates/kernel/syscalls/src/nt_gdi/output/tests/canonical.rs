@@ -22,7 +22,7 @@ fn getdc_draw_release_without_endpaint_publishes_canonical_backing_then_becomes_
         state.release_dc_lease(dc).unwrap();}
     assert_eq!(flush_one(||capture(&owner),|frame|{
         assert!(owner.try_lock().is_ok());assert_eq!(frame.header.hwnd,7);
-        assert_eq!(&frame.payload[16+5*4..20+5*4],&0xffabcdefu32.to_le_bytes());true
+        assert_eq!(&frame.payload[PIXELS+5*4..PIXELS+4+5*4],&0xffabcdefu32.to_le_bytes());true
     },|token,success|{assert_eq!(token.dc,backing);assert!(success);owner.lock().unwrap().finish_output(token,success);}),Ok(FlushOutcome::Presented));
     assert!(owner.lock().unwrap().pending_outputs().unwrap().is_empty());
     assert_eq!(flush_one(||capture(&owner),|_|panic!("clean output published"),|_,_|panic!("clean ACK")),Ok(FlushOutcome::Clean));
@@ -80,7 +80,7 @@ fn explicit_clean_zero_frame_reserves_then_acknowledges_and_failure_remains_pend
     let busy=prepare_explicit(&mut g,7,dc).unwrap();
     assert!(matches!(reserve_prepared(&mut g,busy),Err(PrepareError::Busy)));
     let status=publish_prepared(prepared,|record|{
-        assert_eq!(&record.payload[16..20],&0xff000000u32.to_le_bytes());0
+        assert_eq!(&record.payload[PIXELS..PIXELS+4],&0xff000000u32.to_le_bytes());0
     },|token,success|{g.finish_output(token,success);});assert_eq!(status,0);
     // The busy explicit request may have advanced pending generation; finish it normally.
     let prepared=prepare_explicit(&mut g,7,dc).unwrap();
@@ -95,13 +95,21 @@ fn explicit_clean_zero_frame_reserves_then_acknowledges_and_failure_remains_pend
 #[test]
 fn reserve_captured_reuses_record_allocation_and_validates_backing_identity_and_size(){
     let mut g=GdiManager::new();let dc=g.acquire_window_dc(7,2,2).unwrap();
-    let wrong=crate::nt_gdi_frame::snapshot(7,1,1,1,&[0]).unwrap();
+    let wrong=crate::nt_gdi_frame::snapshot(7,1,1,1,&[0],whole(1,1)).unwrap();
     assert!(matches!(reserve_captured(&mut g,7,dc,wrong),Err(PrepareError::Invalid)));
     assert!(g.pending_outputs().unwrap().is_empty());
-    let (w,h,pixels)=g.surface(dc).unwrap();let record=crate::nt_gdi_frame::snapshot(7,1,w,h,pixels).unwrap();
+    let (w,h,pixels)=g.surface(dc).unwrap();let record=crate::nt_gdi_frame::snapshot(7,1,w,h,pixels,whole(w,h)).unwrap();
     let allocation=record.payload.as_ptr();
     let prepared=reserve_captured(&mut g,7,dc,record).unwrap();assert_eq!(prepared.record.payload.as_ptr(),allocation);
     let prepared=reserve_prepared(&mut g,prepared).unwrap();assert_eq!(prepared.record.payload.as_ptr(),allocation);
     assert_eq!(publish_prepared(prepared,|_|0,|token,success|{g.finish_output(token,success);}),0);
     assert!(g.pending_outputs().unwrap().is_empty());
 }
+
+/// Whole-surface coverage, the damage a fixture with no narrower one sends.
+fn whole(width: i32, height: i32) -> syscall::nt_compositor::Damage {
+    syscall::nt_compositor::Damage { left: 0, top: 0, right: width, bottom: height }
+}
+
+/// First pixel byte of a frame payload, after the extent, format and damage.
+const PIXELS: usize = syscall::nt_compositor::FRAME_HEADER_BYTES;

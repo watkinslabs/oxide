@@ -56,9 +56,29 @@ pub(crate) fn begin_with(hwnd:u32,dc:u32,destination:u64,kernel:bool,nc_region:u
         Some((Resources{hwnd:hwnd as u64,dc:dc as u64,nc_region:if session.nonclient{nc_region as u64}else{0},
             erase:session.erase,delayed:session.delayed_erase,empty_clip:region.is_empty()},region))
     })();
-    let Some((resources,region))=snapshot else{prepared.discard(&mut Current);return 0;};
+    let Some((resources,region))=snapshot else{trace_region(hwnd,dc,None);prepared.discard(&mut Current);return 0;};
+    trace_region(hwnd,dc,Some(&region));
     if crate::nt_gdi::set_paint_region_for_current(dc as u64,region).is_err(){prepared.discard(&mut Current);return 0;}
     run(resources,prepared)
+}
+/// Coverage one paint admitted, before any window procedure can draw into it.
+/// An empty region clips every glyph away while the erase and the paint
+/// message still run, which reads exactly like a control that drew nothing.
+/// Bounded so a running desktop stays quiet.
+fn trace_region(hwnd:u32,dc:u32,region:Option<&ipc::win32_window::PaintRegion>){
+    use core::sync::atomic::{AtomicU32,Ordering};
+    const BUDGET:u32=48;
+    static SPENT:AtomicU32=AtomicU32::new(0);
+    if SPENT.fetch_add(1,Ordering::Relaxed)>=BUDGET{return;}
+    klog::write_raw(b"[WINDOWS-PAINT-REGION] hwnd=");klog::write_hex_u64(hwnd as u64);
+    klog::write_raw(b" dc=");klog::write_hex_u64(dc as u64);
+    let Some(region)=region else{klog::write_raw(b" open=0\n");return;};
+    klog::write_raw(b" rects=");klog::write_hex_u64(region.rects().len() as u64);
+    let bounds=region.bounds().unwrap_or(ipc::win32_window::WindowRect{left:0,top:0,right:0,bottom:0});
+    for (name,value) in [(&b" l="[..],bounds.left),(&b" t="[..],bounds.top),(&b" r="[..],bounds.right),(&b" b="[..],bounds.bottom)]{
+        klog::write_raw(name);klog::write_hex_u64(value as i64 as u64);
+    }
+    klog::write_raw(b"\n");
 }
 /// Existing callback queue calls exactly once on original sender after final Send or cancellation.
 /// # C: O(processes + windows + usercopy)

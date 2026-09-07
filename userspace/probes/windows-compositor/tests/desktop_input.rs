@@ -126,6 +126,7 @@ fn injected_pointer_and_keys_reach_the_bridge_under_a_compositor() {
     let mut frame = Vec::new();
     frame.extend_from_slice(&EDGE.to_le_bytes()); frame.extend_from_slice(&EDGE.to_le_bytes());
     frame.extend_from_slice(&(EDGE * 4).to_le_bytes()); frame.extend_from_slice(&wire::PIXEL_BGRA8888.to_le_bytes());
+    frame.extend_from_slice(&wire::Damage { left: 0, top: 0, right: EDGE as i32, bottom: EDGE as i32 }.encode());
     frame.extend(core::iter::repeat_n(0x00ff_ffffu32.to_le_bytes(), (EDGE * EDGE) as usize).flatten());
     send(&mut peer, Opcode::Frame, 3, 1, frame);
     send(&mut peer, Opcode::Visibility, 4, 1, 1u32.to_le_bytes().to_vec());

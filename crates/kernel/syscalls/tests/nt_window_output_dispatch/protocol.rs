@@ -122,7 +122,7 @@ fn stale_capture_refreshes_pixels_before_reservation_and_upload(){
     let _serial=SERIAL.lock().unwrap();setup();let prepared=crate::presentation_fixture::capture_current();
     {let mut entries=nt_gdi::GDI.lock();entries[0].state.write_dc_pixel(prepared.token.dc,0,0,0x765432).unwrap();}
     *nt_gdi::TRANSPORT.lock().unwrap()=Some(|frame|{
-        assert_eq!(&frame.payload[16..20],&0xff765432u32.to_le_bytes());0
+        assert_eq!(&frame.payload[PIXELS..PIXELS+4],&0xff765432u32.to_le_bytes());0
     });
     assert_eq!(nt_gdi::output::kernel::submit_prepared_for_current(Ok(prepared)),0);assert!(nt_gdi::clean());
 }
@@ -140,3 +140,6 @@ fn already_acknowledged_capture_is_not_retransmitted_or_reported_invalid(){
     assert_eq!(nt_gdi::output::kernel::submit_prepared_for_current(Ok(prepared)),0);
     assert_eq!(*EVENTS.lock().unwrap(),events);
 }
+
+/// First pixel byte of a frame payload, after the extent, format and damage.
+const PIXELS: usize = syscall::nt_compositor::FRAME_HEADER_BYTES;

@@ -49,7 +49,19 @@ fn real_repaint_composites_caret_on_expose_and_restores_move_hide_and_new_frame(
         assert_ne!(damaged,expected);client.expose(xid,1,0,1,2);damaged[1]=expected[1];damaged[5]=expected[5];
         wait_pixels(&mut backend,&client,xid,&damaged);
     }
+    // A caret update repaints where the overlay was and where it now is, and
+    // nothing else: the pixels the loop above cleared behind the server's back
+    // are the server's to lose and an Expose is what restores them, exactly as
+    // for any other client. Assert that narrowing first, then restore the
+    // window the way X does before going on.
+    let mut cleared=client.pixels(xid,4,3);
     assert_eq!(caret(&mut backend,&mut transport,&mut peer,3,7,snapshot(2,2,1,true)),0);
+    // Union of where the overlay was (x=1,y=0..2) and where it is (x=2,y=1..3),
+    // clipped to the 4x3 surface: columns 1 and 2 of every row.
+    for index in [1,2,5,9]{cleared[index]=0x112233;}
+    for index in [6,10]{cleared[index]=0x112233^0xffffff;}
+    wait_pixels(&mut backend,&client,xid,&cleared);
+    client.expose(xid,0,0,4,3);
     expected=vec![0x112233;12];expected[6]^=0xffffff;expected[10]^=0xffffff;wait_pixels(&mut backend,&client,xid,&expected);
     assert_eq!(caret(&mut backend,&mut transport,&mut peer,4,7,snapshot(3,2,1,false)),0);wait_pixels(&mut backend,&client,xid,&vec![0x112233;12]);
     assert_eq!(caret(&mut backend,&mut transport,&mut peer,5,7,snapshot(4,2,1,true)),0);frame(&mut backend,7,0xabcdef);

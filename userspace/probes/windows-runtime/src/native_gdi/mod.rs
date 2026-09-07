@@ -22,3 +22,5 @@ mod glyph_tests;
 mod query_entry_tests;
 #[cfg(test)]
 mod nonclient_tests;
+#[cfg(test)]
+mod edit_run_tests;

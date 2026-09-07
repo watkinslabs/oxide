@@ -97,7 +97,8 @@ fn byte_budget_applies_even_with_record_slots_remaining() {
     let frame = || {
         let mut p = vec![];
         for value in [4096u32, 1024, 16384, wire::PIXEL_BGRA8888] { p.extend_from_slice(&value.to_le_bytes()); }
-        p.resize(16 + 16384 * 1024, 0); p
+        p.extend_from_slice(&wire::Damage { left: 0, top: 0, right: 4096, bottom: 1024 }.encode());
+        p.resize(wire::FRAME_HEADER_BYTES + 16384 * 1024, 0); p
     };
     for _ in 0..3 { queue.enqueue(Opcode::Frame, 1, frame()).unwrap(); }
     assert_eq!(queue.enqueue(Opcode::Frame, 1, frame()), Err(TransportError::Full));

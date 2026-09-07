@@ -11,7 +11,7 @@ mod paint_frame;
 #[path="../../src/nt_gdi/presentation.rs"]
 mod production;
 
-fn pixel(frame:&Record,index:usize)->u32{u32::from_le_bytes(frame.payload[16+index*4..20+index*4].try_into().unwrap())}
+fn pixel(frame:&Record,index:usize)->u32{u32::from_le_bytes(frame.payload[PIXELS+index*4..PIXELS+4+index*4].try_into().unwrap())}
 fn hwnd()->u32{nt_gdi::GDI.lock()[0].state.pending_outputs().unwrap()[0].hwnd}
 fn submit(frame:output::PreparedFrame)->u64{nt_gdi::output::kernel::submit_prepared_for_current(Ok(frame))}
 fn accept(_: &Record)->u64{0}
@@ -100,3 +100,6 @@ fn actual_capture_rejects_mismatched_region_before_storage_mutation(){
     assert_eq!(state.pending_outputs().unwrap(),before);assert_eq!(state.pixels(dc).unwrap(),pixels);
     assert!(state.reserve_output(before[0]));state.finish_output(before[0],false);
 }
+
+/// First pixel byte of a frame payload, after the extent, format and damage.
+const PIXELS: usize = syscall::nt_compositor::FRAME_HEADER_BYTES;

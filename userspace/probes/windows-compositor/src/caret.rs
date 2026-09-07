@@ -2,14 +2,40 @@
 use crate::{Frame,TransportError};
 use std::borrow::Cow;
 use syscall::nt_compositor::caret::Snapshot;
+/// A caret overlay's coverage, in the backing surface's own coordinates.
+pub(crate) type Bounds=crate::Rect;
+/// Coverage of an overlay that is drawn nowhere.
+const EMPTY:Bounds=Bounds{left:0,top:0,right:0,bottom:0};
+
+/// Coverage of both, so a caret that moved erases where it was and draws
+/// where it is in one repaint. # C: O(1)
+fn union(a:Option<Bounds>,b:Option<Bounds>)->Option<Bounds>{
+    match (a,b){
+        (Some(a),Some(b))=>Some(Bounds{left:a.left.min(b.left),top:a.top.min(b.top),right:a.right.max(b.right),bottom:a.bottom.max(b.bottom)}),
+        (one,None)|(None,one)=>one,
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct Surface {snapshot:Option<Snapshot>}
 impl Surface {
     /// Equal-generation erase/paint is stream-ordered; older transactions cannot resurrect an image.
-    pub(crate) fn update(&mut self,snapshot:Snapshot)->Result<bool,TransportError>{
+    /// `None` is a snapshot that did not take effect. An accepted one reports
+    /// the coverage it alters - where the overlay was and where it now is -
+    /// which is empty when neither is drawn.
+    pub(crate) fn update(&mut self,snapshot:Snapshot)->Result<Option<Bounds>,TransportError>{
         snapshot.validate().map_err(|_|TransportError::InvalidFrame)?;
-        if self.snapshot.as_ref().is_some_and(|old|old.generation>snapshot.generation||old==&snapshot){return Ok(false);}
-        self.snapshot=Some(snapshot);Ok(true)
+        if self.snapshot.as_ref().is_some_and(|old|old.generation>snapshot.generation||old==&snapshot){return Ok(None);}
+        let before=self.covered();
+        self.snapshot=Some(snapshot);
+        Ok(Some(union(before,self.covered()).unwrap_or(EMPTY)))
+    }
+
+    /// Where this surface currently draws, if anywhere. # C: O(1)
+    fn covered(&self)->Option<Bounds>{
+        let s=self.snapshot.as_ref().filter(|s|s.visible)?;
+        Some(Bounds{left:s.rect.x,top:s.rect.y,right:s.rect.x.saturating_add(s.rect.width as i32),
+            bottom:s.rect.y.saturating_add(s.rect.height as i32)})
     }
     /// Output is disposable presentation pixels. Caller never replaces the pristine base with these.
     pub(crate) fn compose<'a>(&self,base:&'a Frame)->Result<Cow<'a,[u32]>,TransportError>{

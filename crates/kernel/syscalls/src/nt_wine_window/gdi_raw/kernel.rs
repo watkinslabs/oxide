@@ -124,14 +124,15 @@ fn measure_request(dc: u64, kind: u32) -> Option<MeasureRequest> {
 }
 
 pub(crate) fn ext_text_out(dc: u64, x: i32, y: i32, flags: u32, rect: u64, text: u64, count: u32, dx: u64, code_page: u32) -> u64 {
-    let Ok(state) = crate::nt_gdi::text_snapshot_for_current(dc) else { return 0; };
-    let Ok(input) = super::text_output::validate(flags, rect, text, count, dx, code_page) else { return 0; };
-    let metrics = match crate::nt_gdi::text_metrics_for_current(dc) { Ok(metrics) => metrics, Err(_) => return 0 };
+    use super::text_trace;
+    let Ok(state) = crate::nt_gdi::text_snapshot_for_current(dc) else { text_trace::refused(dc, b"snapshot"); return 0; };
+    let Ok(input) = super::text_output::validate(flags, rect, text, count, dx, code_page) else { text_trace::refused(dc, b"admit"); return 0; };
+    let metrics = match crate::nt_gdi::text_metrics_for_current(dc) { Ok(metrics) => metrics, Err(_) => { text_trace::refused(dc, b"metrics"); return 0; } };
     let (height, width, weight, italic) = state.font.map(|font| (font.height, font.width, font.weight, font.italic as u32))
         .unwrap_or((metrics.height, 0, 0, 0));
     let has_rect = input.rect.is_some();
     let mut raw_rect = [0u8; 16];
-    if let Some(rect) = input.rect { if uaccess::copy_from_user(&mut raw_rect, rect).is_err() { return 0; } }
+    if let Some(rect) = input.rect { if uaccess::copy_from_user(&mut raw_rect, rect).is_err() { text_trace::refused(dc, b"rect"); return 0; } }
     let mut request_rect = [0i32; 4];
     for (index, slot) in request_rect.iter_mut().enumerate() { *slot = i32::from_le_bytes(raw_rect[index * 4..index * 4 + 4].try_into().unwrap()); }
     let request = TextRequest { version: syscall::nt_native_gdi::VERSION, size: core::mem::size_of::<TextRequest>() as u32,
@@ -141,5 +142,7 @@ pub(crate) fn ext_text_out(dc: u64, x: i32, y: i32, flags: u32, rect: u64, text:
         background_mode: state.attributes.background_mode, alignment: state.attributes.alignment,
         current_x: state.attributes.current_position.0, current_y: state.attributes.current_position.1,
         break_extra: state.break_extra, break_rem: state.break_rem };
-    crate::nt_native_gdi::begin(request)
+    let status = crate::nt_native_gdi::begin(request);
+    text_trace::admitted(dc, input.flags, input.count, x, y, request.advances, status);
+    status
 }

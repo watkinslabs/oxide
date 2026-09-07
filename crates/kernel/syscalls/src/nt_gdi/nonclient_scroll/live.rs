@@ -18,7 +18,8 @@ pub(crate) fn repaint_nonclient_scroll_for_current(hwnd: u64, bar: i32, scroll: 
         // removal; neither Hidden nor Clipped proves a submitted repaint.
         if !matches!(outcome, ScrollDrawOutcome::Painted(_)) { return false; }
         let Some((width, height, pixels)) = entry.state.surface(dc) else { return false; };
-        crate::nt_gdi_frame::snapshot(hwnd, 1, width, height, pixels).map_err(|_| STATUS_INVALID_PARAMETER)
+        let whole = syscall::nt_compositor::Damage { left: 0, top: 0, right: width, bottom: height };
+        crate::nt_gdi_frame::snapshot(hwnd, 1, width, height, pixels, whole).map_err(|_| STATUS_INVALID_PARAMETER)
     };
     submit_frame(frame) == STATUS_SUCCESS
 }

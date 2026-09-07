@@ -26,7 +26,7 @@ fn surface()->(u32,u32,PaintRegion,PaintBacking){
         PaintBacking{width:2,height:2,client:Rect{left:0,top:0,right:2,bottom:2}})
 }
 fn accept(frame:&syscall::nt_compositor::Record)->u64{
-    assert_eq!(&frame.payload[16..20],&0xff123456u32.to_le_bytes());STATUS_SUCCESS
+    assert_eq!(&frame.payload[PIXELS..PIXELS+4],&0xff123456u32.to_le_bytes());STATUS_SUCCESS
 }
 #[test]
 fn actual_erase_success_and_failed_transport_both_finish_retention_without_pending_escape(){
@@ -67,3 +67,6 @@ fn actual_erase_preserves_terminal_transport_error_if_backing_was_destroyed(){
     *nt_gdi::TRANSPORT.lock().unwrap()=Some(|frame|{GDI.lock()[0].state.destroy_window_dc(frame.header.hwnd as u32).unwrap();DISCONNECTED});
     assert_eq!(production::retain_erase_for_current(hwnd,dc,&region,layout),Err(DISCONNECTED));
 }
+
+/// First pixel byte of a frame payload, after the extent, format and damage.
+const PIXELS: usize = syscall::nt_compositor::FRAME_HEADER_BYTES;

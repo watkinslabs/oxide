@@ -29,7 +29,8 @@ pub enum Opcode {
     Title = 4,
     /// i32 x,y; u32 width,height.
     Geometry = 5,
-    /// u32 width,height,stride,format; stride*height owned pixel bytes.
+    /// u32 width,height,stride,format; i32 damage left,top,right,bottom;
+    /// stride*height owned pixel bytes.
     Frame = 6,
     /// u64 insertion; u32 flags (1 order, 2 activate); u32 reserved=0.
     Position = 7,
@@ -119,7 +120,7 @@ impl Header {
             // separate axis, not a second reading of the vertical one.
             Opcode::Pointer => n == 20,
             Opcode::Title | Opcode::Text => n <= MAX_TITLE,
-            Opcode::Frame => n >= 16,
+            Opcode::Frame => n >= FRAME_HEADER_BYTES,
             Opcode::Caret => n >= caret::HEADER_BYTES && n <= caret::HEADER_BYTES + caret::MAX_MASK_BYTES,
             Opcode::Monitors => n >= 4 && n <= 4 + MAX_MONITORS * 32 && (n - 4) % 32 == 0,
         };
@@ -171,12 +172,43 @@ impl Rect {
     }
 }
 
+/// Fixed fields a frame payload carries before its pixels: the surface
+/// extent and format, then the damage rectangle the surface changed in.
+pub const FRAME_HEADER_BYTES: usize = 32;
+
+/// The damaged sub-rectangle of one frame's surface. A surface arrives whole,
+/// because a re-expose repaints from it, but only this part of it changed and
+/// only this part has to reach the display.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Damage { pub left: i32, pub top: i32, pub right: i32, pub bottom: i32 }
+
+impl Damage {
+    /// Non-empty and inside the surface it names. # C: O(1)
+    pub fn valid(self, width: u32, height: u32) -> bool {
+        self.left >= 0 && self.top >= 0 && self.left < self.right && self.top < self.bottom
+            && i64::from(self.right) <= i64::from(width) && i64::from(self.bottom) <= i64::from(height)
+    }
+    /// # C: O(1)
+    pub fn encode(self) -> [u8; 16] {
+        let mut out = [0; 16];
+        for (i, value) in [self.left, self.top, self.right, self.bottom].iter().enumerate() {
+            out[i * 4..i * 4 + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        out
+    }
+    /// # C: O(1)
+    pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
+        Ok(Self { left: u32_at(bytes, 0)? as i32, top: u32_at(bytes, 4)? as i32,
+            right: u32_at(bytes, 8)? as i32, bottom: u32_at(bytes, 12)? as i32 })
+    }
+}
+
 /// Validate an owned pixel extent without multiplication wrap or trailing bytes. # C: O(1)
 pub fn pixel_len(width: u32, height: u32, stride: u32, format: u32) -> Result<usize, Error> {
     Rect { x: 0, y: 0, width, height }.validate()?;
     if format != PIXEL_BGRA8888 || stride % 4 != 0 || stride < width.checked_mul(4).ok_or(Error::Overflow)? { return Err(Error::Payload); }
     let n = (stride as usize).checked_mul(height as usize).ok_or(Error::Overflow)?;
-    if n > MAX_PAYLOAD - 16 { return Err(Error::Length); } Ok(n)
+    if n > MAX_PAYLOAD - FRAME_HEADER_BYTES { return Err(Error::Length); } Ok(n)
 }
 
 impl Record {
@@ -202,8 +234,10 @@ impl Record {
             Opcode::Key => { if u32_at(p, 8)? > 1 { return Err(Error::Payload); } }
             Opcode::Title | Opcode::Text => { if p.contains(&0) || core::str::from_utf8(p).is_err() { return Err(Error::Payload); } }
             Opcode::Frame => {
-                let n = pixel_len(u32_at(p, 0)?, u32_at(p, 4)?, u32_at(p, 8)?, u32_at(p, 12)?)?;
-                if p.len() != 16 + n { return Err(Error::Length); }
+                let (width, height) = (u32_at(p, 0)?, u32_at(p, 4)?);
+                let n = pixel_len(width, height, u32_at(p, 8)?, u32_at(p, 12)?)?;
+                if p.len() != FRAME_HEADER_BYTES + n { return Err(Error::Length); }
+                if !Damage::decode(&p[16..FRAME_HEADER_BYTES])?.valid(width, height) { return Err(Error::Payload); }
             }
             Opcode::Monitors => { self.monitors()?; }
             Opcode::Caret => caret::validate_payload(p)?,

@@ -75,7 +75,7 @@ mod nt_gdi{
         EVENTS.lock().unwrap().push("frame");
         let transport=*TRANSPORT.lock().unwrap();
         if let Some(transport)=transport{return transport(&frame);}
-        assert_eq!(&frame.payload[16..20],&0xffabcdefu32.to_le_bytes());STATUS_SUCCESS
+        assert_eq!(&frame.payload[PIXELS..PIXELS+4],&0xffabcdefu32.to_le_bytes());STATUS_SUCCESS
     }
     pub fn setup(hwnd:u32){let task=sched::live::current().unwrap();let mut state=ipc::win32_gdi::GdiManager::new();
         let dc=state.acquire_window_dc(hwnd,2,2).unwrap();state.write_dc_pixel(dc,0,0,0xabcdef).unwrap();
@@ -84,7 +84,7 @@ mod nt_gdi{
     pub fn explicit_publish()->u64{
         let prepared={let mut entries=GDI.lock();let state=&mut entries[0].state;
             let token=state.pending_outputs().unwrap()[0];let(w,h,pixels)=state.surface(token.dc).unwrap();
-            let record=crate::nt_gdi_frame::snapshot(token.hwnd,1,w,h,pixels).unwrap();
+            let record=crate::nt_gdi_frame::snapshot(token.hwnd,1,w,h,pixels,whole(w,h)).unwrap();
             crate::output::reserve_captured(state,token.hwnd,token.dc,record).unwrap()};
         output::kernel::submit_prepared_for_current(Ok(prepared))
     }
@@ -183,3 +183,11 @@ fn actual_explicit_submit_finishes_reserved_backing_outside_gui_and_gdi_locks(){
     let _serial=SERIAL.lock().unwrap();setup();assert_eq!(nt_gdi::explicit_publish(),0);
     assert_eq!(*EVENTS.lock().unwrap(),["frame"]);assert!(nt_gdi::clean());
 }
+
+/// Whole-surface coverage, the damage a fixture with no narrower one sends.
+fn whole(width: i32, height: i32) -> syscall::nt_compositor::Damage {
+    syscall::nt_compositor::Damage { left: 0, top: 0, right: width, bottom: height }
+}
+
+/// First pixel byte of a frame payload, after the extent, format and damage.
+const PIXELS: usize = syscall::nt_compositor::FRAME_HEADER_BYTES;
