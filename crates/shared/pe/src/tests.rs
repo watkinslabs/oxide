@@ -3,9 +3,10 @@ use alloc::{vec, vec::Vec};
 
 mod robustness;
 #[path = "tests/shipped_catalog.rs"] mod shipped_catalog;
+#[path = "tests/image_section.rs"] mod image_section;
 
-const OPT: usize = 0x98;
-const SEC: usize = 0x188;
+pub(crate) const OPT: usize = 0x98;
+pub(crate) const SEC: usize = 0x188;
 
 pub(crate) fn image() -> Vec<u8> {
     let mut b = vec![0u8; 0x800]; b[..2].copy_from_slice(b"MZ"); b[0x3c..0x40].copy_from_slice(&(0x80u32).to_le_bytes());

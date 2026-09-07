@@ -206,18 +206,7 @@ impl<'a> Image<'a> {
         })
     }
     /// # C: O(N_sections + SizeOfImage)
-    pub fn materialize(&self) -> Result<Vec<u8>, Error> {
-        let mut image = vec![0u8; self.size_of_image as usize];
-        let headers = self.size_of_headers as usize;
-        image[..headers].copy_from_slice(self.raw.get(..headers).ok_or(Error::Einval)?);
-        for s in &self.sections {
-            let va = s.virtual_address as usize;
-            let end = va.checked_add(s.raw_size as usize).ok_or(Error::Einval)?;
-            let src_end = (s.raw_offset as usize).checked_add(s.raw_size as usize).ok_or(Error::Einval)?;
-            image.get_mut(va..end).ok_or(Error::Einval)?.copy_from_slice(self.raw.get(s.raw_offset as usize..src_end).ok_or(Error::Einval)?);
-        }
-        Ok(image)
-    }
+    pub fn materialize(&self) -> Result<Vec<u8>, Error> { crate::image_view::materialize_view(self) }
     /// # C: O(import directory + dependency name bytes)
     pub fn imports(&self) -> Result<Vec<Import<'a>>, Error> {
         let d = self.directories[IMAGE_DIRECTORY_ENTRY_IMPORT]; let mut out = Vec::new();

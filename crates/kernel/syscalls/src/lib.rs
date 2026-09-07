@@ -32,6 +32,9 @@ mod nt_text_order;
 // Where one menu item's glyphs start and what record the run carries.
 mod nt_menu_text;
 pub mod nt_dispatch;
+// Allocation attributes and the statuses an image-attributed section answers.
+pub mod nt_section_image;
+mod nt_image_section;
 pub(crate) mod nt_transition_measure;
 include!("nt_manifest.rs");
 mod nt_wine_unix;
