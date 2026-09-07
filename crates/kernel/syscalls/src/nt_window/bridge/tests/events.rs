@@ -424,3 +424,42 @@ fn configure_failure_preserves_existing_damage_as_well_as_rect_and_queue() {
     assert_eq!(state.begin_paint(id), Ok(Some(damage)));
     assert!(state.check_message_capacity(id, 1).is_ok());
 }
+
+/// A desktop click is two reports whose only difference is the button mask,
+/// and each has to become the window message that names that transition. The
+/// bridge's own tests end at the wire, so this is the boundary that proves a
+/// click reaches the window's queue.
+#[test]
+fn a_desktop_click_becomes_a_button_down_and_up_on_the_window_queue() {
+    let (mut state, id) = state();
+    let mut deliver_pointer = |state: &mut WindowManager, buttons: u32| {
+        let record = event(Opcode::Pointer, id, words(&[9, 11, buttons, 0, 0]));
+        apply_event(state, &record, |state, id, x, y, buttons, wheel, hwheel| state.post_compositor_pointer(id, x, y, buttons, wheel, hwheel).is_ok())
+    };
+    assert!(deliver_pointer(&mut state, gui::MK_LBUTTON as u32));
+    assert!(deliver_pointer(&mut state, 0));
+    // Hardware input wakes a queue on its own class, so a wait for input
+    // releases; a post bit alone would leave that wait parked.
+    let pending = state.pending_status(17);
+    assert_eq!(pending & gui::queue_status::QS_MOUSEBUTTON, gui::queue_status::QS_MOUSEBUTTON);
+    assert_eq!(pending & gui::queue_status::QS_MOUSEMOVE, gui::queue_status::QS_MOUSEMOVE);
+    let messages: Vec<u32> = core::iter::from_fn(|| next(&mut state)).map(|message| message.message).collect();
+    assert_eq!(messages, alloc::vec![gui::WM_MOUSEMOVE, gui::WM_LBUTTONDOWN, gui::WM_LBUTTONUP]);
+}
+
+/// The desktop reports focus on the top-level window; activation and keyboard
+/// focus are what the application observes.
+#[test]
+fn a_desktop_focus_report_activates_the_window_and_gives_it_the_keyboard() {
+    let (mut state, id) = state();
+    assert!(deliver(&mut state, &event(Opcode::Focus, id, words(&[1]))));
+    assert_eq!(state.active_window(), Some(id));
+    assert_eq!(state.focused(), Some(id));
+    let messages: Vec<u32> = core::iter::from_fn(|| next(&mut state)).map(|message| message.message).collect();
+    assert!(messages.contains(&0x0006), "activation must reach the window: {messages:?}");
+    assert!(messages.contains(&gui::WM_SETFOCUS), "keyboard focus must reach the window: {messages:?}");
+    // A key report then lands on that window as a Windows key message.
+    let key = event(Opcode::Key, id, words(&[0x41, 0x1e, 1, 0]));
+    assert!(deliver(&mut state, &key));
+    assert_eq!(next(&mut state).map(|message| (message.message, message.wparam)), Some((gui::WM_KEYDOWN, 0x41)));
+}
