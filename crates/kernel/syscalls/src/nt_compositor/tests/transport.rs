@@ -223,3 +223,29 @@ fn unwaited_records_do_not_exhaust_the_queue() {
         queue.sent().unwrap();
     }
 }
+
+#[test]
+fn only_a_presented_frame_reports_the_desktop_acknowledgement() {
+    // Nothing waits on a frame's completion any more, so the acknowledgement
+    // itself is what says the desktop took the pixels. A control request the
+    // desktop carries out is acknowledged the same way and is not that.
+    let mut queue = Queue::new();
+    let pixels = || {
+        let mut p = vec![];
+        for value in [1u32, 1, 4, wire::PIXEL_BGRA8888] { p.extend_from_slice(&value.to_le_bytes()); }
+        p.extend_from_slice(&wire::Damage { left: 0, top: 0, right: 1, bottom: 1 }.encode());
+        p.resize(wire::FRAME_HEADER_BYTES + 4, 0); p
+    };
+    let control = queue.enqueue(Opcode::Title, 7, b"name".to_vec()).unwrap();
+    queue.take_send().unwrap(); queue.sent().unwrap();
+    assert_eq!(queue.acknowledge(control, 7, 0), Ok(false));
+
+    let frame = queue.enqueue(Opcode::Frame, 7, pixels()).unwrap();
+    queue.take_send().unwrap(); queue.sent().unwrap();
+    assert_eq!(queue.acknowledge(frame, 7, 0), Ok(true));
+
+    // A frame the desktop refused is not an acknowledgement of pixels.
+    let refused = queue.enqueue(Opcode::Frame, 7, pixels()).unwrap();
+    queue.take_send().unwrap(); queue.sent().unwrap();
+    assert_eq!(queue.acknowledge(refused, 7, 1), Ok(false));
+}

@@ -76,8 +76,13 @@ extern "C" fn reader(arg: usize) -> ! {
         let (sequence, hwnd) = (record.header.sequence, record.header.hwnd);
         if opcode == Opcode::Ack {
             let status = wire::u32_at(&record.payload, 0).unwrap_or(u32::MAX);
-            if binding.state.lock().queue.acknowledge(sequence, hwnd, status).is_err() {
-                teardown(b"rx-ack-unmatched", sequence, hwnd); break;
+            match binding.state.lock().queue.acknowledge(sequence, hwnd, status) {
+                // The desktop confirming pixels it was handed is the frame
+                // milestone; nothing waits on the completion any more, so
+                // this is where that acknowledgement is observed.
+                Ok(true) => crate::nt_milestone::desktop_ack(),
+                Ok(false) => {}
+                Err(_) => { teardown(b"rx-ack-unmatched", sequence, hwnd); break; }
             }
         } else {
             {
