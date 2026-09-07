@@ -8,10 +8,9 @@
 //! the retrieval-time hit test, the nonclient press the default procedure
 //! turns into `SC_MOUSEMENU`, and the whole modal tracking loop against real
 //! window and menu state.
-use ipc::win32_gdi::{MENU_BAR_HEIGHT, MENU_CHAR_HEIGHT, MENU_CHAR_WIDTH};
 use ipc::win32_menu::bar_hit::BarMetrics;
 use ipc::win32_menu::chain::{self, BarChain, OpenMenu};
-use ipc::win32_menu::draw::MenuDrawOp;
+use ipc::win32_menu::draw::{MenuDrawOp, MenuTextHalf};
 use ipc::win32_menu::popup::{popup_origin, PopupHit, PopupMetrics, TPM_BUTTONDOWN};
 use ipc::win32_menu::track::{PointerEvent, TrackEffect, WM_COMMAND};
 use ipc::win32_menu::track_loop::{classify, LoopAction, LoopStep, ProcCall, RetrievedMessage, TrackLoop};
@@ -28,8 +27,10 @@ const MK_LBUTTON: u32 = 0x0001;
 const WINDOW: WindowRect = WindowRect { left: 120, top: 90, right: 760, bottom: 570 };
 /// The whole screen a popup is placed inside.
 const WORK: MenuRect = MenuRect { left: 0, top: 0, right: 1024, bottom: 768 };
-const BAR_METRICS: BarMetrics = BarMetrics { char_width: MENU_CHAR_WIDTH, char_height: MENU_CHAR_HEIGHT, bar_height: MENU_BAR_HEIGHT };
-const POPUP_METRICS: PopupMetrics = PopupMetrics { char_width: MENU_CHAR_WIDTH, char_height: MENU_CHAR_HEIGHT };
+/// The cells the menu font measures a bar and a popup with: the same owners
+/// the driver reads them from.
+fn bar_metrics() -> BarMetrics { BarMetrics::menu() }
+fn popup_metrics() -> PopupMetrics { PopupMetrics::menu() }
 /// Command identifiers of the File menu items this fixture drives.
 const IDM_NEW: u32 = 1;
 const IDM_OPEN: u32 = 2;
@@ -72,7 +73,7 @@ impl Desktop {
         windows.set_rect(hwnd, WINDOW).unwrap();
         windows.set_menu(hwnd, Some(bar)).unwrap();
         windows.set_visible(hwnd, true).unwrap();
-        let band = menus.bar_rect(MenuId::from_raw(bar).unwrap(), rect(WINDOW), MENU_CHAR_WIDTH, MENU_CHAR_HEIGHT, MENU_BAR_HEIGHT).unwrap();
+        let band = menus.bar_rect(MenuId::from_raw(bar).unwrap(), rect(WINDOW), bar_metrics().char_width, bar_metrics().char_height, bar_metrics().bar_height).unwrap();
         let height = band.bottom - band.top;
         assert!(height > 0, "a bar with items claims a band");
         windows.set_client_rect(hwnd, WindowRect { top: WINDOW.top + height, ..WINDOW }).unwrap();
@@ -81,12 +82,12 @@ impl Desktop {
 
     /// Screen rectangle of one item of the menu bar.
     fn bar_item(&self, position: usize) -> MenuRect {
-        self.menus.bar_item_rect(MenuId::from_raw(self.bar).unwrap(), position, rect(WINDOW), MENU_CHAR_WIDTH, MENU_CHAR_HEIGHT, MENU_BAR_HEIGHT).unwrap()
+        self.menus.bar_item_rect(MenuId::from_raw(self.bar).unwrap(), position, rect(WINDOW), bar_metrics().char_width, bar_metrics().char_height, bar_metrics().bar_height).unwrap()
     }
 
     /// The chain resolution the tracking loop reads a point against.
     fn resolve(&self, point: (i32, i32)) -> PointerEvent {
-        let bar = BarChain { menu: self.bar, bounds: rect(WINDOW), metrics: BAR_METRICS };
+        let bar = BarChain { menu: self.bar, bounds: rect(WINDOW), metrics: bar_metrics() };
         let (menu, hit) = chain::menu_from_point(&self.menus, &self.open, Some(bar), point);
         let menu_is_bar = menu == Some(self.bar);
         PointerEvent { pt: point, menu, hit, menu_is_bar, right_button: false }
@@ -176,12 +177,12 @@ fn apply(state: &mut TrackLoop, desktop: &mut Desktop, effect: TrackEffect) {
 /// it. A bar item's submenu drops below the item.
 fn show_sub(state: &mut TrackLoop, desktop: &mut Desktop, menu: u32, position: u32, submenu: u32, select_first: bool) {
     let id = MenuId::from_raw(submenu).unwrap();
-    let layout = desktop.menus.popup_layout(id, POPUP_METRICS, i32::MAX).unwrap();
+    let layout = desktop.menus.popup_layout(id, popup_metrics(), i32::MAX).unwrap();
     // The same two decisions the driver makes: which menu the item belongs to,
     // and where its submenu opens against it.
     let (parent, item) = match desktop.popup_rect(menu) {
         Some(window) => (chain::ParentMenu::Popup { window },
-            desktop.menus.popup_layout(MenuId::from_raw(menu).unwrap(), POPUP_METRICS, i32::MAX).unwrap().items[position as usize]),
+            desktop.menus.popup_layout(MenuId::from_raw(menu).unwrap(), popup_metrics(), i32::MAX).unwrap().items[position as usize]),
         None => (chain::ParentMenu::Bar, desktop.bar_item(position as usize)),
     };
     let (origin, anchor) = chain::submenu_origin(parent, item);
@@ -256,7 +257,7 @@ fn a_press_on_the_file_item_opens_its_menu_and_a_release_on_an_item_runs_its_com
     let bounds = desktop.popup_rect(desktop.file).unwrap();
     assert_eq!((bounds.left, bounds.top), (file_item.left, file_item.bottom), "the menu drops below its bar item");
     let plan = desktop.menus.popup_draw_plan(MenuId::from_raw(desktop.file).unwrap(), &desktop.open[0].layout).unwrap();
-    let drawn: Vec<u32> = plan.iter().filter_map(|op| match op { MenuDrawOp::Text { position, .. } => Some(*position), _ => None }).collect();
+    let drawn: Vec<u32> = plan.iter().filter_map(|op| match op { MenuDrawOp::Text { position, half: MenuTextHalf::Name, .. } => Some(*position), _ => None }).collect();
     assert_eq!(drawn, vec![0, 1, 2, 3], "every File item is drawn");
 
     // A move over the last item selects it.
