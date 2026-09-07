@@ -24,6 +24,24 @@ mod visibility;
 pub use visibility::rect_visible_in_clip;
 #[path = "win32_gdi/blend.rs"]
 mod blend;
+#[path = "win32_gdi/xform.rs"]
+mod xform;
+pub use xform::{Xform, Point, Size, gdi_round, muldiv, XFORM_BYTES};
+#[path = "win32_gdi/dc_attr.rs"]
+mod dc_attr;
+pub use dc_attr::{DcAttr, DeviceGeometry, add_bounds_rect, empty_bounds, rect_is_empty,
+    MM_TEXT, MM_LOMETRIC, MM_HIMETRIC, MM_LOENGLISH, MM_HIENGLISH, MM_TWIPS, MM_ISOTROPIC, MM_ANISOTROPIC,
+    MWT_IDENTITY, MWT_LEFTMULTIPLY, MWT_RIGHTMULTIPLY, MWT_SET,
+    XFORM_WORLD_TO_PAGE, XFORM_PAGE_TO_DEVICE, XFORM_WORLD_TO_DEVICE, XFORM_DEVICE_TO_WORLD,
+    LP_TO_DP, DP_TO_LP, LAYOUT_RTL, GM_COMPATIBLE, GM_ADVANCED, AD_COUNTERCLOCKWISE, AD_CLOCKWISE,
+    DEFAULT_MITER_LIMIT};
+#[path = "win32_gdi/draw.rs"]
+mod draw;
+pub use draw::{ellipse_first_quadrant, arc_points, round_rect_points, flatten_bezier, fill_polygon, ALTERNATE, WINDING, ARC, ARC_TO, CHORD, PIE, POLY_POLYGON, POLY_POLYLINE, POLY_BEZIER, POLY_BEZIER_TO, POLYLINE_TO, POLY_POLYGON_RGN};
+#[path = "win32_gdi/dc_state.rs"]
+mod dc_state;
+pub use dc_state::{DcKind, SavedDc, GDI_ERROR, SP_ERROR, START_PAGE_RESULT, JOB_RESULT, INIT_SPOOL_RESULT,
+    SPOOL_MESSAGE_RESULT, EXT_ESCAPE_RESULT};
 #[path = "win32_gdi/handles.rs"]
 mod handles;
 #[path = "win32_gdi/projection.rs"]
@@ -60,11 +78,11 @@ pub use stock::{stock_object, stock_by_handle, StockDescription, StockObject, St
 pub use brush::{Brush, BrushStyle, SharedDcColors, TYPE_BRUSH};
 #[path = "win32_gdi/pen.rs"]
 mod pen;
-pub use pen::{Pen, PenRasterState, TYPE_PEN, DEFAULT_DC_PEN_HANDLE};
+pub use pen::{Pen, PenRasterState, DashPattern, TYPE_PEN, DEFAULT_DC_PEN_HANDLE, admit_ext_pen, ExtPenRequest,
+    PS_STYLE_MASK, PS_TYPE_MASK, PS_GEOMETRIC, PS_USERSTYLE, PS_ALTERNATE, BS_SOLID, BS_NULL, MAX_STYLE_ENTRIES};
 pub use handles::{FIRST_DYNAMIC_SLOT, SLOT_LIMIT, SLOT_MASK, TYPE_DC, TYPE_FONT};
 pub use text_state::{TextAttribute, TextAttributes, TextState};
 
-pub const MM_TEXT: u32 = 1;
 const DEFAULT_HEIGHT: i32 = 16;
 const DEFAULT_DESCENT: i32 = 4;
 const DEFAULT_WIDTH: i32 = 8;
@@ -101,21 +119,39 @@ impl Default for PathState {
     fn default() -> Self { Self { open: None, closed: None, poly_fill_mode: path::ALTERNATE, arc_clockwise: false } }
 }
 
-#[derive(Debug, Eq, PartialEq)]
-struct DeviceContext { width: i32, height: i32, map_mode: u32, font: Option<u32>, brush: Option<u32>, dc_brush_color: u32, pen: u32, dc_pen_color: u32, text: TextAttributes, clip: Option<crate::win32_window::PaintRegion>, meta_clip: Option<crate::win32_window::PaintRegion>, paths: PathState, paint_clip: Option<crate::win32_window::PaintRegion>, pixels: Vec<u32>, lease: Option<DcLease>, pending_output: PendingOutput }
 
-pub struct GdiManager { next: u32, dcs: Vec<(u32, DeviceContext)>, fonts: Vec<(u32, FontRecord)>, brushes: Vec<(u32, Brush)>, bitmaps: Vec<(u32, Bitmap)>, pens: Vec<(u32, Pen)>, system_brushes: SystemBrushes, window_dcs: Vec<(u32, u32)>, regions: Vec<(u32, crate::win32_window::PaintRegion)> }
+#[derive(Debug, PartialEq)]
+struct DeviceContext { width: i32, height: i32, attr: DcAttr, font: Option<u32>, brush: Option<u32>, dc_brush_color: u32, pen: u32, dc_pen_color: u32, text: TextAttributes, clip: Option<crate::win32_window::PaintRegion>, meta_clip: Option<crate::win32_window::PaintRegion>, paths: PathState, paint_clip: Option<crate::win32_window::PaintRegion>, pixels: Vec<u32>, lease: Option<DcLease>, pending_output: PendingOutput, saved: Vec<SavedDc> }
+
+pub struct GdiManager { next: u32, dcs: Vec<(u32, DeviceContext)>, fonts: Vec<(u32, FontRecord)>, brushes: Vec<(u32, Brush)>, bitmaps: Vec<(u32, Bitmap)>, pens: Vec<(u32, Pen)>, system_brushes: SystemBrushes, window_dcs: Vec<(u32, u32)>, regions: Vec<(u32, crate::win32_window::PaintRegion)>, client_objs: Vec<u32> }
 
 impl Default for GdiManager { fn default() -> Self { Self::new() } }
 
 impl GdiManager {
     /// Construct an empty process-local GDI object owner. # C: O(1)
-    pub fn new() -> Self { Self { next: FIRST_DYNAMIC_SLOT, dcs: Vec::new(), fonts: Vec::new(), brushes: Vec::new(), bitmaps: Vec::new(), pens: Vec::new(), system_brushes: SystemBrushes::default(), window_dcs: Vec::new(), regions: Vec::new() } }
+    pub fn new() -> Self { Self { next: FIRST_DYNAMIC_SLOT, dcs: Vec::new(), fonts: Vec::new(), brushes: Vec::new(), bitmaps: Vec::new(), pens: Vec::new(), system_brushes: SystemBrushes::default(), window_dcs: Vec::new(), regions: Vec::new(), client_objs: Vec::new() } }
 
     /// Create a memory device context with bounded positive dimensions. # C: O(1)
     pub fn create_dc(&mut self, width: i32, height: i32) -> Result<u32, GdiError> {
         if width <= 0 || height <= 0 { return Err(GdiError::InvalidDimensions); }
         self.create_storage_dc(width, height)
+    }
+
+    /// Create an enhanced-metafile device context. It records rather than
+    /// rasterises, so it owns no surface; its capabilities come from the
+    /// display the reference device context names. # C: O(1)
+    pub fn create_metafile_dc(&mut self) -> Result<u32, GdiError> {
+        let dc = self.create_storage_dc(0, 0)?;
+        self.set_dc_kind(dc, DcKind::EnhMetafile)?;
+        Ok(dc)
+    }
+
+    /// Record what a device context draws on; the object owner sets it once at
+    /// creation. # C: O(N_objects)
+    pub fn set_dc_kind(&mut self, dc: u32, kind: DcKind) -> Result<(), GdiError> {
+        let (_, state) = self.dcs.iter_mut().find(|(handle, _)| *handle == dc).ok_or(GdiError::NoSuchObject)?;
+        state.attr.kind = kind;
+        Ok(())
     }
 
     /// Return the stable display DC associated with one canonical HWND. # C: O(N_windows)
@@ -126,6 +162,7 @@ impl GdiManager {
         }
         self.window_dcs.try_reserve(1).map_err(|_| GdiError::HandleLimit)?;
         let dc = self.create_storage_dc(width, height)?;
+        self.set_dc_kind(dc, DcKind::Display)?;
         self.window_dcs.push((hwnd, dc));
         Ok(dc)
     }

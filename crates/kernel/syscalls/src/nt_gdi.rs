@@ -43,6 +43,8 @@ mod erase_frame;
 pub(crate) use erase_frame::retain_erase_for_current;
 mod visibility;
 mod dc_query;
+#[path = "nt_gdi/dc_state.rs"]
+pub(crate) mod dc_state;
 mod dc_lease;
 mod output;
 pub(crate) use output::flush_pending_for_current;

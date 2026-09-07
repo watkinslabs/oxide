@@ -16,6 +16,14 @@ pub(crate) mod nt_callback_frame;
 mod nt_dc_raw;
 #[path = "nt_wine_window/pen_raw.rs"]
 mod nt_pen_raw;
+#[path = "nt_wine_window/dc_state_raw.rs"]
+mod nt_dc_state_raw;
+#[path = "nt_wine_window/xform_raw.rs"]
+mod nt_xform_raw;
+#[path = "nt_wine_window/draw_raw.rs"]
+mod nt_draw_raw;
+#[path = "nt_wine_window/print_raw.rs"]
+mod nt_print_raw;
 pub(crate) mod nt_file_policy;
 mod nt_file_async_policy;
 mod nt_file_scatter_policy;

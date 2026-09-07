@@ -8,9 +8,10 @@ impl GdiManager {
         let mut pixels=Vec::new();pixels.try_reserve_exact(count).map_err(|_|GdiError::InvalidDimensions)?;pixels.resize(count,0);
         self.dcs.try_reserve(1).map_err(|_|GdiError::HandleLimit)?;
         let handle=self.allocate(TYPE_DC)?;
-        self.dcs.push((handle,DeviceContext{width,height,map_mode:MM_TEXT,font:Some(DEFAULT_DC_FONT_HANDLE),brush:None,
+        let mut attr=DcAttr::new();attr.set_vis_rect(width,height);
+        self.dcs.push((handle,DeviceContext{width,height,attr,font:Some(DEFAULT_DC_FONT_HANDLE),brush:None,
             dc_brush_color:0xffffff,pen:DEFAULT_DC_PEN_HANDLE,dc_pen_color:0,text:TextAttributes::default(),
-            clip:None,meta_clip:None,paths:Default::default(),paint_clip:None,pixels,lease:None,pending_output:Default::default()}));Ok(handle)
+            clip:None,meta_clip:None,paths:Default::default(),paint_clip:None,pixels,lease:None,pending_output:Default::default(),saved:Vec::new()}));Ok(handle)
     }
     /// Keep the canonical DC identity and attributes across window resize.
     /// Allocation/validation precede mutation. # C: O(DCs + new pixels)
@@ -30,6 +31,7 @@ impl GdiManager {
                 .copy_from_slice(&state.pixels[row * state.width as usize..row * state.width as usize + columns]);
         }
         state.width = width; state.height = height; state.pixels = pixels;
+        state.attr.set_vis_rect(width, height);
         state.pending_output.resized(width,height);
         Ok(())
     }

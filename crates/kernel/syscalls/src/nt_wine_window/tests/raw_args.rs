@@ -26,6 +26,17 @@ fn installed_signature_counts_and_admission_are_exact() {
     ];
     assert_eq!(RAW_CALLS.len(), signatures.len());
     assert!(RAW_CALLS.windows(2).all(|pair| pair[0].0 < pair[1].0));
+    // Families that own their own signature table still reach admission
+    // through this one function, so their byte counts are checked here too.
+    let families = [
+        (0x1084,8), (0x108d,48), (0x108f,80), (0x109b,8), (0x10a4,8), (0x10aa,8), (0x10b5,8),
+        (0x118c,8), (0x1190,32), (0x1199,40), (0x119b,8), (0x119d,8), (0x11c3,88), (0x11c5,64),
+        (0x11d5,0), (0x11e0,24), (0x11eb,16), (0x11f6,16), (0x1209,16), (0x1220,32), (0x122a,24),
+        (0x1237,0), (0x1241,24), (0x124f,32), (0x1251,40), (0x125d,40), (0x125f,16), (0x1260,56),
+        (0x1266,8), (0x1269,48), (0x126a,48), (0x1273,24), (0x1276,16), (0x1279,16), (0x127d,24),
+        (0x1281,24), (0x1285,16), (0x128c,40), (0x128d,32), (0x128e,8), (0x1293,8), (0x1294,40),
+    ];
+    assert!(families.windows(2).all(|pair| pair[0].0 < pair[1].0));
     for ordinal in 0..0x2000 {
         let fonts = [(0x11e6,6), (0x11fe,5), (0x1204,5), (0x1211,4), (0x1225,3)];
         // Paths, region shapes and region clipping admit their own signatures.
@@ -33,7 +44,8 @@ fn installed_signature_counts_and_admission_are_exact() {
             (0x11c2,5), (0x11c4,3), (0x11c8,3), (0x11d2,1), (0x11d3,3), (0x11d4,1), (0x11d8,5), (0x1212,4),
             (0x121a,3), (0x121d,3), (0x1239,2), (0x1244,3), (0x1245,3), (0x124d,1), (0x1253,3), (0x1254,3),
             (0x1257,2), (0x126d,2), (0x1280,1), (0x1291,1), (0x1292,1), (0x129d,1)];
-        assert_eq!(argument_count(ordinal), signatures.iter().find(|entry| entry.0 == ordinal).map(|entry| entry.1 / 8)
+        assert_eq!(argument_count(ordinal), signatures.iter().chain(families.iter())
+            .find(|entry| entry.0 == ordinal).map(|entry| entry.1 / 8)
             .or_else(|| fonts.iter().find(|entry| entry.0 == ordinal).map(|entry| entry.1))
             .or_else(|| shapes.iter().find(|entry| entry.0 == ordinal).map(|entry| entry.1)));
     }

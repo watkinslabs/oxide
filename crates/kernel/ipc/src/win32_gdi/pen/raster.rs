@@ -61,6 +61,36 @@ impl GdiManager {
         }
         Ok(())
     }
+    /// Stroke a point run with the selected pen, keeping one dash phase across
+    /// the whole run and closing it back to the first point when asked.
+    /// # C: O(DCs + objects + clipped major-axis span)
+    pub fn pen_polyline(&mut self,dc:u32,points:&[(i32,i32)],close:bool,shared:Option<PenRasterState>)->Result<(),GdiError>{
+        if points.len()<2 {return Ok(());}
+        let state=shared.unwrap_or(self.pen_raster_state(dc)?);
+        let pen=self.stroke_pen(dc,state)?;
+        let mut target=self.raster_dc(dc)?;
+        let segments=if close{points.len()}else{points.len()-1};
+        let mut phase=0;
+        for index in 0..segments {
+            let a=points[index];let b=points[(index+1)%points.len()];
+            stroke(&mut target,pen,state,a,b,phase)?;
+            phase+=(i64::from(a.0)-i64::from(b.0)).abs().max((i64::from(a.1)-i64::from(b.1)).abs()) as u64;
+        }
+        Ok(())
+    }
+
+    /// Fill the interior of one closed point run with the selected brush.
+    /// A null brush paints nothing. # C: O(DCs + objects + clipped area)
+    pub fn brush_polygon(&mut self,dc:u32,points:&[crate::win32_gdi::Point],mode:u32,shared:Option<PenRasterState>)->Result<(),GdiError>{
+        let state=shared.unwrap_or(self.pen_raster_state(dc)?);
+        let dc_state=&self.dcs.iter().find(|(id,_)|*id==dc).ok_or(GdiError::NoSuchObject)?.1;
+        let handle=dc_state.brush.unwrap_or(self.stock_object(0).ok_or(GdiError::NoSuchObject)?.handle);
+        let BrushStyle::Solid(color)=self.brush_style(handle,state.brush_color)? else {return Ok(());};
+        let mut target=self.raster_dc(dc)?;
+        let clip=target.bounds();
+        crate::win32_gdi::draw::fill_polygon(points,clip,mode,|x,y|{target.update(x,y,|old|rop2(state.rop,color,old));})
+    }
+
     fn stroke_pen(&self,dc:u32,state:PenRasterState)->Result<Pen,GdiError>{
         if !(1..=16).contains(&state.rop)||state.pen_color>RGB||state.brush_color>RGB||state.background>RGB{return Err(GdiError::InvalidDimensions);}
         let dc=&self.dcs.iter().find(|(id,_)|*id==dc).ok_or(GdiError::NoSuchObject)?.1;
@@ -73,14 +103,15 @@ impl GdiManager {
 fn stroke(target:&mut DcRaster<'_>,pen:Pen,state:PenRasterState,start:(i32,i32),end:(i32,i32),phase:u64)->Result<(),GdiError>{
     if pen.style==PS_NULL{return Ok(());}
     coverage::line(start,end,target.bounds(),|x,y,step|{
-        let foreground=dash_on(pen.style,phase+step);
+        let foreground=dash_on(pen,phase+step);
         if foreground||state.opaque {let color=if foreground{pen.color}else{state.background};
             target.update(x,y,|old|rop2(state.rop,color,old));}
         Ok(())
     })
 }
-fn dash_on(style:u32,step:u64)->bool{
-    let pattern:&[u64]=match style{PS_SOLID|PS_INSIDEFRAME=>return true,1=>&[18,6],2=>&[3,3],
+fn dash_on(pen:Pen,step:u64)->bool{
+    if pen.pattern.count!=0 {return pen.pattern.covers(step);}
+    let pattern:&[u64]=match pen.style{PS_SOLID|PS_INSIDEFRAME=>return true,1=>&[18,6],2=>&[3,3],
         3=>&[9,6,3,6],4=>&[9,3,3,3,3,3],_=>return false};
     let mut phase=step%pattern.iter().sum::<u64>();
     for (index,length) in pattern.iter().enumerate(){if phase<*length{return index%2==0;}phase-=length;}
