@@ -8,6 +8,7 @@ an absence the log was never in a position to show.
 """
 import select
 import threading
+import time
 
 
 class UartReader:
@@ -15,6 +16,7 @@ class UartReader:
 
     POLL_SECONDS = 0.25
     CHUNK = 65536
+    DRAIN_SECONDS = 5.0
 
     def __init__(self, conn, log):
         self._conn = conn
@@ -52,3 +54,33 @@ class UartReader:
     def stop(self):
         self._stop.set()
         self._thread.join(timeout=2)
+        self.drain()
+
+    def drain(self):
+        """Capture whatever the console socket still holds.
+
+        The pump tests the stop flag before every poll, so everything the
+        guest wrote between its last poll and the stop is left in the socket
+        and dropped with it. That window is the tail of the run -- the click,
+        the typing and the frames after them -- so the retained log ends mid
+        line and a grep of it reports an absence it was never in a position to
+        show.
+        """
+        deadline = time.monotonic() + self.DRAIN_SECONDS
+        while time.monotonic() < deadline:
+            try:
+                ready, _, _ = select.select([self._conn], [], [], self.POLL_SECONDS)
+            except (OSError, ValueError):
+                return
+            if not ready:
+                return
+            try:
+                data = self._conn.recv(self.CHUNK)
+            except OSError:
+                return
+            if not data:
+                return
+            with self._lock:
+                self._buffer.extend(data)
+                self._log.write(data)
+                self._log.flush()
