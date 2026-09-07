@@ -34,6 +34,8 @@ mod info;
 pub mod popup;
 #[path = "win32_menu/track.rs"]
 pub mod track;
+#[path = "win32_menu/track_loop.rs"]
+pub mod track_loop;
 pub use info::{MenuInfo, MENUINFO_BYTES, MF_DEFAULT, MF_HILITE, MF_POPUP, MF_SEPARATOR, MF_SYSMENU,
     MIM_APPLYTOSUBMENUS, MIM_BACKGROUND, MIM_HELPID, MIM_MAXHEIGHT, MIM_MENUDATA, MIM_STYLE, NO_DEFAULT_ITEM};
 

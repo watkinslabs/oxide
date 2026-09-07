@@ -2,12 +2,10 @@
 //! shows one menu, and the effects the tracking loop applies to the chain of
 //! them.
 use super::entry::{current_tid, with_entry};
-use super::raw::WM_UNINITMENUPOPUP;
-use ipc::win32_menu::track::WM_MENUSELECT;
 use super::session::MenuSession;
 use alloc::vec::Vec;
-use ipc::win32_menu::popup::{popup_origin, PopupLayout, PopupMetrics, TPM_NONOTIFY};
-use ipc::win32_menu::track::{TrackEffect, MF_MOUSESELECT};
+use ipc::win32_menu::popup::{popup_origin, PopupLayout, PopupMetrics};
+use ipc::win32_menu::track::MF_MOUSESELECT;
 use ipc::win32_menu::{MenuId, MenuRect, MF_BYPOSITION};
 use ipc::win32_window::{WindowId, WindowRect};
 
@@ -77,56 +75,61 @@ pub(crate) fn window_rect(hwnd: u64) -> Option<MenuRect> {
     Some(MenuRect { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom })
 }
 
-/// Retire the window showing one menu and tell the owner the popup is done
-/// with, as the reference does when it takes a submenu down. # C: O(N_windows)
-pub(crate) fn hide_popup(session: &mut MenuSession, menu: u32, flags: u32) {
+/// Retire the window showing one menu. The owner notification that goes with
+/// it is a step of its own, because it enters a window procedure.
+/// # C: O(N_windows)
+pub(crate) fn close_popup(session: &mut MenuSession, menu: u32) {
     let Some(hwnd) = session.closed(menu) else { return; };
-    if let Some(window) = u32::try_from(hwnd).ok().and_then(WindowId::from_raw) {
-        with_entry(|entry| { let _ = entry.state.destroy(window); });
-    }
-    if flags & TPM_NONOTIFY == 0 {
-        let _ = crate::nt_window::send::send_for_current(session.owner, WM_UNINITMENUPOPUP, menu as u64, 0);
-    }
+    let Some(window) = u32::try_from(hwnd).ok().and_then(WindowId::from_raw) else { return; };
+    with_entry(|entry| { let _ = entry.state.destroy(window); });
 }
 
-/// Close the submenu open under one menu's focused item, innermost first, the
-/// way the reference unwinds a chain of popups. # C: O(N_open * N_items)
-pub(crate) fn hide_sub_popups(session: &mut MenuSession, menu: u32, flags: u32) {
-    let Some(id) = MenuId::from_raw(menu) else { return; };
-    let Some(submenu) = with_entry(|entry| {
-        let focused = entry.menus.focused_item(id);
-        if focused == ipc::win32_menu::popup::NO_SELECTED_ITEM { return None; }
-        let item = entry.menus.item(id, focused, MF_BYPOSITION).ok()?;
-        if item.state & MF_MOUSESELECT == 0 { return None; }
-        let submenu = item.submenu?;
-        if let Ok(item) = entry.menus.item_mut_by_position(id, focused as usize) { item.state &= !MF_MOUSESELECT; }
-        Some(submenu)
-    }).flatten() else { return; };
-    hide_sub_popups(session, submenu, flags);
-    if let Some(submenu_id) = MenuId::from_raw(submenu) {
-        with_entry(|entry| { let _ = entry.menus.set_focused_item(submenu_id, ipc::win32_menu::popup::NO_SELECTED_ITEM); });
+/// The submenus open under one menu's focused item, innermost first, with
+/// their highlight and mouse-select state already cleared. The windows are
+/// retired by the `Close` step each one earns. # C: O(N_open * N_items)
+pub(crate) fn sub_popup_chain(session: &MenuSession, menu: u32) -> Vec<u32> {
+    let mut chain = Vec::new();
+    let mut current = menu;
+    for _ in 0..session.innermost_first().len() {
+        let Some(id) = MenuId::from_raw(current) else { break; };
+        let Some(submenu) = with_entry(|entry| {
+            let focused = entry.menus.focused_item(id);
+            if focused == ipc::win32_menu::popup::NO_SELECTED_ITEM { return None; }
+            let item = entry.menus.item(id, focused, MF_BYPOSITION).ok()?;
+            if item.state & MF_MOUSESELECT == 0 { return None; }
+            let submenu = item.submenu?;
+            if let Ok(item) = entry.menus.item_mut_by_position(id, focused as usize) { item.state &= !MF_MOUSESELECT; }
+            Some(submenu)
+        }).flatten() else { break; };
+        if let Some(submenu_id) = MenuId::from_raw(submenu) {
+            with_entry(|entry| { let _ = entry.menus.set_focused_item(submenu_id, ipc::win32_menu::popup::NO_SELECTED_ITEM); });
+        }
+        chain.push(submenu);
+        current = submenu;
     }
-    hide_popup(session, submenu, flags);
+    chain.reverse();
+    chain
 }
 
-/// Open the submenu of one menu's focused item beside the item, and report the
-/// menu tracking now follows. # C: O(N_items + N_windows)
-pub(crate) fn show_sub_popup(session: &mut MenuSession, menu: u32, _select_first: bool, flags: u32) -> u32 {
-    let Some(id) = MenuId::from_raw(menu) else { return menu; };
-    let Some(hwnd) = session.window_of(menu) else { return menu; };
-    let Some((focused, submenu)) = with_entry(|entry| {
+/// The item of one menu whose submenu the loop is about to open. # C: O(N_items)
+pub(crate) fn submenu_target(menu: u32) -> Option<(u32, u32)> {
+    let id = MenuId::from_raw(menu)?;
+    with_entry(|entry| {
         let focused = entry.menus.focused_item(id);
         if focused == ipc::win32_menu::popup::NO_SELECTED_ITEM { return None; }
         let submenu = entry.menus.item(id, focused, MF_BYPOSITION).ok()?.submenu?;
         Some((focused, submenu))
-    }).flatten() else { return menu; };
-    hide_sub_popups(session, menu, flags);
+    }).flatten()
+}
+
+/// Open one item's submenu beside the item, and report the menu tracking now
+/// follows. The owner has already been told to update it. # C: O(N_items + N_windows)
+pub(crate) fn open_sub_popup(session: &mut MenuSession, menu: u32, position: u32, submenu: u32, flags: u32) -> u32 {
+    let Some(id) = MenuId::from_raw(menu) else { return menu; };
+    let Some(hwnd) = session.window_of(menu) else { return menu; };
     let (Some(rect), Some(layout)) = (window_rect(hwnd), layout_of(menu)) else { return menu; };
-    let Some(item_rect) = layout.items.get(focused as usize).copied() else { return menu; };
-    if flags & TPM_NONOTIFY == 0 {
-        let _ = crate::nt_window::send::send_for_current(session.owner, super::raw::WM_INITMENUPOPUP, submenu as u64, focused as u64);
-    }
-    with_entry(|entry| { if let Ok(item) = entry.menus.item_mut_by_position(id, focused as usize) { item.state |= MF_MOUSESELECT; } });
+    let Some(item_rect) = layout.items.get(position as usize).copied() else { return menu; };
+    with_entry(|entry| { if let Ok(item) = entry.menus.item_mut_by_position(id, position as usize) { item.state |= MF_MOUSESELECT; } });
     // A submenu opens at the item's right edge, and never inherits the
     // caller's alignment.
     let x = rect.left + item_rect.right;
@@ -139,7 +142,7 @@ pub(crate) fn show_sub_popup(session: &mut MenuSession, menu: u32, _select_first
 
 /// The warning a menu makes when a typed key names no item. It is silent
 /// while the beep setting is off. # C: O(1)
-fn beep() {
+pub(crate) fn beep() {
     const BEEP_HZ: u32 = 750;
     const BEEP_MS: u32 = 125;
     if crate::nt_window::USER_SETTINGS.lock().beep_enabled() { let _ = sound::beep::beep(BEEP_HZ, BEEP_MS); }
@@ -147,7 +150,7 @@ fn beep() {
 
 /// Highlight the first item a freshly opened submenu can select, the way the
 /// reference moves the selection into a keyboard-opened popup. # C: O(N_items)
-fn select_first_item(session: &mut MenuSession, menu: u32) {
+pub(crate) fn select_first_item(session: &mut MenuSession, menu: u32) {
     let Some(id) = MenuId::from_raw(menu) else { return; };
     let position = with_entry(|entry| {
         let count = entry.menus.count(id).unwrap_or(0);
@@ -161,29 +164,3 @@ fn select_first_item(session: &mut MenuSession, menu: u32) {
     }
 }
 
-/// Apply one batch of tracking decisions to the live windows, reporting the
-/// menu tracking follows after any submenu it opened. # C: O(N_effects * N_windows)
-pub(crate) fn apply(session: &mut MenuSession, effects: Vec<TrackEffect>, flags: u32, current: u32) -> u32 {
-    let mut current = current;
-    for effect in effects {
-        match effect {
-            TrackEffect::Repaint { menu } => {
-                if let Some(window) = session.window_of(menu).and_then(|hwnd| u32::try_from(hwnd).ok()).and_then(WindowId::from_raw) {
-                    with_entry(|entry| { let _ = entry.state.invalidate(window, None); });
-                } else { let _ = crate::nt_window::draw_menu_bar_for_current(session.owner); }
-            }
-            TrackEffect::MenuSelect { wparam, lparam } => { let _ = crate::nt_window::send::send_for_current(session.owner, WM_MENUSELECT, wparam, lparam as u64); }
-            TrackEffect::HideSubPopups { menu } => hide_sub_popups(session, menu, flags),
-            TrackEffect::ShowSubPopup { menu, select_first } => {
-                current = show_sub_popup(session, menu, select_first, flags);
-                if select_first && current != menu { select_first_item(session, current); }
-            }
-            TrackEffect::Post { message, wparam, lparam } => {
-                let _ = crate::nt_window::dispatch(syscall::nt::NtCall { service: syscall::nt::NtService::PostMessage,
-                    args: syscall::SyscallArgs { a0: session.owner, a1: message as u64, a2: wparam, a3: lparam as u64, a4: 0, a5: 0 } });
-            }
-            TrackEffect::Beep => beep(),
-        }
-    }
-    current
-}
