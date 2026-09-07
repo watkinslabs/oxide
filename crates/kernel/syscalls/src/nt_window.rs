@@ -53,8 +53,7 @@ mod nonclient;
 mod dc_lease;
 pub(crate) use dc_lease::dc_lease_context_for_current;
 pub(crate) use nonclient::nonclient_scroll_context_for_current;
-pub(crate) use control::{set_control_id_for_current, control_id_for_current};
-pub(crate) use control::{get_window_long_for_current, set_window_long_with_encoding_for_current};
+pub(crate) use control::{set_control_id_for_current, control_id_for_current, get_window_long_for_current, set_window_long_with_encoding_for_current};
 #[path = "nt_window/teardown.rs"]
 mod teardown;
 pub(crate) use teardown::cleanup_thread_at_exit;
@@ -93,10 +92,9 @@ pub(crate) use accel::{accel_create_for_current, accel_copy_for_current, accel_d
 pub(crate) use keyboard::{get_key_state_current, get_async_key_state_current,
     get_keyboard_state_current, set_keyboard_state_current};
 pub(crate) use bridge::handle_event as compositor_event;
-pub(crate) use create_lifecycle::{CreateReturnConvention, CreateStructArgs};
+pub(crate) use create_lifecycle::{CreateReturnConvention, CreateStructArgs, callback_layout, serialize_create_struct, CALLBACK_FRAME_BYTES};
 pub(crate) use create::begin_create_lifecycle_for_current;
 #[cfg(target_arch = "x86_64")]
-pub(crate) use create_lifecycle::{callback_layout, serialize_create_struct, CALLBACK_FRAME_BYTES};
 #[cfg(target_arch = "x86_64")]
 #[path = "nt_window/callbacks.rs"]
 mod callbacks;
@@ -135,8 +133,7 @@ struct GuiEntry { group: Weak<sched::thread_group::ThreadGroup>, state: ipc::win
     /// classes it names have already been registered for this process.
     client_procs_w: u64, builtins_registered: bool, init_callback_issued: bool,
     /// Input-context objects this process owns, one default per thread.
-    contexts: ipc::win32_imc::InputContexts }
-
+    contexts: ipc::win32_imc::InputContexts,
     /// Open deferred window-position batches of this process.
     defer: ipc::win32_window::DeferBatches }
 static GUI: Spinlock<Vec<GuiEntry>, GuiLockClass> = Spinlock::new(Vec::new());

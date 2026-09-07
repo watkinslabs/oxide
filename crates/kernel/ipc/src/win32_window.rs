@@ -365,10 +365,7 @@ pub struct WindowManager { next: u32, next_atom: u16, classes: Vec<WindowClass>,
     /// Menu and move/size roles the capture request also carries.
     menu_owner: Option<WindowId>, move_size: Option<WindowId>,
     hotkeys: hotkey::Hotkeys, inputs: thread_input::ThreadInputs, tracks: mouse_track::MouseTracks,
-    raw_input: rawinput::RawRegistrations, layouts: Vec<(u64, u64)>, icons: window_icon::WindowIconTable }
-
-    /// Shared OEM cursor cache and the cursor the pointer displays.
-    cursors: Vec<(u32, u64)>, current_cursor: u64,
+    raw_input: rawinput::RawRegistrations, layouts: Vec<(u64, u64)>, icons: window_icon::WindowIconTable,
     /// Per-window attributes only a few calls touch; absent means defaults.
     attributes: Vec<(WindowId, attributes::WindowAttributes)> }
 

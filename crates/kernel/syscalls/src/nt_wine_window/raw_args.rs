@@ -24,9 +24,6 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x1238, 5), // NtGdiIntersectClipRect
     (0x123a, 3), // NtGdiLineTo
     (0x1243, 4), // NtGdiMoveTo
-    // The Windows signature carries eight arguments; the spool handle and the
-    // two driver records past index 4 belong to the printer and metafile
-    // drivers this call refuses, so no stack word past `is_display` is read.
     (0x1246, 5), // NtGdiOpenDCW
     (0x124c, 6), // NtGdiPatBlt
     (0x1258, 2), // NtGdiRectVisible
@@ -36,15 +33,14 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x126f, 2), // NtGdiSelectPen
     (0x1287, 5), // NtGdiSetRectRgn
     (0x1319, 2), // NtUserActivateKeyboardLayout
-    (0x1321, 3), // NtUserAssociateInputContext
-    (0x1322, 3), // NtUserAttachThreadInput
-    (0x1327, 2), // NtUserBeginPaint
-    (0x132c, 4), // NtUserBuildHimcList
-
     (0x131a, 1), // NtUserAddClipboardFormatListener
     (0x131e, 3), // NtUserAlterWindowStyle
     (0x1320, 1), // NtUserArrangeIconicWindows
+    (0x1321, 3), // NtUserAssociateInputContext
+    (0x1322, 3), // NtUserAttachThreadInput
     (0x1325, 1), // NtUserBeginDeferWindowPos
+    (0x1327, 2), // NtUserBeginPaint
+    (0x132c, 4), // NtUserBuildHimcList
     (0x132d, 8), // NtUserBuildHwndList
     (0x132e, 4), // NtUserBuildNameList
     (0x132f, 4), // NtUserBuildPropList
@@ -57,9 +53,8 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x133e, 3), // NtUserCallTwoParam
     (0x1341, 2), // NtUserChangeClipboardChain
     (0x1347, 3), // NtUserCheckMenuItem
-    (0x1350, 1), // NtUserClipCursor
-
     (0x134b, 4), // NtUserChildWindowFromPointEx
+    (0x1350, 1), // NtUserClipCursor
     (0x1351, 0), // NtUserCloseClipboard
     (0x1352, 1), // NtUserCloseDesktop
     (0x1353, 1), // NtUserCloseWindowStation
@@ -67,9 +62,8 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x135b, 0), // NtUserCountClipboardFormats
     (0x135c, 2), // NtUserCreateAcceleratorTable
     (0x1360, 4), // NtUserCreateCaret
-    (0x1364, 1), // NtUserCreateInputContext
-
     (0x1362, 6), // NtUserCreateDesktopEx
+    (0x1364, 1), // NtUserCreateInputContext
     (0x1366, 0), // NtUserCreateMenu
     (0x1368, 0), // NtUserCreatePopupMenu
     (0x136b, 17), // NtUserCreateWindowEx
@@ -90,12 +84,11 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x13a7, 3), // NtUserEnableMenuItem
     (0x13a9, 1), // NtUserEnableMouseInPointer
     (0x13aa, 0), // NtUserEnableMouseInPointerForThread
-    (0x13bc, 2), // NtUserEndPaint
-    (0x13c5, 3), // NtUserFindExistingCursorIcon
-
     (0x13b5, 2), // NtUserEnableWindow
     (0x13ba, 2), // NtUserEndDeferWindowPosEx
+    (0x13bc, 2), // NtUserEndPaint
     (0x13be, 1), // NtUserEnumClipboardFormats
+    (0x13c5, 3), // NtUserFindExistingCursorIcon
     (0x13c6, 5), // NtUserFindWindowEx
     (0x13c7, 1), // NtUserFlashWindowEx
     (0x13ce, 2), // NtUserGetAncestor
@@ -103,20 +96,15 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x13d1, 2), // NtUserGetAtomName
     (0x13d5, 0), // NtUserGetCaretBlinkTime
     (0x13d6, 1), // NtUserGetCaretPos
-    // The fifth Windows argument is the ANSI flag.  The Oxide class-info
-    // backend has one canonical Unicode representation and does not consume
-    // that trailing flag; do not make the syscall depend on a user-stack
-    // word that is outside the backend contract.
     (0x13d8, 4), // NtUserGetClassInfoEx
     (0x13d9, 3), // NtUserGetClassName
     (0x13da, 1), // NtUserGetClipCursor
-    (0x13e6, 1), // NtUserGetCurrentInputMessageSource
-
     (0x13dc, 2), // NtUserGetClipboardData
     (0x13dd, 3), // NtUserGetClipboardFormatName
     (0x13df, 0), // NtUserGetClipboardOwner
     (0x13e0, 0), // NtUserGetClipboardSequenceNumber
     (0x13e1, 0), // NtUserGetClipboardViewer
+    (0x13e6, 1), // NtUserGetCurrentInputMessageSource
     (0x13e7, 0), // NtUserGetCursor
     (0x13e8, 4), // NtUserGetCursorFrameInfo
     (0x13e9, 1), // NtUserGetCursorInfo
@@ -124,13 +112,12 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x13eb, 1), // NtUserGetDC
     (0x13ec, 3), // NtUserGetDCEx
     (0x13f5, 0), // NtUserGetDoubleClickTime
-    (0x1403, 6), // NtUserGetIconInfo
-    (0x1404, 4), // NtUserGetIconSize
-    (0x140f, 3), // NtUserGetKeyNameText
-
     (0x13fa, 0), // NtUserGetForegroundWindow
     (0x13fb, 2), // NtUserGetGUIThreadInfo
+    (0x1403, 6), // NtUserGetIconInfo
+    (0x1404, 4), // NtUserGetIconSize
     (0x140e, 3), // NtUserGetInternalWindowPos
+    (0x140f, 3), // NtUserGetKeyNameText
     (0x1410, 1), // NtUserGetKeyState
     (0x1411, 1), // NtUserGetKeyboardLayout
     (0x1412, 2), // NtUserGetKeyboardLayoutList
@@ -141,7 +128,6 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x141a, 4), // NtUserGetMenuItemRect
     (0x141b, 4), // NtUserGetMessage
     (0x141f, 5), // NtUserGetMouseMovePointsEx
-
     (0x1420, 5), // NtUserGetObjectInformation
     (0x1422, 0), // NtUserGetOpenClipboardWindow
     (0x1433, 2), // NtUserGetPriorityClipboardFormat
@@ -155,9 +141,8 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x1440, 3), // NtUserGetRawInputDeviceList
     (0x1442, 3), // NtUserGetRegisteredRawInputDevices
     (0x144b, 1), // NtUserGetSystemDpiForProcess
-    (0x144e, 1), // NtUserGetThreadState
-
     (0x144d, 1), // NtUserGetThreadDesktop
+    (0x144e, 1), // NtUserGetThreadState
     (0x144f, 2), // NtUserGetTitleBarInfo
     (0x1457, 3), // NtUserGetUpdatedClipboardFormats
     (0x145d, 1), // NtUserGetWindowContextHelpId
@@ -168,16 +153,15 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x146c, 1), // NtUserHideCaret
     (0x147a, 4), // NtUserInitializeClientPfnArrays
     (0x1488, 2), // NtUserInternalGetWindowIcon
+    (0x1489, 3), // NtUserInternalGetWindowText
     (0x148c, 3), // NtUserInvalidateRect
+    (0x148f, 1), // NtUserIsClipboardFormatAvailable
     (0x1490, 0), // NtUserIsMouseInPointerEnabled
+    (0x14a5, 1), // NtUserLockWindowUpdate
     (0x14b1, 3), // NtUserMapVirtualKeyEx
     (0x14b5, 7), // NtUserMessageCall
     (0x14ba, 6), // NtUserMoveWindow
     (0x14be, 2), // NtUserNotifyIMEStatus
-
-    (0x1489, 3), // NtUserInternalGetWindowText
-    (0x148f, 1), // NtUserIsClipboardFormatAvailable
-    (0x14a5, 1), // NtUserLockWindowUpdate
     (0x14c1, 4), // NtUserNotifyWinEvent
     (0x14c2, 2), // NtUserOpenClipboard
     (0x14c3, 3), // NtUserOpenDesktop
@@ -185,10 +169,9 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x14c6, 2), // NtUserOpenWindowStation
     (0x14ca, 5), // NtUserPeekMessage
     (0x14d0, 4), // NtUserPostMessage
+    (0x14d4, 3), // NtUserPrintWindow
     (0x14dd, 2), // NtUserQueryInputContext
     (0x14df, 2), // NtUserQueryWindow
-
-    (0x14d4, 3), // NtUserPrintWindow
     (0x14e1, 3), // NtUserRealChildWindowFromPoint
     (0x14e9, 4), // NtUserRedrawWindow
     (0x14eb, 7), // NtUserRegisterClassExWOW
@@ -241,7 +224,6 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x15af, 6), // NtUserSetWindowsHookEx
     (0x15b7, 1), // NtUserShowCaret
     (0x15b8, 1), // NtUserShowCursor
-
     (0x15b9, 2), // NtUserShowOwnedPopups
     (0x15bd, 2), // NtUserShowWindow
     (0x15be, 2), // NtUserShowWindowAsync
@@ -252,15 +234,14 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x15d3, 1), // NtUserTrackMouseEvent
     (0x15d7, 3), // NtUserTranslateAccelerator
     (0x15d8, 2), // NtUserTranslateMessage
-    (0x15e0, 2), // NtUserUnregisterHotKey
-    (0x15e5, 3), // NtUserUpdateInputContext
-    (0x15f4, 2), // NtUserVkKeyScanEx
-
     (0x15da, 1), // NtUserUnhookWinEvent
     (0x15db, 2), // NtUserUnhookWindowsHook
     (0x15dc, 1), // NtUserUnhookWindowsHookEx
     (0x15df, 3), // NtUserUnregisterClass
+    (0x15e0, 2), // NtUserUnregisterHotKey
+    (0x15e5, 3), // NtUserUpdateInputContext
     (0x15e7, 10), // NtUserUpdateLayeredWindow
+    (0x15f4, 2), // NtUserVkKeyScanEx
     (0x15fd, 1), // NtUserWindowFromDC
     (0x15ff, 2), // NtUserWindowFromPoint
 ];

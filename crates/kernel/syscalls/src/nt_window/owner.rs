@@ -4,7 +4,7 @@ use super::*;
 pub(super) fn new_entry(group: &Arc<sched::thread_group::ThreadGroup>) -> GuiEntry {
     GuiEntry { group: Arc::downgrade(group), state: ipc::win32_window::WindowManager::new(),
         menus: ipc::win32_menu::MenuManager::new(), accelerators: ipc::win32_accel::AcceleratorTables::new(), dpi_context: 0, wait: Arc::new(sched::live::WaitList::new()),
-        foreground: false, next_create: 1, pending_creates: Vec::new(), pending_positions: Vec::new(), remote_positions: Vec::new(), retrievals: Vec::new(), sent: send::Queue::new(), redraw: redraw::Queue::new(), scroll_pending: scroll::pending::Queue::default(), paint_callbacks: paint_callbacks::Queue::new(), client_procs_w: 0, builtins_registered: false, init_callback_issued: false, contexts: ipc::win32_imc::InputContexts::new() }
+        foreground: false, next_create: 1, pending_creates: Vec::new(), pending_positions: Vec::new(), remote_positions: Vec::new(), retrievals: Vec::new(), sent: send::Queue::new(), redraw: redraw::Queue::new(), scroll_pending: scroll::pending::Queue::default(), paint_callbacks: paint_callbacks::Queue::new(), client_procs_w: 0, builtins_registered: false, init_callback_issued: false, contexts: ipc::win32_imc::InputContexts::new(), defer: ipc::win32_window::DeferBatches::new() }
 }
 
 /// Run one closure against the calling NT process's mutable GUI state,
@@ -47,6 +47,4 @@ pub(super) fn with_state_waking<T>(f: impl FnOnce(&mut ipc::win32_window::Window
     };
     wait.wake_all();
     Some(value)
-
-        foreground: false, next_create: 1, pending_creates: Vec::new(), pending_positions: Vec::new(), remote_positions: Vec::new(), retrievals: Vec::new(), sent: send::Queue::new(), redraw: redraw::Queue::new(), scroll_pending: scroll::pending::Queue::default(), paint_callbacks: paint_callbacks::Queue::new(), client_procs_w: 0, builtins_registered: false, init_callback_issued: false, defer: ipc::win32_window::DeferBatches::new() }
 }
