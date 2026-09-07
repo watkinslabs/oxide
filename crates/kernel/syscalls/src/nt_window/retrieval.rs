@@ -22,6 +22,20 @@ pub(super) fn pump(call: NtCall, raw: bool) -> Option<u64> {
     }
 }
 
+/// Save the calling thread's retrieval so a window-procedure call made from
+/// inside it resumes the whole retrieval when the callback returns.
+/// # C: O(N_process_gui_states)
+pub(super) fn save(call: NtCall, raw: bool) -> bool {
+    let Some(cur) = sched::live::current() else { return false; };
+    let mut entries = GUI.lock();
+    let Some(entry) = entries.iter_mut().find(|e| e.group.ptr_eq(&Arc::downgrade(&cur.thread_group))) else { return false; };
+    policy::push(&mut entry.retrievals, Retrieval { tid: cur.tid as u64, call, raw })
+}
+
+/// Discard a saved retrieval whose call resolved without suspending.
+/// # C: O(N_process_gui_states)
+pub(super) fn drop_saved() -> Option<Retrieval> { take() }
+
 fn take() -> Option<Retrieval> {
     let cur = sched::live::current()?;
     let mut entries = GUI.lock();

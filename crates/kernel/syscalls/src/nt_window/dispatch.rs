@@ -41,6 +41,14 @@ pub(super) fn dispatch_mode(call: NtCall, raw: bool) -> Option<u64> {
             crate::nt_gdi::flush_pending_for_current(false);
             let _ = caret::blink::expire_for_current(timekeeper::monotonic_ns());
             if let Some(result) = retrieval::pump(call, raw) { return Some(result); }
+            // Activation, the cursor and the double click are decided here,
+            // on the way out of the queue and inside the window procedure,
+            // not by whatever posted the raw input.
+            match hardware::process_for_current(call, raw, operation) {
+                hardware::Stage::Pending(status) => return Some(status),
+                hardware::Stage::Again => continue,
+                hardware::Stage::Ready => {}
+            }
         }
         let (result, wake, sleep, cleanup, atoms, paint_dcs) = {
             let mut entries = GUI.lock();

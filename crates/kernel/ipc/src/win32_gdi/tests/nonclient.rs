@@ -23,6 +23,9 @@ fn default_profile_serializes_all_five_canonical_stock_fonts() {
     assert_eq!(system_metric_default(2), Some(integer(&bytes, 8)));
     assert_eq!(system_metric_default(9), Some(integer(&bytes, 12)));
     assert_eq!(system_metric_default(31), None);
+    // The double-click rectangle the retrieval-time click pairing measures against.
+    assert_eq!(system_metric_default(36), Some(4));
+    assert_eq!(system_metric_default(37), Some(4));
 }
 
 #[test]

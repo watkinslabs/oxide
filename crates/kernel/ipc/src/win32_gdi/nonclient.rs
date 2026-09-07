@@ -11,6 +11,9 @@ const SMALL_CAPTION: i32 = 15;
 /// Half-extent, in pixels, a pointer may travel from a button press before the
 /// movement counts as a drag rather than a click.
 const DRAG: i32 = 4;
+/// Full width and height, in pixels, of the rectangle a second click must fall
+/// inside for the pair to count as a double click.
+const DOUBLE_CLICK: i32 = 4;
 
 /// Non-display scalar defaults from the same immutable profile as nonclient settings.
 /// # C: O(1)
@@ -20,6 +23,7 @@ pub fn system_metric_default(index: i32) -> Option<i32> {
         5 | 6 => 1, 7 | 8 => 3,
         11 | 12 | 13 | 14 => 32,
         30 => CAPTION.max(8), 32 | 33 => 3 + BORDER.max(1),
+        36 | 37 => DOUBLE_CLICK,
         45 | 46 => 2, 49 | 50 => 16, 52 => SMALL_CAPTION, 54 => CAPTION,
         68 | 69 => DRAG,
         _ => return None,

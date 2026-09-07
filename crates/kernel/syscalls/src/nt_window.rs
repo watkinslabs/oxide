@@ -66,6 +66,8 @@ pub(crate) mod rect_query;
 pub(crate) use creation_metadata::{set_creation_metadata_current, window_call_context_current};
 #[path = "nt_window/retrieval.rs"]
 mod retrieval;
+#[path = "nt_window/hardware.rs"]
+mod hardware;
 pub(crate) use retrieval::{resume_position_message_current, retrieve_raw};
 #[path = "nt_window/position.rs"]
 pub(crate) mod position;
@@ -150,7 +152,14 @@ struct GuiEntry { group: Weak<sched::thread_group::ThreadGroup>, state: ipc::win
     key_menu: ipc::win32_window::nonclient_menu::KeyMenuLatch,
     /// Latched once any thread of this process has drained its input, which is
     /// what an input-idle wait on the process waits for. Nothing clears it.
-    idle: bool }
+    idle: bool,
+    /// The retrieval-time hardware ladder of the thread processing an input
+    /// message, parked here while the window procedure one of its steps
+    /// entered runs.
+    hardware: Option<hardware::PendingHardware>,
+    /// The click this process last handed over, which the next one is paired
+    /// with to recognise a double click.
+    last_click: Option<ipc::win32_window::hardware::ClickRecord> }
 static GUI: Spinlock<Vec<GuiEntry>, GuiLockClass> = Spinlock::new(Vec::new());
 #[cfg(target_os = "oxide-kernel")]
 static USER_ATOMS: Spinlock<ipc::win32_window::UserAtomTable, GuiLockClass> = Spinlock::new(ipc::win32_window::UserAtomTable::new());
