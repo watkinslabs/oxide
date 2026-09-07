@@ -1,7 +1,7 @@
 //! Canonical HWND lifetime, geometry, painting and message work.
 use super::*;
 impl WindowManager {
-    pub fn new() -> Self { Self { next: 1, next_atom: 1, classes: Vec::new(), windows: Vec::new(), rects: Vec::new(), texts: Vec::new(), dirty: Vec::new(), painting: Vec::new(), queues: Vec::new(), timers: Vec::new(), focus: None, capture: None, cursor: (0, 0), buttons: 0, destroying: Vec::new(), keyboard: KeyboardState::default(), active: None, cursors: cursor_object::CursorIcons::new(), current_cursor: 0, cursor_count: 0, cursor_clip: None, cursor_change: 0, cursor_history: [cursor_pos::CursorPos { x: 0, y: 0, time: 0, info: 0 }; cursor_pos::CURSOR_HISTORY], cursor_latest: 0, menu_owner: None, move_size: None, hotkeys: hotkey::Hotkeys::new(), inputs: thread_input::ThreadInputs::new(), tracks: mouse_track::MouseTracks::new(), raw_input: rawinput::RawRegistrations::new(), layouts: Vec::new() } }
+    pub fn new() -> Self { Self { next: 1, next_atom: 1, classes: Vec::new(), windows: Vec::new(), rects: Vec::new(), texts: Vec::new(), dirty: Vec::new(), painting: Vec::new(), queues: Vec::new(), timers: Vec::new(), focus: None, capture: None, cursor: (0, 0), buttons: 0, destroying: Vec::new(), keyboard: KeyboardState::default(), active: None, cursors: cursor_object::CursorIcons::new(), current_cursor: 0, cursor_count: 0, cursor_clip: None, cursor_change: 0, cursor_history: [cursor_pos::CursorPos { x: 0, y: 0, time: 0, info: 0 }; cursor_pos::CURSOR_HISTORY], cursor_latest: 0, menu_owner: None, move_size: None, hotkeys: hotkey::Hotkeys::new(), inputs: thread_input::ThreadInputs::new(), tracks: mouse_track::MouseTracks::new(), raw_input: rawinput::RawRegistrations::new(), layouts: Vec::new(), icons: window_icon::WindowIconTable::new() } }
     pub fn create(&mut self, owner_tid: u64, parent: Option<WindowId>, wndproc: u64) -> Result<WindowId, WindowError> {
         if parent.is_some_and(|parent| self.get(parent).is_none()) { return Err(WindowError::InvalidParent); }
         let id = WindowId(self.next);
@@ -120,6 +120,7 @@ impl WindowManager {
         self.rects.retain(|(window, _)| *window != id);
         self.texts.retain(|(window, _)| *window != id);
         self.dirty.retain(|(window, _)| *window != id);
+        self.icons.remove(id);
         self.painting.retain(|(window, _)| *window != id);
         self.destroying.retain(|window| *window != id);
         if self.capture == Some(id) { self.capture = None; }

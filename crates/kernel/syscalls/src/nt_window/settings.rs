@@ -27,3 +27,15 @@ pub(crate) fn set_caret_blink_time(value: u32) -> bool {
     }
     true
 }
+
+/// Double-click interval in milliseconds. # C: O(1)
+pub(crate) fn double_click_time_for_current() -> Option<u32> { Some(super::USER_SETTINGS.lock().double_click_ms()) }
+
+/// Store the double-click interval, answering the previous one. # C: O(1)
+pub(crate) fn set_double_click_time(value: u32) -> u32 { super::USER_SETTINGS.lock().set_double_click_ms(value) }
+
+/// Hover dwell in milliseconds. # C: O(1)
+pub(crate) fn mouse_hover_time_for_current() -> Option<u32> { Some(super::USER_SETTINGS.lock().mouse_hover_ms()) }
+
+/// Store the hover dwell, answering the previous one. # C: O(1)
+pub(crate) fn set_mouse_hover_time(value: u32) -> u32 { super::USER_SETTINGS.lock().set_mouse_hover_ms(value) }

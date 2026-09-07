@@ -51,6 +51,14 @@ pub(crate) mod nt_wine_long_contract;
 pub(crate) mod nt_wine_class_long_contract;
 #[path = "nt_wine_window/cursor_raw.rs"]
 pub(crate) mod nt_wine_cursor_contract;
+#[path = "nt_wine_window/cursor_icon_raw.rs"]
+pub(crate) mod nt_wine_cursor_icon_contract;
+#[path = "nt_wine_window/input_raw.rs"]
+pub(crate) mod nt_wine_input_contract;
+#[path = "nt_wine_window/keyboard_raw.rs"]
+pub(crate) mod nt_wine_keyboard_contract;
+#[path = "nt_wine_window/rawinput_raw.rs"]
+pub(crate) mod nt_wine_rawinput_contract;
 #[path = "nt_wine_window/clip_raw.rs"]
 pub(crate) mod nt_wine_clip_contract;
 #[path = "nt_window/rect_query/policy.rs"]

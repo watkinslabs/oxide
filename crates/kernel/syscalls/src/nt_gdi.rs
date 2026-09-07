@@ -16,7 +16,7 @@ mod owner;
 use owner::new_entry;
 #[path = "nt_gdi/bitmap.rs"]
 mod bitmap;
-pub(crate) use bitmap::{create_bitmap_for_current, create_pattern_brush_for_current, create_display_dc_for_current};
+pub(crate) use bitmap::{create_bitmap_for_current, create_pattern_brush_for_current, create_display_dc_for_current, copy_bitmap_for_current};
 #[path = "nt_gdi/brush.rs"]
 mod brush;
 #[path = "nt_gdi/object_query.rs"]

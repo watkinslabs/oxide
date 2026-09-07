@@ -17,6 +17,8 @@ pub(crate) use class_background::{register_class_with_background_for_current, re
 #[path = "nt_window/client_procs.rs"]
 mod client_procs;
 pub(crate) use client_procs::{publish_client_procs_for_current, claim_builtin_registration_for_current, claim_init_builtin_classes_callback_for_current};
+#[path = "nt_window/user_input.rs"]
+pub(crate) mod user_input;
 #[path = "nt_window/class_long.rs"]
 mod class_long_state;
 pub(crate) use class_long_state::{class_long_for_current, set_class_long_for_current, class_cursor_for_current, shared_oem_cursor_for_current, set_current_cursor_for_current, current_cursor_for_current};

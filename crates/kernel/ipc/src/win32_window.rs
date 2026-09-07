@@ -65,6 +65,9 @@ mod class_long;
 pub use class_long::{GCL_MENUNAME, GCLP_HBRBACKGROUND, GCLP_HCURSOR, GCLP_HICON, GCLP_HMODULE, GCL_CBWNDEXTRA, GCL_CBCLSEXTRA, GCLP_WNDPROC, GCL_STYLE, GCW_ATOM, GCLP_HICONSM};
 #[path = "win32_window/cursor.rs"]
 mod cursor;
+#[path = "win32_window/window_icon.rs"]
+pub mod window_icon;
+pub use window_icon::{get_icon, set_icon, IconSideEffect, WindowIcons, WindowIconTable, ICON_BIG, ICON_SMALL, ICON_SMALL2};
 #[path = "win32_window/cursor_object.rs"]
 pub mod cursor_object;
 pub use cursor_object::{CursorFrame, CursorIconDesc, CursorIcons, FrameInfo, IconInfo, LR_SHARED, MAX_ANI_STEPS, OEM_CURSOR_BASE};
@@ -360,7 +363,7 @@ pub struct WindowManager { next: u32, next_atom: u16, classes: Vec<WindowClass>,
     /// Menu and move/size roles the capture request also carries.
     menu_owner: Option<WindowId>, move_size: Option<WindowId>,
     hotkeys: hotkey::Hotkeys, inputs: thread_input::ThreadInputs, tracks: mouse_track::MouseTracks,
-    raw_input: rawinput::RawRegistrations, layouts: Vec<(u64, u64)> }
+    raw_input: rawinput::RawRegistrations, layouts: Vec<(u64, u64)>, icons: window_icon::WindowIconTable }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 struct WindowTimer { owner_tid: u64, hwnd: Option<WindowId>, id: u64, period_ns: u64, due_ns: u64, proc: u64 }

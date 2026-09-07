@@ -2,23 +2,7 @@
 //! canonical class owner; this module only resolves the calling process.
 use super::*;
 use ipc::win32_window::LongPtrError;
-
-fn with_state_mut<T>(f: impl FnOnce(&mut ipc::win32_window::WindowManager) -> T) -> Option<T> {
-    let cur = sched::live::current().filter(|task| task.is_nt_personality())?;
-    let group = Arc::clone(&cur.thread_group);
-    let mut entries = GUI.lock();
-    entries.retain(|entry| entry.group.upgrade().is_some());
-    let index = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group)))
-        .unwrap_or_else(|| { entries.push(new_entry(&group)); entries.len() - 1 });
-    Some(f(&mut entries[index].state))
-}
-
-fn with_state<T>(f: impl FnOnce(&ipc::win32_window::WindowManager) -> T) -> Option<T> {
-    let cur = sched::live::current().filter(|task| task.is_nt_personality())?;
-    let entries = GUI.lock();
-    let entry = entries.iter().find(|entry| entry.group.ptr_eq(&Arc::downgrade(&cur.thread_group)))?;
-    Some(f(&entry.state))
-}
+use super::owner::{with_state, with_state_mut};
 
 /// # C: O(processes + windows + classes)
 pub(crate) fn class_long_for_current(hwnd: u64, offset: i32, width: usize) -> Result<u64, LongPtrError> {

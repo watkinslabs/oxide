@@ -91,3 +91,15 @@ pub(super) fn from_snapshot(index: u64, primary: Option<Monitor>, monitors: &[Mo
 #[cfg(test)]
 #[path = "tests/desktop_metrics.rs"]
 mod tests;
+
+/// Virtual screen rectangle: the union of every monitor, which bounds the
+/// cursor and every clip request. # C: O(monitors)
+pub(crate) fn virtual_screen_rect(snapshot: impl FnOnce() -> Option<alloc::vec::Vec<Monitor>>) -> Option<ipc::win32_window::WindowRect> {
+    let monitors = snapshot()?;
+    let primary = primary(&monitors);
+    let read = |index: i32| from_snapshot(index as i64 as u64, primary, &monitors) as i32;
+    let (left, top) = (read(SM_XVIRTUALSCREEN), read(SM_YVIRTUALSCREEN));
+    let (width, height) = (read(SM_CXVIRTUALSCREEN), read(SM_CYVIRTUALSCREEN));
+    (width > 0 && height > 0).then_some(ipc::win32_window::WindowRect {
+        left, top, right: left.saturating_add(width), bottom: top.saturating_add(height) })
+}
