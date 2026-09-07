@@ -6,7 +6,7 @@
 //! - `print`: document and page job results the null print driver reports.
 //! - `client_obj`: opaque client-owned object handles.
 
-use super::{GdiError, GdiManager, DcAttr, Rect, TextAttributes};
+use super::{GdiError, GdiManager, DcAttr, TextAttributes};
 
 #[path = "dc_state/save.rs"]
 mod save;

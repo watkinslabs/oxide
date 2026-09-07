@@ -26,14 +26,7 @@ pub const POLYLINE_TO: u32 = 5;
 /// Build a region from the polygons rather than drawing them.
 pub const POLY_POLYGON_RGN: u32 = 6;
 
-/// Start a new figure at this point.
-pub const PT_MOVETO: u8 = 0x06;
-/// Draw a line to this point.
-pub const PT_LINETO: u8 = 0x02;
-/// One of three points of a cubic curve.
-pub const PT_BEZIERTO: u8 = 0x04;
-/// Close the figure after this point.
-pub const PT_CLOSEFIGURE: u8 = 0x01;
+pub use crate::win32_gdi::path::{PT_BEZIERTO, PT_CLOSEFIGURE, PT_LINETO, PT_MOVETO};
 
 impl GdiManager {
     /// The device rectangle a bounded primitive covers. Right-to-left layout

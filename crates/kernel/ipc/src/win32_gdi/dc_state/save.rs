@@ -1,5 +1,6 @@
 //! The save/restore stack: one level per SaveDC, unwound by RestoreDC.
-use super::{DcAttr, GdiError, GdiManager, Rect, TextAttributes};
+use super::{DcAttr, GdiError, GdiManager, TextAttributes};
+use crate::win32_window::PaintRegion;
 
 /// Everything one saved level restores. The visible region is deliberately not
 /// part of it: a saved level never changes which pixels a context can reach.
@@ -12,7 +13,8 @@ pub struct SavedDc {
     pub pen: u32,
     pub dc_brush_color: u32,
     pub dc_pen_color: u32,
-    pub clip: Option<Rect>,
+    pub clip: Option<PaintRegion>,
+    pub meta_clip: Option<PaintRegion>,
 }
 
 impl GdiManager {
@@ -23,7 +25,7 @@ impl GdiManager {
         self.dcs[index].1.ensure_active()?;
         let state = &self.dcs[index].1;
         let level = SavedDc { attr: state.attr, text: state.text, font: state.font, brush: state.brush,
-            pen: state.pen, dc_brush_color: state.dc_brush_color, dc_pen_color: state.dc_pen_color, clip: state.clip };
+            pen: state.pen, dc_brush_color: state.dc_brush_color, dc_pen_color: state.dc_pen_color, clip: state.clip.clone(), meta_clip: state.meta_clip.clone() };
         let state = &mut self.dcs[index].1;
         state.saved.try_reserve(1).map_err(|_| GdiError::HandleLimit)?;
         state.saved.push(level);
@@ -55,6 +57,7 @@ impl GdiManager {
         state.dc_brush_color = restored.dc_brush_color;
         state.dc_pen_color = restored.dc_pen_color;
         state.clip = restored.clip;
+        state.meta_clip = restored.meta_clip;
         state.attr.update_xforms();
         self.collect_deleted_pens();
         Ok(())
