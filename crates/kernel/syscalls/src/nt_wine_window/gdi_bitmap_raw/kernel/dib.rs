@@ -110,7 +110,8 @@ fn create_dibitmap(dc: u64, width: i32, height: i32, init: u32, bits: u64, info:
 /// # C: O(rows*width)
 fn set_di_bits(bitmap: u32, start: u32, lines: u32, bits: u64, info: u64) -> u64 {
     let Some(info) = read_info(info) else { return 0; };
-    if !info.header.is_valid(true) { return 0; }
+    // Run-length rows are not stored rows; refuse rather than read them as raster.
+    if !info.header.is_valid(false) { return 0; }
     let Some(len) = image_bytes(&info.header) else { return 0; };
     let Some(source) = read_bits(bits, len) else { return 0; };
     let Ok(stored) = crate::nt_gdi::with_gdi(|state| state.put_dib_rows(bitmap, &info.header, &info.table, info.masks, &source, start, lines)) else { return 0; };
@@ -175,7 +176,8 @@ fn set_dibits_to_device(dc: u64, dst: Rect, src_x: i32, src_y: i32, start: u32, 
     let Ok(handle) = u32::try_from(dc) else { return 0; };
     if usage > ipc::win32_gdi::DIB_PAL_INDICES { return 0; }
     let Some(request) = read_info(info) else { return 0; };
-    if !request.header.is_valid(true) { return 0; }
+    // Run-length rows are not stored rows; refuse rather than read them as raster.
+    if !request.header.is_valid(false) { return 0; }
     let Some(len) = image_bytes(&request.header) else { return 0; };
     let Some(source) = read_bits(bits, len) else { return 0; };
     let Ok((colors, _)) = crate::nt_gdi::colors_for(dc) else { return 0; };
@@ -189,7 +191,8 @@ fn stretch_dibits(dc: u64, dst: Rect, src: Rect, bits: u64, info: u64, usage: u3
     let Ok(handle) = u32::try_from(dc) else { return 0; };
     if usage > ipc::win32_gdi::DIB_PAL_INDICES { return 0; }
     let Some(request) = read_info(info) else { return 0; };
-    if !request.header.is_valid(true) { return 0; }
+    // Run-length rows are not stored rows; refuse rather than read them as raster.
+    if !request.header.is_valid(false) { return 0; }
     let Some(len) = image_bytes(&request.header) else { return 0; };
     let Some(source) = read_bits(bits, len) else { return 0; };
     let Ok((colors, mode)) = crate::nt_gdi::colors_for(dc) else { return 0; };
