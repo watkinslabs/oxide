@@ -69,6 +69,11 @@ pub mod styles;
 mod tree;
 pub use tree::{point_in_rect, HwndListFilter, CWP_ALL, CWP_SKIPDISABLED, CWP_SKIPINVISIBLE,
     CWP_SKIPTRANSPARENT, GA_PARENT, GA_ROOT, GA_ROOTOWNER, HTCLIENT, HTERROR, HTNOWHERE, HTTRANSPARENT};
+#[path = "win32_window/defer.rs"]
+mod defer;
+pub use defer::{DeferBatches, DeferError, DeferredPosition, SWP_FRAMECHANGED, SWP_HIDEWINDOW,
+    SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOREDRAW, SWP_NOSIZE,
+    SWP_NOZORDER, SWP_SHOWWINDOW};
 #[path = "win32_window/attributes.rs"]
 mod attributes;
 pub use attributes::{title_bar_state, EnableOutcome, LayeredAttributes, WindowAttributes,
