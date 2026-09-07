@@ -50,7 +50,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
 
 .PHONY: all build x86 arm kpi-layout \
         build-debug x86-debug arm-debug \
-        test windows-compat-test lint lint-ratchet lint-ratchet-update audit-counts profile-policy warnings-control stats ci \
+        test windows-compat-test windows-surface-gate windows-surface-gate-update lint lint-ratchet lint-ratchet-update audit-counts profile-policy warnings-control stats ci \
         nano nano-arm micro micro-arm gnome gnome-arm lite live live-x86 live-arm dist \
         qemu-x86 qemu-arm qemu-x86-virtio-gpu qemu-x86-image qemu-arm-image qemu-x86-existing qemu-arm-existing qemu-x86-debug qemu-arm-debug qemu-mcp verify-native-q35 smoke-native-pci-x86 smoke-native-pci-e1000-x86 \
         hardware-audit-image-x86 \
@@ -117,12 +117,25 @@ test: windows-compat-test
 # Keep this explicit even though the workspace test also discovers these
 # crates: it prevents a workspace-selection change from silently removing the
 # compatibility gate.
-windows-compat-test:
+windows-compat-test: windows-surface-gate
 	./tools/test-windows-notepad-harness.sh
 	./tools/test-windows-nt-transition-harness.sh
 	$(WARNING_RUN) $(CARGO) test --manifest-path userspace/probes/Cargo.toml -p windows-contracts --quiet
 	$(WARNING_RUN) $(CARGO) run --manifest-path userspace/probes/Cargo.toml -p windows-contracts --quiet
 	$(WARNING_RUN) $(CARGO) +nightly check -Z build-std=core,compiler_builtins,alloc -Z build-std-features=compiler-builtins-mem -Z unstable-options -Z json-target-spec --target targets/x86_64-unknown-oxide-kernel.json -p kmain -p boot-x86_64 -p kernel-bin-x86_64 --quiet
+
+# Static audit of every Windows call the shipped Notepad module closure can
+# reach: win32u ordinals against the raw admission table, ntdll names against
+# the synthetic runtime export table, and every import against the graph
+# resolver. The campaign was discovering one of these per acceptance boot; the
+# whole surface is statically knowable from the shipped PE set, so it is a
+# hosted ratchet instead. Skips when the Wine PE catalog is absent.
+windows-surface-gate:
+	$(WARNING_RUN) $(CARGO) test -p syscalls --test windows_call_surface --quiet
+
+# Rewrite the ratchet baseline after closing gaps, as `lint-ratchet-update` does.
+windows-surface-gate-update:
+	OXIDE_WINDOWS_SURFACE_UPDATE=1 $(CARGO) test -p syscalls --test windows_call_surface --quiet
 
 windows-nt-transition-test:
 	./tools/test-windows-nt-transition-harness.sh
