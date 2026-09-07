@@ -52,6 +52,7 @@ pub mod pe_modules;
 pub mod pe_init;
 pub mod pe_startup;
 pub mod process_env;
+pub mod nt_ordinals;
 pub mod nt_image_section;
 pub mod nt_memory;
 pub mod nt_unmap;

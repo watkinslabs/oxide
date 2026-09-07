@@ -470,7 +470,13 @@
 
     #[test]
     fn nt_open_directory_object_uses_a_syscall_stub_not_a_debug_breakpoint() {
-        assert_eq!(runtime_stub_bytes(220), pe::nt_stub::X64_SIX_ARG_STUB_BYTES);
+        let open_index = ntdll_catalog::NTDLL_EXPORTS.iter().position(|name| *name == b"NtOpenDirectoryObject").unwrap();
+        assert_eq!(runtime_stub_bytes(open_index), pe::nt_stub::X64_SIX_ARG_STUB_BYTES);
+        // The breakpoint export is the one entry that must NOT be a service
+        // trap: the ABI executes a breakpoint instruction at user privilege.
+        let break_index = ntdll_catalog::NTDLL_EXPORTS.iter().position(|name| *name == b"DbgBreakPoint").unwrap();
+        assert_eq!(runtime_stub_bytes(break_index), pe::nt_stub::X64_BREAKPOINT_STUB_BYTES);
+        assert_eq!(ntdll_catalog::service_for_index(break_index), None);
         let as_ = AddressSpace::new(0x20_000).unwrap();
         let runtime = map_nt_runtime(&as_).unwrap();
         let open = runtime.resolve(b"ntdll.dll", &pe::ImportThunk::Name { hint: 0, name: b"NtOpenDirectoryObject" }).unwrap();

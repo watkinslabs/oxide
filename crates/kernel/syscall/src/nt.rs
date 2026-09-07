@@ -1664,4 +1664,5 @@ pub fn decode_terminate(call: NtCall) -> Result<(u64, u32), Errno> {
     if call.service != NtService::TerminateProcess { return Err(Errno::Enosys); }
     Ok((call.args.a0, call.args.a1 as u32))
 }
+#[path = "nt/ordinals.rs"] pub mod ordinals;
 #[cfg(test)] #[path = "nt/tests.rs"] mod tests;
