@@ -140,8 +140,8 @@ struct GuiEntry { group: Weak<sched::thread_group::ThreadGroup>, state: ipc::win
     /// Process startup-info flags the window manager mirrors, and the default
     /// display layout new device contexts inherit.
     startup_info_flags: u32, process_layout: u32,
-    /// Window whose menu this thread is tracking, if any.
-    menu_tracking: Option<u64>,
+    /// The menu-tracking session this thread is running, if any.
+    menu_tracking: Option<menu_raw::session::MenuCancel>,
     /// Latched once any thread of this process has drained its input, which is
     /// what an input-idle wait on the process waits for. Nothing clears it.
     idle: bool }

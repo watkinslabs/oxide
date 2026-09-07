@@ -102,6 +102,9 @@ pub fn dispatch(call: NtCall) -> u64 {
             // Wine uses NtUserMessageCall for CallWindowProcW/A.  The
             // result-info record begins with the requested WNDPROC; when it
             // is absent, the canonical window record supplies the procedure.
+            if args[5] == WINE_POPUP_MENU_WND_PROC {
+                return crate::nt_window::menu_raw::popup_menu_window_proc(hwnd, message as u32, wparam, lparam);
+            }
             if args[5] == WINE_DEF_WINDOW_PROC {
                 if message == WM_NCCREATE { return (lparam != 0) as u64; }
                 if message == WM_NCDESTROY { return STATUS_SUCCESS; }

@@ -34,6 +34,10 @@ pub(crate) mod nt_window_scroll_bar_contract;
 pub(crate) mod nt_window_scroll_dc_contract;
 #[path = "nt_window/menu_raw/raw.rs"]
 pub(crate) mod nt_window_menu_contract;
+#[path = "nt_window/menu_raw/session.rs"]
+pub(crate) mod nt_window_menu_session_contract;
+#[path = "nt_window/menu_raw/popup_proc.rs"]
+pub(crate) mod nt_window_menu_popup_proc_contract;
 #[path = "nt_window/display/raw.rs"]
 pub(crate) mod nt_window_display_contract;
 #[path = "nt_window/display/devmode.rs"]
