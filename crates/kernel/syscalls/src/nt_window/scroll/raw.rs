@@ -1,8 +1,6 @@
 //! Raw NtUser scroll ABI.  This layer only decodes fixed-width arguments;
 //! live state mutation remains in `live.rs`.
 
-pub(crate) const GET_SCROLL_INFO_METHOD: u32 = 7;
-pub(crate) const HWND_PARAM_ORDINAL: u64 = 0x1336;
 pub(crate) const SET_SCROLL_INFO_ORDINAL: u64 = 0x1581;
 pub(crate) const SBM_SETSCROLLINFO: u32 = 0x00e9;
 pub(crate) const GET_PARAMS_BYTES: usize = 16;

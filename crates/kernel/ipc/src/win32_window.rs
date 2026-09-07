@@ -69,6 +69,11 @@ mod class_long;
 pub use class_long::{GCL_MENUNAME, GCLP_MENUNAME, GCLP_HBRBACKGROUND, GCLP_HCURSOR, GCLP_HICON, GCLP_HMODULE, GCL_CBWNDEXTRA, GCL_CBCLSEXTRA, GCLP_WNDPROC, GCL_STYLE, GCW_ATOM, GCLP_HICONSM};
 #[path = "win32_window/styles.rs"]
 pub mod styles;
+#[path = "win32_window/dialog.rs"]
+mod dialog;
+#[path = "win32_window/map_points.rs"]
+mod map_points;
+pub use map_points::{pack_offset, WindowsOffset};
 #[path = "win32_window/tree.rs"]
 mod tree;
 pub use tree::{point_in_rect, HwndListFilter, CWP_ALL, CWP_SKIPDISABLED, CWP_SKIPINVISIBLE,
@@ -359,7 +364,13 @@ pub struct WindowRecord { pub owner_tid: u64, pub parent: Option<WindowId>, pub 
     pub imc: Option<crate::win32_imc::ImcId>,
     /// Builtin control identity this window's procedure belongs to; zero until
     /// one is given.
-    pub fnid: u16 }
+    pub fnid: u16,
+    /// Client pointer to the dialog's own state, zero for a window that is not
+    /// a dialog. Never dereferenced here.
+    pub dlg_info: u64,
+    /// Whether the window is an MDI client, which is what makes the client
+    /// info held in its extra area readable.
+    pub mdi_client: bool }
 
 
 const USER_ATOM_BASE: u16 = 0xc000;

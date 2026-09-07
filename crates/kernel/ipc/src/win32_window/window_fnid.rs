@@ -14,6 +14,22 @@ pub const FNID_VALID: u16 = 0x8000;
 pub const FNID_INDEX: u16 = 0x7fff;
 /// Entries the client procedure arrays hold.
 pub const CLIENT_PROC_COUNT: u16 = 17;
+/// Client procedure indices whose windows keep no private extra region: a
+/// dialog and an MDI client publish their whole extra area to the application.
+pub const PROC_DIALOG: u16 = 10;
+pub const PROC_MDICLIENT: u16 = 13;
+
+/// Bytes an identity reserves at the front of a window's extra area. A builtin
+/// control keeps its entire extra area to itself; a window with no identity,
+/// and the two identities whose extra area is the application's, reserve none.
+/// # C: O(1)
+pub const fn private_size(fnid: u16, extra_size: usize) -> usize {
+    match fnid_proc_index(fnid) {
+        None => 0,
+        Some(index) if index as u16 == PROC_DIALOG || index as u16 == PROC_MDICLIENT => 0,
+        Some(_) => extra_size,
+    }
+}
 
 /// Build the identity of one client procedure index. # C: O(1)
 pub const fn make_fnid(index: u16) -> u16 { FNID_VALID | index }
@@ -39,6 +55,8 @@ impl WindowManager {
         let (_, record) = self.windows.iter_mut().find(|(window, _)| *window == id).ok_or(WindowError::NoSuchWindow)?;
         if record.fnid != 0 && record.fnid != fnid { return Err(WindowError::InvalidParent); }
         record.fnid = fnid;
+        let reserved = private_size(fnid, record.extra.len());
+        record.extra.set_private_size(reserved);
         Ok(())
     }
 }

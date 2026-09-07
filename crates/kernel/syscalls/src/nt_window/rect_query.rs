@@ -5,7 +5,7 @@ use super::*;
 mod policy;
 pub(crate) use policy::{map_rect, query_state, RectKind};
 
-pub(crate) fn query_current(hwnd: u32, client: bool, requested_dpi: u32)
+pub(crate) fn query_current(hwnd: u32, kind: RectKind, requested_dpi: u32)
     -> Option<ipc::win32_window::WindowRect>
 {
     let cur = sched::live::current()?;
@@ -17,6 +17,5 @@ pub(crate) fn query_current(hwnd: u32, client: bool, requested_dpi: u32)
     entries.retain(|entry| entry.group.upgrade().is_some());
     let index = entries.iter().position(|entry| entry.group.upgrade()
         .is_some_and(|candidate| alloc::sync::Arc::ptr_eq(&candidate, &group)))?;
-    query_state(&entries[index].state, window,
-        if client { RectKind::Client } else { RectKind::Window }, requested_dpi, source_dpi)
+    query_state(&entries[index].state, window, kind, requested_dpi, source_dpi)
 }

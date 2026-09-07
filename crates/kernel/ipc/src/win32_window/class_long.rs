@@ -43,7 +43,7 @@ impl WindowManager {
             GCLP_HICONSM => class.icon_sm,
             GCLP_WNDPROC => class.wndproc,
             GCLP_MENUNAME => if ansi { class.menu_name.ansi } else { class.menu_name.wide },
-            _ => return class.extra.read(offset, width),
+            _ => return class.extra.read(offset, width, false),
         };
         Ok(truncate(value, width))
     }
@@ -68,7 +68,7 @@ impl WindowManager {
             // the previous value is meaningless to the caller; the exchange
             // itself is `exchange_class_menu_name`.
             GCLP_MENUNAME => 0,
-            _ => return class.extra.write(offset, width, value),
+            _ => return class.extra.write(offset, width, value, false),
         };
         Ok(truncate(previous, width))
     }

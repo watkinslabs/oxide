@@ -5,6 +5,8 @@ use super::{with_owner, PaintRegion, Rect};
 pub(crate) fn regions_equal(first: u32, second: u32) -> Result<bool, u64> { with_owner(|state| state.regions_equal(first, second)) }
 /// # C: O(processes + regions + rectangles)
 pub(crate) fn offset_region(region: u32, x: i32, y: i32) -> Result<u32, u64> { with_owner(|state| state.offset_region(region, x, y)) }
+/// # C: O(processes + regions + rectangles²)
+pub(crate) fn mirror_region(region: u32, width: i32) -> Result<u32, u64> { with_owner(|state| state.mirror_region(region, width)) }
 /// # C: O(processes + regions + rectangles)
 pub(crate) fn region_contains_point(region: u32, x: i32, y: i32) -> Result<bool, u64> { with_owner(|state| state.region_contains_point(region, x, y)) }
 /// # C: O(processes + regions + rectangles)

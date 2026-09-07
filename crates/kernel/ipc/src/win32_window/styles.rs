@@ -21,6 +21,7 @@ pub const WS_EX_TRANSPARENT: u32 = 0x0000_0020;
 pub const WS_EX_TOOLWINDOW: u32 = 0x0000_0080;
 pub const WS_EX_CONTEXTHELP: u32 = 0x0000_0400;
 pub const WS_EX_LAYERED: u32 = 0x0008_0000;
+pub const WS_EX_LAYOUTRTL: u32 = 0x0040_0000;
 
 /// Class style bit that removes the system menu's close item.
 pub const CS_NOCLOSE: u32 = 0x0200;

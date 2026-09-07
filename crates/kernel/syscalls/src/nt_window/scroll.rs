@@ -1,7 +1,7 @@
 //! Raw Win32 scroll ABI codecs and validation. Main owns dispatch wiring.
 
 #[path = "scroll/raw.rs"]
-mod raw;
+pub(crate) mod raw;
 #[path = "scroll/bar_raw.rs"]
 pub(crate) mod bar_raw;
 #[path = "scroll/dc_raw.rs"]

@@ -37,6 +37,10 @@ pub(crate) struct Snapshot {
     pub current_thread: bool,
     pub text_length: u32,
     pub dpi: u32,
+    /// The dialog's own state pointer, zero for a window that is not a dialog.
+    pub dlg_info: u64,
+    /// MDI client info, which only a window marked an MDI client reports.
+    pub mdi_client_info: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -70,7 +74,9 @@ pub(crate) fn answer(code: u32, hwnd: u64, window: Option<Snapshot>) -> Answer {
         IS_CURRENT_PROCESS_WINDOW => u64::from(w.hwnd),
         IS_CURRENT_THREAD_WINDOW => if w.current_thread { u64::from(w.hwnd) } else { 0 },
         GET_LAST_ACTIVE_POPUP => u64::from(w.hwnd),
-        GET_DIALOG_INFO | GET_MDI_CLIENT_INFO | GET_WINDOW_INPUT_CONTEXT | GET_WINDOW_SYS_SUB_MENU => 0,
+        GET_DIALOG_INFO => w.dlg_info,
+        GET_MDI_CLIENT_INFO => w.mdi_client_info,
+        GET_WINDOW_INPUT_CONTEXT | GET_WINDOW_SYS_SUB_MENU => 0,
         ACTIVATE_OTHER_WINDOW | SET_FOREGROUND_WINDOW_INTERNAL => 0,
         other => return Answer::Unsupported(other),
     })

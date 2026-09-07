@@ -80,7 +80,7 @@ fn binding(family: Family) -> Route {
         Family::KeyboardRaw => (|o, a: &Args| keyboard_raw::kernel::route(o, a)) as Route,
         Family::RawInputRaw => (|o, a: &Args| rawinput_raw::kernel::route(o, a)) as Route,
         Family::PointerRaw => (|o, a: &Args| pointer_raw::kernel::route(o, a)) as Route,
-        Family::HwndParam => hwnd_param_route as Route,
+        Family::HwndParam => (|o, a: &Args| hwnd_param::kernel::route(o, a)) as Route,
         Family::GdiRoute => (|o, a: &Args| gdi_route::descriptor(o, a)) as Route,
         Family::ObjectRaw => (|o, a: &Args| object_raw::decode(o, a).map(object_raw::kernel::dispatch)) as Route,
         Family::BitmapRaw => (|o, a: &Args| bitmap_raw::kernel::route(o, a)) as Route,
@@ -93,15 +93,4 @@ fn binding(family: Family) -> Route {
         Family::KeyboardQuery => (|o, a: &Args| keyboard_query(o, a[0])) as Route,
         Family::Legacy => legacy::route as Route,
     }
-}
-
-/// `NtUserCallHwndParam` multiplexes three requests behind one ordinal.
-/// # C: O(1) plus the selected request's own cost
-fn hwnd_param_route(ordinal: u64, a: &Args) -> Option<u64> {
-    if ordinal != hwnd_param::ORDINAL { return None; }
-    if let Some(hwnd_param::Request::GetWindowLong { offset, width }) = hwnd_param::decode_request(a[2] as u32, a[1]) {
-        return Some(long_raw::get(a[0], offset, width));
-    }
-    if a[2] as u32 == hwnd_param::GET_WINDOW_RECTS { return Some(hwnd_param::dispatch_get_window_rects(a[0], a[1])); }
-    class_raw::decode_get(a[2] as u32, a[0], a[1]).map(class_raw::get)
 }

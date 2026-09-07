@@ -153,7 +153,7 @@ mod nt_window {
         } })
     }
 }
-#[path = "../hwnd_param.rs"] mod hwnd_param;
+#[path = "../create_menu.rs"] mod create_menu;
 #[path = "../raw_class.rs"] mod raw_class;
 
 /// Drive the production creation decision the way the dispatcher does: the

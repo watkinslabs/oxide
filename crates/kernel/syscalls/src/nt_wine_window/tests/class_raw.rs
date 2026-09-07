@@ -3,17 +3,8 @@ use super::*;
 const HWND: u64 = 0x20;
 const GCLP_HCURSOR: i32 = -12;
 
-#[test]
-fn each_read_method_names_its_own_width_and_encoding() {
-    assert_eq!(decode_get(GET_CLASS_LONG_A, HWND, GCLP_HCURSOR as u32 as u64),
-        Some(ClassLong { hwnd: HWND, offset: GCLP_HCURSOR, width: 4, ansi: true }));
-    assert_eq!(decode_get(GET_CLASS_LONG_W, HWND, 0), Some(ClassLong { hwnd: HWND, offset: 0, width: 4, ansi: false }));
-    assert_eq!(decode_get(GET_CLASS_LONG_PTR_A, HWND, 0), Some(ClassLong { hwnd: HWND, offset: 0, width: 8, ansi: true }));
-    assert_eq!(decode_get(GET_CLASS_LONG_PTR_W, HWND, 0), Some(ClassLong { hwnd: HWND, offset: 0, width: 8, ansi: false }));
-    assert_eq!(decode_get(GET_CLASS_WORD, HWND, 0), Some(ClassLong { hwnd: HWND, offset: 0, width: 2, ansi: true }));
-    assert_eq!(decode_get(0, HWND, 0), None);
-    assert_eq!(decode_get(9, HWND, 0), None);
-}
+// The read methods are named by the one NtUserCallHwndParam decoder, whose
+// own tests pin each width and encoding; this file owns the write ordinals.
 
 #[test]
 fn each_write_ordinal_normalises_its_value_to_the_written_width() {

@@ -79,3 +79,34 @@ fn boolean_regions_preserve_exact_geometry_aliases_and_invalid_call_rollback() {
         assert_eq!(g.combine_region(a,a,a,RGN_XOR),Ok(NULL_REGION));
     }
 }
+
+#[test]
+fn mirroring_reflects_every_rectangle_about_the_named_width() {
+    let mut gdi = GdiManager::new();
+    let handle = gdi.create_rect_region(Rect { left: 10, top: 0, right: 30, bottom: 20 }).unwrap();
+    gdi.mirror_region(handle, 100).unwrap();
+    assert_eq!(gdi.region_box(handle).unwrap().1, Rect { left: 70, top: 0, right: 90, bottom: 20 });
+    // Mirroring twice about the same width restores the original.
+    gdi.mirror_region(handle, 100).unwrap();
+    assert_eq!(gdi.region_box(handle).unwrap().1, Rect { left: 10, top: 0, right: 30, bottom: 20 });
+}
+
+#[test]
+fn mirroring_keeps_a_multi_rectangle_region_ordered_left_to_right() {
+    let mut gdi = GdiManager::new();
+    let left = gdi.create_rect_region(Rect { left: 0, top: 0, right: 10, bottom: 10 }).unwrap();
+    let right = gdi.create_rect_region(Rect { left: 40, top: 0, right: 50, bottom: 10 }).unwrap();
+    let both = gdi.create_rect_region(Rect { left: 0, top: 0, right: 0, bottom: 0 }).unwrap();
+    gdi.combine_region(both, left, right, RGN_OR).unwrap();
+    gdi.mirror_region(both, 50).unwrap();
+    assert_eq!(gdi.region_box(both).unwrap().1, Rect { left: 0, top: 0, right: 50, bottom: 10 });
+    assert!(gdi.region_contains_point(both, 5, 5).unwrap());
+    assert!(gdi.region_contains_point(both, 45, 5).unwrap());
+    assert!(!gdi.region_contains_point(both, 25, 5).unwrap());
+}
+
+#[test]
+fn mirroring_a_region_that_does_not_exist_answers_nothing() {
+    let mut gdi = GdiManager::new();
+    assert!(gdi.mirror_region(0x4242, 100).is_err());
+}

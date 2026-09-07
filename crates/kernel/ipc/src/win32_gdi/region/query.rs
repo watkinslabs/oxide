@@ -28,6 +28,18 @@ pub fn offset_region(region: &PaintRegion, x: i32, y: i32) -> Result<PaintRegion
     region.translated(x, y).map_err(|_| GdiError::HandleLimit)
 }
 
+/// Reflect one region about the vertical axis of a space `width` wide: each
+/// rectangle's x span becomes `[width - right, width - left]`. # C: O(N_rects²)
+pub fn mirror_region(region: &PaintRegion, width: i32) -> Result<PaintRegion, GdiError> {
+    let mut rects: Vec<WindowRect> = Vec::new();
+    rects.try_reserve_exact(region.rects().len()).map_err(|_| GdiError::HandleLimit)?;
+    for rect in region.rects() {
+        rects.push(WindowRect { left: width.saturating_sub(rect.right), top: rect.top,
+            right: width.saturating_sub(rect.left), bottom: rect.bottom });
+    }
+    PaintRegion::from_rects(&rects).map_err(|_| GdiError::HandleLimit)
+}
+
 /// Frame coverage is the source minus its four-way inward intersection. # C: O(N_rects² * fragments)
 pub fn frame_region(region: &PaintRegion, x: i32, y: i32) -> Result<PaintRegion, GdiError> {
     if region.is_empty() { return Err(GdiError::NoSuchObject); }

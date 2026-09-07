@@ -13,13 +13,6 @@ pub(crate) fn dispatch(ordinal: u64, args: [u64; 4]) -> Option<u64> {
                 request.hwnd, request.bar, request.info, request.redraw, &mut sink,
             ))
         }
-        raw::HWND_PARAM_ORDINAL if args[2] as u32 == raw::GET_SCROLL_INFO_METHOD => {
-            if args[1] == 0 { return Some(0); }
-            let mut bytes = [0u8; raw::GET_PARAMS_BYTES];
-            if uaccess::copy_from_user(&mut bytes, args[1]).is_err() { return Some(0); }
-            let request = raw::GetScrollInfoParams::decode(bytes);
-            Some(live::get_scroll_info_for_current(args[0], request.bar, request.info))
-        }
         _ => None,
     }
 }

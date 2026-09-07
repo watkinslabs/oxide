@@ -109,6 +109,16 @@ impl GdiManager {
         Ok(kind)
     }
 
+    /// Reflect one region in place about a space `width` wide and report its
+    /// resulting complexity. # C: O(rectangles²)
+    pub fn mirror_region(&mut self, handle: u32, width: i32) -> Result<u32, GdiError> {
+        let region = &self.regions.iter().find(|(id,_)| *id == handle).ok_or(GdiError::NoSuchObject)?.1;
+        let mirrored = query::mirror_region(region, width)?;
+        let kind = complexity_of(&mirrored).0;
+        self.replace_region(handle, mirrored)?;
+        Ok(kind)
+    }
+
     /// Half-open point membership. # C: O(regions + rectangles)
     pub fn region_contains_point(&self, handle: u32, x: i32, y: i32) -> Result<bool, GdiError> {
         let region = &self.regions.iter().find(|(id,_)| *id == handle).ok_or(GdiError::NoSuchObject)?.1;

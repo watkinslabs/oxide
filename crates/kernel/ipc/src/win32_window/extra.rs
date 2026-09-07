@@ -15,7 +15,7 @@ pub const GWLP_USERDATA: i32 = -21;
 pub enum LongPtrError { InvalidWindow, InvalidIndex, InvalidSize, NoMemory, OwnerTransaction }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct WindowExtra { bytes: Vec<u8>, pub userdata: u64, pub instance: u64 }
+pub struct WindowExtra { bytes: Vec<u8>, private: usize, pub userdata: u64, pub instance: u64 }
 
 impl WindowExtra {
     /// Admit signed class size and allocate zeroed private bytes before HWND publication.
@@ -25,27 +25,35 @@ impl WindowExtra {
         let mut bytes = Vec::new();
         bytes.try_reserve_exact(size).map_err(|_| LongPtrError::NoMemory)?;
         bytes.resize(size, 0);
-        Ok(Self { bytes, userdata: 0, instance })
+        Ok(Self { bytes, private: 0, userdata: 0, instance })
     }
     /// Return declared per-window storage extent, not vector capacity. # C: O(1)
     pub fn len(&self) -> usize { self.bytes.len() }
-    /// Read a byte-indexed, possibly unaligned WORD/DWORD/pointer slot. # C: O(1)
-    pub fn read(&self, offset: i32, width: usize) -> Result<u64, LongPtrError> {
-        let range = self.range(offset, width)?;
+    /// Bytes at the front of the buffer reserved for the window's builtin
+    /// control state, which only an internal access may name. # C: O(1)
+    pub fn private_size(&self) -> usize { self.private }
+    /// Reserve the leading private region; a size past the buffer reserves it
+    /// entirely. # C: O(1)
+    pub fn set_private_size(&mut self, size: usize) { self.private = size.min(self.bytes.len()); }
+    /// Read a byte-indexed, possibly unaligned WORD/DWORD/pointer slot; an
+    /// internal read reaches the private region. # C: O(1)
+    pub fn read(&self, offset: i32, width: usize, internal: bool) -> Result<u64, LongPtrError> {
+        let range = self.range(offset, width, internal)?;
         let mut value = [0u8; 8];
         value[..width].copy_from_slice(&self.bytes[range]);
         Ok(u64::from_le_bytes(value))
     }
     /// Return old bytes and replace exactly the admitted range. # C: O(1)
-    pub fn write(&mut self, offset: i32, width: usize, value: u64) -> Result<u64, LongPtrError> {
-        let range = self.range(offset, width)?;
-        let previous = self.read(offset, width)?;
+    pub fn write(&mut self, offset: i32, width: usize, value: u64, internal: bool) -> Result<u64, LongPtrError> {
+        let range = self.range(offset, width, internal)?;
+        let previous = self.read(offset, width, internal)?;
         self.bytes[range].copy_from_slice(&value.to_le_bytes()[..width]);
         Ok(previous)
     }
-    fn range(&self, offset: i32, width: usize) -> Result<core::ops::Range<usize>, LongPtrError> {
+    fn range(&self, offset: i32, width: usize, internal: bool) -> Result<core::ops::Range<usize>, LongPtrError> {
         if !matches!(width, 2 | 4 | 8) { return Err(LongPtrError::InvalidSize); }
         let start = usize::try_from(offset).map_err(|_| LongPtrError::InvalidIndex)?;
+        if !internal && start < self.private { return Err(LongPtrError::InvalidIndex); }
         let end = start.checked_add(width).filter(|end| *end <= self.bytes.len()).ok_or(LongPtrError::InvalidIndex)?;
         Ok(start..end)
     }
@@ -84,8 +92,21 @@ impl WindowManager {
     pub fn get_window_long_ptr(&self, window: WindowId, offset: i32) -> Result<u64, LongPtrError> {
         self.get_window_long(window, offset, 8)
     }
+    /// Read past the private region, as a builtin control's own state access
+    /// does. # C: O(N_windows)
+    pub fn get_window_long_internal(&self, window: WindowId, offset: i32, width: usize) -> Result<u64, LongPtrError> {
+        self.window_long(window, offset, width, true)
+    }
+    /// Write past the private region, as a builtin control's own state access
+    /// does. # C: O(N_windows)
+    pub fn set_window_long_internal(&mut self, window: WindowId, offset: i32, width: usize, value: u64) -> Result<u64, LongPtrError> {
+        self.window_long_set(window, offset, width, value, true)
+    }
     /// Width describes extra-byte access and truncates scalar query results. # C: O(N_windows)
     pub fn get_window_long(&self, window: WindowId, offset: i32, width: usize) -> Result<u64, LongPtrError> {
+        self.window_long(window, offset, width, false)
+    }
+    fn window_long(&self, window: WindowId, offset: i32, width: usize, internal: bool) -> Result<u64, LongPtrError> {
         let entry = &self.windows.iter().find(|(id, _)| *id == window).ok_or(LongPtrError::InvalidWindow)?.1;
         let mask = width_mask(width)?;
         if width == 2 && offset < 0 && offset != GWLP_USERDATA { return Err(LongPtrError::InvalidIndex); }
@@ -97,7 +118,7 @@ impl WindowManager {
             GWL_EXSTYLE => Ok(entry.record.ex_style as u64),
             GWLP_HWNDPARENT => Ok(entry.record.parent.or(entry.record.owner).map_or(0, |id| id.raw() as u64)),
             GWLP_ID => Ok(entry.record.id_menu),
-            value if value >= 0 => entry.extra.read(value, width),
+            value if value >= 0 => entry.extra.read(value, width, internal),
             _ => Err(LongPtrError::InvalidIndex),
         }?;
         Ok(value & mask)
@@ -111,6 +132,9 @@ impl WindowManager {
     /// Width-limited writes preserve unrelated bytes; style/parent changes need owner work.
     /// # C: O(N_windows)
     pub fn set_window_long(&mut self, window: WindowId, offset: i32, width: usize, value: u64) -> Result<u64, LongPtrError> {
+        self.window_long_set(window, offset, width, value, false)
+    }
+    fn window_long_set(&mut self, window: WindowId, offset: i32, width: usize, value: u64, internal: bool) -> Result<u64, LongPtrError> {
         let entry = &mut self.windows.iter_mut().find(|(id, _)| *id == window).ok_or(LongPtrError::InvalidWindow)?.1;
         let mask = width_mask(width)?;
         let value = if width == 4 { value as u32 as i32 as i64 as u64 } else { value & mask };
@@ -121,7 +145,7 @@ impl WindowManager {
             GWLP_WNDPROC => &mut entry.record.wndproc,
             GWLP_ID => &mut entry.record.id_menu,
             GWLP_HWNDPARENT | GWL_STYLE | GWL_EXSTYLE => return Err(LongPtrError::OwnerTransaction),
-            index if index >= 0 => return entry.extra.write(index, width, value),
+            index if index >= 0 => return entry.extra.write(index, width, value, internal),
             _ => return Err(LongPtrError::InvalidIndex),
         };
         let previous = *slot;
