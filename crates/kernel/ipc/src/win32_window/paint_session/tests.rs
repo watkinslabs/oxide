@@ -7,6 +7,7 @@ fn exact_fresh_dc_is_required_before_consuming_session() {
     let id = manager.create(9, None, 0x1234).unwrap();
     let damage = Some(WindowRect { left: 1, top: 2, right: 8, bottom: 9 });
     manager.set_rect(id, WindowRect { left: 0, top: 0, right: 10, bottom: 10 }).unwrap();
+    manager.set_visible(id, true).unwrap();
     manager.invalidate(id, damage).unwrap();
     assert_eq!(manager.begin_paint(id), Ok(damage));
     assert_eq!(manager.bind_paint_dc(id, 0), Err(PaintSessionError::InvalidDc));

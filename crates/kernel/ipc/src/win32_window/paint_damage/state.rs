@@ -36,6 +36,11 @@ impl PaintDamage {
         Ok(Self { region: self.region.try_copy()?, internal: self.internal,
             erase: self.erase, nonclient: self.nonclient, delayed_erase: self.delayed_erase })
     }
+    /// Drop every pending client, erase and nonclient obligation. # C: O(1)
+    pub fn validate_all(&mut self) {
+        self.region = PaintRegion::default();
+        self.erase = false; self.delayed_erase = false; self.nonclient = false;
+    }
     /// Apply already-coordinate-mapped coverage atomically; None means entire applicable area.
     /// Frame/client bounds are both expressed in client coordinates. # C: O(N_rects²)
     pub fn apply(&mut self, input: Option<&PaintRegion>, client: WindowRect, frame: WindowRect,
@@ -48,10 +53,8 @@ impl PaintDamage {
             if flags & RDW_FRAME != 0 { next.nonclient = true; }
             if flags & RDW_ERASE != 0 { next.erase = true; }
         } else if flags & RDW_VALIDATE != 0 {
-            if input.is_none() && flags & RDW_NOFRAME != 0 {
-                next.region = PaintRegion::default();
-                next.erase = false; next.delayed_erase = false; next.nonclient = false;
-            } else if !next.region.is_empty() {
+            if input.is_none() && flags & RDW_NOFRAME != 0 { next.validate_all(); }
+            else if !next.region.is_empty() {
                 let bounds = if nested { frame } else { client };
                 let coverage = match input { Some(region) => region.clipped(bounds)?, None => PaintRegion::from_rect(bounds)? };
                 next.region.subtract(&coverage)?;

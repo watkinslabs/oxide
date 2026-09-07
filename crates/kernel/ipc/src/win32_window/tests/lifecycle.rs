@@ -155,12 +155,17 @@ use super::tests::message;
         let mut manager = WindowManager::new();
         let window = manager.create(9, None, 0).unwrap();
         manager.set_rect(window, WindowRect { left: 0, top: 0, right: 20, bottom: 20 }).unwrap();
+        // A hidden window exposes no area, so a request to damage it records
+        // nothing and it never owes a paint.
         manager.invalidate(window, Some(WindowRect { left: -4, top: 2, right: 30, bottom: 40 })).unwrap();
-        assert_eq!(manager.begin_paint(window), Ok(Some(WindowRect { left: 0, top: 2, right: 20, bottom: 20 })));
+        assert_eq!(manager.begin_paint(window), Ok(None));
         assert_eq!(manager.present_record(window), Err(WindowError::NotVisible));
         manager.end_paint(window).unwrap();
         manager.show(9, window, true).unwrap();
         assert_eq!(manager.begin_paint(window), Ok(Some(WindowRect { left: 0, top: 0, right: 20, bottom: 20 })));
+        manager.end_paint(window).unwrap();
+        manager.invalidate(window, Some(WindowRect { left: -4, top: 2, right: 30, bottom: 40 })).unwrap();
+        assert_eq!(manager.begin_paint(window), Ok(Some(WindowRect { left: 0, top: 2, right: 20, bottom: 20 })));
     }
 
     #[test]

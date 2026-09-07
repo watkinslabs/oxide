@@ -146,6 +146,7 @@ mod nt_window{
     pub(super) fn setup()->u32{let task=sched::live::current().unwrap();let mut entry=new_entry(&task.thread_group);
         let hwnd=entry.state.create(task.tid as u64,None,0).unwrap();
         entry.state.set_rect(hwnd,ipc::win32_window::WindowRect{left:0,top:0,right:2,bottom:2}).unwrap();
+        entry.state.set_visible(hwnd,true).unwrap();
         let mut entries=GUI.lock();entries.clear();entries.push(entry);hwnd.raw()}
     pub fn window_rect_for_current(hwnd:u32)->Option<(ipc::win32_window::WindowRect,bool)>{
         let task=sched::live::current()?;let entries=GUI.lock();let entry=entries.iter().find(|e|e.group.ptr_eq(&Arc::downgrade(&task.thread_group)))?;

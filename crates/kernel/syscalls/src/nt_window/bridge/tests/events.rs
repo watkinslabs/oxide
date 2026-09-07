@@ -5,6 +5,7 @@ fn state() -> (WindowManager, WindowId) {
     let mut state = WindowManager::new();
     let id = state.create(17, None, 42).unwrap();
     state.set_rect(id, WindowRect { left: 20, top: 30, right: 220, bottom: 130 }).unwrap();
+    state.set_visible(id, true).unwrap();
     (state, id)
 }
 fn event(opcode: Opcode, id: WindowId, payload: Vec<u8>) -> Record {
