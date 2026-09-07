@@ -50,26 +50,33 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def test_flat_dark_search_spot_means_overview():
-    assert overview_visible_pixels(0.13, 0.0)
-    assert overview_visible_pixels(0.25, 0.03)
-    assert not overview_visible_pixels(0.26, 0.0)
-    assert not overview_visible_pixels(0.13, 0.05)
+    # The text-free interior of the search entry is a flat mid grey; the
+    # band excludes both the wallpaper under the spot and a crop that still
+    # carries placeholder text (its std is far above the limit).
+    assert overview_visible_pixels(0.25, 0.0)
+    assert overview_visible_pixels(0.32, 0.03)
+    assert not overview_visible_pixels(0.11, 0.0)
+    assert not overview_visible_pixels(0.33, 0.0)
+    assert not overview_visible_pixels(0.25, 0.05)
     assert not overview_visible_pixels(1.0, 1.0)
 
 
 def test_search_pill_rect_scales_with_the_frame():
-    assert search_pill_rect(1024, 768) == (326, 44, 372, 40)
+    assert search_pill_rect(1024, 768) == (660, 52, 30, 24)
     left, top, w, h = search_pill_rect(2048, 1536)
-    assert (left, top, w, h) == (652, 88, 744, 80)
+    assert (left, top, w, h) == (1320, 104, 60, 48)
 
 
 def test_real_overview_probe_crop_reads_as_overview_and_wallpaper_does_not():
-    # overview-search-pill.png is the search-entry crop of a real guest frame
-    # (run 1618308) whose grey placeholder tesseract could not read; the
-    # pixel marker must carry it. The wallpaper-like crop must not.
+    # overview-search-pill.png is the 372x40 search-entry crop (frame origin
+    # 326,44) of a real guest frame (run 1618308) whose grey placeholder
+    # tesseract could not read; the pixel marker measures the text-free
+    # interior at frame (660,52), which is (334,8) inside that crop. The
+    # wallpaper-like crop must not read as the overview.
     pill = FIXTURES / "overview-search-pill.png"
     desktop = FIXTURES / "desktop-under-search-spot.png"
-    mean, std = pill_stats(pill, rect=(0, 0, 372, 40))
+    interior = (334, 8, 30, 24)
+    mean, std = pill_stats(pill, rect=interior)
     assert overview_showing("", mean, std), (mean, std)
-    mean, std = pill_stats(desktop, rect=(0, 0, 372, 40))
+    mean, std = pill_stats(desktop, rect=interior)
     assert not overview_showing("", mean, std), (mean, std)

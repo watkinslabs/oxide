@@ -54,7 +54,9 @@ SEARCH_PILL_HEIGHT = 24 / 768
 # darker or brighter than the entry, and neither is this flat. A ceiling alone
 # admits every dark window, and a ceiling below the entry's grey admits
 # nothing at all.
-PILL_MEAN_MIN = 0.20
+# Measured interiors: run 1618308 fixture 0.134, runs 26893/458537 0.252;
+# the wallpaper under the spot on the bare desktop reads 0.069 (std 0.003).
+PILL_MEAN_MIN = 0.12
 PILL_MEAN_MAX = 0.32
 PILL_STD_MAX = 0.03
 
