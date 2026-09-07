@@ -3,8 +3,7 @@
 //! that carry a press or an Alt/F10 key into the tracking loop.
 use super::entry::with_entry;
 use super::popup_window::work_area;
-use super::session::MenuSession;
-use super::track_live::{exit_tracking, init_tracking, track_menu};
+use super::track_live::track_bar_menu;
 use ipc::win32_menu::{MenuId, MenuRect};
 use ipc::win32_window::nonclient_menu::{MenuCommand, HTSYSMENU};
 use ipc::win32_window::WindowId;
@@ -76,13 +75,13 @@ pub(crate) fn nc_paint_for_current(hwnd: u64) -> bool {
 /// Enter menu tracking for one window's bar. A press names the point it began
 /// at; a key names no point and lets the loop select the first item.
 /// # C: O(N_messages * N_items); # Sleeps: yes
-pub(crate) fn track_for_current(hwnd: u64, command: MenuCommand, point: (i32, i32)) -> bool {
+pub(crate) fn track_for_current(hwnd: u64, command: MenuCommand, point: (i32, i32)) -> Option<u64> {
     let menu = match command {
         MenuCommand::Mouse { hit } if hit == HTSYSMENU => system_menu_of(hwnd),
         MenuCommand::Mouse { .. } => bar_of(hwnd).map(|(menu, _)| menu.raw()),
         MenuCommand::Keyboard { character } => keyboard_menu(hwnd, character),
     };
-    let Some(menu) = menu else { return false; };
+    let Some(menu) = menu else { return None; };
     let mut flags = TPM_LEFTALIGN_LEFTBUTTON;
     if matches!(command, MenuCommand::Mouse { .. }) { flags |= TPM_BUTTONDOWN; }
     if let MenuCommand::Keyboard { character } = command {
@@ -94,12 +93,13 @@ pub(crate) fn track_for_current(hwnd: u64, command: MenuCommand, point: (i32, i3
             KeyboardEntry::First(position) => select(menu, position),
         }
     }
-    let mut session = MenuSession::new(hwnd);
-    init_tracking(hwnd, menu, false, flags);
-    let _ = track_menu(&mut session, menu, flags, point);
-    exit_tracking(hwnd, false);
+    let already = with_entry(|entry| entry.menu_tracking.is_some()).unwrap_or(true);
+    if already { return None; }
+    let _ = with_entry(|entry| entry.menu_tracking = Some(super::session::MenuCancel { owner: hwnd, exit: false }));
     let _ = work_area();
-    true
+    // The loop suspends in every window procedure it enters and reports from
+    // the callback return that finishes it.
+    Some(track_bar_menu(hwnd, menu, flags, point))
 }
 
 /// What a keyboard-opened bar selects before its loop begins.
@@ -173,8 +173,7 @@ pub(crate) fn default_proc_for_current(hwnd: u64, message: u32, wparam: u64, lpa
         nc::WM_SYSCOMMAND => {
             let command = nc::menu_sys_command(wparam as u32, lparam as u32)?;
             let point = ((lparam as u64 as u16 as i16) as i32, (((lparam as u64) >> 16) as u16 as i16) as i32);
-            track_for_current(hwnd, command, point);
-            Some(0)
+            Some(track_for_current(hwnd, command, point).unwrap_or(0))
         }
         nc::WM_KEYDOWN | nc::WM_KEYUP | nc::WM_SYSKEYDOWN | nc::WM_SYSKEYUP | nc::WM_SYSCHAR => {
             let alt = lparam as u64 & KEYDATA_ALT != 0;
