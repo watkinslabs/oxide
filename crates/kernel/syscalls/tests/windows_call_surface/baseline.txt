@@ -1,5 +1,1 @@
 # Windows call-surface gaps still open. Ratchet: entries only leave.
-win32u 0x1393 NtUserDragDetect
-win32u 0x1394 NtUserDragObject
-win32u 0x139a NtUserDrawIconEx
-win32u 0x15f8 NtUserWaitForInputIdle

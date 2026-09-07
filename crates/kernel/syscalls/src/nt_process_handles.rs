@@ -463,7 +463,9 @@ fn thread_task(raw: u64, table: &sched::nt_object::NtHandleTable, access: u32)
     (object.kind() == sched::nt_object::NtObjectType::Thread).then(|| object.task()).flatten()
 }
 
-fn process_task(raw: u64, table: &sched::nt_object::NtHandleTable, access: u32)
+/// Resolve one process handle to the canonical scheduler task it names.
+/// # C: O(1)
+pub(crate) fn process_task(raw: u64, table: &sched::nt_object::NtHandleTable, access: u32)
     -> Option<alloc::sync::Arc<sched::Task>> {
     if raw > u32::MAX as u64 { return None; }
     let handle = sched::nt_object::NtHandle::from_raw(raw as u32);

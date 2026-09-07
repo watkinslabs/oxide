@@ -22,6 +22,9 @@ pub use pixel::{FLOODFILLBORDER, FLOODFILLSURFACE};
 pub const SRCCOPY: u32 = 0x00cc_0020;
 pub const SRCAND: u32 = 0x0088_00c6;
 pub const SRCPAINT: u32 = 0x00ee_0086;
+pub const SRCINVERT: u32 = 0x0066_0046;
+/// Pattern-only fill from the destination's selected brush.
+pub const PATCOPY: u32 = 0x00f0_0021;
 /// A bit that asks the operation not to mirror a mirrored layout.
 pub const NOMIRRORBITMAP: u32 = 0x8000_0000;
 

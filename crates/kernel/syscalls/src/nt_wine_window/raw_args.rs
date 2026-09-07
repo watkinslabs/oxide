@@ -80,7 +80,10 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x1389, 1), // NtUserDisableThreadIme
     (0x138b, 1), // NtUserDispatchMessage
     (0x138c, 1), // NtUserDisplayConfigGetDeviceInfo
+    (0x1393, 3), // NtUserDragDetect
+    (0x1394, 5), // NtUserDragObject
     (0x1399, 7), // NtUserDrawCaptionTemp
+    (0x139a, 9), // NtUserDrawIconEx
     (0x139b, 1), // NtUserDrawMenuBar
     (0x139c, 5), // NtUserDrawMenuBarTemp
     (0x13a4, 0), // NtUserEmptyClipboard
@@ -290,6 +293,7 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x15f1, 2), // NtUserValidateRect
     (0x15f2, 2), // NtUserValidateRgn
     (0x15f4, 2), // NtUserVkKeyScanEx
+    (0x15f8, 3), // NtUserWaitForInputIdle
     (0x15fb, 0), // NtUserWaitMessage
     (0x15fd, 1), // NtUserWindowFromDC
     (0x15ff, 2), // NtUserWindowFromPoint

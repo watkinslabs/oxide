@@ -141,7 +141,10 @@ struct GuiEntry { group: Weak<sched::thread_group::ThreadGroup>, state: ipc::win
     /// display layout new device contexts inherit.
     startup_info_flags: u32, process_layout: u32,
     /// Window whose menu this thread is tracking, if any.
-    menu_tracking: Option<u64> }
+    menu_tracking: Option<u64>,
+    /// Latched once any thread of this process has drained its input, which is
+    /// what an input-idle wait on the process waits for. Nothing clears it.
+    idle: bool }
 static GUI: Spinlock<Vec<GuiEntry>, GuiLockClass> = Spinlock::new(Vec::new());
 #[cfg(target_os = "oxide-kernel")]
 static USER_ATOMS: Spinlock<ipc::win32_window::UserAtomTable, GuiLockClass> = Spinlock::new(ipc::win32_window::UserAtomTable::new());
@@ -401,6 +404,12 @@ pub(crate) mod menu_raw;
 
 #[path = "nt_window/display.rs"]
 pub(crate) mod display;
+
+#[path = "nt_window/drag.rs"]
+pub(crate) mod drag;
+
+#[path = "nt_window/draw_icon.rs"]
+pub(crate) mod draw_icon;
 
 /// Create a Wine window by resolving its registered class in the canonical
 /// process window owner. # C: O(N_process_gui_states + N_classes + N_windows)
