@@ -11,6 +11,7 @@ separate from the QMP transport and tesseract subprocess calls so they
 are unit-testable without a live guest or an image file.
 """
 import re
+import subprocess
 
 OVERVIEW_MARKER = re.compile(r"type\s+to\s+search", re.IGNORECASE)
 
@@ -35,3 +36,60 @@ def window_activated(text, window_rect):
     full-frame OCR text `overview_visible` consumes.
     """
     return window_rect is not None and not overview_visible(text)
+
+
+# The overview's search entry is a uniform dark rounded box at the top centre
+# of the frame; its grey placeholder text defeats OCR at the guest's 1024x768,
+# so the pixel statistics of that box are the reliable marker. Fractions of
+# the frame so any resolution maps to the same spot.
+SEARCH_PILL_LEFT = 326 / 1024
+SEARCH_PILL_TOP = 44 / 768
+SEARCH_PILL_WIDTH = 372 / 1024
+SEARCH_PILL_HEIGHT = 40 / 768
+# A wallpaper or a window under that spot is neither this dark nor this flat.
+PILL_MEAN_MAX = 0.25
+PILL_STD_MAX = 0.03
+
+
+def search_pill_rect(width, height):
+    """Pixel rect (left, top, w, h) of the overview search entry for a frame."""
+    return (int(width * SEARCH_PILL_LEFT), int(height * SEARCH_PILL_TOP),
+            max(1, int(width * SEARCH_PILL_WIDTH)), max(1, int(height * SEARCH_PILL_HEIGHT)))
+
+
+def overview_visible_pixels(mean, std):
+    """True when the search-entry spot is a flat dark box (overview showing).
+
+    `mean`/`std` are the grey-level mean and standard deviation, in [0, 1],
+    of the `search_pill_rect` crop of a full-frame screenshot.
+    """
+    return mean <= PILL_MEAN_MAX and std <= PILL_STD_MAX
+
+
+def overview_showing(text, mean, std):
+    """Either marker suffices: OCR'd placeholder text or the flat dark entry."""
+    return overview_visible(text) or overview_visible_pixels(mean, std)
+
+
+def image_size(path):
+    result = subprocess.run(["identify", "-format", "%w %h", str(path)], check=False,
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=10)
+    width, _, height = result.stdout.strip().partition(" ")
+    return int(width), int(height)
+
+
+def pill_stats(path, rect=None):
+    """Grey mean/std of the overview search-entry spot of a full-frame image
+    (or of `rect`, for a pre-cropped fixture). Unreadable images report
+    (1.0, 1.0), which never counts as the overview."""
+    if rect is None:
+        width, height = image_size(path)
+        rect = search_pill_rect(width, height)
+    left, top, w, h = rect
+    result = subprocess.run(["convert", str(path), "-crop", f"{w}x{h}+{left}+{top}", "+repage",
+                             "-colorspace", "gray", "-format", "%[fx:mean] %[fx:standard_deviation]", "info:"],
+                            check=False, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=20)
+    parts = result.stdout.split()
+    if len(parts) != 2:
+        return 1.0, 1.0
+    return float(parts[0]), float(parts[1])
