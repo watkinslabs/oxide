@@ -106,10 +106,9 @@ pub struct ThreadGroup {
     pub nt_atoms: Spinlock<Vec<Vec<u8>>, TaskListClass>, pub nt_atom_table: Spinlock<bool, TaskListClass>,
     /// Owner and recursion depth of the process heap lock: `(tid, depth)`.
     pub nt_heap_lock: Spinlock<Option<(u64, u32)>, TaskListClass>,
-    /// Heap allocation metadata: base, flags, user value, exact extent size.
-    /// Adjacent compatible allocations may share one VMA, so a heap free must
-    /// use this size rather than the containing VMA's size.
-    pub nt_heap_user_info: Spinlock<Vec<(u64, u32, u64, usize)>, TaskListClass>,
+    /// The process heap: reserved regions carved into blocks. Created on the
+    /// first heap call, torn down with the address space.
+    pub nt_heap: Spinlock<Option<ntheap::Heap>, TaskListClass>,
     /// Process-owned native callback registrations and their typed schedules.
     pub nt_callbacks: Spinlock<Vec<crate::nt_callback::Registration>, TaskListClass>,
     pub nt_wait_next: AtomicU64,
@@ -300,7 +299,7 @@ impl ThreadGroup {
             nt_user_module: Spinlock::new(None),
             nt_atoms: Spinlock::new(Vec::new()), nt_atom_table: Spinlock::new(false),
             nt_heap_lock: Spinlock::new(None),
-            nt_heap_user_info: Spinlock::new(Vec::new()),
+            nt_heap: Spinlock::new(None),
             nt_callbacks: Spinlock::new(Vec::new()), nt_wait_next: AtomicU64::new(1),
             nt_io_completion: Spinlock::new(None),
             nt_search_path_mode: AtomicU32::new(0),

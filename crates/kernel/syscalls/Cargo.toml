@@ -74,6 +74,8 @@ ninep   = { path = "../ninep" }
 fs      = { path = "../fs" }
 umh     = { path = "../umh" }
 vmm     = { path = "../mm-vmm" }
+# Process-heap block policy: the shim only supplies the address space.
+nt-heap = { path = "../nt-heap" }
 power    = { path = "../power" }
 firmware = { path = "../firmware" }
 nscg     = { path = "../nscg" }

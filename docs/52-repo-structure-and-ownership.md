@@ -320,6 +320,14 @@ must use grouped paths from day one.
     or a second taskfile executor. `syscalls` owns user-memory copy only.
     `scsi` owns generic CDB transport and publication; it bounds raw CDBs per
     transport but does not retain, synthesize, or translate ATA state.
+25. Native process-heap block policy lives in `crates/kernel/nt-heap`: block
+    geometry, free-block search, splitting, coalescing, region growth and
+    large-block classification. It depends only on `core` + `alloc` and reaches
+    an address space solely through its `HeapBackend` trait, so the decisions
+    are hosted-tested without one. `sched` holds the per-process heap object;
+    `syscalls` owns the ABI shim (decode, handle checks, user-memory copy) and
+    the backend that maps reservations onto the NT virtual-memory owner. No
+    other crate keeps heap block state.
 
 ## 6
 
