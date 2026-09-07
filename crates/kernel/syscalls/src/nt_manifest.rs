@@ -40,6 +40,9 @@ pub(crate) mod nt_ulong;
 pub(crate) mod nt_directory_notify_policy;
 mod nt_path;
 mod nt_path_type;
+// PE resource-directory walk (type/name/language) shared by the loader's
+// resource services; ungated so `cargo test` exercises it.
+pub(crate) mod nt_resource;
 mod nt_image;
 mod nt_dos83;
 #[cfg(target_os = "oxide-kernel")]
