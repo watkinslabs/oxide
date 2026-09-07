@@ -7,7 +7,7 @@ pub enum TransportError { Invalid, Full, Disconnected, Unknown, NoMemory, Busy, 
 pub enum Completion { Pending, Presented, Failed(u32) }
 pub(super) struct Prepared { bytes: Vec<u8>, hwnd: u64, opcode: Opcode }
 struct Entry { sequence: u64, hwnd: u64, opcode: Opcode, charge: usize, bytes: Option<Vec<u8>>, result: Completion, sent: bool, ack: Option<u32>, awaited: bool }
-pub struct Queue { entries: VecDeque<Entry>, bytes: usize, next: u64, active: Option<u64>, dead: bool }
+pub struct Queue { entries: VecDeque<Entry>, bytes: usize, next: u64, dead: bool }
 
 impl Prepared {
     pub(super) fn new(opcode: Opcode, hwnd: u64, payload: Vec<u8>) -> Result<Self, TransportError> {
@@ -20,7 +20,7 @@ impl Prepared {
 
 impl Queue {
     /// # C: O(1)
-    pub const fn new() -> Self { Self { entries: VecDeque::new(), bytes: 0, next: 1, active: None, dead: false } }
+    pub const fn new() -> Self { Self { entries: VecDeque::new(), bytes: 0, next: 1, dead: false } }
     /// Reserve every queue slot before the binding is published. # C: O(records)
     pub fn try_new() -> Result<Self, TransportError> {
         let mut queue = Self::new();
@@ -43,11 +43,17 @@ impl Queue {
         self.entries.push_back(Entry { sequence, hwnd, opcode, charge, bytes: Some(bytes), result: Completion::Pending, sent: false, ack: None, awaited });
         self.bytes += charge; self.next = next; Ok(sequence)
     }
-    /// One outstanding stream transaction bounds socket buffering and ACK ownership. # C: O(records)
-    pub fn take_send(&mut self) -> Option<Vec<u8>> {
-        if self.dead || self.active.is_some() { return None; }
+    /// Hand the next unsent record to the socket, with the sequence its
+    /// acknowledgement will carry. Records stream out back to back: the
+    /// socket's own capacity is the flow control, and a record already in
+    /// flight never stops the one behind it. Stopping until the desktop
+    /// answered made every later record wait a whole application round trip,
+    /// which is head-of-line blocking, not back pressure. # C: O(records)
+    pub fn take_send(&mut self) -> Option<(u64, Vec<u8>)> {
+        if self.dead { return None; }
         let entry = self.entries.iter_mut().find(|e| e.bytes.is_some())?;
-        self.active = Some(entry.sequence); entry.bytes.take()
+        let sequence = entry.sequence;
+        entry.bytes.take().map(|bytes| (sequence, bytes))
     }
     /// # C: O(records)
     /// Answers whether the acknowledgement settled a presented frame, which
@@ -55,9 +61,11 @@ impl Queue {
     /// request it carried out. # C: O(records)
     pub fn acknowledge(&mut self, sequence: u64, hwnd: u64, status: u32) -> Result<bool, TransportError> {
         if self.dead { return Err(TransportError::Disconnected); }
-        if self.active != Some(sequence) { return Err(TransportError::Unknown); }
         let entry = self.entries.iter_mut().find(|e| e.sequence == sequence && e.hwnd == hwnd).ok_or(TransportError::Unknown)?;
-        if entry.ack.is_some() { return Err(TransportError::Unknown); }
+        // A record still holding its bytes was never handed to the socket, so
+        // the peer cannot have received it; twice-acknowledged is the same
+        // protocol violation. Both end the connection at the reader.
+        if entry.ack.is_some() || entry.bytes.is_some() { return Err(TransportError::Unknown); }
         entry.ack = Some(status);
         let frame = entry.opcode == Opcode::Frame && status == 0;
         if !entry.sent { return Ok(false); }
@@ -72,15 +80,14 @@ impl Queue {
     fn settle(&mut self, sequence: u64, status: u32) {
         let Some(index) = self.entries.iter().position(|e| e.sequence == sequence) else { return; };
         self.entries[index].result = if status == 0 { Completion::Presented } else { Completion::Failed(status) };
-        self.active = None;
         if self.entries[index].awaited { return; }
         if let Some(entry) = self.entries.remove(index) { self.bytes -= entry.charge; }
     }
     /// ACK can race final socket return; completion needs both whole transfer and ACK. # C: O(records)
-    pub fn sent(&mut self) -> Result<(), TransportError> {
+    pub fn sent(&mut self, sequence: u64) -> Result<(), TransportError> {
         if self.dead { return Err(TransportError::Disconnected); }
-        let sequence = self.active.ok_or(TransportError::Unknown)?;
         let entry = self.entries.iter_mut().find(|e| e.sequence == sequence).ok_or(TransportError::Unknown)?;
+        if entry.bytes.is_some() { return Err(TransportError::Unknown); }
         entry.sent = true;
         let status = entry.ack;
         if let Some(status) = status { self.settle(sequence, status); }
@@ -94,10 +101,8 @@ impl Queue {
         if result != Completion::Pending { let entry = self.entries.remove(i).ok_or(TransportError::Unknown)?; self.bytes -= entry.charge; }
         Ok(result)
     }
-    /// The record this queue currently has in flight on the stream. # C: O(1)
-    pub fn active(&self) -> Option<u64> { self.active }
     /// # C: O(records)
-    pub fn has_send(&self) -> bool { !self.dead && self.active.is_none() && self.entries.iter().any(|e| e.bytes.is_some()) }
+    pub fn has_send(&self) -> bool { !self.dead && self.entries.iter().any(|e| e.bytes.is_some()) }
     /// # C: O(records)
     pub fn completion_ready(&self, sequence: u64) -> bool {
         self.dead || self.entries.iter().find(|e| e.sequence == sequence).map_or(true, |e| e.result != Completion::Pending)
@@ -105,5 +110,5 @@ impl Queue {
     /// # C: O(1)
     pub fn is_dead(&self) -> bool { self.dead }
     /// # C: O(records)
-    pub fn close(&mut self) { self.dead = true; self.entries.clear(); self.bytes = 0; self.active = None; }
+    pub fn close(&mut self) { self.dead = true; self.entries.clear(); self.bytes = 0; }
 }

@@ -114,15 +114,15 @@ extern "C" fn writer(arg: usize) -> ! {
     // SAFETY: spawn passed exactly one Arc strong reference to this worker.
     let binding = unsafe { Arc::from_raw(arg as *const Binding) };
     while binding.live() {
-        let (bytes, active) = { let mut state = binding.state.lock(); (state.queue.take_send(), state.queue.active()) };
-        if let Some(bytes) = bytes {
-            crate::nt_gdi_frame_trace::taken(active.unwrap_or(0));
+        let taken = binding.state.lock().queue.take_send();
+        if let Some((sequence, bytes)) = taken {
+            crate::nt_gdi_frame_trace::taken(sequence);
             let deadline = net::sock_clock::monotonic_ns_safe().saturating_add(TRANSFER_TIMEOUT_NS);
             if stream::write_record(&bytes, |slice| write_chunk(&binding, slice, deadline)).is_err() {
                 teardown(b"tx-write", 0, 0); break;
             }
-            crate::nt_gdi_frame_trace::written(active.unwrap_or(0));
-            if binding.state.lock().queue.sent().is_err() { teardown(b"tx-sent-unmatched", 0, 0); break; }
+            crate::nt_gdi_frame_trace::written(sequence);
+            if binding.state.lock().queue.sent(sequence).is_err() { teardown(b"tx-sent-unmatched", sequence, 0); break; }
             binding.wait.wake_all();
         } else {
             let deadline = net::sock_clock::monotonic_ns_safe().saturating_add(LIFETIME_CHECK_NS);
