@@ -78,6 +78,10 @@ mod kernel {
     static RESOURCES: Spinlock<Vec<Resource>, DriverLockClass> = Spinlock::new(Vec::new());
     static NEXT_RESOURCE: AtomicU32 = AtomicU32::new(1);
     static PRESENT_CALLS: AtomicU32 = AtomicU32::new(0);
+    /// Scanout-resource traces one boot emits; every console line costs
+    /// milliseconds of serial time and a resource is created per presented frame.
+    const MAX_RESOURCE_TRACES: u32 = 32;
+    static RESOURCE_TRACES: AtomicU32 = AtomicU32::new(0);
 
     struct BochsDrm { unique: String }
 
@@ -128,7 +132,7 @@ mod kernel {
     fn resource_key(bdf: pci::Bdf) -> u32 { u32::from(bdf.raw()) + 1 }
 
     fn create_from_pa(key: drm::node::ScanoutDriverKey, pa: u64, width: u32, height: u32, pitch: u32, format: u32) -> Option<u32> {
-        {
+        if RESOURCE_TRACES.fetch_add(1, Ordering::Relaxed) < MAX_RESOURCE_TRACES {
             klog::write_raw(b"[BOCHS-RESOURCE] pa="); klog::write_hex_u64(pa);
             klog::write_raw(b" w="); klog::write_hex_u64(width as u64);
             klog::write_raw(b" h="); klog::write_hex_u64(height as u64);

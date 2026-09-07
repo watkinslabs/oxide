@@ -128,11 +128,23 @@ pub fn set_plane(card_id: u32, card: &Arc<dyn DrmDriver>, arg: u64, token: u64) 
     0
 }
 
+/// Flips one boot traces before the marker goes quiet.
+const FLIP_TRACES: u32 = 32;
+/// Whether one more flip trace is admitted. A desktop presents a frame every
+/// few milliseconds and every console line costs milliseconds of serial time,
+/// so an unbounded per-flip trace consumes the console the whole system shares.
+/// # C: O(1)
+fn trace_budget() -> bool {
+    use core::sync::atomic::{AtomicU32, Ordering};
+    static BUDGET: AtomicU32 = AtomicU32::new(0);
+    BUDGET.fetch_add(1, Ordering::Relaxed) < FLIP_TRACES
+}
+
 /// Apply the primary-plane portion of an already validated atomic state. The
 /// atomic and legacy paths converge here so `CURRENT_FB` and scanout ownership
 /// cannot diverge. # C: O(1) + O(scanout)
 pub fn atomic_primary(card_id: u32, card: &Arc<dyn DrmDriver>, crtc_id: u32, fb_id: u32, token: u64) -> i64 {
-    {
+    if trace_budget() {
         klog::write_raw(b"[DRM-ATOMIC] card="); klog::write_hex_u64(card_id as u64);
         klog::write_raw(b" crtc="); klog::write_hex_u64(crtc_id as u64);
         klog::write_raw(b" fb="); klog::write_hex_u64(fb_id as u64); klog::write_raw(b"\n");
@@ -151,7 +163,7 @@ pub fn atomic_primary(card_id: u32, card: &Arc<dyn DrmDriver>, crtc_id: u32, fb_
         Some(v) => v, None => return einval(),
     };
     let presented = (ops.present)(ops.driver_key, res_id, width, height, crate::node::DamageRect::full(width, height));
-    {
+    if !presented || trace_budget() {
         klog::write_raw(b"[DRM-ATOMIC] resource="); klog::write_hex_u64(res_id as u64);
         klog::write_raw(if presented { b" present=ok\n" } else { b" present=fail\n" });
     }
