@@ -35,6 +35,10 @@ pub use dc_attr::{DcAttr, DeviceGeometry, add_bounds_rect, empty_bounds, rect_is
     XFORM_WORLD_TO_PAGE, XFORM_PAGE_TO_DEVICE, XFORM_WORLD_TO_DEVICE, XFORM_DEVICE_TO_WORLD,
     LP_TO_DP, DP_TO_LP, LAYOUT_RTL, GM_COMPATIBLE, GM_ADVANCED, AD_COUNTERCLOCKWISE, AD_CLOCKWISE,
     DEFAULT_MITER_LIMIT};
+#[path = "win32_gdi/dc_state.rs"]
+mod dc_state;
+pub use dc_state::{DcKind, SavedDc, SP_ERROR, START_PAGE_RESULT, JOB_RESULT, INIT_SPOOL_RESULT,
+    SPOOL_MESSAGE_RESULT, EXT_ESCAPE_RESULT};
 #[path = "win32_gdi/handles.rs"]
 mod handles;
 #[path = "win32_gdi/projection.rs"]
@@ -115,20 +119,37 @@ impl Default for PathState {
 struct DeviceContext { width: i32, height: i32, map_mode: u32, font: Option<u32>, brush: Option<u32>, dc_brush_color: u32, pen: u32, dc_pen_color: u32, text: TextAttributes, clip: Option<crate::win32_window::PaintRegion>, meta_clip: Option<crate::win32_window::PaintRegion>, paths: PathState, paint_clip: Option<crate::win32_window::PaintRegion>, pixels: Vec<u32>, lease: Option<DcLease>, pending_output: PendingOutput }
 
 #[derive(Debug, PartialEq)]
-struct DeviceContext { width: i32, height: i32, attr: DcAttr, font: Option<u32>, brush: Option<u32>, dc_brush_color: u32, pen: u32, dc_pen_color: u32, text: TextAttributes, clip: Option<Rect>, paint_clip: Option<crate::win32_window::PaintRegion>, pixels: Vec<u32>, lease: Option<DcLease>, pending_output: PendingOutput }
+struct DeviceContext { width: i32, height: i32, attr: DcAttr, font: Option<u32>, brush: Option<u32>, dc_brush_color: u32, pen: u32, dc_pen_color: u32, text: TextAttributes, clip: Option<Rect>, paint_clip: Option<crate::win32_window::PaintRegion>, pixels: Vec<u32>, lease: Option<DcLease>, pending_output: PendingOutput, saved: Vec<SavedDc> }
 
-pub struct GdiManager { next: u32, dcs: Vec<(u32, DeviceContext)>, fonts: Vec<(u32, FontRecord)>, brushes: Vec<(u32, Brush)>, bitmaps: Vec<(u32, Bitmap)>, pens: Vec<(u32, Pen)>, system_brushes: SystemBrushes, window_dcs: Vec<(u32, u32)>, regions: Vec<(u32, crate::win32_window::PaintRegion)> }
+pub struct GdiManager { next: u32, dcs: Vec<(u32, DeviceContext)>, fonts: Vec<(u32, FontRecord)>, brushes: Vec<(u32, Brush)>, bitmaps: Vec<(u32, Bitmap)>, pens: Vec<(u32, Pen)>, system_brushes: SystemBrushes, window_dcs: Vec<(u32, u32)>, regions: Vec<(u32, crate::win32_window::PaintRegion)>, client_objs: Vec<u32> }
 
 impl Default for GdiManager { fn default() -> Self { Self::new() } }
 
 impl GdiManager {
     /// Construct an empty process-local GDI object owner. # C: O(1)
-    pub fn new() -> Self { Self { next: FIRST_DYNAMIC_SLOT, dcs: Vec::new(), fonts: Vec::new(), brushes: Vec::new(), bitmaps: Vec::new(), pens: Vec::new(), system_brushes: SystemBrushes::default(), window_dcs: Vec::new(), regions: Vec::new() } }
+    pub fn new() -> Self { Self { next: FIRST_DYNAMIC_SLOT, dcs: Vec::new(), fonts: Vec::new(), brushes: Vec::new(), bitmaps: Vec::new(), pens: Vec::new(), system_brushes: SystemBrushes::default(), window_dcs: Vec::new(), regions: Vec::new(), client_objs: Vec::new() } }
 
     /// Create a memory device context with bounded positive dimensions. # C: O(1)
     pub fn create_dc(&mut self, width: i32, height: i32) -> Result<u32, GdiError> {
         if width <= 0 || height <= 0 { return Err(GdiError::InvalidDimensions); }
         self.create_storage_dc(width, height)
+    }
+
+    /// Create an enhanced-metafile device context. It records rather than
+    /// rasterises, so it owns no surface; its capabilities come from the
+    /// display the reference device context names. # C: O(1)
+    pub fn create_metafile_dc(&mut self) -> Result<u32, GdiError> {
+        let dc = self.create_storage_dc(0, 0)?;
+        self.set_dc_kind(dc, DcKind::EnhMetafile)?;
+        Ok(dc)
+    }
+
+    /// Record what a device context draws on; the object owner sets it once at
+    /// creation. # C: O(N_objects)
+    pub fn set_dc_kind(&mut self, dc: u32, kind: DcKind) -> Result<(), GdiError> {
+        let (_, state) = self.dcs.iter_mut().find(|(handle, _)| *handle == dc).ok_or(GdiError::NoSuchObject)?;
+        state.attr.kind = kind;
+        Ok(())
     }
 
     /// Return the stable display DC associated with one canonical HWND. # C: O(N_windows)
@@ -139,6 +160,7 @@ impl GdiManager {
         }
         self.window_dcs.try_reserve(1).map_err(|_| GdiError::HandleLimit)?;
         let dc = self.create_storage_dc(width, height)?;
+        self.set_dc_kind(dc, DcKind::Display)?;
         self.window_dcs.push((hwnd, dc));
         Ok(dc)
     }

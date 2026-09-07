@@ -5,7 +5,7 @@
 //! - `world`: world transform modification and coordinate-space queries.
 //! - `bounds`: accumulated drawing bounds and their enable state.
 
-use super::{Rect, Xform, Point, Size};
+use super::{Rect, Xform, Point, Size, DcKind};
 
 #[path = "dc_attr/mapping.rs"]
 mod mapping;
@@ -57,6 +57,7 @@ pub struct DcAttr {
     pub bounds_enabled: bool,
     pub save_level: u32,
     pub pixel_format: i32,
+    pub kind: DcKind,
 }
 
 impl Default for DcAttr { fn default() -> Self { Self::new() } }
@@ -74,6 +75,7 @@ impl DcAttr {
             world_to_wnd: Xform::IDENTITY, world_to_vport: Xform::IDENTITY,
             vport_to_world: Xform::IDENTITY, vport_to_world_valid: true,
             bounds: empty_bounds(), bounds_enabled: false, save_level: 0, pixel_format: 0,
+            kind: DcKind::Memory,
         }
     }
 
@@ -82,7 +84,8 @@ impl DcAttr {
     pub fn reset(&mut self) {
         let vis_rect = self.vis_rect;
         let pixel_format = self.pixel_format;
-        *self = DcAttr { vis_rect, pixel_format, ..DcAttr::new() };
+        let kind = self.kind;
+        *self = DcAttr { vis_rect, pixel_format, kind, ..DcAttr::new() };
     }
 
     /// Publish a new surface extent as the visible rectangle and rebuild the
