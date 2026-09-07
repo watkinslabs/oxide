@@ -29,9 +29,12 @@ struct State {
     metadata: Option<(u64, u32, u32, u64)>, control_id: Option<(u64, u64)>,
     registered: Option<(Vec<u16>, u64, i32)>, wndclass: u64, extra: i32,
     registered_unicode: Option<bool>, instance: Option<u64>,
-    class_style: u32, registered_style: Option<u32>, registered_background: Option<u64>,
+    class_style: u32, class_extra: i32, class_module: u64, class_icon: u64, class_icon_sm: u64,
+    class_cursor: u64, class_background: u64, registered_style: Option<u32>, registered_background: Option<u64>,
+    /// Every remaining WNDCLASSEXW field the registration entry hands over.
+    registered_class_extra: Option<i32>, registered_icons: Option<(u64, u64)>,
+    registered_cursor: Option<u64>, registered_module: Option<u64>, registered_builtin: Option<bool>,
     user_reads: Vec<u64>,
-    registered_menu_name: Option<ipc::win32_window::ClassMenuName>,
     ensured_builtins: usize,
 }
 thread_local! { static STATE: RefCell<State> = RefCell::new(State::default()); }
@@ -43,11 +46,29 @@ mod klog {
     pub fn write_hex_u64(_: u64) {}
 }
 mod uaccess {
-    pub fn get_user_u32(address: u64) -> Result<u32, ()> {
-        super::STATE.with(|s| { let mut s = s.borrow_mut(); s.user_reads.push(address);
-            if address == s.wndclass { Ok(80) }
-            else if address == s.wndclass + 4 { Ok(s.class_style) }
-            else if address == s.wndclass + 20 { Ok(s.extra as u32) } else { Err(()) } })
+    use ipc::win32_window::class_info_abi as abi;
+    /// The caller's WNDCLASSEXW, assembled from the fields the test set.
+    pub fn copy_from_user(destination: &mut [u8], address: u64) -> Result<(), ()> {
+        super::STATE.with(|s| {
+            let mut s = s.borrow_mut();
+            s.user_reads.push(address);
+            if address != s.wndclass || destination.len() != abi::BYTES { return Err(()); }
+            let mut raw = [0u8; abi::BYTES];
+            let mut word = |offset: usize, value: u32| raw[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+            word(abi::SIZE, abi::BYTES as u32);
+            word(abi::STYLE, s.class_style);
+            word(abi::CLS_EXTRA, s.class_extra as u32);
+            word(abi::WND_EXTRA, s.extra as u32);
+            let mut quad = |offset: usize, value: u64| raw[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+            quad(abi::WNDPROC, 0x1400042c0);
+            quad(abi::INSTANCE, s.class_module);
+            quad(abi::ICON, s.class_icon);
+            quad(abi::CURSOR, s.class_cursor);
+            quad(abi::BACKGROUND, s.class_background);
+            quad(abi::ICON_SM, s.class_icon_sm);
+            destination.copy_from_slice(&raw);
+            Ok(())
+        })
     }
     pub fn get_user_u64(_: u64) -> Result<u64, ()> { Ok(0x1400042c0) }
 }
@@ -85,33 +106,21 @@ mod nt_window {
             result
         })
     }
-    /// The single canonical registration the production path calls; every
-    /// field the raw entry decoded is recorded where its test reads it.
+    /// The whole registration the entry hands to the canonical class owner.
     pub fn register_class_desc_for_current(desc: ipc::win32_window::ClassRegistration<'_>) -> Option<u64> {
-        STATE.with(|s| { let mut s = s.borrow_mut();
+        STATE.with(|s| {
+            let mut s = s.borrow_mut();
             s.registered = Some((desc.name.to_vec(), desc.wndproc, desc.cb_wnd_extra));
             s.registered_unicode = Some(desc.unicode);
             s.registered_style = Some(desc.style);
             s.registered_background = Some(desc.background);
-            s.registered_menu_name = Some(desc.menu_name);
+            s.registered_class_extra = Some(desc.cb_cls_extra);
+            s.registered_icons = Some((desc.icon, desc.icon_sm));
+            s.registered_cursor = Some(desc.cursor);
+            s.registered_module = Some(desc.module);
+            s.registered_builtin = Some(desc.builtin);
         });
         Some(21)
-    }
-    pub fn register_class_with_extra_for_current(name: &[u16], wndproc: u64, extra: i32) -> Option<u64> {
-        STATE.with(|s| s.borrow_mut().registered = Some((name.to_vec(), wndproc, extra)));
-        Some(21)
-    }
-    pub fn register_class_with_encoding_for_current(name: &[u16], wndproc: u64, extra: i32, unicode: bool) -> Option<u64> {
-        STATE.with(|s| s.borrow_mut().registered_unicode = Some(unicode));
-        register_class_with_extra_for_current(name, wndproc, extra)
-    }
-    pub fn register_class_with_background_for_current(name: &[u16], wndproc: u64, extra: i32, unicode: bool, style: u32, background: u64) -> Option<u64> {
-        STATE.with(|s| s.borrow_mut().registered_background = Some(background));
-        register_class_with_style_for_current(name, wndproc, extra, unicode, style)
-    }
-    pub fn register_class_with_style_for_current(name: &[u16], wndproc: u64, extra: i32, unicode: bool, style: u32) -> Option<u64> {
-        STATE.with(|s| s.borrow_mut().registered_style = Some(style));
-        register_class_with_encoding_for_current(name, wndproc, extra, unicode)
     }
     pub fn set_creation_metadata_current(hwnd: u64, style: u32, ex_style: u32, owner: u64, instance: u64) -> Result<(), ()> {
         STATE.with(|s| s.borrow_mut().instance = Some(instance));
