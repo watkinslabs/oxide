@@ -103,7 +103,6 @@ mod nt_context_image;
 mod nt_sid;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_rtl_ansi;
-#[cfg(target_os = "oxide-kernel")]
 mod nt_debug;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_rtl_integer;
