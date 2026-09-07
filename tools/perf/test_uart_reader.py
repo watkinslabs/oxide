@@ -60,6 +60,17 @@ class UartReaderTests(unittest.TestCase):
         self.assertTrue(_drain(self.reader, "third"))
         self.assertIn("second", self.reader.text())
 
+    def test_stop_drains_what_the_socket_still_holds(self):
+        # The pump exits on the stop flag, so anything written between its
+        # last poll and the stop stays in the socket. That is the tail of the
+        # acceptance run -- the click and the typing -- and it must reach the
+        # log rather than be dropped with the connection.
+        self.reader._stop.set()
+        self.reader._thread.join(timeout=2)
+        self.guest.sendall(b"[WINDOWS-GETMESSAGE] msg=0000000000000201\n")
+        self.reader.stop()
+        self.assertIn(b"msg=0000000000000201", self.log.getvalue())
+
     def test_stop_is_idempotent_and_leaves_the_log_flushed(self):
         self.guest.sendall(b"done\n")
         self.assertTrue(_drain(self.reader, "done"))
