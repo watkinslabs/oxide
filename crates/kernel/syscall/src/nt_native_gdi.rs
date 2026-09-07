@@ -56,16 +56,21 @@ pub struct TextRequest {
 }
 
 impl TextRequest {
-    /// Validate before either side dereferences caller text. # C: O(1)
-    pub fn valid(&self) -> bool {
+    /// Every field of the record except its two payload pointers. # C: O(1)
+    pub fn fields_valid(&self) -> bool {
         self.version == VERSION && self.size as usize == core::mem::size_of::<Self>()
             && self.width.checked_abs().is_some_and(|w| w <= MAX_WIDTH) && (0..=1000).contains(&self.weight) && self.italic <= 1 && self.reserved == 0
             && matches!(self.background_mode, TRANSPARENT | BACKGROUND_OPAQUE) && self.alignment == 0 && self.break_rem >= 0
-            && self.dc != 0 && self.count <= MAX_UNITS && (self.count == 0 || self.text != 0)
+            && self.dc != 0 && self.count <= MAX_UNITS
             && self.flags & !(OPAQUE | CLIPPED | GLYPH_INDEX | IGNORE_LANGUAGE | PDY) == 0 && self.has_rect <= 1
             && (self.flags & (OPAQUE | CLIPPED) == 0 || self.has_rect == 1)
             && (self.has_rect == 0 || (self.rect[0] <= self.rect[2] && self.rect[1] <= self.rect[3]))
             && self.height.checked_abs().is_some_and(|h| h <= MAX_HEIGHT)
+    }
+    /// Validate before either side dereferences caller text. # C: O(1)
+    pub fn valid(&self) -> bool {
+        self.fields_valid()
+            && (self.count == 0 || self.text != 0)
             && self.text.checked_add(self.count as u64 * 2).is_some()
             && self.advances.checked_add(self.advance_count() as u64 * 4).is_some()
     }
@@ -76,6 +81,14 @@ impl TextRequest {
         if !self.valid() { return None; }
         let text_end = core::mem::size_of::<Self>() + self.count as usize * 2;
         Some((text_end + 3) & !3usize).and_then(|end| end.checked_add(if self.advances == 0 { 0 } else { self.advance_count() * 4 }))
+    }
+    /// Callback storage for a run whose text units the kernel itself owns: its
+    /// text pointer is written when the payload is placed, so the record is
+    /// sized on the fields that are final at submission. A kernel-owned run
+    /// carries no advance array. # C: O(1)
+    pub fn kernel_payload_bytes(&self) -> Option<usize> {
+        if !self.fields_valid() || self.advances != 0 { return None; }
+        Some((core::mem::size_of::<Self>() + self.count as usize * 2 + 3) & !3usize)
     }
     /// Fixed callback ABI layout; no pointer accesses or Task state changes. # C: O(1)
     pub fn callback_layout(&self, original_sp: u64, arch: CallbackArch) -> Option<CallbackLayout> {

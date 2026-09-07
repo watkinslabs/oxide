@@ -45,35 +45,38 @@ pub(crate) fn height_for_current(hwnd: u64, width: i32) -> i32 {
 }
 
 /// Draw one window's menu bar into `dc`, whose origin is `origin` in the
-/// window's own coordinates. Reports the height the bar drew. # C: O(N_items + pixels)
-pub(crate) fn draw_into(hwnd: u64, dc: u64, origin: MenuRect) -> i32 {
-    let Some((menu, _)) = bar_of(hwnd) else { return 0; };
+/// window's own coordinates. Reports the height the bar drew and the redirect
+/// status of the run that entered the font backend. # C: O(N_items + pixels)
+pub(crate) fn draw_into(hwnd: u64, dc: u64, origin: MenuRect) -> (i32, Option<u64>) {
+    let Some((menu, _)) = bar_of(hwnd) else { return (0, None); };
     let (char_width, char_height, bar_height) = metrics();
-    let Some(plan) = with_entry(|entry| entry.menus.bar_draw_plan(menu, origin, char_width, char_height, bar_height).ok()).flatten() else { return 0; };
-    let Some(bar) = with_entry(|entry| entry.menus.bar_rect(menu, origin, char_width, char_height, bar_height).ok()).flatten() else { return 0; };
-    crate::nt_window::menu_draw::run(dc, menu, &plan, (0, 0));
-    bar.bottom - bar.top
+    let Some(plan) = with_entry(|entry| entry.menus.bar_draw_plan(menu, origin, char_width, char_height, bar_height).ok()).flatten() else { return (0, None); };
+    let Some(bar) = with_entry(|entry| entry.menus.bar_rect(menu, origin, char_width, char_height, bar_height).ok()).flatten() else { return (0, None); };
+    let launched = crate::nt_window::menu_draw::run(dc, menu, &plan, (0, 0));
+    (bar.bottom - bar.top, launched)
 }
 
 /// Paint the bar of one window into its own window-wide device context, the
-/// way the nonclient painter draws it after the frame and caption.
+/// way the nonclient painter draws it after the frame and caption. `Some` is
+/// the redirect status the nonclient message must return, so the font backend
+/// enters its callback with the payload the launch placed.
 /// # C: O(N_items + pixels)
-pub(crate) fn nc_paint_for_current(hwnd: u64) -> bool {
-    let Some((_, rect)) = bar_of(hwnd) else { return false; };
-    let Ok(window) = u32::try_from(hwnd) else { return false; };
+pub(crate) fn nc_paint_for_current(hwnd: u64) -> Option<u64> {
+    let (_, rect) = bar_of(hwnd)?;
+    let window = u32::try_from(hwnd).ok()?;
     let (width, height) = (rect.right - rect.left, rect.bottom - rect.top);
-    if width <= 0 || height <= 0 { return false; }
+    if width <= 0 || height <= 0 { return None; }
     let dc = crate::nt_gdi::acquire_window_dc_for_current(window, width, height);
-    let Ok(handle) = u32::try_from(dc) else { return false; };
-    if handle == 0 { return false; }
+    let handle = u32::try_from(dc).ok()?;
+    if handle == 0 { return None; }
     let origin = MenuRect { left: 0, top: 0, right: width, bottom: height };
-    let drawn = draw_into(hwnd, dc, origin) > 0;
+    let (_, launched) = draw_into(hwnd, dc, origin);
     // Item text does not rasterize inside this pass: it enters the font
     // backend after the syscall returns. Releasing the device context here
     // would put the band on the screen before its labels reached it, and take
     // the surface the pending upload names out from under it.
     crate::nt_text_order::end_paint_for_current(hwnd, dc, release_band_dc);
-    drawn
+    launched
 }
 
 /// Release the window-wide device context the bar drew into, once every text

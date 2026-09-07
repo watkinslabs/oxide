@@ -20,7 +20,12 @@ pub(super) fn dispatch_mode(call: NtCall, raw: bool) -> Option<u64> {
         if message == ipc::win32_window::WM_PAINT { return Some(default_paint::for_current(hwnd)); }
         // The menu bar owns its band of the nonclient area: its size, its
         // pixels, and the two entries into menu tracking.
-        if message == WM_NCPAINT { menu_raw::bar::nc_paint_for_current(hwnd); }
+        if message == WM_NCPAINT {
+            // A launched run rewrote this thread's frame: the font backend
+            // reads its payload out of the syscall return, so the redirect
+            // status is what this nonclient message answers.
+            if let Some(status) = menu_raw::bar::nc_paint_for_current(hwnd) { return Some(status); }
+        }
         if message == WM_NCCALCSIZE {
             if let Some(result) = menu_raw::bar::nc_calc_size_for_current(hwnd, lparam as u64) { return Some(result); }
         }

@@ -30,12 +30,14 @@ pub(crate) fn finish_for_current(prepared: paint_prepare::Prepared, result: Resu
 fn end(hwnd: u64, dc: u64) -> u64 {
     // A builtin class paints its own content between the begin and the end of
     // the paint it did not open itself; the popup-menu class draws its items.
-    menu_raw::paint_popup_menu_window(hwnd, dc);
+    let launched = menu_raw::paint_popup_menu_window(hwnd, dc);
     // Item text rasterizes in the font backend after this syscall returns, so
     // the present and the deletion of this HDC wait for the runs the class
     // just issued instead of racing them.
     crate::nt_text_order::end_paint_for_current(hwnd, dc, present);
-    0
+    // A launched run rewrote this thread's frame; its payload reaches the
+    // font backend through this syscall's return value.
+    launched.unwrap_or(0)
 }
 
 /// Present the finished surface and release the paint session. # C: O(pixels)

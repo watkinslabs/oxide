@@ -133,7 +133,7 @@ mod nt_window{
     mod send{pub fn cancel_window<T>(_:&T,_:u64){}}
     mod position{pub fn cancel_position_window<T>(_:&T,_:u64){}}
     mod menu_raw{pub mod bar{
-        pub fn nc_paint_for_current(_:u64)->bool{false}
+        pub fn nc_paint_for_current(_:u64)->Option<u64>{None}
         pub fn nc_calc_size_for_current(_:u64,_:u64)->Option<u64>{None}
         pub fn hit_test_for_current(_:u64,_:i64)->Option<i16>{None}
         pub fn default_proc_for_current(_:u64,_:u32,_:u64,_:i64)->Option<u64>{None}}}

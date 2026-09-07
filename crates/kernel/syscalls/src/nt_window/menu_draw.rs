@@ -5,12 +5,16 @@ use alloc::vec::Vec;
 use ipc::win32_menu::draw::MenuDrawOp;
 use ipc::win32_menu::{MenuId, MenuRect, MF_BYPOSITION};
 use ipc::win32_gdi::SystemColor;
-use syscall::nt_native_gdi::TextRequest;
 
 /// `PATCOPY`: the pattern brush replaces the destination.
 const PATCOPY: u32 = 0x00f0_0021;
 /// `TRANSPARENT` leaves the fill behind the glyphs of a text run.
-const TRANSPARENT: u32 = 1;
+const TRANSPARENT: u32 = syscall::nt_native_gdi::TRANSPARENT;
+
+/// Trace of the runs one menu plan issues and the launch status each takes.
+macro_rules! bar_trace {
+    ($($body:tt)*) => { #[cfg(feature = "debug-menubar")] { $($body)* } };
+}
 
 /// Move one plan rectangle into the device context's own coordinates.
 fn shifted(rect: MenuRect, origin: (i32, i32)) -> MenuRect {
@@ -27,31 +31,35 @@ fn fill(dc: u64, rect: MenuRect, color: SystemColor) {
 
 /// Queue one item's text for the font backend, centred in its rectangle both
 /// ways for a bar item and left-aligned in a popup. The run is measured with
-/// the same cell metrics the layout was built from. # C: O(text units)
-fn text(dc: u64, rect: MenuRect, units: &[u16], color: SystemColor, centered: bool) {
-    if units.is_empty() { return; }
-    let Ok(state) = crate::nt_gdi::text_snapshot_for_current(dc) else { return; };
-    let Ok(metrics) = crate::nt_gdi::text_metrics_for_current(dc) else { return; };
-    let (height, width, weight, italic) = state.font.map(|font| (font.height, font.width, font.weight, font.italic as u32))
-        .unwrap_or((metrics.height, 0, 0, 0));
+/// the same cell metrics the layout was built from. `Some` is the redirect
+/// status the syscall this pass runs under must return, so the backend enters
+/// its callback with the payload the launch placed. # C: O(text units)
+fn text(dc: u64, rect: MenuRect, units: &[u16], color: SystemColor, centered: bool) -> Option<u64> {
+    if units.is_empty() { return None; }
+    let state = crate::nt_gdi::text_snapshot_for_current(dc).ok()?;
+    let metrics = crate::nt_gdi::text_metrics_for_current(dc).ok()?;
     let foreground = crate::nt_gdi::system_color_value(color);
     let saved = crate::nt_gdi::set_text_attribute_for_current(dc, ipc::win32_gdi::TextAttribute::Foreground, foreground).ok();
     let saved_mode = crate::nt_gdi::set_text_attribute_for_current(dc, ipc::win32_gdi::TextAttribute::BackgroundMode, TRANSPARENT).ok();
-    let run = (units.len() as i32).saturating_mul(ipc::win32_gdi::MENU_CHAR_WIDTH);
-    let x = if centered { rect.left + ((rect.right - rect.left) - run).max(0) / 2 } else { rect.left };
-    let y = rect.top + ((rect.bottom - rect.top) - metrics.height).max(0) / 2;
-    let request = TextRequest { version: syscall::nt_native_gdi::VERSION, size: core::mem::size_of::<TextRequest>() as u32,
-        dc, x, y, flags: 0, count: units.len() as u32, text: 0, advances: 0, rect: [0; 4], height, width, weight, italic,
-        foreground, background: state.attributes.background, has_rect: 0, reserved: 0,
-        background_mode: TRANSPARENT, alignment: state.attributes.alignment,
-        current_x: state.attributes.current_position.0, current_y: state.attributes.current_position.1,
-        break_extra: state.break_extra, break_rem: state.break_rem };
+    let request = crate::nt_menu_text::request(dc, rect, units.len(), centered, foreground, &state, metrics.height);
     // The run does not rasterize inside this call: it enters the font backend
     // after the syscall returns, so it goes through the thread's ordered
     // queue, which also holds this paint's present until it lands.
-    crate::nt_text_order::submit_for_current(request, units);
+    let status = crate::nt_text_order::submit_for_current(request, units);
+    bar_trace! {
+        klog::write_raw(b"[WINDOWS-MENU-BAR] run dc="); klog::write_hex_u64(dc);
+        klog::write_raw(b" units="); klog::write_hex_u64(units.len() as u64);
+        klog::write_raw(b" x="); klog::write_hex_u64(request.x as i64 as u64);
+        klog::write_raw(b" y="); klog::write_hex_u64(request.y as i64 as u64);
+        klog::write_raw(b" height="); klog::write_hex_u64(request.height as i64 as u64);
+        klog::write_raw(b" fg="); klog::write_hex_u64(u64::from(foreground));
+        klog::write_raw(b" sized="); klog::write_hex_u64(request.kernel_payload_bytes().unwrap_or(0) as u64);
+        klog::write_raw(b" launched="); klog::write_hex_u64(status.map_or(u64::MAX, |value| value));
+        klog::write_raw(b"\n");
+    }
     if let Some(value) = saved { let _ = crate::nt_gdi::set_text_attribute_for_current(dc, ipc::win32_gdi::TextAttribute::Foreground, value); }
     if let Some(value) = saved_mode { let _ = crate::nt_gdi::set_text_attribute_for_current(dc, ipc::win32_gdi::TextAttribute::BackgroundMode, value); }
+    status
 }
 
 /// The displayed text of one item of one menu. # C: O(N_items + text units)
@@ -67,8 +75,11 @@ fn item_text(menu: MenuId, position: u32) -> Option<Vec<u16>> {
 }
 
 /// Draw one plan, with every rectangle shifted by `origin` into the device
-/// context's coordinates. # C: O(N_ops * pixels)
-pub(crate) fn run(dc: u64, menu: MenuId, ops: &[MenuDrawOp], origin: (i32, i32)) {
+/// context's coordinates. `Some` is the redirect status of the one run that
+/// entered the font backend from this pass; the runs behind it wait in the
+/// thread's ordered queue. # C: O(N_ops * pixels)
+pub(crate) fn run(dc: u64, menu: MenuId, ops: &[MenuDrawOp], origin: (i32, i32)) -> Option<u64> {
+    let mut launched = None;
     for op in ops {
         match op {
             MenuDrawOp::Fill { rect, color } => fill(dc, shifted(*rect, origin), *color),
@@ -80,8 +91,10 @@ pub(crate) fn run(dc: u64, menu: MenuId, ops: &[MenuDrawOp], origin: (i32, i32))
             }
             MenuDrawOp::Text { rect, position, color, centered, .. } => {
                 let Some(units) = item_text(menu, *position) else { continue; };
-                text(dc, shifted(*rect, origin), &units, *color, *centered);
+                let status = text(dc, shifted(*rect, origin), &units, *color, *centered);
+                if launched.is_none() { launched = status; }
             }
         }
     }
+    launched
 }
