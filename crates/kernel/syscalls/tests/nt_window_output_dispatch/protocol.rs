@@ -38,10 +38,10 @@ pub fn enqueue_current(opcode:Opcode,hwnd:u64,payload:Vec<u8>)->Result<u64,Trans
         match SCENARIO.with(|s|*s.borrow()){
             Scenario::Disconnected=>q.close(),
             Scenario::Full=>for _ in 0..syscall::nt_compositor::MAX_QUEUED_RECORDS{
-                q.enqueue_prepared(&mut Some(queue::Prepared::new(Opcode::Destroy,hwnd,vec![])?))?;
+                q.enqueue_prepared(&mut Some(queue::Prepared::new(Opcode::Destroy,hwnd,vec![])?),true)?;
             },_=>{}
         }
-        q.enqueue_prepared(&mut Some(queue::Prepared::new(opcode,hwnd,payload)?))
+        q.enqueue_prepared(&mut Some(queue::Prepared::new(opcode,hwnd,payload)?),true)
     })
 }
 pub fn wait_completion_current(ticket:u64,timeout:u64)->Result<Completion,TransportError>{
