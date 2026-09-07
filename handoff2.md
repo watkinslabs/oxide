@@ -1,21 +1,19 @@
-# Notepad: framed, focused, caret blinking; accepted input is never retrieved — 2026-09-07
+# Notepad: click and typing reach the edit control; the typed text is not yet on screen — 2026-09-07
 
 First command: `git log --oneline -8 && make windows-surface-gate && git worktree list && tools/issues.sh --query status=OPEN grep='Notepad\|bridge\|menu'`
 
-## State (main 89d371a11)
+## State (main e351002a1)
 
 - Static call surface closed: `crates/kernel/syscalls/tests/windows_call_surface/baseline.txt` has zero entries (134 → 0 this session: PRs #7546 window/desktop/clipboard/hook, #7547 message/timer/scroll/menu/sysparams, #7551 drag/icon/idle; #7548 warning fix). KI-0473 fixed.
 - Serial "stall" was never the UART: the scheduler's cpufreq hook spun on a process-held plain spinlock inside the wakeup IRQ (PR #7545, KI-0521).
 - Notepad window never reached the GNOME screen because `shmctl` answered EIDRM on segments marked SHM_DEST, which is the normal state of a GTK MIT-SHM segment; XWayland turned it into BadAccess and `mutter-x11-frames` died on every map (PR #7550, KI-0540). Acceptance run `/home/nd/oxide/acc2/` (uart-193559.log, screen-193559-after-token.ppm): Notepad is framed, titled, raised on click, paints white client + status bar.
 - One wait list carries the message queue and NT objects (PR #7549, KI-0535).
 
-## What acceptance still fails on (measured, acc9: full console capture + traces)
+## What acceptance still fails on (measured, last full run `/home/nd/oxide/tgt-B3547/acc/`)
 
-Merged since the wave: #7553/#7555/#7556/#7558 popup menu window, resumable tracking loop, menu bar paint/hit test/entry, bar items in the loop; #7559 kernel text runs present in order; #7554/#7557 bridge input retargeting and child configure; #7562 retrieval-time hardware ladder (WM_MOUSEACTIVATE/SETCURSOR/PARENTNOTIFY, PM_NOREMOVE paint readiness); #7560/#7564/#7565/#7566 harness: whole oops retained, console drained for the whole run (earlier "zero input" logs ended before the click), bounded wait for the desktop to frame the window, per-record traces on both sides of the compositor socket.
+Merged since the previous note: #7568 retrieval stage compared hardware messages against the raw zero filter (every mouse/key message dropped); #7569 thread-state classes; #7570 phantom nt_window tests made real; #7571 console reader kept the run's tail (two "wedges" were capture artifacts); #7572 ONE win32u routing chain (the raw entry routed twelve fewer families; unclaimed count now 0 on the real path; hosted coverage test pins every family walked); #7574 InvalidateRect had a second, divergent implementation (erase flag dropped, no children); #7575 debug-channel header never wrote the resolved flags back (every trace site re-entered the kernel); #7576 show invalidates the frame so WM_NCPAINT is sent; #7577 NT heap: regions/blocks instead of a mapping per allocation (164 -> 6 address-space ops per run).
 
-Run acc9 (`/home/nd/oxide/acc9/uart-1200805.log`): Notepad framed, activated, caret visible in the edit control (`screen-*-after-token.ppm`). Focus record accepted → WM_ACTIVATE/WM_SETFOCUS retrieved. Click + typed token: bridge emits Pointer/Key/Text for hwnd 2, kernel logs `[WINDOWS-BRIDGE-EVENT] op=0105/0103/0104 hwnd=2 accepted=1` for all 55 records, no `[WINDOWS-BRIDGE-DOWN]`, yet Notepad's thread never retrieves again after 55.989 (zero GETMESSAGE/MESSAGE-CALL for 0x200/0x201/0x21/0x100/0x102, zero CALLBACK-CALL). Lane `B…-hardware-records-never-retrieved` (running at hand-off) owns it: wake predicate/mask for QS_MOUSE/QS_KEY vs the posted path, the #7562 ladder never arming its callback, or take/peek filtering hardware entries.
-
-Also still open for a usable Notepad: no menu bar painted yet on screen (bar code merged; verify after input lands), KI-0581 window-menu icon, KI-0585 bar text one flush late, KI-0592 chained EDIT text coverage.
+Now: framed, focused, caret visible; click -> WM_LBUTTONDOWN, typing -> ~60 WM_CHAR handled by the edit (EN_CHANGE notifications flow), a typed character invalidates a rect on the edit and WM_PAINT is retrieved; UART audit clean. Still red: (1) the typed token is not painted within the harness window (KI-0608 open: pump was ~1 message / 1.6 s before #7575/#7577; the first acceptance on main with both merged has not run yet, run it first); (2) no menu bar: frame gets WM_NCPAINT but its default handling never reaches the kernel arm and WM_NCCALCSIZE goes only to the edit child (KI-0615, lane `B3550-frame-nccalcsize-and-ncpaint-reach-bar` running at hand-off); (3) KI-0610 native InvalidateWindow probe surface, KI-0614 SetMenu frame change, KI-0617..0623 heap follow-ups, KI-0603 caret blink test red on main, KI-0613 three test targets do not compile, KI-0616 setpriority flake.
 
 ## Integration recipe (unchanged; see auto-memory `union-merge-damage-checklist`)
 
