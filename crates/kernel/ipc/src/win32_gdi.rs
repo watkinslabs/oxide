@@ -128,7 +128,6 @@ pub enum GdiError { NoSuchObject, InvalidDimensions, InvalidText, HandleLimit }
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct PathState { open: Option<GdiPath>, closed: Option<GdiPath>, poly_fill_mode: i32, arc_clockwise: bool }
 
-struct DeviceContext { width: i32, height: i32, map_mode: u32, font: Option<u32>, brush: Option<u32>, dc_brush_color: u32, pen: u32, dc_pen_color: u32, text: TextAttributes, justification: (i32, i32), clip: Option<Rect>, paint_clip: Option<crate::win32_window::PaintRegion>, pixels: Vec<u32>, lease: Option<DcLease>, pending_output: PendingOutput }
 
 impl Default for PathState {
     /// Alternate fill and counter-clockwise arcs are the initial device-context attributes. # C: O(1)
@@ -138,6 +137,8 @@ impl Default for PathState {
 
 #[derive(Debug, PartialEq)]
 struct DeviceContext { width: i32, height: i32, attr: DcAttr, font: Option<u32>, brush: Option<u32>, dc_brush_color: u32, pen: u32, dc_pen_color: u32, text: TextAttributes, clip: Option<crate::win32_window::PaintRegion>, meta_clip: Option<crate::win32_window::PaintRegion>, paths: PathState, paint_clip: Option<crate::win32_window::PaintRegion>, pixels: Vec<u32>, lease: Option<DcLease>, pending_output: PendingOutput, saved: Vec<SavedDc>, palette: Option<u32>, bitmap: Option<u32>, memory: bool }
+
+struct DeviceContext { width: i32, height: i32, attr: DcAttr, font: Option<u32>, brush: Option<u32>, dc_brush_color: u32, pen: u32, dc_pen_color: u32, text: TextAttributes, clip: Option<crate::win32_window::PaintRegion>, meta_clip: Option<crate::win32_window::PaintRegion>, paths: PathState, paint_clip: Option<crate::win32_window::PaintRegion>, pixels: Vec<u32>, lease: Option<DcLease>, pending_output: PendingOutput, saved: Vec<SavedDc>, justification: (i32, i32) }
 
 pub struct GdiManager { next: u32, dcs: Vec<(u32, DeviceContext)>, fonts: Vec<(u32, FontRecord)>, brushes: Vec<(u32, Brush)>, bitmaps: Vec<(u32, Bitmap)>, pens: Vec<(u32, Pen)>, system_brushes: SystemBrushes, window_dcs: Vec<(u32, u32)>, regions: Vec<(u32, crate::win32_window::PaintRegion)>, client_objs: Vec<u32>, palettes: Vec<(u32, Palette)>, system_palette_use: u32, primary_palette: Option<u32>, last_realized_palette: Option<u32> }
 
