@@ -245,8 +245,20 @@ impl WindowManager {
         let matches = |message| message_matches_in_windows(windows, filter, message);
         let queue = &mut self.queues[queue_index].1;
         queue.peek_matching(matches, remove).or_else(|| queue.quit_message(filter, remove))
-            .or_else(|| self.take_pending_paint(tid, filter))
+            .or_else(|| self.take_pending_paint(tid, filter, remove))
     }
+    /// Replace one queued message with the form a retrieval prepared: the
+    /// nonclient renumbering and the double-click promotion belong to the
+    /// message the application receives, not to a second copy of the queue.
+    /// # C: O(N_queued + N_windows)
+    pub fn replace_for_thread(&mut self, tid: u64, filter: MessageFilter, message: WinMessage) -> bool {
+        let Some(queue_index) = self.queues.iter().position(|(owner, _)| *owner == tid) else { return false; };
+        let windows = &self.windows;
+        let matches = |candidate| message_matches_in_windows(windows, filter, candidate);
+        self.queues[queue_index].1.replace_matching(matches, message)
+    }
+    /// # C: O(1)
+    pub fn window_count(&self) -> usize { self.windows.len() }
     /// Validate the optional HWND filter before a queue lookup. # C: O(N_windows)
     pub fn validate_message_filter(&self, window: Option<WindowId>) -> Result<(), WindowError> {
         if window.is_some_and(|window| self.get(window).is_none()) { return Err(WindowError::NoSuchWindow); }
@@ -281,7 +293,7 @@ impl WindowManager {
         let queue = &mut self.queues[queue_index].1;
         if let Some(message) = queue.peek_matching(matches, true) { QueueResult::Message(message) }
         else if let Some(code) = queue.take_quit_matching(matches) { QueueResult::Quit(code) }
-        else if let Some(message) = self.take_pending_paint(tid, filter) { QueueResult::Message(message) }
+        else if let Some(message) = self.take_pending_paint(tid, filter, true) { QueueResult::Message(message) }
         else { QueueResult::Empty }
     }
     pub fn quit_pending(&self, tid: u64) -> bool { self.queues.iter().find(|(owner, _)| *owner == tid).is_some_and(|(_, queue)| queue.quit_pending()) }

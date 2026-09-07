@@ -20,6 +20,7 @@ pub(crate) fn cleanup_thread_at_exit(task: &sched::Task) {
         for window in &removed { entry.scroll_pending.cancel_root(window.raw() as u64); }
         entry.pending_creates.retain(|pending| !removed.iter().any(|id| id.raw() as u64 == pending.hwnd));
         crate::nt_retrieval_policy::cancel_thread(&mut entry.retrievals, task.tid as u64);
+        hardware::cancel_thread(entry, task.tid as u64);
         entry.contexts.cleanup_thread(task.tid as u64);
         (removed, atoms, paint_dcs)
     };

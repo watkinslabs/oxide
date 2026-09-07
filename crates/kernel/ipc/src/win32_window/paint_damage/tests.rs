@@ -106,12 +106,12 @@ fn paint_selection_orders_parent_and_transparent_siblings_and_consumes_internal(
     assert_eq!(state.pending_paint_message(7).unwrap().hwnd,Some(low));
     state.invalidate(root,None).unwrap();
     let child_filter=super::super::MessageFilter{hwnd:Some(high),first:0,last:0};
-    assert!(state.take_pending_paint(7,child_filter).is_none());
+    assert!(state.take_pending_paint(7,child_filter,true).is_none());
     assert_eq!(state.pending_paint_message(7).unwrap().hwnd,Some(root));
     state.redraw_tree(root,None,RDW_VALIDATE|RDW_NOFRAME|RDW_ALLCHILDREN,|_,_,r|r.try_copy()).unwrap();
     state.redraw_damage(root,None,RDW_INTERNALPAINT,false).unwrap();
     let filter=super::super::MessageFilter{hwnd:None,first:0,last:0};
-    assert!(state.take_pending_paint(7,filter).is_some());assert!(state.take_pending_paint(7,filter).is_none());
+    assert!(state.take_pending_paint(7,filter,true).is_some());assert!(state.take_pending_paint(7,filter,true).is_none());
 }
 
 #[test]
@@ -161,7 +161,7 @@ fn wait_predicate_never_consumes_internal_paint_posted_or_quit() {
     let paint=super::super::MessageFilter{hwnd:Some(id),first:super::super::WM_PAINT,last:super::super::WM_PAINT};
     state.redraw_damage(id,None,RDW_INTERNALPAINT,false).unwrap();
     for _ in 0..3 { assert!(state.has_message_for_thread(7,paint)); }
-    assert!(state.take_pending_paint(7,paint).is_some());assert!(!state.has_message_for_thread(7,paint));
+    assert!(state.take_pending_paint(7,paint,true).is_some());assert!(!state.has_message_for_thread(7,paint));
     let posted=super::super::WinMessage{hwnd:Some(id),message:super::super::WM_CLOSE,wparam:0,lparam:0};
     state.post_to_window(id,posted).unwrap();state.post_quit(7,19);
     assert!(state.has_message_for_thread(7,all));assert!(!state.has_message_for_thread(7,paint));
@@ -169,4 +169,18 @@ fn wait_predicate_never_consumes_internal_paint_posted_or_quit() {
     for _ in 0..3 { assert!(state.has_message_for_thread(7,all)); }
     assert_eq!(state.peek_for_thread(7,all,true).unwrap().message,super::super::WM_QUIT);
     assert!(!state.has_message_for_thread(7,all));assert!(!state.has_message_for_thread(8,all));
+}
+
+// A no-remove peek looks at the synthesised paint without consuming what made
+// it ready; only a removing retrieval clears internal-only readiness.
+#[test]
+fn non_removing_peek_leaves_internal_paint_readiness_intact() {
+    let (mut state,id)=window();
+    state.redraw_damage(id,None,RDW_INTERNALPAINT,false).unwrap();
+    let filter=super::super::MessageFilter{hwnd:None,first:0,last:0};
+    assert_eq!(state.peek_for_thread(7,filter,false).map(|m|m.hwnd),Some(Some(id)));
+    assert_eq!(state.peek_for_thread(7,filter,false).map(|m|m.hwnd),Some(Some(id)));
+    assert!(state.has_message_for_thread(7,filter));
+    assert_eq!(state.peek_for_thread(7,filter,true).map(|m|m.hwnd),Some(Some(id)));
+    assert!(!state.has_message_for_thread(7,filter));
 }

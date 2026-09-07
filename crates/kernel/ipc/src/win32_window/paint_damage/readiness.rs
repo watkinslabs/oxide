@@ -32,12 +32,15 @@ impl WindowManager {
         }
         None
     }
-    /// Paint retrieval clears internal-only readiness even for Peek; region damage remains until validation.
+    /// Only a removing retrieval consumes internal-only readiness; a peek that
+    /// leaves the message in place leaves the readiness that produced it, so
+    /// the paint is offered again. Region damage remains until validation.
     /// A filtered-out parent prevents skipping ahead to a child. # C: O(windows³)
-    pub fn take_pending_paint(&mut self, tid: u64, filter: MessageFilter) -> Option<WinMessage> {
+    pub fn take_pending_paint(&mut self, tid: u64, filter: MessageFilter, remove: bool) -> Option<WinMessage> {
         let message = self.pending_paint_message(tid)?;
         if !message_matches_in_windows(&self.windows, filter, message) { return None; }
         let id = message.hwnd?;
+        if !remove { return Some(message); }
         if let Some(index) = self.dirty.iter().position(|(window, _)| *window == id) {
             self.dirty[index].1.internal = false;
             if !self.dirty[index].1.pending() { self.dirty.remove(index); }

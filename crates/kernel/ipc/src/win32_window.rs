@@ -123,6 +123,8 @@ pub use kbd_state::{activate_layout, layout_name, locale_layout, LayoutError, DE
 #[path = "win32_window/set_cursor.rs"]
 mod set_cursor;
 pub use set_cursor::{SetCursorAction, SetCursorTarget, set_cursor_action, parent_gets_first_chance, split_lparam, WM_SETCURSOR};
+#[path = "win32_window/hardware.rs"]
+pub mod hardware;
 pub use cursor::{IDC_ARROW, IDC_IBEAM, IDC_SIZENWSE, IDC_SIZENESW, IDC_SIZEWE, IDC_SIZENS};
 
 pub const WM_CLOSE: u32 = 0x0010;
@@ -254,6 +256,15 @@ impl MessageQueue {
     where F: Fn(WinMessage) -> bool {
         let index = self.messages.iter().position(|entry| matches(entry.message))?;
         self.read_entry(index, remove)
+    }
+    /// Put the retrieval-prepared form of one queued message back where the
+    /// queued one was, so the canonical queue stays the only place a
+    /// retrieval reads a message from. # C: O(N_queued)
+    fn replace_matching<F>(&mut self, matches: F, message: WinMessage) -> bool
+    where F: Fn(WinMessage) -> bool {
+        let Some(index) = self.messages.iter().position(|entry| matches(entry.message)) else { return false; };
+        self.messages[index].message = message;
+        true
     }
     pub fn len(&self) -> usize { self.messages.len() }
     fn cleanup_window(&mut self, id: WindowId) {
