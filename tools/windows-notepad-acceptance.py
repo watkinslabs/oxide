@@ -19,6 +19,8 @@ from notepad_qmp import QmpTransactions, QmpError
 from screenshot_evidence import screenshot_completed, record_screenshot
 from notepad_evidence import token_in_notepad_window, locate_notepad_window, image_size
 from gnome_overview import overview_visible, window_activated
+from notepad_uart_audit import audit as uart_audit, render_table as uart_audit_table, \
+    render_markdown as uart_audit_markdown, load_win32u_ordinals
 
 ROOT = Path(__file__).resolve().parents[1]
 IMAGES = ROOT.parent / "images"
@@ -31,6 +33,7 @@ QMP = OUT / f"qmp-{RUN}.sock"
 UART_LOG = OUT / f"uart-{RUN}.log"
 QEMU_LOG = OUT / f"qemu-{RUN}.log"
 SCREEN = OUT / f"screen-{RUN}"
+AUDIT_MD = OUT / f"audit-{RUN}.md"
 TIMEOUT = int(os.environ.get("WINDOWS_NOTEPAD_ACCEPTANCE_TIMEOUT", "900"))
 TOKEN = os.environ.get("OXIDE_NOTEPAD_TOKEN", f"oxide-{RUN}").lower()
 DEFAULT_WINE_NTDLL = ROOT / "target/lanes/wine-10.20-build/dlls/ntdll/ntdll.so"
@@ -352,6 +355,20 @@ def prepare_image():
         die(f"kernel image preparation failed; see {QEMU_LOG}")
 
 
+def run_uart_audit():
+    """Audit whatever UART_LOG holds (partial on an early die(), complete on
+    a normal exit) for unclaimed/refused Windows calls, print the table, and
+    retain audit-<run>.md next to the other evidence. Findings here are a
+    harness failure on their own -- a clean A1-A5 run can still have logged
+    one (KI: unclaimed win32u ordinals and refused loads/callbacks were only
+    ever noticed by a human reading the log)."""
+    text = UART_LOG.read_bytes().decode("utf-8", "replace") if UART_LOG.is_file() else ""
+    result = uart_audit(text, load_win32u_ordinals())
+    print(uart_audit_table(result))
+    AUDIT_MD.write_text(uart_audit_markdown(RUN, result))
+    return result
+
+
 def main():
     global qemu
     if not re.fullmatch(r"[a-z0-9-]{4,64}", TOKEN):
@@ -427,8 +444,18 @@ def main():
         qmp(qmp_sock, "quit")
     uart.close()
     qemu.wait(timeout=20)
+    result = run_uart_audit()
+    if not result.passed:
+        die(f"unclaimed or refused Windows call(s) in the UART log; see the table above and {AUDIT_MD}")
     print(f"windows-notepad-acceptance: PASS — evidence retained in {OUT}")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    finally:
+        # A1-A5 already failed via die() before the UART audit ran above:
+        # audit whatever was captured anyway so a failed run still gets its
+        # table and audit-<run>.md, not just the milestone that broke.
+        if UART_LOG.is_file() and not AUDIT_MD.is_file():
+            run_uart_audit()
