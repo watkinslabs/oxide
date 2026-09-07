@@ -166,7 +166,9 @@ pub(crate) fn menu_bar_rect_for_current_menu(hwnd: u64, raw_menu: u64) -> Option
     entries[index].menus.bar_rect(menu, origin, ipc::win32_gdi::MENU_CHAR_WIDTH, ipc::win32_gdi::MENU_CHAR_HEIGHT, ipc::win32_gdi::MENU_BAR_HEIGHT).ok()
 }
 
-/// Match Wine's `NtUserDrawMenuBar` frame-change invalidation.
+/// Redrawing a window's menu bar is a frame change: it invalidates the whole
+/// window, nonclient band included, so the bar is repainted from WM_NCPAINT.
+/// A client-only invalidation leaves the bar band untouched.
 #[cfg(target_os = "oxide-kernel")]
 pub(crate) fn draw_menu_bar_for_current(hwnd: u64) -> u64 {
     let Some(hwnd) = ipc::win32_window::WindowId::from_raw(u32::try_from(hwnd).ok().unwrap_or(u32::MAX)) else { return STATUS_INVALID_PARAMETER; };
@@ -177,7 +179,7 @@ pub(crate) fn draw_menu_bar_for_current(hwnd: u64) -> u64 {
     entries.retain(|entry| entry.group.upgrade().is_some());
     let Some(index) = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group))) else { return STATUS_INVALID_HANDLE; };
     if entries[index].state.menu(hwnd).is_none() { return STATUS_SUCCESS; }
-    if entries[index].state.invalidate(hwnd, None).is_err() { return STATUS_INVALID_HANDLE; }
+    if entries[index].state.redraw_tree(hwnd, None, ipc::win32_window::FRAME_REDRAW, |_, _, region| region.try_copy()).is_err() { return STATUS_INVALID_HANDLE; }
     STATUS_SUCCESS
 }
 

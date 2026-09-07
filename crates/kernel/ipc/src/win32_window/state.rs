@@ -86,9 +86,9 @@ impl WindowManager {
         if previous == visible { return Ok(previous); }
         record.visible = visible;
         if visible {
-            let area = self.client_rect(id);
+            let area = self.rect(id);
             if area.is_some_and(|rect| rect.right > rect.left && rect.bottom > rect.top) {
-                if let Err(error) = self.invalidate(id, None) {
+                if let Err(error) = self.redraw_tree(id, None, FRAME_REDRAW, |_, _, region| region.try_copy()) {
                     if let Some((_, record)) = self.windows.iter_mut().find(|(window, _)| *window == id) { record.visible = previous; record.style = previous_style; }
                     return Err(error);
                 }

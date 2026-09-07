@@ -223,3 +223,69 @@ fn a_child_sized_to_fill_its_parent_becomes_paintable() {
     assert_eq!(state.next_pending_paint(child, None, PaintChildren::All), Ok(Some(child)),
         "a child that has just been given a real extent must need painting");
 }
+
+// Measured in the guest: Notepad's WM_NCPAINT count is zero for a whole run
+// while WM_NCCALCSIZE is delivered, so the menu bar band the window paints
+// itself never appears. The window becoming visible exposes its whole frame,
+// so the show transition must leave nonclient damage, not client-only damage.
+#[test]
+fn showing_a_window_damages_the_frame_band_the_menu_bar_occupies() {
+    let mut state = WindowManager::new();
+    let id = state.create(7, None, 0x1000).unwrap();
+    state.set_rect(id, WindowRect { left: 0, top: 0, right: 729, bottom: 546 }).unwrap();
+    // A menu bar reserves a band off the top of the client area: the client
+    // rectangle starts below the window's own top edge.
+    state.windows.iter_mut().find(|(window, _)| *window == id).unwrap().1.client_rect = Some(WindowRect { left: 0, top: 19, right: 729, bottom: 546 });
+    assert_eq!(state.show(7, id, true), Ok(false));
+    let damage = state.erase_damage(id).unwrap();
+    assert!(damage.nonclient, "a shown window must carry nonclient damage");
+    assert!(damage.erase, "the show transition erases as well");
+    // The band above the client origin is inside the damage, in client
+    // coordinates, so the nonclient painter has the bar band to draw into.
+    let band = crate::win32_window::PaintRegion::from_rect(WindowRect { left: 0, top: -19, right: 729, bottom: 0 }).unwrap();
+    let mut outside = band.try_copy().unwrap();
+    outside.subtract(&damage.region).unwrap();
+    assert!(outside.is_empty(), "the bar band must be inside the show damage: {:?}", damage.region);
+}
+
+// The session BeginPaint reserves carries the nonclient flag through, which is
+// what makes the paint preparation build a nonclient region and send
+// WM_NCPAINT before the client paint.
+#[test]
+fn the_paint_session_a_shown_window_begins_is_a_nonclient_one() {
+    let mut state = WindowManager::new();
+    let id = state.create(7, None, 0x1000).unwrap();
+    state.set_rect(id, WindowRect { left: 0, top: 0, right: 729, bottom: 546 }).unwrap();
+    state.windows.iter_mut().find(|(window, _)| *window == id).unwrap().1.client_rect = Some(WindowRect { left: 0, top: 19, right: 729, bottom: 546 });
+    state.show(7, id, true).unwrap();
+    state.begin_paint(id).unwrap();
+    let session = state.paint_session(id).unwrap();
+    assert!(session.nonclient, "the first paint of a shown window is a nonclient paint");
+}
+
+// Redrawing a menu bar is a frame change, not a client invalidation: the band
+// the bar occupies sits outside the client rectangle, so a client-only request
+// leaves it out of the update region and the bar is never repainted.
+#[test]
+fn a_menu_bar_redraw_covers_the_band_outside_the_client_rectangle() {
+    let mut state = WindowManager::new();
+    let id = state.create(7, None, 0x1000).unwrap();
+    state.set_rect(id, WindowRect { left: 0, top: 0, right: 729, bottom: 546 }).unwrap();
+    state.windows.iter_mut().find(|(window, _)| *window == id).unwrap().1.client_rect = Some(WindowRect { left: 0, top: 19, right: 729, bottom: 546 });
+    state.set_visible(id, true).unwrap();
+    state.redraw_tree(id, None, crate::win32_window::FRAME_REDRAW, |_, _, region| region.try_copy()).unwrap();
+    let damage = state.erase_damage(id).unwrap();
+    assert!(damage.nonclient);
+    assert_eq!(damage.region.bounds(), Some(WindowRect { left: 0, top: -19, right: 729, bottom: 527 }));
+    // A client-only request cannot reach the band, which is what the frame
+    // request is for.
+    let mut plain = WindowManager::new();
+    let other = plain.create(7, None, 0x1000).unwrap();
+    plain.set_rect(other, WindowRect { left: 0, top: 0, right: 729, bottom: 546 }).unwrap();
+    plain.windows.iter_mut().find(|(window, _)| *window == other).unwrap().1.client_rect = Some(WindowRect { left: 0, top: 19, right: 729, bottom: 546 });
+    plain.set_visible(other, true).unwrap();
+    plain.redraw_tree(other, None, crate::win32_window::RDW_INVALIDATE, |_, _, region| region.try_copy()).unwrap();
+    let plain_damage = plain.erase_damage(other).unwrap();
+    assert!(!plain_damage.nonclient);
+    assert_eq!(plain_damage.region.bounds(), Some(WindowRect { left: 0, top: 0, right: 729, bottom: 527 }));
+}
