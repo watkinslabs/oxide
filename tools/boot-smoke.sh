@@ -145,6 +145,30 @@ STABILITY_SECONDS="${SMOKE_STABILITY_SECONDS:-5}"
 # with OXIDE_SMOKE_ATTEMPTS (default 3).
 ATTEMPTS="${OXIDE_SMOKE_ATTEMPTS:-3}"
 
+# How long an orderly guest shutdown gets before the harness gives up and
+# kills QEMU. A killed guest leaves the root image in whatever state the last
+# in-flight write left it, which is how this harness used to hand the next run
+# a damaged filesystem; the fallback exists only so a wedged guest cannot hang
+# a run forever, and every fallback is reported as a KILL, never as a shutdown.
+SHUTDOWN_TIMEOUT="${SMOKE_SHUTDOWN_TIMEOUT:-45}"
+# A guest that already failed (fault, or a timeout with no marker) has proven
+# it will not run its shutdown path, so it gets a token wait rather than the
+# full budget three times over.
+SHUTDOWN_TIMEOUT_WEDGED="${SMOKE_SHUTDOWN_TIMEOUT_WEDGED:-8}"
+# A guest that is going to shut down starts saying so within seconds. One that
+# never handled the power button at all says nothing, and waiting out the full
+# budget for it costs every run of this gate that time for no information.
+# After this grace we require EVIDENCE the shutdown began; without it the guest
+# is killed immediately and reported as having ignored the request -- which is a
+# different fact from "too slow", and both are different from a shutdown.
+SHUTDOWN_GRACE="${SMOKE_SHUTDOWN_GRACE:-10}"
+# Serial evidence that the guest acted on the power button. Any one of these
+# means the shutdown path is running and deserves the full budget.
+SHUTDOWN_MARKER="${SMOKE_SHUTDOWN_MARKER-Powering off|Power-Off|systemd-shutdown|Unmounting |Deactivated successfully.*shutdown|reboot: Power down|Stopping .*target}"
+# Set by stop_boot: powered-off | killed | already-exited | no-guest.
+SHUTDOWN_OUTCOME="no-guest"
+QMP_SOCK=""
+
 LOG=""
 PIDFILE="$(mktemp /tmp/oxide-boot-smoke-${ARCH}-XXXXXX.pid)"
 kill_boot() {
@@ -162,6 +186,62 @@ kill_boot() {
         fi
         : > "$PIDFILE"
     fi
+    [ -n "${QMP_SOCK:-}" ] && rm -f "$QMP_SOCK" 2>/dev/null || true
+    QMP_SOCK=""
+}
+
+# End the guest the way a power button does: ask QEMU to raise the machine's
+# power-button event (QMP `system_powerdown`), which systemd turns into an
+# orderly shutdown that unmounts the root filesystem, and wait for the QEMU
+# process to exit on its own. Only when it does not exit within $1 seconds do
+# we fall back to kill_boot -- that fallback means the image was left unclean,
+# so it is recorded and printed as a kill, never as a shutdown.
+stop_boot() {
+    local budget="${1:-$SHUTDOWN_TIMEOUT}" qemu_pid deadline started
+    qemu_pid="$(cat "$QEMU_PIDFILE" 2>/dev/null || true)"
+    if [ -z "$qemu_pid" ] || ! kill -0 "$qemu_pid" 2>/dev/null; then
+        SHUTDOWN_OUTCOME="already-exited"
+        kill_boot
+        return 0
+    fi
+    if [ -z "$QMP_SOCK" ] || [ ! -S "$QMP_SOCK" ]; then
+        echo "boot-smoke: shutdown=killed (no QMP endpoint to request a power-off on)" >&2
+        SHUTDOWN_OUTCOME="killed"
+        kill_boot
+        return 0
+    fi
+    if ! python3 "$SMOKE_ROOT/tools/guest_powerdown.py" "$QMP_SOCK" 5 >/dev/null 2>&1; then
+        echo "boot-smoke: shutdown=killed (QEMU refused the power-off request)" >&2
+        SHUTDOWN_OUTCOME="killed"
+        kill_boot
+        return 0
+    fi
+    started="$(date +%s)"
+    deadline=$(( started + budget ))
+    local acting=0
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        if ! kill -0 "$qemu_pid" 2>/dev/null; then
+            echo "boot-smoke: shutdown=powered-off — guest powered itself off in $(( $(date +%s) - started ))s"
+            SHUTDOWN_OUTCOME="powered-off"
+            kill_boot
+            return 0
+        fi
+        if [ "$acting" -eq 0 ] && [ -n "$SHUTDOWN_MARKER" ] && [ -n "$LOG" ] \
+           && grep -qaE "$SHUTDOWN_MARKER" "$LOG" 2>/dev/null; then
+            acting=1
+        fi
+        if [ "$acting" -eq 0 ] && [ $(( $(date +%s) - started )) -ge "$SHUTDOWN_GRACE" ]; then
+            echo "boot-smoke: shutdown=killed — guest IGNORED the power button (no shutdown activity on serial in ${SHUTDOWN_GRACE}s); KILLING it. The root image is left unclean." >&2
+            SHUTDOWN_OUTCOME="killed"
+            kill_boot
+            return 0
+        fi
+        sleep 1
+    done
+    echo "boot-smoke: shutdown=killed — guest began shutting down but did not finish within ${budget}s; KILLING it. The root image is left unclean." >&2
+    SHUTDOWN_OUTCOME="killed"
+    kill_boot
+    return 0
 }
 # SMOKE_KEEP_LOG=<path>: copy the last attempt's serial log there
 # before cleanup so a failed boot can be inspected (the temp log is
@@ -182,7 +262,7 @@ keep_log_copy() {
 }
 
 cleanup() {
-    kill_boot
+    stop_boot "$SHUTDOWN_TIMEOUT_WEDGED"
     [ -n "$LOG" ] && keep_log_copy "cleanup" "last"
     rm -f "$LOG" "$PIDFILE"
 }
@@ -390,20 +470,25 @@ attempt_boot() {
     # old `< /dev/null` for a clean boot (no bytes sent until timeout).
     SYSRQ_FIFO="$(mktemp -u /tmp/oxide-smoke-sysrq-${ARCH}-XXXXXX.fifo)"
     mkfifo "$SYSRQ_FIFO" 2>/dev/null || SYSRQ_FIFO=""
+    # QMP endpoint for the orderly stop (stop_boot). Short /tmp path: a unix
+    # socket pathname is capped well below a worktree path plus build id.
+    QMP_SOCK="$(mktemp -u /tmp/oxide-smoke-qmp-${ARCH}-XXXXXX.sock)"
+    rm -f "$QMP_SOCK"
+    SHUTDOWN_OUTCOME="no-guest"
     if [ -n "$SYSRQ_FIFO" ]; then
         exec {SYSRQ_WFD}<>"$SYSRQ_FIFO"
         # The launcher also keeps a serial log by default. Point it at this
         # attempt's log so the markers below inspect the guest stream, not
         # merely `make`/xtask narration. This also makes SMOKE_KEEP_LOG retain
         # the actual boot evidence on both success and failure.
-        qemu_env=(OXIDE_QEMU_HEADLESS=1 OXIDE_SERIAL_LOG="$LOG")
+        qemu_env=(OXIDE_QEMU_HEADLESS=1 OXIDE_SERIAL_LOG="$LOG" OXIDE_QEMU_QMP_SOCK="$QMP_SOCK")
         for qemu_var in OXIDE_QEMU_DINT OXIDE_QEMU_DFLAGS OXIDE_QEMU_GDB OXIDE_QEMU_GDB_PORT; do
             if [ -n "${!qemu_var:-}" ]; then qemu_env+=("$qemu_var=${!qemu_var}"); fi
         done
         setsid env "${qemu_env[@]}" "$MAKE_BIN" SMP="$OXIDE_SMP" "$RUN_TARGET" <"$SYSRQ_FIFO" >"$LOG" 2>&1 &
     else
         SYSRQ_WFD=""
-        qemu_env=(OXIDE_QEMU_HEADLESS=1 OXIDE_SERIAL_LOG="$LOG")
+        qemu_env=(OXIDE_QEMU_HEADLESS=1 OXIDE_SERIAL_LOG="$LOG" OXIDE_QEMU_QMP_SOCK="$QMP_SOCK")
         for qemu_var in OXIDE_QEMU_DINT OXIDE_QEMU_DFLAGS OXIDE_QEMU_GDB OXIDE_QEMU_GDB_PORT; do
             if [ -n "${!qemu_var:-}" ]; then qemu_env+=("$qemu_var=${!qemu_var}"); fi
         done
@@ -500,6 +585,9 @@ attempt_boot() {
             fi
             echo "boot-smoke: PASS — $ARCH proved alive by $proof in ${elapsed}s (attempt $1)"
             keep_log_copy "$1" "pass"
+            # A passing run is the one that MUST end cleanly: it is the run
+            # whose image the next boot inherits.
+            stop_boot "$SHUTDOWN_TIMEOUT"
             close_sysrq
             return 0
         fi
@@ -555,7 +643,7 @@ while [ "$a" -le "$ATTEMPTS" ]; do
         [ "$a" -gt 1 ] && echo "boot-smoke: NOTE — passed on retry $a (SMP late-boot flake; see tools/boot-smoke.sh)" >&2
         exit 0
     fi
-    kill_boot
+    stop_boot "$SHUTDOWN_TIMEOUT_WEDGED"
     diagnose_empty_log "$a"
     keep_log_copy "$a" "post-fail"
     rm -f "$LOG"

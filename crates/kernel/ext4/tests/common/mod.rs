@@ -9,6 +9,7 @@
 extern crate alloc;
 
 pub mod crash;
+pub mod powercut;
 
 use alloc::string::String;
 use alloc::sync::Arc;

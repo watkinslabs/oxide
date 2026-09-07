@@ -15,6 +15,7 @@ import sys
 import time
 from pathlib import Path
 from notepad_qmp import QmpTransactions, QmpError
+import guest_powerdown
 from uart_reader import UartReader
 from notepad_fault_drain import drain as drain_fault
 import notepad_cadence
@@ -38,6 +39,8 @@ SCREEN = OUT / f"screen-{RUN}"
 AUDIT_MD = OUT / f"audit-{RUN}.md"
 CADENCE_MD = OUT / f"cadence-{RUN}.md"
 TIMEOUT = int(os.environ.get("WINDOWS_NOTEPAD_ACCEPTANCE_TIMEOUT", "900"))
+# Budget for the orderly guest shutdown before cleanup() kills QEMU.
+SHUTDOWN_TIMEOUT = int(os.environ.get("WINDOWS_NOTEPAD_SHUTDOWN_TIMEOUT", "60"))
 # Bound on the desktop framing the shown window before the activation click.
 LOCATE_SECONDS = 15
 # Bound on the guest painting the typed token into its edit control.
@@ -511,7 +514,11 @@ def run_desktop_checks(uart, reader, qmp_sock, deadline, guest=None):
     if "[WINDOWS-NOTEPAD] runtime-exit status=0" not in reader.text():
         die("Notepad runtime exited without status 0")
     print("windows-notepad-acceptance: A4/A5 PASS (close, exit, wrapper cleanup)")
-    qmp(qmp_sock, "quit")
+    # `quit` kills the VM where it stands, leaving the root image holding
+    # whatever was in flight; the guest that ran this acceptance owns the same
+    # image the next run boots. Raise the power button instead and let systemd
+    # unmount, exactly as a real machine shuts down. main() bounds the wait.
+    qmp(qmp_sock, guest_powerdown.POWERDOWN)
 
 
 def main():
@@ -555,7 +562,14 @@ def main():
             # on the failure path as well as the success path.
             reader.stop()
     uart.close()
-    qemu.wait(timeout=20)
+    # A shutdown that does not finish is a kill, and must never be reported as
+    # a clean stop: cleanup() (atexit) does the killing, this says so out loud.
+    try:
+        qemu.wait(timeout=SHUTDOWN_TIMEOUT)
+        print("windows-notepad-acceptance: shutdown=powered-off")
+    except subprocess.TimeoutExpired:
+        print(f"windows-notepad-acceptance: shutdown=killed — guest did not power off "
+              f"within {SHUTDOWN_TIMEOUT}s; the root image is left unclean", file=sys.stderr)
     result = run_uart_audit()
     if not result.passed:
         die(f"unclaimed or refused Windows call(s) in the UART log; see the table above and {AUDIT_MD}")
