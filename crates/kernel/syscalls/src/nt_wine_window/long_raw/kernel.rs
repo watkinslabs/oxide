@@ -28,9 +28,16 @@ pub(crate) fn dispatch(ordinal: u64, args: [u64; 4]) -> Option<u64> {
 }
 
 /// Query methods share error encoding and retain LastError on success.
+/// `GWLP_ID` is a child-only identifier, not a generic extra-bytes slot: read
+/// it through the canonical control-id accessor, which refuses a window that
+/// is not an effective child instead of returning its menu handle as an id.
 /// # C: O(N_process_gui_states + N_windows)
 pub(crate) fn get(hwnd: u64, index: i32, width: usize) -> u64 {
-    let result = crate::nt_window::get_window_long_for_current(hwnd, index, width);
+    let result = if index == ipc::win32_window::GWLP_ID {
+        crate::nt_window::control_id_for_current(hwnd).ok_or(LongPtrError::InvalidWindow)
+    } else {
+        crate::nt_window::get_window_long_for_current(hwnd, index, width)
+    };
     trace_slot(b"get", hwnd, index, result.unwrap_or(u64::MAX));
     finish(result, width, last_error)
 }

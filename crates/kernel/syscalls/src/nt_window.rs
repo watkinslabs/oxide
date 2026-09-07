@@ -53,7 +53,7 @@ mod nonclient;
 mod dc_lease;
 pub(crate) use dc_lease::dc_lease_context_for_current;
 pub(crate) use nonclient::nonclient_scroll_context_for_current;
-pub(crate) use control::{set_control_id_for_current, get_window_long_for_current, set_window_long_with_encoding_for_current};
+pub(crate) use control::{set_control_id_for_current, get_window_long_for_current, set_window_long_with_encoding_for_current, control_id_for_current};
 #[path = "nt_window/teardown.rs"]
 mod teardown;
 pub(crate) use teardown::cleanup_thread_at_exit;
@@ -312,6 +312,10 @@ fn destroy_window_for_current(hwnd: u64) {
     for dc in paint_dcs { let _ = crate::nt_gdi::delete_paint_dc_current(dc); }
     for hwnd in cleanup {
         paint_cleanup::window_for_current(hwnd as u64);
+        // Drain and dispose any preparation still retained for this window;
+        // the inline `cancel_window` above only marks the queue entry
+        // cancelled, it does not free a preparation an active WndProc holds.
+        paint_callbacks::cancel_window_current(hwnd as u64);
         send::cancel_window(&group, hwnd as u64);
         position::cancel_position_window(&group, hwnd as u64);
         let _ = bridge::publish_destroy_current(hwnd as u64);

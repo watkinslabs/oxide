@@ -26,7 +26,7 @@ mod control;
 pub use control::{is_effective_child, menu_of};
 #[path = "win32_window/extra.rs"]
 mod extra;
-pub use extra::GWLP_HINSTANCE;
+pub use extra::{GWLP_HINSTANCE, GWLP_ID};
 #[path = "win32_window/property.rs"]
 mod property;
 #[path = "win32_window/scroll.rs"]
