@@ -1,12 +1,22 @@
 //! Bounded callback-stack payload layout; no persistent callback registry.
+#[cfg(any(test, target_arch = "x86_64"))]
 use alloc::vec::Vec;
+// x86.rs::begin is the sole caller (AMD64 continuation ABI); the AArch64
+// equivalent (wndproc_payload/aarch64.rs + aarch64_live.rs) is written and
+// tested but not wired in - it depends on an unwritten
+// elf_load::pe_loader::resolve_nt_runtime_wndproc_continuation_arm (KI-0704).
+#[cfg(any(test, target_arch = "x86_64"))]
 const MAX_PAYLOAD: usize = 4096;
+#[cfg(any(test, target_arch = "x86_64"))]
 const ALIGNMENT: u64 = 16;
+#[cfg(any(test, target_arch = "x86_64"))]
 const LINK_AND_SHADOW: u64 = 40;
 
+#[cfg(any(test, target_arch = "x86_64"))]
 #[derive(Debug, PartialEq, Eq)]
 struct Payload { stack: u64, address: u64, bytes: Vec<u8> }
 
+#[cfg(any(test, target_arch = "x86_64"))]
 fn prepare(sp: u64, bytes: &[u8], relocations: &[(usize, usize)]) -> Option<Payload> {
     if bytes.is_empty() || bytes.len() > MAX_PAYLOAD || relocations.len() > MAX_PAYLOAD / 8 { return None; }
     let address = sp.checked_sub(bytes.len() as u64 + ALIGNMENT)? & !(ALIGNMENT - 1);

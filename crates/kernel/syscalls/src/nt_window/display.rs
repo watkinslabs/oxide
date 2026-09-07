@@ -3,7 +3,6 @@
 
 #[path = "display/raw.rs"]
 mod raw;
-pub(crate) use raw::*;
 
 #[path = "display/devmode.rs"]
 pub(crate) mod devmode;

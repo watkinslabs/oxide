@@ -7,9 +7,11 @@ use super::GUI;
 
 #[path = "desktop/bootstrap.rs"]
 mod bootstrap;
+#[allow(unused_imports)] // KI-0705: orphaned virtual-desktop bootstrap surface
 pub(crate) use bootstrap::{prepare_bound_for_current, BoundDesktop, BootstrapError};
 #[path = "desktop/bind.rs"]
 mod bind;
+#[allow(unused_imports)] // KI-0705: orphaned desktop-bind surface
 pub(crate) use bind::bind_for_current;
 
 pub(crate) struct DesktopWindow { pub group: Arc<ThreadGroup>, pub window: WindowId }

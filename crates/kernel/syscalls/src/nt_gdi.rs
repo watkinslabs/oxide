@@ -73,6 +73,7 @@ pub(crate) use system_brush::{set_system_color, system_color_brush_for_current, 
 pub(crate) use menu_face::menu_face_for_current;
 pub(crate) use lifecycle::delete_object_for_current as delete_paint_dc_current;
 pub(crate) use lifecycle::create_dc_for_current as create_paint_dc_for_current;
+#[allow(unused_imports)] // KI-0708: set_paint_clip_for_current unwired
 pub(crate) use clip::{scroll_surface_for_current, exclude_clip_region_for_current, intersect_clip_rect_for_current, get_app_clip_box_for_current, app_clip_box_snapshot_for_current, set_paint_clip_for_current, set_paint_region_for_current};
 pub(crate) use selected::selected_object_current;
 pub(crate) use object_query::{create_font_record_for_current, get_object_w_for_current};

@@ -131,6 +131,7 @@ pub(super) fn load(name_descriptor: u64, module_output: u64) -> u64 {
 /// an ASCII name, not a `UNICODE_STRING`; the loaded module handle is
 /// published into the descriptor's module slot.
 /// # C: O(dependency closure of the named module)
+#[cfg(target_arch = "x86_64")]
 pub(crate) fn load_ascii(name: &[u8], module_output: u64) -> u64 {
     if name.is_empty() || name.iter().any(|byte| *byte == 0 || !byte.is_ascii()) { return STATUS_INVALID_PARAMETER; }
     let wide: alloc::vec::Vec<u8> = name.iter().flat_map(|byte| [*byte, 0]).collect();
@@ -187,6 +188,7 @@ pub(super) fn load_unixlib(name_descriptor: u64, module_output: u64) -> u64 {
 
 /// Bounded trace naming which loader step refused a dynamic load: a delay
 /// import that fails is otherwise indistinguishable from a missing file.
+#[cfg(target_arch = "x86_64")]
 fn ldr_fail(step: &'static [u8], name: &[u8]) {
     use core::sync::atomic::{AtomicU32, Ordering};
     static BUDGET: AtomicU32 = AtomicU32::new(0);
@@ -314,9 +316,6 @@ fn load_wide_locked(cur: &sched::Task, wanted: &[u8], module_output: u64) -> u64
 
 #[cfg(target_arch = "aarch64")]
 fn load_locked(_cur: &sched::Task, _name_descriptor: u64, _module_output: u64) -> u64 { STATUS_NOT_SUPPORTED }
-
-#[cfg(target_arch = "aarch64")]
-fn load_wide_locked(_cur: &sched::Task, _wanted: &[u8], _module_output: u64) -> u64 { STATUS_NOT_SUPPORTED }
 
 #[cfg(target_arch = "aarch64")]
 pub(super) fn load_unixlib(_name_descriptor: u64, _module_output: u64) -> u64 { STATUS_NOT_SUPPORTED }

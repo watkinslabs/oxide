@@ -28,6 +28,7 @@ pub(crate) const PROC_LISTBOX: usize = 12;
 pub(crate) const PROC_MDICLIENT: usize = 13;
 pub(crate) const PROC_STATIC: usize = 14;
 pub(crate) const PROC_IME: usize = 15;
+#[cfg(test)]
 pub(crate) const PROC_COUNT: usize = 17;
 pub(crate) const PROC_ENTRY_BYTES: u64 = 8;
 
@@ -57,6 +58,7 @@ pub(crate) const BUILTINS: [Builtin; 12] = [
 /// admits one class. A cursor that will not load still registers its class:
 /// the reference destroys the cursor when registration fails, never the
 /// reverse. Returns how many were registered. # C: O(builtins)
+#[cfg(test)]
 pub(crate) fn register_all(mut procedure: impl FnMut(usize) -> Option<u64>, mut cursor: impl FnMut(u32) -> Option<u64>,
     mut register: impl FnMut(&Builtin, u64, u64) -> bool) -> usize {
     register_reporting(&mut procedure, &mut cursor, &mut register, &mut |_| {})

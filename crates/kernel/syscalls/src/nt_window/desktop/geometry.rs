@@ -3,6 +3,7 @@ use syscall::nt_compositor::Monitor;
 
 /// Virtual desktop bounds use all actual monitor extents, not workarea or guessed primary.
 /// # C: O(monitors)
+#[allow(dead_code)] // KI-0705: no dispatch caller yet; kept as real Win32 surface.
 pub(crate) fn bounds(monitors: &[Monitor]) -> Option<WindowRect> {
     if monitors.is_empty() { return None; }
     let mut left=i64::MAX;let mut top=i64::MAX;let mut right=i64::MIN;let mut bottom=i64::MIN;

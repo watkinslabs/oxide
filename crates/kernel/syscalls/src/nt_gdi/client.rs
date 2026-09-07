@@ -46,8 +46,11 @@ pub struct ClientBinding {
 }
 
 impl ClientBinding {
+    #[allow(dead_code)] // KI-0709
     pub const fn table_bytes() -> usize { abi::TABLE_BYTES }
+    #[allow(dead_code)] // KI-0709
     pub const fn attr_bytes() -> usize { abi::DC_ATTR_BYTES }
+    #[allow(dead_code)] // KI-0709
     pub const fn attr_stride() -> usize { abi::DC_ATTR_SIZE }
 
     /// Compute the DC_ATTR address from retained mapping identity and the
@@ -79,6 +82,7 @@ impl ClientBinding {
     /// Commit a complete client DC_ATTR record after validating its identity
     /// and text fields.  Callers must preserve fields they do not own; this
     /// method never merges against a private TextAttributes shadow.
+    #[allow(dead_code)] // KI-0709
     pub fn write_dc_attr(&self, handle: u32, bytes: &[u8; abi::DC_ATTR_SIZE]) -> Result<(), ClientError> {
         self.validate_current()?;
         abi::decode_text(bytes, handle).map_err(|_| ClientError::Codec)?;
@@ -156,10 +160,12 @@ impl ClientBinding {
     /// Publish an already-existing canonical stock identity.  Stock objects
     /// have no native pointer payload; the shared codec preserves their stock
     /// bit from the canonical handle.
+    #[allow(dead_code)] // KI-0709
     pub fn publish_stock(&self, handle: u32, process_id: u16) -> Result<(), ClientError> {
         self.publish_handle(handle, process_id)
     }
 
+    #[allow(dead_code)] // KI-0709
     pub(crate) fn publish_stock_unchecked(&self, handle: u32, process_id: u16) -> Result<(), ClientError> {
         self.publish_handle_unchecked(handle, process_id)
     }

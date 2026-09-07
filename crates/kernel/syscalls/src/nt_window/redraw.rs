@@ -3,10 +3,8 @@ use alloc::vec::Vec;
 use ipc::win32_window::{PaintChildren, WindowId};
 
 const MAX_REDRAWS: usize = 64;
-const RDW_UPDATENOW: u32 = 0x0100;
 const RDW_ALLCHILDREN: u32 = 0x0080;
 const RDW_NOCHILDREN: u32 = 0x0040;
-const RDW_ERASENOW: u32 = 0x0200;
 pub(crate) const ORDINAL: u64 = 0x14e9;
 
 #[derive(Clone, Copy, Debug)]
@@ -61,7 +59,9 @@ pub(crate) fn mode(rect: u64, region: u64, flags: u32) -> Option<PaintChildren> 
 
 #[path = "redraw/input.rs"]
 mod input;
-pub(crate) use input::{read_rect, read_region};
+pub(crate) use input::read_region;
+#[cfg(test)]
+pub(crate) use input::read_rect;
 
 #[path = "redraw/erase.rs"]
 pub(crate) mod erase;

@@ -39,7 +39,7 @@ pub(crate) fn publish_new(handle: u32, remove: impl Fn(&mut GdiManager) -> Resul
 /// # C: O(processes)
 pub(crate) fn retire(handle: u32) -> Result<(), GdiError> {
     let current = sched::live::current().ok_or(GdiError::NoSuchObject)?;
-    let binding = { let mut entries = GDI.lock();
+    let binding = { let entries = GDI.lock();
         entries.iter().find(|entry| entry.group.ptr_eq(&Arc::downgrade(&current.thread_group)))
             .and_then(|entry| entry.client) };
     match binding { Some(binding) => binding.delete_handle(handle).map_err(|_| GdiError::NoSuchObject), None => Ok(()) }

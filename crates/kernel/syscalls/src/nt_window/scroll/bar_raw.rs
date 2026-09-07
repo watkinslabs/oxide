@@ -1,6 +1,8 @@
 //! Scrollbar visibility, arrow enabling and the accessibility snapshot
 //! (`NtUserShowScrollBar`, `NtUserEnableScrollBar`, `NtUserGetScrollBarInfo`).
-use ipc::win32_window::{ESB_DISABLE_BOTH, ESB_DISABLE_LTUP, SB_BOTH, SB_CTL, SB_HORZ, SB_VERT};
+use ipc::win32_window::{ESB_DISABLE_BOTH, SB_BOTH, SB_CTL, SB_HORZ, SB_VERT};
+#[cfg(test)]
+use ipc::win32_window::ESB_DISABLE_LTUP;
 
 pub(crate) const SHOW_SCROLL_BAR: u64 = 0x15ba;
 pub(crate) const ENABLE_SCROLL_BAR: u64 = 0x13b0;

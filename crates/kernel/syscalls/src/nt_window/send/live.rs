@@ -4,8 +4,10 @@ use super::{work::{Message,Work},Queue,Reply,Resume,Outcome,Continuation,SendOut
 use super::super::{GUI,STATUS_PENDING};
 use ipc::win32_window::WindowId;
 const CALLBACK_SEND:u64=0x40;
+#[cfg(test)]
 pub(crate) struct Context {pub tid:u64,pub wndproc:u64}
 /// Same-process canonical lookup, shared with raw client-param publication. # C: O(processes + windows)
+#[cfg(test)]
 pub(crate) fn context_current(hwnd:u64)->Option<Context>{
     let cur=sched::live::current()?;if !cur.is_nt_personality(){return None;}
     let id=WindowId::from_raw(u32::try_from(hwnd).ok()?)?;

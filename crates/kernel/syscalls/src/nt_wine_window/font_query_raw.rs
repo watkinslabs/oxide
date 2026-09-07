@@ -20,6 +20,9 @@ fn signature(ordinal: u64) -> Option<(u32, usize)> {
 }
 
 /// Admit exactly the raw signature before entry-layer stack collection. # C: O(1)
+// Sole caller is raw_args::argument_count, itself x86-64-only (54§2: no
+// win32u register ABI on other architectures).
+#[cfg(any(test, target_arch = "x86_64"))]
 pub(crate) fn argument_count(ordinal: u64) -> Option<usize> { signature(ordinal).map(|(_, count)| count) }
 
 /// Recognized malformed calls stay claimed in their API failure domain. # C: O(1)

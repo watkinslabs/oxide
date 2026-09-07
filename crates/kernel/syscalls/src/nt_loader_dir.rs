@@ -44,6 +44,7 @@ mod legacy_path;
 /// Load the module a delay-load descriptor names and publish its handle into
 /// the descriptor's module slot. The ASCII name is the descriptor's own.
 /// # C: O(dependency closure of the named module)
+#[cfg(target_arch = "x86_64")]
 pub(crate) fn load_delay_module(name: &[u8], module_output: u64) -> u64 { dynamic::load_ascii(name, module_output) }
 
 // Loader enumeration is diagnostic only. Keep it off the normal image: each

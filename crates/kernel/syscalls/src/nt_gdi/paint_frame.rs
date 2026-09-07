@@ -14,6 +14,7 @@ pub(crate) fn merge_region(state: &mut GdiManager, hwnd: u32, dc: u32, region: &
 }
 
 /// Exact session coverage is authoritative; caller bounds are only an ABI consistency check. # C: O(frame pixels + region)
+#[allow(dead_code)] // KI-0708: unwired capture/publish pipeline
 pub(crate) fn capture_region(state: &mut GdiManager, hwnd: u32, dc: u32, region: &PaintRegion, layout: PaintBacking)
     -> Result<syscall::nt_compositor::Record, ()> {
     if region.is_empty() { return Err(()); }

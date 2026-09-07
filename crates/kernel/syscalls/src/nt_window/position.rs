@@ -6,7 +6,12 @@ use crate::nt_wine_window::position::{Order,Request};
 #[path="position/work.rs"] mod work;
 #[path="position/continuation.rs"] mod continuation;
 pub(crate) use continuation::{Continuation,Outcome};
-pub(crate) use work::{RemotePosition,has_remote_for_tid};
+pub(crate) use work::RemotePosition;
 pub(crate) use remote::{queue_position_for_current,pump_position_current,pump_for_reply,has_remote_for_current,cancel_position_thread,cancel_position_window};
+pub(crate) use live::{PendingPosition,position_context_for_current,position_apply_for_current,position_apply_resumable_for_current};
+// callbacks.rs (sole consumer) is x86-64-only (NtCallbackReturn has no
+// AArch64 continuation yet, KI-0703/KI-0704-class).
+#[cfg(target_arch = "x86_64")]
 pub(crate) use layout::handles_callback;
-pub(crate) use live::{PendingPosition,position_context_for_current,position_apply_for_current,position_apply_resumable_for_current,complete_position_callback};
+#[cfg(target_arch = "x86_64")]
+pub(crate) use live::complete_position_callback;

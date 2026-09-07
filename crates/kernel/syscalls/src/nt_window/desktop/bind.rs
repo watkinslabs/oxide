@@ -2,16 +2,24 @@
 use alloc::sync::Arc;
 use sched::nt_object::{NtHandle, NtObjectType, ThreadDesktop};
 
+// KI-0705: no dispatch caller yet; kept as real Win32 surface.
+#[allow(dead_code)]
 const SUCCESS: u64 = 0;
+#[allow(dead_code)]
 const INVALID_PARAMETER: u64 = 0xc000_000d;
+#[allow(dead_code)]
 const INVALID_HANDLE: u64 = 0xc000_0008;
+#[allow(dead_code)]
 const OBJECT_TYPE_MISMATCH: u64 = 0xc000_0024;
+#[allow(dead_code)]
 const ACCESS_DENIED: u64 = 0xc000_0022;
+#[allow(dead_code)]
 const DEVICE_BUSY: u64 = 0x8000_0011;
 
 /// Tagged bootstrap hook, callable before NT activation. No caller lock may be held.
 /// Caller supplies already-issued handles; this service does not issue session authority.
 /// # C: O(1); # Sleeps: no
+#[allow(dead_code)]
 pub(crate) fn bind_for_current(station_handle: u64, desktop_handle: u64) -> u64 {
     let (Ok(station_handle), Ok(desktop_handle)) = (u32::try_from(station_handle), u32::try_from(desktop_handle))
         else { return INVALID_PARAMETER; };

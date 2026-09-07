@@ -9,6 +9,9 @@
 /// A path that ends in a separator has no basename to take, so it is returned
 /// whole rather than reduced to an empty name no task manager could show.
 /// # C: O(path.len())
+// Both real callers (nt_process_create.rs, pe_exec.rs) are x86-64-only PE/NT
+// paths (KI-0713-class); kept hosted-testable on every host arch.
+#[cfg(any(test, target_arch = "x86_64"))]
 pub(crate) fn comm_of(path: &str) -> &str {
     path.rsplit(['\\', '/']).next().filter(|name| !name.is_empty()).unwrap_or(path)
 }

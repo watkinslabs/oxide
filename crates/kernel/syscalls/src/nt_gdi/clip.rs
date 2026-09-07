@@ -13,6 +13,7 @@ pub(crate) fn set_paint_region_for_current(dc: u64, region: ipc::win32_window::P
 }
 
 /// Paint admission supplies an owned update rectangle, never a borrowed user buffer. # C: O(processes + DCs)
+#[allow(dead_code)] // KI-0708: unwired capture/publish pipeline
 pub(crate) fn set_paint_clip_for_current(dc: u64, rect: Rect) -> Result<(), u64> {
     let dc = u32::try_from(dc).map_err(|_| STATUS_INVALID_HANDLE)?;
     let _gate = lifecycle::ClientGate::acquire_current().map_err(|_| STATUS_INVALID_HANDLE)?;

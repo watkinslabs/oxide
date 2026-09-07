@@ -43,6 +43,7 @@ impl Queue {
     /// # C: O(1)
     pub(crate) fn idle(&self) -> bool { !self.in_flight && self.items.is_empty() }
     /// # C: O(1)
+    #[cfg(test)]
     pub(crate) fn depth(&self) -> usize { self.items.len() }
     fn push(&mut self, item: Item) -> bool {
         if self.items.len() >= MAX_PENDING || self.items.try_reserve(1).is_err() { return false; }

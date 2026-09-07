@@ -19,7 +19,7 @@ pub(crate) mod popup_proc;
 #[path = "menu_raw/entry.rs"]
 mod entry;
 #[cfg(target_os = "oxide-kernel")]
-pub(crate) use entry::with_entry;
+pub(in crate::nt_window) use entry::with_entry;
 #[cfg(target_os = "oxide-kernel")]
 #[path = "menu_raw/bar.rs"]
 pub(crate) mod bar;

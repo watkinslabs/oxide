@@ -29,6 +29,10 @@ impl Owner for Current {
 /// Takes ownership of a fresh bound paint HDC and optional nonclient HRGN on every path.
 /// Erase flags come from the canonical session; `run` retains Prepared in the existing callback queue.
 /// # C: O(processes + windows + region); # Sleeps: yes (callbacks after unlock)
+/// Superseded in production by factory::prepare_with, which computes nc_region
+/// itself and calls begin_with directly; kept as a directly-testable seam for
+/// hosted.rs's begin_with unit tests.
+#[cfg(test)]
 pub(crate) fn begin_for_current(hwnd:u32,dc:u32,destination:u64,nc_region:u32,
     run:fn(Resources,Prepared)->u64)->u64{
     begin_with(hwnd,dc,destination,false,nc_region,run)

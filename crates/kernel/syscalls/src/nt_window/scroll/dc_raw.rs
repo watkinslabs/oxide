@@ -39,6 +39,7 @@ pub(crate) fn offset(rect: WindowRect, dx: i32, dy: i32) -> WindowRect {
 }
 
 /// # C: O(1)
+#[cfg(test)]
 pub(crate) fn union(a: WindowRect, b: WindowRect) -> WindowRect {
     if is_empty(a) { return b; }
     if is_empty(b) { return a; }

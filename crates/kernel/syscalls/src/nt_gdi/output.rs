@@ -29,6 +29,7 @@ pub(crate) fn prepare_explicit(state:&mut GdiManager,hwnd:u32,dc:u32)->Result<Pr
 
 /// Caller holds GDI continuously from pixel capture through output demand. No second frame allocation.
 /// # C: O(windows + DCs + frame validation)
+#[allow(dead_code)] // KI-0708: unwired capture/publish pipeline
 pub(crate) fn reserve_captured(state:&mut GdiManager,hwnd:u32,dc:u32,record:Record)->Result<PreparedFrame,PrepareError>{
     if record.header.hwnd!=u64::from(hwnd)||record.header.opcode!=syscall::nt_compositor::Opcode::Frame
         ||record.validate().is_err()||state.window_dc(hwnd)!=Some(dc){return Err(PrepareError::Invalid);}

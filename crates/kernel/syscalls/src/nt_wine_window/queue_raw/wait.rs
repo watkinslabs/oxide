@@ -2,7 +2,9 @@
 //! and `WaitMessage`. Queue-status classification belongs to the queue owner.
 
 /// Wait for an already-available message rather than only for a new one.
+#[allow(dead_code)] // KI-0711
 pub(crate) const MWMO_INPUTAVAILABLE: u32 = 0x0004;
+#[allow(dead_code)] // KI-0711
 pub(crate) const MWMO_ALERTABLE: u32 = 0x0002;
 /// The queue occupies one wait slot, so a caller may name at most one fewer.
 pub(crate) const MAXIMUM_WAIT_OBJECTS: u32 = 64;
@@ -29,6 +31,7 @@ pub(crate) const fn deadline_ns(now_ns: u64, timeout_ms: u32) -> Option<u64> {
 }
 
 /// A wait that already accepts available input consults the queue before parking. # C: O(1)
+#[allow(dead_code)] // KI-0711
 pub(crate) const fn checks_before_waiting(flags: u32) -> bool { flags & MWMO_INPUTAVAILABLE != 0 }
 
 /// `WaitMessage` reports success for anything but an outright failure. # C: O(1)

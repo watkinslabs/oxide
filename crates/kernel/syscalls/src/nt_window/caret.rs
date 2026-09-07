@@ -10,7 +10,9 @@ pub const SHOW_CARET_ORDINAL: u64 = 0x15b7;
 pub struct CaretPos { pub x: i32, pub y: i32 }
 
 impl CaretPos {
+    #[cfg(test)]
     pub fn decode(bytes: [u8; 8]) -> Self { Self { x: i32::from_le_bytes(bytes[0..4].try_into().unwrap()), y: i32::from_le_bytes(bytes[4..8].try_into().unwrap()) } }
+    #[cfg(test)]
     pub fn encode(self) -> [u8; 8] { let mut bytes = [0; 8]; bytes[0..4].copy_from_slice(&self.x.to_le_bytes()); bytes[4..8].copy_from_slice(&self.y.to_le_bytes()); bytes }
 }
 
