@@ -9,7 +9,11 @@ pub struct Win32uCall {
     pub importers: BTreeSet<String>,
     pub admitted: bool,
 }
-pub struct NtdllCall { pub name: Vec<u8>, pub present: bool }
+/// One ntdll name the closure imports. `present` is whether the synthetic
+/// kernel runtime publishes it; `user_mode` is whether the Windows ABI runs it
+/// in user mode, in which case a kernel entry is privilege the ABI never asks
+/// for and the name belongs in a loaded ntdll image instead.
+pub struct NtdllCall { pub name: Vec<u8>, pub present: bool, pub user_mode: bool }
 pub struct UnboundImport { pub importer: String, pub dll: String, pub symbol: String }
 
 pub struct Findings {
@@ -38,6 +42,11 @@ impl Findings {
     pub fn absent_ntdll(&self) -> Vec<String> {
         self.ntdll.iter().filter(|call| !call.present).map(|call| text(&call.name)).collect()
     }
+    /// Names the kernel serves as a trap that the Windows ABI runs in user mode.
+    /// # C: O(ntdll imports)
+    pub fn user_mode_traps(&self) -> Vec<String> {
+        self.ntdll.iter().filter(|call| call.user_mode && call.present).map(|call| text(&call.name)).collect()
+    }
     /// # C: O(unbound imports)
     pub fn unbound_lines(&self) -> Vec<String> {
         self.unbound.iter().map(|item| format!("{} imports {}!{}", item.importer, item.dll, item.symbol)).collect()
@@ -55,12 +64,14 @@ impl Findings {
         let _ = writeln!(out, "| win32u ordinals unadmitted | {} |", self.win32u.iter().filter(|c| !c.admitted).count());
         let _ = writeln!(out, "| distinct ntdll imports | {} |", self.ntdll.len());
         let _ = writeln!(out, "| ntdll exports absent | {} |", self.ntdll.iter().filter(|c| !c.present).count());
+        let _ = writeln!(out, "| user-mode ntdll routines served as kernel traps | {} |", self.user_mode_traps().len());
         let _ = writeln!(out, "| imports that do not bind | {} |\n", self.unbound.len());
         let _ = writeln!(out, "## Closure\n\n{}\n", self.modules.join(", "));
         section(&mut out, "Catalog names not found", &self.missing.iter()
             .map(|(name, by)| format!("{name} requested by {}", joined(by))).collect::<Vec<_>>());
         section(&mut out, "Unadmitted win32u ordinals", &self.unclaimed_win32u());
         section(&mut out, "Absent ntdll runtime exports", &self.absent_ntdll());
+        section(&mut out, "User-mode ntdll routines served as kernel traps", &self.user_mode_traps());
         section(&mut out, "Imports that do not bind", &self.unbound_lines());
         let _ = writeln!(out, "## Admitted win32u ordinals\n");
         let _ = writeln!(out, "| ordinal | export | importers |\n|---|---|---|");
@@ -90,7 +101,7 @@ pub fn emit(findings: &Findings) -> String {
 impl Findings {
     /// Stable ratchet keys for every open gap in the surface. # C: O(gaps)
     pub fn keys(&self) -> BTreeSet<String> {
-        self.win32u_keys().into_iter().chain(self.ntdll_keys()).chain(self.bind_keys()).chain(self.missing_keys()).collect()
+        self.win32u_keys().into_iter().chain(self.ntdll_keys()).chain(self.bind_keys()).chain(self.missing_keys()).chain(self.user_mode_trap_keys()).collect()
     }
     /// # C: O(win32u imports)
     pub fn win32u_keys(&self) -> Vec<String> {
@@ -102,6 +113,10 @@ impl Findings {
     /// # C: O(ntdll imports)
     pub fn ntdll_keys(&self) -> Vec<String> {
         self.ntdll.iter().filter(|call| !call.present).map(|call| format!("ntdll {}", text(&call.name))).collect()
+    }
+    /// # C: O(ntdll imports)
+    pub fn user_mode_trap_keys(&self) -> Vec<String> {
+        self.user_mode_traps().into_iter().map(|name| format!("usermode-trap ntdll {name}")).collect()
     }
     /// # C: O(unbound imports)
     pub fn bind_keys(&self) -> Vec<String> {

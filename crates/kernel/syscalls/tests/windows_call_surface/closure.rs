@@ -31,9 +31,19 @@ fn dependencies(name: &str, blob: &[u8]) -> Vec<String> {
 /// Breadth-first closure from the root image. The synthetic runtime module is
 /// a leaf: its exports are owned by the kernel, not by a catalog PE.
 /// # C: O(closure modules * (module bytes + import descriptors))
-pub fn discover(root: &Path) -> Closure {
+pub fn discover(root: &Path) -> Closure { walk(root, true) }
+
+/// Breadth-first closure that reads the runtime module from the catalog like
+/// any other image, for auditing the boundary the Windows ABI actually
+/// publishes: a user-mode ntdll whose system-service entries are stubs.
+/// # C: as `discover`
+pub fn discover_with_runtime_image(root: &Path) -> Closure { walk(root, false) }
+
+fn walk(root: &Path, runtime_is_a_leaf: bool) -> Closure {
     let mut queue = std::collections::VecDeque::from([catalog::ROOT_MODULE.to_string()]);
-    let mut seen = BTreeSet::from([catalog::ROOT_MODULE.to_string(), catalog::RUNTIME_MODULE.to_string()]);
+    let mut seen = BTreeSet::from([catalog::ROOT_MODULE.to_string()]);
+    if runtime_is_a_leaf { seen.insert(catalog::RUNTIME_MODULE.to_string()); }
+    else { queue.push_back(catalog::RUNTIME_MODULE.to_string()); seen.insert(catalog::RUNTIME_MODULE.to_string()); }
     let mut modules: Vec<(String, Vec<u8>)> = Vec::new();
     let mut missing: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut requesters: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
