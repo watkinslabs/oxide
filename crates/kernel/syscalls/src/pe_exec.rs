@@ -21,6 +21,8 @@ pub struct PreparedPeProcess {
     pub process: elf_load::pe_loader::PeProcess,
     pub initial_entry: u64,
     pub initial_stack: u64,
+    /// First argument register at entry: the loader handover's startup context.
+    pub initial_argument: u64,
 }
 
 /// Private PE launch continuation. The mapped image, environment, and
@@ -175,7 +177,7 @@ fn commit_x86(cur: &sched::Task, path: &[u8], blob: &[u8], exec_vp: Option<&vfs:
     let startup_view = continuation.prepared().process.startup.facts();
     if let Err(error) = select_nt_personality(cur, startup_view) { close_stdio(&mut stdio, &table); return Err(error); }
     let (prepared, startup) = continuation.take();
-    let PreparedPeProcess { mm: as_, stack, stack_top, process, initial_entry, initial_stack } = prepared;
+    let PreparedPeProcess { mm: as_, stack, stack_top, process, initial_entry, initial_stack, initial_argument } = prepared;
     let cpu = (hal_x86_64::X86CpuOps::current_cpu() as usize).min(cpu::MAX_CPUS - 1);
     as_.mark_cpu(cpu);
     // SAFETY: root belongs to this freshly-built address space and activation
@@ -226,7 +228,7 @@ fn commit_x86(cur: &sched::Task, path: &[u8], blob: &[u8], exec_vp: Option<&vfs:
     klog::write_raw(b"-");
     klog::write_hex_u64(stack_top);
     klog::write_raw(b"\n");
-    *frame = hal_x86_64::PtRegs { rip: initial_entry, rsp: initial_stack, rflags: 0x202,
+    *frame = hal_x86_64::PtRegs { rip: initial_entry, rsp: initial_stack, rcx: initial_argument, rflags: 0x202,
         cs: hal_x86_64::USER_CS_SELECTOR, ss: hal_x86_64::USER_SS_SELECTOR,
         vector: frame.vector, error: frame.error, ..Default::default() };
     sched::live::vfork_done(cur);
@@ -287,14 +289,27 @@ pub fn prepare_pe_process(cur: &sched::Task, path: &[u8], blob: &[u8], command_l
     let enoexec = || -(syscall::errno::Errno::Enoexec.as_i32() as i64);
     let path = core::str::from_utf8(path).map_err(|_| refused(b"image-path-not-utf8", None))?;
     let (as_, stack, stack_top) = build_pe_address_space(cur, STACK_BYTES, replace_current)?;
+    let input = elf_load::process_env::EnvironmentInput {
+        image_base: 0, image_size: 0, image_path: path,
+        command_line: command_line.unwrap_or(path), environment, process_id, thread_id,
+    };
+    // When the catalog stages the runtime module, the kernel maps two images
+    // and enters the runtime's own initialization thunk. It does not walk the
+    // module graph, does not bind a single import, and does not publish an
+    // export page: all of that is the runtime's work in user mode.
+    if let Some(runtime_blob) = catalog.and_then(|catalog| catalog.load(elf_load::pe_runtime_loader::RUNTIME_MODULE)) {
+        let handover = elf_load::pe_runtime_loader::load(blob, runtime_blob, &as_, &input, stack.as_u64(), stack_top)
+            .map_err(|error| refused(b"runtime-handover", Some(error)))?;
+        let process = handover.into_process();
+        let startup = process.startup.facts();
+        let (initial_entry, initial_stack, initial_argument) =
+            (startup.transfer_entry.as_u64(), startup.stack_pointer.as_u64(), process.entry.rcx);
+        return Ok(PreparedPeProcess { mm: as_, stack, stack_top, initial_entry, initial_stack, initial_argument, process });
+    }
     let runtime = map_nt_runtime_box(&as_).map_err(|error| refused(b"map-nt-runtime", Some(error)))?;
     let runtime_module = elf_load::process_env::NtModuleInput {
         base: runtime.base.as_u64(), entry: 0, size: runtime.bytes as u32,
         full_name: "C:\\Windows\\System32\\ntdll.dll", base_name: "ntdll.dll",
-    };
-    let input = elf_load::process_env::EnvironmentInput {
-        image_base: 0, image_size: 0, image_path: path,
-        command_line: command_line.unwrap_or(path), environment, process_id, thread_id,
     };
     let process = match catalog.map_or_else(
         || elf_load::pe_loader::load_pe_process_with_resolver_and_modules_and_params_with_stack_bounds(blob, &as_, &input, stack.as_u64(), stack_top, &*runtime, &[runtime_module], params),
@@ -312,7 +327,7 @@ pub fn prepare_pe_process(cur: &sched::Task, path: &[u8], blob: &[u8], command_l
         Some(blob) => prepare_native_bootstrap(&as_, blob, environment, startup.transfer_entry.as_u64(), startup.stack_pointer.as_u64(), startup.teb.as_u64(), startup.peb.as_u64(), &rnd, enoexec())?,
         None => (startup.transfer_entry.as_u64(), startup.stack_pointer.as_u64()),
     };
-    Ok(PreparedPeProcess { mm: as_, stack, stack_top, initial_entry, initial_stack, process })
+    Ok(PreparedPeProcess { mm: as_, stack, stack_top, initial_entry, initial_stack, initial_argument: process.entry.rcx, process })
 }
 
 #[cfg(target_arch = "x86_64")]

@@ -48,6 +48,8 @@ pub(super) const CURRENT_DIR: &str = "C:\\Windows";
 pub(super) const CURRENT_DIR_STORAGE: usize = 0x400;
 pub(super) const API_SET_OFF: usize = 0x15000;
 pub(super) const PEB_PROCESS_HEAP_OFF: usize = 0x30;
+/// PEB.ImageBaseAddress.
+pub(super) const PEB_IMAGE_BASE_OFF: usize = 0x10;
 pub(super) const PEB_NUMBER_OF_PROCESSORS_OFF: usize = 0xb8;
 pub(super) const PROCESS_HEAP_HANDLE: u64 = 1;
 pub(super) const INITIAL_PROCESSOR_COUNT: u32 = 1;

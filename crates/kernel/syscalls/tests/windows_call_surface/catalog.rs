@@ -10,9 +10,9 @@ use std::path::{Path, PathBuf};
 const CATALOG: &str = "target/artifacts/wine/x86_64/x86_64-windows";
 /// The single image the Notepad campaign runs.
 pub const ROOT_MODULE: &str = "notepad.exe";
-/// Kernel-published synthetic module. Never read from the Wine catalog: the
-/// rootfs stages every DLL except this one, and its exports are the NT service
-/// stub page rather than a PE image.
+/// The NT runtime module. The image stages it like every other module and the
+/// kernel hands each process over to it; the synthetic export page is what the
+/// kernel falls back to when no catalog carries it.
 pub const RUNTIME_MODULE: &str = "ntdll.dll";
 /// Modules the window manager loads by name at init rather than through an
 /// import descriptor, so no import or delay descriptor names them.

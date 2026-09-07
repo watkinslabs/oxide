@@ -29,6 +29,33 @@ pub struct EnvironmentInput<'a> {
     pub thread_id: u32,
 }
 
+/// Read one published PEB field back out of the mapped block. # C: O(1)
+fn peb_field(as_: &AddressSpace, env: &NtProcessEnvironment, field: usize) -> Option<u64> {
+    let address = env.peb.as_u64().checked_add(field as u64)?;
+    let vma = as_.find_vma(UserVirtAddr::new(address)?)?;
+    let VmaBacking::KernelBytes { data, .. } = vma.backing else { return None };
+    let at = (address.checked_sub(vma.start.as_u64())?) as usize;
+    Some(u64::from_le_bytes(data.get(at..at + 8)?.try_into().ok()?))
+}
+
+/// The image base the process block names. # C: O(1)
+pub fn peb_image_base(as_: &AddressSpace, env: &NtProcessEnvironment) -> Option<u64> {
+    peb_field(as_, env, PEB_OFF + PEB_IMAGE_BASE_OFF)
+}
+
+/// The process-heap handle the block names, zero while the runtime still owes
+/// it. # C: O(1)
+pub fn peb_process_heap(as_: &AddressSpace, env: &NtProcessEnvironment) -> Option<u64> {
+    peb_field(as_, env, PEB_OFF + PEB_PROCESS_HEAP_OFF)
+}
+
+impl NtProcessParameters<'_> {
+    /// The parameters a process gets when no parent supplied any. # C: O(1)
+    pub fn default_for() -> Self {
+        Self { current_directory: CURRENT_DIR, current_directory_handle: 0, console_handle: 0, standard_handles: [0; 3] }
+    }
+}
+
 /// Windows process-parameter values copied from a parent into a new image.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NtProcessParameters<'a> {
@@ -171,9 +198,33 @@ pub fn build_with_modules_and_params(input: &EnvironmentInput<'_>, modules: &[Nt
     build_with_modules_and_params_and_stack(input, modules, params, 0, 0, as_)
 }
 
+/// Who creates the process heap and publishes it in the PEB.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ProcessHeapOwner {
+    /// The kernel owns the heap and publishes its handle before the image
+    /// runs, because the image's allocator is the kernel's own service page.
+    Kernel,
+    /// The user-mode runtime creates the process heap during its own
+    /// initialization and writes the handle into the block itself. The field
+    /// stays zero until it does; a handle written here would be a second,
+    /// disagreeing owner of the same slot.
+    Runtime,
+}
+
 /// Build process parameters and publish the canonical stack VMA in NT_TIB.
 /// # C: O(image_path + command_line + environment + N_modules)
 pub fn build_with_modules_and_params_and_stack(input: &EnvironmentInput<'_>, modules: &[NtModuleInput<'_>], params: &NtProcessParameters<'_>, stack_base: u64, stack_top: u64, as_: &AddressSpace) -> Result<NtProcessEnvironment, Error> {
+    build_with_heap_owner(input, modules, params, stack_base, stack_top, as_, ProcessHeapOwner::Kernel)
+}
+
+/// Build the initial environment for a process whose user-mode runtime owns
+/// the process heap.
+/// # C: O(image_path + command_line + environment + N_modules)
+pub fn build_for_runtime_loader(input: &EnvironmentInput<'_>, modules: &[NtModuleInput<'_>], params: &NtProcessParameters<'_>, stack_base: u64, stack_top: u64, as_: &AddressSpace) -> Result<NtProcessEnvironment, Error> {
+    build_with_heap_owner(input, modules, params, stack_base, stack_top, as_, ProcessHeapOwner::Runtime)
+}
+
+fn build_with_heap_owner(input: &EnvironmentInput<'_>, modules: &[NtModuleInput<'_>], params: &NtProcessParameters<'_>, stack_base: u64, stack_top: u64, as_: &AddressSpace, heap: ProcessHeapOwner) -> Result<NtProcessEnvironment, Error> {
     if modules.is_empty() || modules.len() > MAX_MODULES { return Err(Error::Einval); }
     let (stack_base, stack_top) = if stack_base == 0 && stack_top != 0 {
         let top = UserVirtAddr::new(stack_top).ok_or(Error::Einval)?;
@@ -231,10 +282,12 @@ pub fn build_with_modules_and_params_and_stack(input: &EnvironmentInput<'_>, mod
         VmaFlags::PRIVATE, VmaBacking::Anonymous, false).map_err(|_| Error::Einval)?;
     let base = reservation.as_u64();
     let mut block = vec![0u8; BLOCK_BYTES];
-    put_u64(&mut block, PEB_OFF + 0x10, input.image_base);
+    put_u64(&mut block, PEB_OFF + PEB_IMAGE_BASE_OFF, input.image_base);
     put_u64(&mut block, PEB_OFF + 0x18, base + LDR_OFF as u64);
     put_u64(&mut block, PEB_OFF + 0x20, base + PARAM_OFF as u64);
-    put_u64(&mut block, PEB_OFF + PEB_PROCESS_HEAP_OFF, PROCESS_HEAP_HANDLE);
+    // Left zero when the runtime owns the heap: its loader initialization
+    // creates the process heap and publishes the handle in this slot.
+    if heap == ProcessHeapOwner::Kernel { put_u64(&mut block, PEB_OFF + PEB_PROCESS_HEAP_OFF, PROCESS_HEAP_HANDLE); }
     put_u32(&mut block, PEB_OFF + PEB_NUMBER_OF_PROCESSORS_OFF, INITIAL_PROCESSOR_COUNT);
     put_u64(&mut block, PEB_OFF + 0x68, base + API_SET_OFF as u64);
     // Normalized parameters own one page; strings and environment have

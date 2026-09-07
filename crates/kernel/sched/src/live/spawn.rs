@@ -51,6 +51,14 @@ fn build_user_arch_ctx(stack_top: *mut u8, user_ip: u64, user_sp: u64) -> ArchCt
 fn build_user_arch_ctx(stack_top: *mut u8, user_ip: u64, user_sp: u64) -> ArchCtx {
     ArchCtx::new_user_with_irq_frame(stack_top, user_ip, user_sp)
 }
+#[cfg(target_arch = "x86_64")]
+fn build_user_arch_ctx_with_arg(stack_top: *mut u8, user_ip: u64, user_sp: u64, arg0: u64) -> ArchCtx {
+    ArchCtx::new_user_with_irq_frame_and_arg(stack_top, user_ip, user_sp, arg0)
+}
+#[cfg(target_arch = "aarch64")]
+fn build_user_arch_ctx_with_arg(stack_top: *mut u8, user_ip: u64, user_sp: u64, arg0: u64) -> ArchCtx {
+    ArchCtx::new_user_with_irq_frame_and_arg(stack_top, user_ip, user_sp, arg0)
+}
 
 /// Default kthread stack size. Mirrors the prior ksched.rs shim;
 /// `13§5` doesn't pin a number — Linux uses 16 KiB on x86_64 too.
@@ -296,13 +304,27 @@ pub unsafe fn new_user_task_unpublished(
 /// `entry_va` and `user_sp` must lie in that task's own address space.
 /// # C: O(1)
 pub unsafe fn arm_user_entry(task: &Task, entry_va: u64, user_sp: u64) {
+    // SAFETY: forwards to the argument-carrying form with no argument; the
+    // task is the same unpublished task this function documents.
+    unsafe { arm_user_entry_with_argument(task, entry_va, user_sp, 0) }
+}
+
+/// Arm a user entry that receives one argument in the first argument
+/// register. The runtime loader handover enters an initialization thunk that
+/// reads its startup context from there, so an entry armed without it would
+/// hand the thunk a null pointer.
+/// # C: O(1)
+/// # Ctx: task unpublished
+pub unsafe fn arm_user_entry_with_argument(task: &Task, entry_va: u64, user_sp: u64, argument: u64) {
     let stack_top = task.kernel_stack.load(Ordering::Acquire);
     // SAFETY: stack_top is the task's installed top-of-stack; the task is unpublished so nothing can be mid-switch on it; the synthetic frame uses USER selectors / EL0 SPSR so the shared epilogue lands at CPL=3 / EL0.
     unsafe {
         let p = task.arch_ctx_ptr::<ArchCtx>();
-        core::ptr::write(p, build_user_arch_ctx(stack_top, entry_va, user_sp));
+        core::ptr::write(p, build_user_arch_ctx_with_arg(stack_top, entry_va, user_sp, argument));
     }
 }
+
+
 
 /// Fork-specific user-task spawn (P5-10): identical to
 /// `spawn_user_thread` but builds the arch ctx via the

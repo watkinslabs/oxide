@@ -13,29 +13,13 @@
 // carried none.
 
 use super::CONTEXT_BYTES;
+// The record layout has one owner, so this frame and the loader's startup
+// context cannot drift apart.
+use pe::nt_context::{CTX_FLAGS, CTX_SEG_CS, CTX_SEG_DS, CTX_SEG_ES, CTX_SEG_FS, CTX_SEG_GS,
+    CTX_SEG_SS, CTX_EFLAGS, CTX_RAX, CTX_RIP, CTX_MXCSR, CTX_FLT_SAVE, FXSAVE_MXCSR};
 
-/// AMD64 `CONTEXT` field offsets. User ABI.
-const CTX_FLAGS: usize = 0x30;
-const CTX_SEG_CS: usize = 0x38;
-const CTX_SEG_DS: usize = 0x3a;
-const CTX_SEG_ES: usize = 0x3c;
-const CTX_SEG_FS: usize = 0x3e;
-const CTX_SEG_GS: usize = 0x40;
-const CTX_SEG_SS: usize = 0x42;
-const CTX_EFLAGS: usize = 0x44;
-const CTX_RAX: usize = 0x78;
-const CTX_RIP: usize = 0xf8;
-
-/// `CONTEXT_AMD64` plus the components this frame carries: control, integer,
-/// segment and floating-point registers. Debug registers are not advertised,
-/// so a consumer never reads them out of an uninitialised frame.
-pub const X64_CONTEXT_FLAGS: u32 = 0x0010_0000 | 0x1 | 0x2 | 0x4 | 0x8;
-/// The legacy `FXSAVE` image occupies `CONTEXT.FltSave`.
-const CTX_MXCSR: usize = 0x34;
-const CTX_FLT_SAVE: usize = 0x100;
-pub const X64_FLT_SAVE_BYTES: usize = 512;
-/// `MXCSR` within the `FXSAVE` image.
-const FXSAVE_MXCSR: usize = 0x18;
+pub use pe::nt_context::CONTEXT_FULL as X64_CONTEXT_FLAGS;
+pub use pe::nt_context::FLT_SAVE_BYTES as X64_FLT_SAVE_BYTES;
 
 /// `CONTEXT_EX` sits immediately after the `CONTEXT` in the dispatcher frame.
 pub const X64_CONTEXT_EX_OFFSET: usize = CONTEXT_BYTES;

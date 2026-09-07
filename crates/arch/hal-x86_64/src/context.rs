@@ -390,10 +390,20 @@ impl ContextX86_64 {
     /// # C: O(1)
     #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn new_user_with_irq_frame(stack_top: *mut u8, user_ip: u64, user_sp: u64) -> Self {
+        Self::new_user_with_irq_frame_and_arg(stack_top, user_ip, user_sp, 0)
+    }
+
+    /// The same scaffold with one value in the first argument register. An
+    /// entry point that takes an argument — a loader initialization thunk
+    /// reading its startup context — needs it there at the first instruction.
+    /// # C: O(1)
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    pub fn new_user_with_irq_frame_and_arg(stack_top: *mut u8, user_ip: u64, user_sp: u64, arg0: u64) -> Self {
         // USER CS/SS per `36-bootloader-handoff` GDT (P1-93): USER_CS =
         // 0x4B (DPL=3 64-bit code), USER_DS = 0x43 (DPL=3 data).
         let regs = PtRegs {
             rip:    user_ip,
+            rcx:    arg0,
             cs:     crate::gdt::USER_CS_SELECTOR,
             rflags: SCAFFOLD_RFLAGS,
             rsp:    user_sp,

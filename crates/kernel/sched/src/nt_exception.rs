@@ -18,7 +18,7 @@ pub mod fault;
 pub mod context;
 
 pub const EXCEPTION_RECORD_BYTES: usize = 0x98;
-pub const CONTEXT_BYTES: usize = 0x4d0;
+pub use pe::nt_context::CONTEXT_BYTES;
 const EXCEPTION_CODE_OFFSET: usize = 0;
 const EXCEPTION_FLAGS_OFFSET: usize = 4;
 const EXCEPTION_RECORD_OFFSET: usize = 8;
@@ -31,7 +31,7 @@ const EXCEPTION_BREAKPOINT: u32 = 0x8000_0003;
 const CONTEXT_FLAGS_OFFSET: usize = 0x30;
 #[cfg(target_arch = "x86_64")]
 const CONTEXT_AMD64: u32 = 0x0010_0000;
-const CONTEXT_RIP_OFFSET: usize = 0xf8;
+use pe::nt_context::CTX_RIP as CONTEXT_RIP_OFFSET;
 #[cfg(target_arch = "x86_64")]
 const CONTEXT_RSP_OFFSET: usize = 0x98;
 #[cfg(target_arch = "x86_64")]

@@ -85,6 +85,11 @@ pub fn install_from_image(image: &pe::Image<'_>) -> Result<Numbering, pe::Error>
     Ok(Numbering { decoded: decoded.len(), numbers: numbers(&decoded), installed, unpublished: unpublished(&decoded).len() })
 }
 
+/// The installed numbering is one global table, so every test that touches it
+/// runs under this lock rather than racing a sibling's `clear`.
+#[cfg(test)]
+pub(crate) static TABLE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 #[path = "nt_ordinals/tests.rs"]
 mod tests;

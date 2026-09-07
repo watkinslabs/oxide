@@ -50,6 +50,9 @@ fn runtime_stub_bytes(index: usize) -> usize {
 pub struct PeEntryState {
     pub rip: UserVirtAddr,
     pub rsp: UserVirtAddr,
+    /// First argument register at entry. Zero for an image entered directly;
+    /// the loader handover passes the startup context here.
+    pub rcx: u64,
     pub gs_base: UserVirtAddr,
     pub personality: ExecutionPersonality,
 }
@@ -333,7 +336,7 @@ pub fn initial_entry_state(image: &PeLoadedImage, stack_top: u64) -> Result<PeEn
     // alignment and its 32-byte home area remains above RSP.
     let rsp = stack_top.checked_sub(process_env::X64_SHADOW_SPACE + process_env::X64_RETURN_SLOT).ok_or(pe::Error::Einval)?;
     let rsp = (rsp & !0xf) | 8;
-    Ok(PeEntryState { rip: image.entry, rsp: UserVirtAddr::new(rsp).ok_or(pe::Error::Einval)?, gs_base: UserVirtAddr::new(0).ok_or(pe::Error::Einval)?, personality: ExecutionPersonality::Nt })
+    Ok(PeEntryState { rip: image.entry, rsp: UserVirtAddr::new(rsp).ok_or(pe::Error::Einval)?, rcx: 0, gs_base: UserVirtAddr::new(0).ok_or(pe::Error::Einval)?, personality: ExecutionPersonality::Nt })
 }
 pub fn initial_entry_state_with_environment(image: &PeLoadedImage, stack_top: u64, env: &process_env::NtProcessEnvironment) -> Result<PeEntryState, pe::Error> {
     let mut state = initial_entry_state(image, stack_top)?;
@@ -545,9 +548,17 @@ pub fn load_pe_image_with_resolver<R: ImportResolver>(blob: &[u8], as_: &Address
 }
 /// Map one validated image using the shared import resolver and optional exact placement. # C: O(SizeOfImage + N_sections)
 pub fn load_pe_image_with_resolver_at<R: ImportResolver>(blob: &[u8], as_: &AddressSpace, resolver: &R, exact_base: Option<UserVirtAddr>, relay_call: u64) -> Result<PeLoadedImage, pe::Error> {
-    load_pe_image_with_resolver_at_mode(blob, as_, resolver, exact_base, relay_call, true)
+    load_pe_image_with_resolver_at_mode(blob, as_, resolver, exact_base, relay_call, true, true)
 }
-fn load_pe_image_with_resolver_at_mode<R: ImportResolver>(blob: &[u8], as_: &AddressSpace, resolver: &R, exact_base: Option<UserVirtAddr>, relay_call: u64, validate_imports: bool) -> Result<PeLoadedImage, pe::Error> {
+/// Map an image and leave its import table exactly as the file carries it.
+/// The user-mode loader binds its own graph; binding here would give the same
+/// slots a second writer.
+/// # C: O(image bytes)
+pub fn load_pe_image_unbound(blob: &[u8], as_: &AddressSpace) -> Result<PeLoadedImage, pe::Error> {
+    load_pe_image_with_resolver_at_mode(blob, as_, &RejectImports, None, 0, false, false)
+}
+
+fn load_pe_image_with_resolver_at_mode<R: ImportResolver>(blob: &[u8], as_: &AddressSpace, resolver: &R, exact_base: Option<UserVirtAddr>, relay_call: u64, validate_imports: bool, bind: bool) -> Result<PeLoadedImage, pe::Error> {
     let parsed = pe::parse(blob)?;
     // Validate every image-owned TLS address before binding or reserving
     // anything; malformed TLS must leave no VMA behind.
@@ -572,9 +583,11 @@ fn load_pe_image_with_resolver_at_mode<R: ImportResolver>(blob: &[u8], as_: &Add
     // Relocations apply to image-owned absolute pointers. Bind external IAT
     // addresses only afterward; otherwise the relocation delta is added to
     // an already-final external function pointer.
-    if let Err(error) = bind_imports(&parsed, &mut image, resolver) {
-        let _ = as_.munmap(reservation, len);
-        return Err(error);
+    if bind {
+        if let Err(error) = bind_imports(&parsed, &mut image, resolver) {
+            let _ = as_.munmap(reservation, len);
+            return Err(error);
+        }
     }
     // Wine owns relay installation. Its loader first records each original
     // EAT target in relay_private_data, then patches the EAT to the generated
@@ -697,7 +710,7 @@ pub fn load_pe_module_graph<'a, R: ImportResolver>(modules: &[pe::Module<'a>], a
     let resolver = PeGraphResolver { modules: &exports, fallback };
     let mut loaded = alloc::vec::Vec::new();
     for (module, base) in modules.iter().zip(&bases) {
-        match load_pe_image_with_resolver_at_mode(module.image.raw, as_, &resolver, UserVirtAddr::new(base.base), relay_call, false) {
+        match load_pe_image_with_resolver_at_mode(module.image.raw, as_, &resolver, UserVirtAddr::new(base.base), relay_call, false, true) {
             Ok(image) => loaded.push(PeLoadedModule { name: module.name, image }),
             Err(error) => {
                 for entry in &bases { if let Some(address) = UserVirtAddr::new(entry.base) { let _ = as_.munmap(address, entry.size as usize); } }

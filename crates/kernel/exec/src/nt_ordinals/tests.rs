@@ -27,7 +27,7 @@ fn a_decoded_name_the_kernel_publishes_pairs_with_its_service_and_one_it_does_no
 
 #[test]
 fn the_staged_module_numbering_routes_its_own_stubs_to_the_services_the_kernel_publishes() {
-    let _guard = TABLE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _guard = crate::nt_ordinals::TABLE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let Some(blob) = staged() else { return };
     let image = pe::parse(&blob).expect("the staged runtime module must parse");
     let decoded = pe::ntdll::services::decode_all(&image).expect("its service stubs must decode");
@@ -78,13 +78,9 @@ fn report_the_staged_numbering() {
     std::println!("unpublished: {:?}", un);
 }
 
-/// The installed numbering is one global table, so every test that touches it
-/// runs under this lock rather than racing a sibling's `clear`.
-static TABLE: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 #[test]
 fn the_process_loader_installs_the_staged_module_numbering_when_the_catalog_carries_it() {
-    let _guard = TABLE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _guard = crate::nt_ordinals::TABLE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..")
         .join("target/artifacts/wine/x86_64/x86_64-windows");
     if !root.join("ntdll.dll").is_file() { return; }
