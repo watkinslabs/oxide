@@ -3,7 +3,7 @@
 //! zero, so a bar built from a resource keeps every label and measures every
 //! item from it.
 use super::*;
-use crate::win32_gdi::{MENU_BAR_HEIGHT, MENU_CHAR_HEIGHT, MENU_CHAR_WIDTH};
+use crate::win32_gdi::menu_bar_metrics;
 use crate::win32_menu::draw::MenuDrawOp;
 use crate::win32_menu::{MenuItem, MenuManager, MenuRect, MF_BYPOSITION, MF_GRAYED, MF_SEPARATOR};
 use alloc::vec;
@@ -130,22 +130,23 @@ fn a_bar_appended_from_a_template_draws_one_text_run_per_item() {
         menus.insert(menu, position, MenuItem { id: info.id, state: info.insert_flags(), text, submenu: info.submenu }).unwrap();
     }
     let origin = MenuRect { left: 0, top: 0, right: 582 - 261, bottom: 768 - 122 };
-    let plan = menus.bar_draw_plan(menu, origin, MENU_CHAR_WIDTH, MENU_CHAR_HEIGHT, MENU_BAR_HEIGHT).unwrap();
+    let cells = menu_bar_metrics();
+    let plan = menus.bar_draw_plan(menu, origin, cells.char_width, cells.char_height, cells.bar_height).unwrap();
     let runs: Vec<(u32, MenuRect)> = plan.iter().filter_map(|op| match op { MenuDrawOp::Text { rect, position, .. } => Some((*position, *rect)), _ => None }).collect();
     assert_eq!(runs.len(), NOTEPAD_BAR.len());
     for (position, label) in NOTEPAD_BAR.iter().enumerate() {
         let item = menus.item(menu, position as u32, MF_BYPOSITION).unwrap();
         assert_eq!(item.text, wide(label));
-        let cell = menus.bar_item_rect(menu, position, origin, MENU_CHAR_WIDTH, MENU_CHAR_HEIGHT, MENU_BAR_HEIGHT).unwrap();
+        let cell = menus.bar_item_rect(menu, position, origin, cells.char_width, cells.char_height, cells.bar_height).unwrap();
         // The cell is measured from the label as it is drawn, so the prefix
         // that marks the mnemonic costs no column, and the run sits inside it.
-        assert_eq!(cell.right - cell.left, (crate::win32_menu::mnemonic::display_len(&item.text) as i32 + 2) * MENU_CHAR_WIDTH);
-        assert_eq!(cell.right - cell.left, (label.len() as i32 + 1) * MENU_CHAR_WIDTH, "one prefix per label is consumed");
-        assert_eq!(runs[position], (position as u32, MenuRect { left: cell.left + MENU_CHAR_WIDTH, top: cell.top, right: cell.right - MENU_CHAR_WIDTH, bottom: cell.bottom }));
+        assert_eq!(cell.right - cell.left, (crate::win32_menu::mnemonic::display_len(&item.text) as i32 + 2) * cells.char_width);
+        assert_eq!(cell.right - cell.left, (label.len() as i32 + 1) * cells.char_width, "one prefix per label is consumed");
+        assert_eq!(runs[position], (position as u32, MenuRect { left: cell.left + cells.char_width, top: cell.top, right: cell.right - cells.char_width, bottom: cell.bottom }));
     }
-    let bar = menus.bar_rect(menu, origin, MENU_CHAR_WIDTH, MENU_CHAR_HEIGHT, MENU_BAR_HEIGHT).unwrap();
+    let bar = menus.bar_rect(menu, origin, cells.char_width, cells.char_height, cells.bar_height).unwrap();
     assert!(bar.bottom - bar.top > 0);
-    assert_eq!(bar.right, runs[NOTEPAD_BAR.len() - 1].1.right + MENU_CHAR_WIDTH);
+    assert_eq!(bar.right, runs[NOTEPAD_BAR.len() - 1].1.right + cells.char_width);
 }
 
 /// A separator carries its bit in the type word, so a bar skips it and a
@@ -162,7 +163,8 @@ fn a_separator_from_a_template_draws_no_run_on_a_bar() {
         menus.insert(menu, position, MenuItem { id: info.id, state: info.insert_flags(), text, submenu: info.submenu }).unwrap();
     }
     let origin = MenuRect { left: 0, top: 0, right: 320, bottom: 240 };
-    let plan = menus.bar_draw_plan(menu, origin, MENU_CHAR_WIDTH, MENU_CHAR_HEIGHT, MENU_BAR_HEIGHT).unwrap();
+    let cells = menu_bar_metrics();
+    let plan = menus.bar_draw_plan(menu, origin, cells.char_width, cells.char_height, cells.bar_height).unwrap();
     let runs = plan.iter().filter(|op| matches!(op, MenuDrawOp::Text { .. })).count();
     assert_eq!(runs, 1);
     assert_eq!(vec![menus.item(menu, 1, MF_BYPOSITION).unwrap().state & MF_SEPARATOR], vec![MF_SEPARATOR]);

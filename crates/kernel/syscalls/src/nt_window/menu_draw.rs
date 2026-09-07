@@ -40,15 +40,18 @@ fn text(dc: u64, rect: MenuRect, drawn: &DisplayText, color: SystemColor, center
     let units = &drawn.units[..];
     if units.is_empty() { return None; }
     let state = crate::nt_gdi::text_snapshot_for_current(dc).ok()?;
+    // The face selected below is the one the item rectangles were measured
+    // with, so the advance the run is placed on is that face's own.
     let metrics = crate::nt_gdi::text_metrics_for_current(dc).ok()?;
+    let advance = metrics.character_width;
     if let Some(mnemonic) = drawn.mnemonic {
-        let rule = crate::nt_menu_text::underline(rect, units.len(), mnemonic, centered, metrics.height, metrics.ascent);
+        let rule = crate::nt_menu_text::underline(rect, units.len(), mnemonic, centered, advance, metrics.height, metrics.ascent);
         fill(dc, rule, color);
     }
     let foreground = crate::nt_gdi::system_color_value(color);
     let saved = crate::nt_gdi::set_text_attribute_for_current(dc, ipc::win32_gdi::TextAttribute::Foreground, foreground).ok();
     let saved_mode = crate::nt_gdi::set_text_attribute_for_current(dc, ipc::win32_gdi::TextAttribute::BackgroundMode, TRANSPARENT).ok();
-    let request = crate::nt_menu_text::request(dc, rect, units.len(), centered, foreground, &state, metrics.height);
+    let request = crate::nt_menu_text::request(dc, rect, units.len(), centered, advance, foreground, &state, metrics.height);
     // The run does not rasterize inside this call: it enters the font backend
     // after the syscall returns, so it goes through the thread's ordered
     // queue, which also holds this paint's present until it lands.
@@ -83,6 +86,23 @@ fn item_text(menu: MenuId, position: u32) -> Option<DisplayText> {
 /// entered the font backend from this pass; the runs behind it wait in the
 /// thread's ordered queue. # C: O(N_ops * pixels)
 pub(crate) fn run(dc: u64, menu: MenuId, ops: &[MenuDrawOp], origin: (i32, i32)) -> Option<u64> {
+    let previous = select_menu_face(dc);
+    let launched = draw(dc, menu, ops, origin);
+    if let Some(previous) = previous { let _ = crate::nt_gdi::select_font_current(dc, previous); }
+    launched
+}
+
+/// Select the profile's menu font into `dc` for the whole plan, the way the
+/// reference selects it before it measures or draws any menu. Absent means the
+/// process has no menu face to select and the plan draws in the face the
+/// device context already carries. # C: O(N_objects)
+fn select_menu_face(dc: u64) -> Option<u64> {
+    let face = crate::nt_gdi::menu_face_for_current().ok()?;
+    crate::nt_gdi::select_font_current(dc, u64::from(face))
+}
+
+/// Walk the plan with the menu face already selected. # C: O(N_ops * pixels)
+fn draw(dc: u64, menu: MenuId, ops: &[MenuDrawOp], origin: (i32, i32)) -> Option<u64> {
     let mut launched = None;
     for op in ops {
         match op {

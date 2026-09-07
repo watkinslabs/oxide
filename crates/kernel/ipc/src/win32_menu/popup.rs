@@ -40,6 +40,15 @@ pub const SEPARATOR_HEIGHT: i32 = 5;
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct PopupMetrics { pub char_width: i32, pub char_height: i32 }
 
+impl PopupMetrics {
+    /// The cells the nonclient profile's menu font measures a popup with.
+    /// # C: O(1)
+    pub fn menu() -> Self {
+        let metrics = crate::win32_gdi::menu_bar_metrics();
+        Self { char_width: metrics.char_width, char_height: metrics.char_height }
+    }
+}
+
 /// Where every item sits inside the popup window, and the window's own size.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct PopupLayout { pub width: i32, pub height: i32, pub items: Vec<MenuRect> }

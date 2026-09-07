@@ -24,8 +24,7 @@ const ANY_MESSAGE: MessageFilter = MessageFilter { hwnd: None, first: 0, last: 0
 /// Capture claimed for menu tracking rather than an application drag.
 const CAPTURE_MENU: u32 = ipc::win32_window::CAPTURE_MENU;
 /// The cell metrics one menu bar is measured, drawn and hit-tested with.
-const BAR_METRICS: BarMetrics = BarMetrics { char_width: ipc::win32_gdi::MENU_CHAR_WIDTH,
-    char_height: ipc::win32_gdi::MENU_CHAR_HEIGHT, bar_height: ipc::win32_gdi::MENU_BAR_HEIGHT };
+fn bar_metrics() -> BarMetrics { BarMetrics::menu() }
 
 /// Take the calling thread's parked loop out of the process record; exactly
 /// one driver owns it at a time. # C: O(N_process_gui_states)
@@ -82,7 +81,7 @@ fn bar_from_point(owner: u64, top: u32, point: (i32, i32)) -> (Option<u32>, Popu
         if entry.menus.is_popup(menu).unwrap_or(true) { return PopupHit::Nowhere; }
         let Some(rect) = entry.state.rect(window) else { return PopupHit::Nowhere; };
         let bounds = MenuRect { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
-        bar_hit_test(&entry.menus, menu, bounds, point, BAR_METRICS)
+        bar_hit_test(&entry.menus, menu, bounds, point, bar_metrics())
     }).unwrap_or(PopupHit::Nowhere);
     if hit == PopupHit::Nowhere { (None, hit) } else { (Some(top), hit) }
 }

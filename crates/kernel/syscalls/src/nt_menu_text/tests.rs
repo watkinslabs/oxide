@@ -3,13 +3,18 @@
 //! launch accepts, and its glyphs must start inside the band.
 use super::*;
 use alloc::vec::Vec;
-use ipc::win32_gdi::{TextAttributes, TextState, MENU_BAR_HEIGHT, MENU_CHAR_HEIGHT, MENU_CHAR_WIDTH};
+use ipc::win32_gdi::{TextAttributes, TextState};
 use ipc::win32_menu::draw::MenuDrawOp;
 use ipc::win32_menu::mnemonic::display_text;
 use ipc::win32_menu::{MenuItem, MenuManager, MenuRect};
 
-/// Glyph height a device context with the stock font reports.
-const GLYPH_HEIGHT: i32 = MENU_CHAR_HEIGHT;
+/// The cells the nonclient profile's menu font measures this bar with. The
+/// device context every run is placed against selects that same face, so its
+/// reported advance is the one the layout used.
+fn cells() -> ipc::win32_gdi::MenuMetrics { ipc::win32_gdi::menu_bar_metrics() }
+/// Glyph height and ascent that face reports.
+fn glyph_height() -> i32 { cells().char_height }
+fn ascent() -> i32 { ipc::win32_gdi::font_text_metrics(ipc::win32_gdi::menu_font()).ascent }
 /// Device-context handle the band is drawn into.
 const BAND_DC: u64 = 0x21;
 /// `MenuText` on the default scheme.
@@ -18,8 +23,6 @@ const MENU_TEXT: u32 = 0;
 const STORED: [&[u8]; 5] = [b"&File", b"&Edit", b"F&ormat", b"&View", b"&Help"];
 /// The same bar as it is drawn, once the prefix rules have run.
 const LABELS: [&[u8]; 5] = [b"File", b"Edit", b"Format", b"View", b"Help"];
-/// Ascent a device context with the stock font reports.
-const ASCENT: i32 = MENU_CHAR_HEIGHT - 3;
 /// Frame width the band spans in the acceptance window.
 const FRAME_WIDTH: i32 = 582 - 261;
 
@@ -45,12 +48,12 @@ fn stock_state() -> TextState {
 fn runs() -> Vec<(MenuRect, usize, TextRequest)> {
     let (menus, menu) = notepad_bar();
     let origin = MenuRect { left: 0, top: 0, right: FRAME_WIDTH, bottom: 768 };
-    let plan = menus.bar_draw_plan(menu, origin, MENU_CHAR_WIDTH, MENU_CHAR_HEIGHT, MENU_BAR_HEIGHT).unwrap();
+    let plan = menus.bar_draw_plan(menu, origin, cells().char_width, cells().char_height, cells().bar_height).unwrap();
     let state = stock_state();
     plan.iter().filter_map(|op| match op {
         MenuDrawOp::Text { rect, position, .. } => {
             let count = LABELS[*position as usize].len();
-            Some((*rect, count, request(BAND_DC, *rect, count, true, MENU_TEXT, &state, GLYPH_HEIGHT)))
+            Some((*rect, count, request(BAND_DC, *rect, count, true, cells().char_width, MENU_TEXT, &state, glyph_height())))
         }
         _ => None,
     }).collect()
@@ -85,9 +88,9 @@ fn a_menu_run_carries_no_unit_pointer_until_its_payload_is_placed() {
 fn every_run_starts_inside_the_item_it_belongs_to() {
     for (rect, count, request) in runs() {
         assert!(request.x >= rect.left, "run starts left of its item");
-        assert!(request.x + run_width(count) <= rect.right, "run runs past its item");
+        assert!(request.x + run_width(count, cells().char_width) <= rect.right, "run runs past its item");
         assert!(request.y >= rect.top, "run starts above its item");
-        assert!(request.y + GLYPH_HEIGHT <= rect.bottom, "run runs below its item");
+        assert!(request.y + glyph_height() <= rect.bottom, "run runs below its item");
     }
 }
 
@@ -95,10 +98,10 @@ fn every_run_starts_inside_the_item_it_belongs_to() {
 fn the_band_holds_every_run_of_the_bar() {
     let (menus, menu) = notepad_bar();
     let origin = MenuRect { left: 0, top: 0, right: FRAME_WIDTH, bottom: 768 };
-    let band = menus.bar_rect(menu, origin, MENU_CHAR_WIDTH, MENU_CHAR_HEIGHT, MENU_BAR_HEIGHT).unwrap();
+    let band = menus.bar_rect(menu, origin, cells().char_width, cells().char_height, cells().bar_height).unwrap();
     for (_, count, request) in runs() {
-        assert!(request.x >= band.left && request.x + run_width(count) <= band.right);
-        assert!(request.y >= band.top && request.y + GLYPH_HEIGHT <= band.bottom);
+        assert!(request.x >= band.left && request.x + run_width(count, cells().char_width) <= band.right);
+        assert!(request.y >= band.top && request.y + glyph_height() <= band.bottom);
     }
 }
 
@@ -106,7 +109,7 @@ fn the_band_holds_every_run_of_the_bar() {
 fn every_notepad_label_draws_without_its_prefix_and_rules_the_marked_character() {
     let (menus, menu) = notepad_bar_from(&STORED);
     let origin = MenuRect { left: 0, top: 0, right: FRAME_WIDTH, bottom: 768 };
-    let plan = menus.bar_draw_plan(menu, origin, MENU_CHAR_WIDTH, MENU_CHAR_HEIGHT, MENU_BAR_HEIGHT).unwrap();
+    let plan = menus.bar_draw_plan(menu, origin, cells().char_width, cells().char_height, cells().bar_height).unwrap();
     let marked: [usize; 5] = [0, 0, 1, 0, 0];
     let mut seen = 0;
     for op in &plan {
@@ -118,14 +121,14 @@ fn every_notepad_label_draws_without_its_prefix_and_rules_the_marked_character()
         assert_eq!(drawn.mnemonic, Some(marked[*position as usize]));
         // The run is measured from the drawn units, so it still fits the cell
         // the prefix-free measurement produced.
-        let request = request(BAND_DC, *rect, drawn.units.len(), *centered, MENU_TEXT, &stock_state(), GLYPH_HEIGHT);
+        let request = request(BAND_DC, *rect, drawn.units.len(), *centered, cells().char_width, MENU_TEXT, &stock_state(), glyph_height());
         assert_eq!(request.count as usize, expected.len());
-        assert!(request.x >= rect.left && request.x + run_width(drawn.units.len()) <= rect.right);
+        assert!(request.x >= rect.left && request.x + run_width(drawn.units.len(), cells().char_width) <= rect.right);
         // The rule sits under the marked character's own cell, below the
         // baseline, inside the item.
-        let rule = underline(*rect, drawn.units.len(), drawn.mnemonic.unwrap(), *centered, GLYPH_HEIGHT, ASCENT);
-        assert_eq!(rule.left, request.x + MENU_CHAR_WIDTH * marked[*position as usize] as i32);
-        assert_eq!(rule.right, rule.left + MENU_CHAR_WIDTH - 1);
+        let rule = underline(*rect, drawn.units.len(), drawn.mnemonic.unwrap(), *centered, cells().char_width, glyph_height(), ascent());
+        assert_eq!(rule.left, request.x + cells().char_width * marked[*position as usize] as i32);
+        assert_eq!(rule.right, rule.left + cells().char_width - 1);
         assert_eq!(rule.bottom - rule.top, UNDERLINE_RULE);
         assert!(rule.top > request.y && rule.bottom <= rect.bottom, "the rule sits under the glyphs and inside the item");
         seen += 1;
@@ -135,8 +138,11 @@ fn every_notepad_label_draws_without_its_prefix_and_rules_the_marked_character()
 
 #[test]
 fn a_popup_run_starts_at_the_left_edge_and_a_bar_run_is_centred() {
-    let rect = MenuRect { left: 10, top: 4, right: 10 + MENU_CHAR_WIDTH * 6, bottom: 4 + 18 };
-    assert_eq!(origin(rect, 4, false, GLYPH_HEIGHT).0, 10);
-    assert_eq!(origin(rect, 4, true, GLYPH_HEIGHT).0, 10 + MENU_CHAR_WIDTH);
-    assert_eq!(origin(rect, 4, true, GLYPH_HEIGHT).1, 4 + 1);
+    let (advance, height) = (cells().char_width, glyph_height());
+    let rect = MenuRect { left: 10, top: 4, right: 10 + advance * 6, bottom: 4 + 18 };
+    assert_eq!(origin(rect, 4, false, advance, height).0, 10);
+    // Two of the six columns are free, so the centred run gives one to each side.
+    assert_eq!(origin(rect, 4, true, advance, height).0, 10 + advance);
+    // The glyphs sit on the face's own cell, centred in the item's rows.
+    assert_eq!(origin(rect, 4, true, advance, height).1, 4 + (18 - height) / 2);
 }

@@ -11,18 +11,16 @@ pub(crate) const UNDERLINE_RULE: i32 = 1;
 /// Rows between the run's baseline and the rule under it.
 const UNDERLINE_DROP: i32 = 1;
 
-/// Glyph advance one menu character occupies. The layout that produced the
-/// item rectangles is measured with the same cell.
-pub(crate) const CHAR_WIDTH: i32 = ipc::win32_gdi::MENU_CHAR_WIDTH;
-
-/// Width one run of `units` characters covers. # C: O(1)
-pub(crate) fn run_width(units: usize) -> i32 { (units as i32).saturating_mul(CHAR_WIDTH) }
+/// Width one run of `units` characters covers at `advance` per character.
+/// The advance is the selected menu face's own, the same one the layout that
+/// produced the item rectangles measured with. # C: O(1)
+pub(crate) fn run_width(units: usize, advance: i32) -> i32 { (units as i32).saturating_mul(advance) }
 
 /// Where one run's glyphs start inside `rect`: a bar item centres its text,
 /// a popup item starts at the left edge, and both centre it vertically on the
 /// glyph height the device context reports. # C: O(1)
-pub(crate) fn origin(rect: MenuRect, units: usize, centered: bool, glyph_height: i32) -> (i32, i32) {
-    let x = if centered { rect.left + ((rect.right - rect.left) - run_width(units)).max(0) / 2 } else { rect.left };
+pub(crate) fn origin(rect: MenuRect, units: usize, centered: bool, advance: i32, glyph_height: i32) -> (i32, i32) {
+    let x = if centered { rect.left + ((rect.right - rect.left) - run_width(units, advance)).max(0) / 2 } else { rect.left };
     let y = rect.top + ((rect.bottom - rect.top) - glyph_height).max(0) / 2;
     (x, y)
 }
@@ -30,11 +28,11 @@ pub(crate) fn origin(rect: MenuRect, units: usize, centered: bool, glyph_height:
 /// The rule drawn under the mnemonic character of one run: it spans that
 /// character's own cell less its last pixel column, one row below the
 /// baseline the ascent names. # C: O(1)
-pub(crate) fn underline(rect: MenuRect, units: usize, mnemonic: usize, centered: bool, glyph_height: i32, ascent: i32) -> MenuRect {
-    let (x, y) = origin(rect, units, centered, glyph_height);
-    let left = x.saturating_add(run_width(mnemonic));
+pub(crate) fn underline(rect: MenuRect, units: usize, mnemonic: usize, centered: bool, advance: i32, glyph_height: i32, ascent: i32) -> MenuRect {
+    let (x, y) = origin(rect, units, centered, advance, glyph_height);
+    let left = x.saturating_add(run_width(mnemonic, advance));
     let top = y.saturating_add(ascent).saturating_add(UNDERLINE_DROP);
-    MenuRect { left, top, right: left.saturating_add(CHAR_WIDTH).saturating_sub(1), bottom: top.saturating_add(UNDERLINE_RULE) }
+    MenuRect { left, top, right: left.saturating_add(advance).saturating_sub(1), bottom: top.saturating_add(UNDERLINE_RULE) }
 }
 
 /// The face one run is rasterized in: the device context's selected font, or
@@ -51,10 +49,10 @@ fn face(font: Option<Font>, glyph_height: i32) -> (i32, i32, i32, u32) {
 /// callback payload, which is placed after the record is built, so this
 /// record is admitted by `kernel_payload_bytes` and not by the user-facing
 /// `valid`. # C: O(1)
-pub(crate) fn request(dc: u64, rect: MenuRect, units: usize, centered: bool, foreground: u32,
+pub(crate) fn request(dc: u64, rect: MenuRect, units: usize, centered: bool, advance: i32, foreground: u32,
     state: &TextState, glyph_height: i32) -> TextRequest {
     let (height, width, weight, italic) = face(state.font, glyph_height);
-    let (x, y) = origin(rect, units, centered, glyph_height);
+    let (x, y) = origin(rect, units, centered, advance, glyph_height);
     TextRequest { version: VERSION, size: core::mem::size_of::<TextRequest>() as u32,
         dc, x, y, flags: 0, count: units as u32, text: 0, advances: 0, rect: [0; 4],
         height, width, weight, italic, foreground, background: state.attributes.background,

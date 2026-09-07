@@ -18,7 +18,10 @@ mod dc_lease;
 pub use dc_lease::{DcLease, DcLeaseRequest, LeaseOwner, dc_lease_flags, DCX_WINDOW, DCX_CACHE, DCX_NORESETATTRS, DCX_CLIPCHILDREN, DCX_CLIPSIBLINGS, DCX_PARENTCLIP, DCX_EXCLUDERGN, DCX_INTERSECTRGN, DCX_USESTYLE};
 #[path = "win32_gdi/nonclient.rs"]
 mod nonclient;
-pub use nonclient::{nonclient_defaults, system_metric_default};
+pub use nonclient::{nonclient_defaults, system_metric_default, menu_font, MENU_HEIGHT};
+#[path = "win32_gdi/menu_metrics.rs"]
+mod menu_metrics;
+pub use menu_metrics::{MenuMetrics, menu_metrics, menu_bar_metrics};
 #[path = "win32_gdi/visibility.rs"]
 mod visibility;
 pub use visibility::rect_visible_in_clip;
@@ -100,9 +103,6 @@ pub use text_state::{TextAttribute, TextAttributes, TextState};
 const DEFAULT_HEIGHT: i32 = 16;
 const DEFAULT_DESCENT: i32 = 4;
 const DEFAULT_WIDTH: i32 = 8;
-pub const MENU_CHAR_WIDTH: i32 = DEFAULT_WIDTH;
-pub const MENU_CHAR_HEIGHT: i32 = DEFAULT_HEIGHT;
-pub const MENU_BAR_HEIGHT: i32 = 19;
 const MAX_SURFACE_PIXELS: usize = 16 * 1024 * 1024;
 /// Every device-context surface word is one 32-bit XRGB pixel, so that is the
 /// colour depth a Win32 client reads back from any device context here.
@@ -139,13 +139,13 @@ impl Default for PathState {
 struct DeviceContext { width: i32, height: i32, attr: DcAttr, font: Option<u32>, brush: Option<u32>, dc_brush_color: u32, pen: u32, dc_pen_color: u32, text: TextAttributes, clip: Option<crate::win32_window::PaintRegion>, meta_clip: Option<crate::win32_window::PaintRegion>, paths: PathState, paint_clip: Option<crate::win32_window::PaintRegion>, pixels: Vec<u32>, lease: Option<DcLease>, pending_output: PendingOutput, saved: Vec<SavedDc>, palette: Option<u32>, bitmap: Option<u32>, memory: bool, justification: (i32, i32) }
 
 
-pub struct GdiManager { next: u32, dcs: Vec<(u32, DeviceContext)>, fonts: Vec<(u32, FontRecord)>, brushes: Vec<(u32, Brush)>, bitmaps: Vec<(u32, Bitmap)>, pens: Vec<(u32, Pen)>, system_brushes: SystemBrushes, window_dcs: Vec<(u32, u32)>, regions: Vec<(u32, crate::win32_window::PaintRegion)>, client_objs: Vec<u32>, palettes: Vec<(u32, Palette)>, system_palette_use: u32, primary_palette: Option<u32>, last_realized_palette: Option<u32> }
+pub struct GdiManager { next: u32, dcs: Vec<(u32, DeviceContext)>, fonts: Vec<(u32, FontRecord)>, brushes: Vec<(u32, Brush)>, bitmaps: Vec<(u32, Bitmap)>, pens: Vec<(u32, Pen)>, system_brushes: SystemBrushes, window_dcs: Vec<(u32, u32)>, regions: Vec<(u32, crate::win32_window::PaintRegion)>, client_objs: Vec<u32>, palettes: Vec<(u32, Palette)>, system_palette_use: u32, primary_palette: Option<u32>, last_realized_palette: Option<u32>, menu_face: Option<(u32, Font)> }
 
 impl Default for GdiManager { fn default() -> Self { Self::new() } }
 
 impl GdiManager {
     /// Construct an empty process-local GDI object owner. # C: O(1)
-    pub fn new() -> Self { Self { next: FIRST_DYNAMIC_SLOT, dcs: Vec::new(), fonts: Vec::new(), brushes: Vec::new(), bitmaps: Vec::new(), pens: Vec::new(), system_brushes: SystemBrushes::default(), window_dcs: Vec::new(), regions: Vec::new(), client_objs: Vec::new(), palettes: Vec::new(), system_palette_use: SYSPAL_STATIC, primary_palette: None, last_realized_palette: None } }
+    pub fn new() -> Self { Self { next: FIRST_DYNAMIC_SLOT, dcs: Vec::new(), fonts: Vec::new(), brushes: Vec::new(), bitmaps: Vec::new(), pens: Vec::new(), system_brushes: SystemBrushes::default(), window_dcs: Vec::new(), regions: Vec::new(), client_objs: Vec::new(), palettes: Vec::new(), system_palette_use: SYSPAL_STATIC, primary_palette: None, last_realized_palette: None, menu_face: None } }
 
     /// Create a memory device context with bounded positive dimensions. # C: O(1)
     pub fn create_dc(&mut self, width: i32, height: i32) -> Result<u32, GdiError> {
@@ -221,10 +221,7 @@ impl GdiManager {
 
     /// Return text metrics for the selected font or the stock font. # C: O(N_objects)
     pub fn text_metrics(&self, dc: u32) -> Result<TextMetrics, GdiError> {
-        let font = self.font_for(dc)?;
-        let height = metric_height(font);
-        let width = metric_width(font, height);
-        Ok(TextMetrics { height, ascent: height - DEFAULT_DESCENT, descent: DEFAULT_DESCENT, average_width: width, max_width: width, character_width: width })
+        Ok(font_text_metrics(self.font_for(dc)?))
     }
 
     /// Return the stock dialog base units used by the native GUI owner. # C: O(1)
@@ -233,10 +230,9 @@ impl GdiManager {
     /// Measure UTF-16 code units using the selected logical font. # C: O(N_text)
     pub fn text_extent(&self, dc: u32, count: u32) -> Result<TextExtent, GdiError> {
         if count > i32::MAX as u32 { return Err(GdiError::InvalidText); }
-        let font = self.font_for(dc)?;
-        let height = metric_height(font);
-        let width = metric_width(font, height).checked_mul(count as i32).ok_or(GdiError::InvalidText)?;
-        Ok(TextExtent { width, height })
+        let metrics = font_text_metrics(self.font_for(dc)?);
+        let width = metrics.character_width.checked_mul(count as i32).ok_or(GdiError::InvalidText)?;
+        Ok(TextExtent { width, height: metrics.height })
     }
 
     /// Fill a clipped device-context rectangle with one XRGB color. # C: O(width*height)
@@ -265,7 +261,23 @@ impl GdiManager {
 }
 
 fn metric_height(font: Option<Font>) -> i32 { font.map(|font| font.height.abs().max(1)).unwrap_or(DEFAULT_HEIGHT) }
-fn metric_width(font: Option<Font>, height: i32) -> i32 { font.map(|font| font.width.abs().max(1)).unwrap_or((height / 2).max(DEFAULT_WIDTH)) }
+/// A logical width of zero leaves the face free to choose its own aspect
+/// ratio, which reports the same half-of-cell average width the absent-font
+/// case does; only a width the caller asked for overrides it.
+fn metric_width(font: Option<Font>, height: i32) -> i32 {
+    match font { Some(font) if font.width != 0 => font.width.abs(), _ => (height / 2).max(1) }
+}
+
+/// Metrics one logical font reports, whether it is selected into a device
+/// context or named by the nonclient profile. Every measurement in this crate
+/// reads the face through here, so a caller's `GetTextExtentPoint32W` and the
+/// layout of anything the kernel measures for it cannot disagree.
+/// # C: O(1)
+pub fn font_text_metrics(font: Option<Font>) -> TextMetrics {
+    let height = metric_height(font);
+    let width = metric_width(font, height);
+    TextMetrics { height, ascent: height - DEFAULT_DESCENT, descent: DEFAULT_DESCENT, average_width: width, max_width: width, character_width: width }
+}
 
 #[cfg(test)]
 mod tests {
