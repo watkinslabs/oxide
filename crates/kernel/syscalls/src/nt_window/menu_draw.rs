@@ -25,7 +25,7 @@ fn fill(dc: u64, rect: MenuRect, color: SystemColor) {
     let _ = crate::nt_gdi::select_brush_for_current(dc, u64::from(previous));
 }
 
-/// Hand one item's text to the font backend, centred in its rectangle both
+/// Queue one item's text for the font backend, centred in its rectangle both
 /// ways for a bar item and left-aligned in a popup. The run is measured with
 /// the same cell metrics the layout was built from. # C: O(text units)
 fn text(dc: u64, rect: MenuRect, units: &[u16], color: SystemColor, centered: bool) {
@@ -46,7 +46,10 @@ fn text(dc: u64, rect: MenuRect, units: &[u16], color: SystemColor, centered: bo
         background_mode: TRANSPARENT, alignment: state.attributes.alignment,
         current_x: state.attributes.current_position.0, current_y: state.attributes.current_position.1,
         break_extra: state.break_extra, break_rem: state.break_rem };
-    let _ = crate::nt_native_gdi::begin_kernel_text(request, units);
+    // The run does not rasterize inside this call: it enters the font backend
+    // after the syscall returns, so it goes through the thread's ordered
+    // queue, which also holds this paint's present until it lands.
+    crate::nt_text_order::submit_for_current(request, units);
     if let Some(value) = saved { let _ = crate::nt_gdi::set_text_attribute_for_current(dc, ipc::win32_gdi::TextAttribute::Foreground, value); }
     if let Some(value) = saved_mode { let _ = crate::nt_gdi::set_text_attribute_for_current(dc, ipc::win32_gdi::TextAttribute::BackgroundMode, value); }
 }

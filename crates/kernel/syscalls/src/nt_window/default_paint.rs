@@ -31,6 +31,14 @@ fn end(hwnd: u64, dc: u64) -> u64 {
     // A builtin class paints its own content between the begin and the end of
     // the paint it did not open itself; the popup-menu class draws its items.
     menu_raw::paint_popup_menu_window(hwnd, dc);
-    let _ = crate::nt_wine_window::paint::end_paint_with_dc(hwnd, dc, gdi);
+    // Item text rasterizes in the font backend after this syscall returns, so
+    // the present and the deletion of this HDC wait for the runs the class
+    // just issued instead of racing them.
+    crate::nt_text_order::end_paint_for_current(hwnd, dc, present);
     0
+}
+
+/// Present the finished surface and release the paint session. # C: O(pixels)
+fn present(hwnd: u64, dc: u64) {
+    let _ = crate::nt_wine_window::paint::end_paint_with_dc(hwnd, dc, gdi);
 }

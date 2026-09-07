@@ -26,6 +26,9 @@ pub mod netlink_getsockopt_policy;
 pub mod mmsg_batch;
 // The one owner of "which message ABI does this call speak" plus both shapes.
 pub mod msg_layout;
+// One thread's kernel-owned text runs and the paint ends they gate: the
+// ordering decision is hosted-testable, the Task binding is not.
+mod nt_text_order;
 pub mod nt_dispatch;
 pub(crate) mod nt_transition_measure;
 include!("nt_manifest.rs");
