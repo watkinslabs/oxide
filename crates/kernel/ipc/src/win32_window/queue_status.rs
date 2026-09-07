@@ -27,10 +27,8 @@ pub const QS_SMRESULT: u32 = 0x8000;
 /// Bits a posted message carries.
 pub const QS_POSTED: u32 = QS_POSTMESSAGE | QS_ALLPOSTMESSAGE;
 
-const WM_KEYFIRST: u32 = 0x0100;
-const WM_KEYLAST: u32 = 0x0109;
-const WM_MOUSEMOVE: u32 = 0x0200;
-const WM_NCMOUSEMOVE: u32 = 0x00a0;
+use super::hardware::{WM_KEYFIRST, WM_KEYLAST, WM_MOUSEMOVE, WM_NCMOUSEMOVE};
+
 const WM_INPUT_DEVICE_CHANGE: u32 = 0x00fe;
 const WM_INPUT: u32 = 0x00ff;
 const WM_POINTERUPDATE: u32 = 0x0245;

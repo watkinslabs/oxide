@@ -33,7 +33,7 @@ pub(super) fn mouse_context(state: &WindowManager, window: WindowId, lparam: i64
         double_click_ms,
         double_click_width: metric(hardware::SM_CXDOUBLECLK),
         double_click_height: metric(hardware::SM_CYDOUBLECLK),
-        time_ms, remove, first: filter.first, last: filter.last,
+        time_ms, remove, filter,
     }
 }
 
@@ -44,7 +44,7 @@ fn metric(index: i32) -> i32 { ipc::win32_gdi::system_metric_default(index).unwr
 pub(super) fn key_context(state: &WindowManager, window: WindowId, menu_active: bool, remove: bool,
     filter: MessageFilter) -> KeyContext {
     KeyContext { remove, desktop: state.get(window).is_some_and(|record| record.parent.is_none() && !record.visible),
-        menu_active, first: filter.first, last: filter.last }
+        menu_active, filter }
 }
 
 /// # C: O(N_windows)

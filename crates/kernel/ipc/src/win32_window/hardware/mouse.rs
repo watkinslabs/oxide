@@ -2,7 +2,7 @@
 //! nonclient renumbering, double-click synthesis, the retrieval filter, and
 //! which of the four outcomes the retrieval takes.
 use super::uapi::*;
-use super::super::{WinMessage, HTCLIENT, HTERROR, HTNOWHERE};
+use super::super::{MessageFilter, WinMessage, HTCLIENT, HTERROR, HTNOWHERE};
 
 /// The click a window last saw, kept so the next one can be recognised as the
 /// second half of a double click.
@@ -40,8 +40,10 @@ pub struct MouseContext {
     pub time_ms: u32,
     /// The retrieval removes the message rather than only looking at it.
     pub remove: bool,
-    pub first: u32,
-    pub last: u32,
+    /// The retrieval's own filter. The range it admits is read from it, never
+    /// from its two ends: a retrieval naming neither end asks for every
+    /// message, and a stage that tested the literal pair ate them all.
+    pub filter: MessageFilter,
 }
 
 /// What the retrieval does with the message the stage prepared.
@@ -122,7 +124,8 @@ pub fn prepare(queued: WinMessage, previous: Option<ClickRecord>, ctx: &MouseCon
 /// the cursor is set for all of them and not only for a button going down.
 /// # C: O(1)
 const fn outcome_of(message: u32, ctx: &MouseContext) -> MouseOutcome {
-    if message < ctx.first || message > ctx.last { return MouseOutcome::Filtered; }
+    let (first, last) = ctx.filter.range();
+    if message < first || message > last { return MouseOutcome::Filtered; }
     if ctx.hit_test == HTERROR || ctx.hit_test == HTNOWHERE { return MouseOutcome::ErrorCursor; }
     if !ctx.remove || ctx.captured { return MouseOutcome::Deliver; }
     MouseOutcome::Ladder

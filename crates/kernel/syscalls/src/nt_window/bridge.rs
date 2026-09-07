@@ -5,7 +5,7 @@ use syscall::nt_compositor::{self as wire, Opcode, Record};
 
 #[cfg(test)]
 use gui::{WM_MOVE, WM_SIZE};
-const WM_CHAR: u32 = 0x0102;
+use gui::hardware::WM_CHAR;
 const WM_SYSKEYDOWN: u32 = 0x0104;
 const WM_SYSKEYUP: u32 = 0x0105;
 const KEY_EXTENDED: u32 = 1 << 24;

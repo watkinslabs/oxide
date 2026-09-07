@@ -210,10 +210,17 @@ pub const fn key_lparam(pressed: bool, repeat: bool) -> i64 {
 }
 
 impl MessageFilter {
+    /// The message range this filter admits. A retrieval that names neither
+    /// end asks for every message, and the whole range is what every stage of
+    /// the retrieval must test against, not the zero pair the caller passed.
+    /// # C: O(1)
+    pub const fn range(&self) -> (u32, u32) {
+        if self.first == 0 && self.last == 0 { (0, u32::MAX) } else { (self.first, self.last) }
+    }
     fn matches(self, message: WinMessage) -> bool {
-        let last = if self.first == 0 && self.last == 0 { u32::MAX } else { self.last };
+        let (first, last) = self.range();
         (self.hwnd.is_none() || self.hwnd == message.hwnd)
-            && message.message >= self.first && message.message <= last
+            && message.message >= first && message.message <= last
     }
 }
 
