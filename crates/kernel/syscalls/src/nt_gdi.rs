@@ -56,6 +56,9 @@ mod output;
 pub(crate) use output::flush_pending_for_current;
 pub(crate) use dc_lease::{get_dc_ex_for_current, release_dc_lease_for_current, lease_window_for_current};
 mod pen;
+#[path = "nt_gdi/polygon.rs"]
+mod polygon;
+pub(crate) use polygon::fill_polygon_for_current;
 pub(crate) use pen::{create_pen_for_current, select_pen_for_current, pen_line_for_current, pen_rectangle_for_current};
 pub(crate) use dc_query::dc_query_value;
 #[path = "nt_gdi/dc_caps.rs"]

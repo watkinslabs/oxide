@@ -282,7 +282,10 @@ fn draw_menu_bar_temp(args: &[u64; 17]) -> u64 {
     for (index, value) in [rect.left, rect.top, rect.right, rect.bottom].iter().enumerate() {
         raw[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
     }
-    if uaccess::copy_to_user(args[2], &raw).is_err() { 0 } else { rect.bottom.saturating_sub(rect.top) as u64 }
+    if uaccess::copy_to_user(args[2], &raw).is_err() { return 0; }
+    // The caller's device context receives the bar itself, not only its size.
+    if args[1] != 0 { crate::nt_window::menu_raw::bar::draw_into(args[0], args[1], rect); }
+    rect.bottom.saturating_sub(rect.top) as u64
 }
 
 #[cfg(target_os = "oxide-kernel")]

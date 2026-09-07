@@ -393,6 +393,8 @@ pub enum QueueResult { Message(WinMessage), Quit(i32), Empty }
 
 impl Default for WindowManager { fn default() -> Self { Self::new() } }
 
+#[path = "win32_window/nonclient_menu.rs"]
+pub mod nonclient_menu;
 #[path = "win32_window/state.rs"]
 mod state;
 #[path = "win32_window/timer.rs"]
