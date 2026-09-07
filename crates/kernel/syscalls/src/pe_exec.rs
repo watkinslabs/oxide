@@ -424,6 +424,7 @@ fn refused(stage: &'static [u8], error: Option<pe::Error>) -> i64 {
     -(syscall::errno::Errno::Enoexec.as_i32() as i64)
 }
 
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 fn nomem(message: &'static [u8]) -> i64 {
     klog::write_raw(message);
     -(syscall::errno::Errno::Enomem.as_i32() as i64)
