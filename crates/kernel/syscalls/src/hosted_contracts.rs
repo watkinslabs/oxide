@@ -17,6 +17,27 @@ pub(crate) mod nt_control_color_contract;
 pub(crate) mod nt_wine_raw_args_contract;
 #[path = "nt_wine_window/raw_gather.rs"]
 pub(crate) mod nt_wine_raw_gather_contract;
+
+#[path = "nt_wine_window/queue_raw.rs"]
+pub(crate) mod nt_wine_queue_contract;
+#[path = "nt_window/timer/raw.rs"]
+pub(crate) mod nt_window_timer_contract;
+#[path = "nt_window/update_region/raw.rs"]
+pub(crate) mod nt_window_update_region_contract;
+#[path = "nt_window/caption/raw.rs"]
+pub(crate) mod nt_window_caption_contract;
+#[path = "nt_window/sys_colors/raw.rs"]
+pub(crate) mod nt_window_sys_colors_contract;
+#[path = "nt_window/scroll/bar_raw.rs"]
+pub(crate) mod nt_window_scroll_bar_contract;
+#[path = "nt_window/scroll/dc_raw.rs"]
+pub(crate) mod nt_window_scroll_dc_contract;
+#[path = "nt_window/menu_raw/raw.rs"]
+pub(crate) mod nt_window_menu_contract;
+#[path = "nt_window/display/raw.rs"]
+pub(crate) mod nt_window_display_contract;
+#[path = "nt_window/display/devmode.rs"]
+pub(crate) mod nt_window_devmode_contract;
 #[path = "nt_window/send/work.rs"]
 pub(crate) mod nt_window_send_contract;
 #[path = "nt_wine_window/bitmap_raw.rs"]

@@ -114,11 +114,11 @@ fn next_timer_deadline_is_minimum_of_existing_owner_timers_only() {
     let mut manager = WindowManager::new();
     let first = manager.create(11, None, 0).unwrap();
     let second = manager.create(12, None, 0).unwrap();
-    manager.set_timer(11, Some(first), 1, 30, 0, 1_000).unwrap();
-    manager.set_timer(11, None, 2, 10, 0, 2_000).unwrap();
-    manager.set_timer(12, Some(second), 3, 1, 0, 3_000).unwrap();
+    manager.set_timer(11, Some(first), crate::win32_window::WM_TIMER, 1, 30, 0, 1_000).unwrap();
+    manager.set_timer(11, None, crate::win32_window::WM_TIMER, 2, 10, 0, 2_000).unwrap();
+    manager.set_timer(12, Some(second), crate::win32_window::WM_TIMER, 3, 15, 0, 3_000).unwrap();
     assert_eq!(manager.next_timer_deadline(11), Some(10_002_000));
-    assert_eq!(manager.next_timer_deadline(12), Some(1_003_000));
+    assert_eq!(manager.next_timer_deadline(12), Some(15_003_000));
     assert_eq!(manager.next_timer_deadline(13), None);
 }
 
@@ -131,8 +131,8 @@ fn retrieval_deadline_joins_caret_and_timer_and_missing_both_is_unbounded() {
     manager.set_caret_pos(11, 4, 5).unwrap();
     manager.show_caret(11, Some(window)).unwrap();
     manager.arm_current_caret_blink(11, window, 3, 100, 20).unwrap();
-    manager.set_timer(11, Some(window), 1, 30, 0, 1_000).unwrap();
+    manager.set_timer(11, Some(window), crate::win32_window::WM_TIMER, 1, 30, 0, 1_000).unwrap();
     assert_eq!(manager.next_retrieval_deadline(11), Some(20_000_100));
-    manager.set_timer(11, Some(window), 1, 5, 0, 2_000).unwrap();
-    assert_eq!(manager.next_retrieval_deadline(11), Some(5_002_000));
+    manager.set_timer(11, Some(window), crate::win32_window::WM_TIMER, 1, 10, 0, 2_000).unwrap();
+    assert_eq!(manager.next_retrieval_deadline(11), Some(10_002_000));
 }

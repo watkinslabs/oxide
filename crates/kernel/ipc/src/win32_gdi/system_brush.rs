@@ -65,16 +65,23 @@ impl SystemColor {
 }
 
 #[derive(Default)]
-pub struct SystemBrushes { handles: [Option<u32>; SYSTEM_COLOR_COUNT] }
+pub struct SystemBrushes { handles: [Option<u32>; SYSTEM_COLOR_COUNT], values: [u32; SYSTEM_COLOR_COUNT] }
 
 impl GdiManager {
     /// Allocate at most one canonical solid brush for each represented role. # C: O(brushes)
     pub fn system_brush(&mut self, role: SystemColor) -> Result<u32, GdiError> {
-        if let Some(handle) = self.system_brushes.handles[role.slot()] {
+        self.system_brush_value(role, role.color())
+    }
+    /// The cached brush is reused only while it still carries the role's
+    /// current colour, so a changed system colour produces a new brush.
+    /// # C: O(objects)
+    pub fn system_brush_value(&mut self, role: SystemColor, value: u32) -> Result<u32, GdiError> {
+        if let Some(handle) = self.system_brushes.handles[role.slot()].filter(|_| self.system_brushes.values[role.slot()] == value) {
             return if self.contains_object(handle) { Ok(handle) } else { Err(GdiError::NoSuchObject) };
         }
-        let handle = self.create_solid_brush(role.color())?;
+        let handle = self.create_solid_brush(value)?;
         self.system_brushes.handles[role.slot()] = Some(handle);
+        self.system_brushes.values[role.slot()] = value;
         Ok(handle)
     }
     /// Both generic and brush-specific deletion check protection before mutation. # C: O(1)
@@ -86,3 +93,33 @@ impl GdiManager {
 #[cfg(test)]
 #[path = "tests/system_brush.rs"]
 mod tests;
+
+/// The session's system-colour values. Every role starts at its documented
+/// default and a set replaces one role's value for every later query.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct SystemColorTable { values: [u32; SYSTEM_COLOR_COUNT], overridden: [bool; SYSTEM_COLOR_COUNT] }
+
+impl SystemColorTable {
+    /// # C: O(1)
+    pub const fn new() -> Self { Self { values: [0; SYSTEM_COLOR_COUNT], overridden: [false; SYSTEM_COLOR_COUNT] } }
+    /// # C: O(1)
+    pub fn value(&self, role: SystemColor) -> u32 {
+        let slot = role as usize;
+        if self.overridden[slot] { self.values[slot] } else { role.color() }
+    }
+    /// Store one role's value and report the value it replaced. # C: O(1)
+    pub fn set(&mut self, role: SystemColor, value: u32) -> u32 {
+        let slot = role as usize;
+        let previous = self.value(role);
+        self.values[slot] = value; self.overridden[slot] = true;
+        previous
+    }
+    /// Whether any role still carries its default. # C: O(N_roles)
+    pub fn is_default(&self) -> bool { self.overridden.iter().all(|flag| !flag) }
+}
+
+impl Default for SystemColorTable { fn default() -> Self { Self::new() } }
+
+#[cfg(test)]
+#[path = "tests/system_color_table.rs"]
+mod system_color_table_tests;

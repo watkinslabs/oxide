@@ -76,14 +76,14 @@ use alloc::vec;
     fn timers_replace_by_window_and_enqueue_callback_message_after_deadline() {
         let mut manager = WindowManager::new();
         let window = manager.create(7, None, 0x1000).unwrap();
-        assert_eq!(manager.set_timer(7, Some(window), 3, 10, 0xfeed, 100), Ok(3));
-        assert_eq!(manager.set_timer(7, Some(window), 3, 20, 0xbeef, 200), Ok(3));
+        assert_eq!(manager.set_timer(7, Some(window), WM_TIMER, 3, 10, 0xfeed, 100), Ok(3));
+        assert_eq!(manager.set_timer(7, Some(window), WM_TIMER, 3, 20, 0xbeef, 200), Ok(3));
         assert_eq!(manager.expire_timers(19_000_199), 0);
         assert_eq!(manager.expire_timers(20_000_200), 1);
         let filter = MessageFilter { hwnd: Some(window), first: WM_TIMER, last: WM_TIMER };
         assert_eq!(manager.peek_for_thread(7, filter, true).map(|message| (message.wparam, message.lparam)), Some((3, 0xbeef)));
-        assert!(manager.kill_timer(Some(window), 3));
-        assert!(!manager.kill_timer(Some(window), 3));
+        assert!(manager.kill_timer(Some(window), WM_TIMER, 3));
+        assert!(!manager.kill_timer(Some(window), WM_TIMER, 3));
     }
 
     #[test]
@@ -175,7 +175,7 @@ use alloc::vec;
         let window = manager.create(9, None, 0x1234).unwrap();
         manager.post_to_window(window, message(Some(window), WM_CLOSE)).unwrap();
         manager.post_to_window(window, message(Some(window), WM_PAINT)).unwrap();
-        manager.set_timer(9, Some(window), 3, 10, 0xfeed, 100).unwrap();
+        manager.set_timer(9, Some(window), WM_TIMER, 3, 10, 0xfeed, 100).unwrap();
         manager.destroy(window).unwrap();
         let filter = MessageFilter { hwnd: None, first: 0, last: u32::MAX };
         assert_eq!(manager.peek_for_thread(9, filter, false), None);

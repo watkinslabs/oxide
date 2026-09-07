@@ -6,12 +6,14 @@ impl WindowManager {
         if parent.is_some_and(|parent| self.get(parent).is_none()) { return Err(WindowError::InvalidParent); }
         let id = WindowId(self.next);
         self.next = self.next.checked_add(1).ok_or(WindowError::NoSuchWindow)?;
-        self.windows.push((id, OwnedWindow::new(WindowRecord { owner_tid, parent, owner: None, wndproc, unicode: true, class_atom: None, visible: false, menu: None, id_menu: 0, presentation_ready: false, style: 0, ex_style: 0, last_focus: None, client_rect: None, imc: None }, 0, 0).map_err(|_| WindowError::NoMemory)?));
+        self.windows.push((id, OwnedWindow::new(WindowRecord { owner_tid, parent, owner: None, wndproc, unicode: true, class_atom: None, visible: false, menu: None, sys_menu: None, id_menu: 0, presentation_ready: false, style: 0, ex_style: 0, last_focus: None, client_rect: None, imc: None }, 0, 0).map_err(|_| WindowError::NoMemory)?));
         self.rects.push((id, WindowRect { left: 0, top: 0, right: 0, bottom: 0 }));
         self.texts.push((id, Vec::new()));
         if self.queues.iter().all(|(tid, _)| *tid != owner_tid) { self.queues.push((owner_tid, MessageQueue::default())); }
         Ok(id)
     }
+    /// Every live window, in creation order. # C: O(N_windows)
+    pub fn window_handles(&self) -> Vec<WindowId> { self.windows.iter().map(|(id, _)| *id).collect() }
     pub fn get(&self, id: WindowId) -> Option<WindowRecord> { self.windows.iter().find(|(window, _)| *window == id).map(|(_, entry)| entry.record) }
     pub fn set_visible(&mut self, id: WindowId, visible: bool) -> Result<(), WindowError> {
         let Some((_, record)) = self.windows.iter_mut().find(|(window, _)| *window == id) else { return Err(WindowError::NoSuchWindow); };
@@ -173,17 +175,24 @@ impl WindowManager {
             .ok_or(WindowError::NoSuchWindow)?;
         queue.post_with_bits(message, bits).map_err(|_| WindowError::QueueFull)
     }
+    /// Enqueue one hardware message, which counts as input rather than as a post. # C: O(N_windows)
+    pub fn post_input_to_window(&mut self, id: WindowId, message: WinMessage) -> Result<(), WindowError> {
+        let owner = self.get(id).ok_or(WindowError::NoSuchWindow)?.owner_tid;
+        let queue = self.queues.iter_mut().find(|(tid, _)| *tid == owner).map(|(_, queue)| queue)
+            .ok_or(WindowError::NoSuchWindow)?;
+        queue.post_input(message).map_err(|_| WindowError::QueueFull)
+    }
     /// Enqueue one native keyboard transition on the focused window's owner queue. # C: O(N_windows)
     pub fn post_key(&mut self, tid: u64, key: u16, pressed: bool, repeat: bool) -> Result<(), WindowError> {
         let window = self.focus.ok_or(WindowError::NoFocus)?;
         let record = self.get(window).ok_or(WindowError::NoSuchWindow)?;
         if record.owner_tid != tid { return Err(WindowError::WrongThread); }
-        self.post_to_window(window, WinMessage { hwnd: Some(window), message: if pressed { WM_KEYDOWN } else { WM_KEYUP }, wparam: key as u64, lparam: key_lparam(pressed, repeat) })
+        self.post_input_to_window(window, WinMessage { hwnd: Some(window), message: if pressed { WM_KEYDOWN } else { WM_KEYUP }, wparam: key as u64, lparam: key_lparam(pressed, repeat) })
     }
     /// Enqueue one hardware key transition on the focused window. # C: O(N_windows)
     pub fn post_focused_key(&mut self, key: u16, pressed: bool, repeat: bool) -> Result<(), WindowError> {
         let window = self.focus.ok_or(WindowError::NoFocus)?;
-        self.post_to_window(window, WinMessage { hwnd: Some(window), message: if pressed { WM_KEYDOWN } else { WM_KEYUP }, wparam: key as u64, lparam: key_lparam(pressed, repeat) })
+        self.post_input_to_window(window, WinMessage { hwnd: Some(window), message: if pressed { WM_KEYDOWN } else { WM_KEYUP }, wparam: key as u64, lparam: key_lparam(pressed, repeat) })
     }
     /// Enqueue one relative mouse transition on the focused window. # C: O(N_windows)
     pub fn post_focused_mouse(&mut self, code: u16, delta: i32) -> Result<(), WindowError> {
@@ -194,7 +203,7 @@ impl WindowManager {
         *axis = axis.saturating_add(delta);
         let limit = if code == 0 { rect.right } else { rect.bottom };
         if limit > 0 { *axis = (*axis).clamp(0, limit - 1); }
-        self.post_to_window(window, WinMessage { hwnd: Some(window), message: WM_MOUSEMOVE, wparam: 0, lparam: mouse_lparam(self.cursor.0, self.cursor.1) })
+        self.post_input_to_window(window, WinMessage { hwnd: Some(window), message: WM_MOUSEMOVE, wparam: 0, lparam: mouse_lparam(self.cursor.0, self.cursor.1) })
     }
     /// Convert one accepted Linux pointer event into a capture-aware message. # C: O(N_windows)
     pub fn post_hardware_mouse(&mut self, ev_type: u16, code: u16, value: i32) -> Result<(), WindowError> {
@@ -228,37 +237,7 @@ impl WindowManager {
         let rect = self.rect(window).ok_or(WindowError::NoSuchWindow)?;
         let point = if message == WM_MOUSEWHEEL { self.cursor }
             else { (self.cursor.0.saturating_sub(rect.left), self.cursor.1.saturating_sub(rect.top)) };
-        self.post_to_window(window, WinMessage { hwnd: Some(window), message, wparam: wparam as u64, lparam: mouse_lparam(point.0, point.1) })
-    }
-    /// Arm or replace one process-owned timer using the canonical window queue. # C: O(N_timers)
-    pub fn set_timer(&mut self, owner_tid: u64, hwnd: Option<WindowId>, id: u64, timeout_ms: u32, proc: u64, now_ns: u64) -> Result<u64, WindowError> {
-        if let Some(window) = hwnd { if self.get(window).is_none() { return Err(WindowError::NoSuchWindow); } }
-        let period_ns = (timeout_ms as u64).saturating_mul(1_000_000).max(1_000_000);
-        if let Some(timer) = self.timers.iter_mut().find(|timer| timer.hwnd == hwnd && timer.id == id) {
-            timer.period_ns = period_ns; timer.due_ns = now_ns.saturating_add(period_ns); timer.proc = proc;
-            return Ok(id.max(1));
-        }
-        let id = id.max(1);
-        self.timers.push(WindowTimer { owner_tid, hwnd, id, period_ns, due_ns: now_ns.saturating_add(period_ns), proc });
-        if self.queues.iter().all(|(tid, _)| *tid != owner_tid) { self.queues.push((owner_tid, MessageQueue::default())); }
-        Ok(id)
-    }
-    /// Remove one timer by its canonical window/id identity. # C: O(N_timers)
-    pub fn kill_timer(&mut self, hwnd: Option<WindowId>, id: u64) -> bool {
-        let before = self.timers.len(); self.timers.retain(|timer| !(timer.hwnd == hwnd && timer.id == id)); before != self.timers.len()
-    }
-    /// Convert elapsed timer deadlines into queued WM_TIMER messages. # C: O(N_timers + N_queues)
-    pub fn expire_timers(&mut self, now_ns: u64) -> usize {
-        let mut fired = 0;
-        for index in 0..self.timers.len() {
-            let timer = self.timers[index];
-            if now_ns < timer.due_ns { continue; }
-            let owner = timer.hwnd.and_then(|window| self.get(window).map(|record| record.owner_tid)).unwrap_or(timer.owner_tid);
-            let Some(queue) = self.queues.iter_mut().find(|(tid, _)| *tid == owner).map(|(_, queue)| queue) else { continue; };
-            if queue.post_with_bits(WinMessage { hwnd: timer.hwnd, message: WM_TIMER, wparam: timer.id, lparam: timer.proc as i64 }, queue_status::QS_TIMER).is_ok() { fired += 1; }
-            self.timers[index].due_ns = now_ns.saturating_add(timer.period_ns);
-        }
-        fired
+        self.post_input_to_window(window, WinMessage { hwnd: Some(window), message, wparam: wparam as u64, lparam: mouse_lparam(point.0, point.1) })
     }
     pub fn peek_for_thread(&mut self, tid: u64, filter: MessageFilter, remove: bool) -> Option<WinMessage> {
         let queue_index = self.queues.iter().position(|(owner, _)| *owner == tid)?;
@@ -272,6 +251,24 @@ impl WindowManager {
     pub fn validate_message_filter(&self, window: Option<WindowId>) -> Result<(), WindowError> {
         if window.is_some_and(|window| self.get(window).is_none()) { return Err(WindowError::NoSuchWindow); }
         Ok(())
+    }
+    /// Store one window's system-menu bar and report the one it replaced.
+    /// # C: O(N_windows)
+    pub fn set_sys_menu(&mut self, id: WindowId, menu: Option<u32>) -> Result<Option<u32>, WindowError> {
+        let (_, record) = self.windows.iter_mut().find(|(window, _)| *window == id).ok_or(WindowError::NoSuchWindow)?;
+        let previous = record.sys_menu;
+        record.sys_menu = menu;
+        Ok(previous)
+    }
+    /// # C: O(N_windows)
+    pub fn sys_menu(&self, id: WindowId) -> Option<u32> { self.get(id).and_then(|record| record.sys_menu) }
+
+    /// Post one message on a named thread's queue; a thread without a queue
+    /// takes no message. # C: O(N_queues)
+    pub fn post_to_thread(&mut self, tid: u64, message: WinMessage) -> Result<(), WindowError> {
+        let queue = self.queues.iter_mut().find(|(owner, _)| *owner == tid).map(|(_, queue)| queue)
+            .ok_or(WindowError::NoSuchWindow)?;
+        queue.post(message).map_err(|_| WindowError::QueueFull)
     }
     pub fn post_quit(&mut self, tid: u64, code: i32) {
         if let Some((_, queue)) = self.queues.iter_mut().find(|(owner, _)| *owner == tid) { queue.post_quit(code); }

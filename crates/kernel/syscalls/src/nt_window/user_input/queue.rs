@@ -57,13 +57,13 @@ pub(crate) fn post_message_for_current(hwnd: u64, message: u32, wparam: u64, lpa
 pub(crate) fn set_system_timer_for_current(hwnd: u64, id: u64, timeout_ms: u32) -> bool {
     let Some(window) = super::super::valid_window(hwnd) else { return false; };
     let Some(tid) = current_tid() else { return false; };
-    with_state_mut(|state| state.set_timer(tid, Some(window), id, timeout_ms, 0, timekeeper::monotonic_ns()).is_ok()).unwrap_or(false)
+    with_state_mut(|state| state.set_timer(tid, Some(window), ipc::win32_window::WM_TIMER, id, timeout_ms, 0, timekeeper::monotonic_ns()).is_ok()).unwrap_or(false)
 }
 
 /// # C: O(N_timers)
 pub(crate) fn kill_system_timer_for_current(hwnd: u64, id: u64) -> bool {
     let Some(window) = super::super::valid_window(hwnd) else { return false; };
-    with_state_mut(|state| state.kill_timer(Some(window), id)).unwrap_or(false)
+    with_state_mut(|state| state.kill_timer(Some(window), ipc::win32_window::WM_TIMER, id)).unwrap_or(false)
 }
 
 /// Inject one pointer transition through the canonical hardware path.

@@ -172,7 +172,7 @@ pub(super) fn dispatch_mode(call: NtCall, raw: bool) -> Option<u64> {
                 NtWindowCall::SetTimer { hwnd, id, timeout_ms, proc } => {
                     if hwnd > u32::MAX as u64 || id == 0 { return Some(STATUS_INVALID_PARAMETER); }
                     let window = if hwnd == 0 { None } else { Some(match ipc::win32_window::WindowId::from_raw(hwnd as u32) { Some(window) => window, None => return Some(STATUS_INVALID_HANDLE) }) };
-                    let result = match state.set_timer(cur.tid as u64, window, id, timeout_ms, proc, timekeeper::monotonic_ns()) {
+                    let result = match state.set_timer(cur.tid as u64, window, ipc::win32_window::WM_TIMER, id, timeout_ms, proc, timekeeper::monotonic_ns()) {
                         Ok(value) => value,
                         Err(_) => STATUS_INVALID_HANDLE,
                     };
@@ -181,7 +181,7 @@ pub(super) fn dispatch_mode(call: NtCall, raw: bool) -> Option<u64> {
                 NtWindowCall::KillTimer { hwnd, id } => {
                     if hwnd > u32::MAX as u64 || id == 0 { return Some(STATUS_INVALID_PARAMETER); }
                     let window = if hwnd == 0 { None } else { Some(match ipc::win32_window::WindowId::from_raw(hwnd as u32) { Some(window) => window, None => return Some(STATUS_INVALID_HANDLE) }) };
-                    (Some(state.kill_timer(window, id) as u64), None, None)
+                    (Some(state.kill_timer(window, ipc::win32_window::WM_TIMER, id) as u64), None, None)
                 }
                 NtWindowCall::GetRect { hwnd, rect } => {
                     let Some(window) = ipc::win32_window::WindowId::from_raw(hwnd as u32) else { return Some(STATUS_INVALID_HANDLE); };

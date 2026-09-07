@@ -64,10 +64,11 @@ pub(crate) use dc_caps::contains_dc_for_current;
 pub(crate) use visibility::visibility_clip_for_current;
 pub(crate) mod nonclient_scroll;
 pub(crate) use nonclient_scroll::repaint_nonclient_scroll_for_current;
-pub(crate) use system_brush::system_color_brush_for_current;
+pub(crate) use lifecycle::select_font_for_current as select_font_raw;
+pub(crate) use system_brush::{set_system_color, system_color_brush_for_current, system_color_value};
 pub(crate) use lifecycle::delete_object_for_current as delete_paint_dc_current;
 pub(crate) use lifecycle::create_dc_for_current as create_paint_dc_for_current;
-pub(crate) use clip::{intersect_clip_rect_for_current, get_app_clip_box_for_current, app_clip_box_snapshot_for_current, set_paint_clip_for_current, set_paint_region_for_current};
+pub(crate) use clip::{scroll_surface_for_current, exclude_clip_region_for_current, intersect_clip_rect_for_current, get_app_clip_box_for_current, app_clip_box_snapshot_for_current, set_paint_clip_for_current, set_paint_region_for_current};
 pub(crate) use selected::selected_object_current;
 pub(crate) use object_query::{create_font_record_for_current, get_object_w_for_current};
 pub(crate) use brush::{create_solid_brush_for_current, select_brush_for_current, pat_blt_for_current, set_dc_brush_color_for_current};
@@ -256,4 +257,13 @@ fn get_extent(state: &ipc::win32_gdi::GdiManager, dc: u32, count: u32, text: sys
     let mut bytes = [0u8; 8];
     for (index, field) in raw.iter().enumerate() { bytes[index * 4..index * 4 + 4].copy_from_slice(field); }
     if uaccess::copy_to_user(pointer.as_u64(), &bytes).is_err() { STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
+}
+
+/// Select one font into a device context and report the font it replaced.
+/// # C: O(processes + DCs)
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) fn select_font_current(dc: u64, font: u64) -> Option<u64> {
+    let dc = u32::try_from(dc).ok()?;
+    let font = u32::try_from(font).ok()?;
+    select_font_raw(dc, font).ok().map(u64::from)
 }

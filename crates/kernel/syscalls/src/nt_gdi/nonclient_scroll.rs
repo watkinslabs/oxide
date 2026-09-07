@@ -26,7 +26,7 @@ pub(crate) fn nonclient_scroll_context(window: WindowRect, client: WindowRect, s
     Some(NonclientScrollContext { window, client, style, ex_style, metrics, colors, pressed })
 }
 
-fn bounds(context: NonclientScrollContext, bar: i32) -> Result<Option<Rect>, GdiError> {
+pub(crate) fn bounds(context: NonclientScrollContext, bar: i32) -> Result<Option<Rect>, GdiError> {
     let client = context.client;
     let metric = context.metrics.arrow_size;
     if metric <= 0 || client.left > client.right || client.top > client.bottom { return Err(GdiError::InvalidDimensions); }

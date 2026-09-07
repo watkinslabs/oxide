@@ -5,14 +5,16 @@ pub const DEFAULT_CARET_BLINK_MS: u32 = 500;
 pub const DEFAULT_DOUBLE_CLICK_MS: u32 = 500;
 /// Dwell before a tracked pointer reports a hover, in milliseconds.
 pub const DEFAULT_MOUSE_HOVER_MS: u32 = 400;
+/// The warning beep is enabled for a session that has not turned it off.
+pub const DEFAULT_BEEP: bool = true;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct UserSettings { caret_blink_ms: u32, double_click_ms: u32, mouse_hover_ms: u32 }
+pub struct UserSettings { caret_blink_ms: u32, double_click_ms: u32, mouse_hover_ms: u32, beep: bool }
 
 impl UserSettings {
     pub const fn new() -> Self {
         Self { caret_blink_ms: DEFAULT_CARET_BLINK_MS, double_click_ms: DEFAULT_DOUBLE_CLICK_MS,
-            mouse_hover_ms: DEFAULT_MOUSE_HOVER_MS }
+            mouse_hover_ms: DEFAULT_MOUSE_HOVER_MS, beep: DEFAULT_BEEP }
     }
     /// # C: O(1)
     pub const fn double_click_ms(&self) -> u32 { self.double_click_ms }
@@ -22,6 +24,10 @@ impl UserSettings {
     pub const fn mouse_hover_ms(&self) -> u32 { self.mouse_hover_ms }
     /// Store the hover dwell and answer the previous one. # C: O(1)
     pub fn set_mouse_hover_ms(&mut self, value: u32) -> u32 { core::mem::replace(&mut self.mouse_hover_ms, value) }
+    /// # C: O(1)
+    pub const fn beep_enabled(&self) -> bool { self.beep }
+    /// Store the warning-beep setting and report the previous value. # C: O(1)
+    pub fn set_beep_enabled(&mut self, value: bool) -> bool { let previous = self.beep; self.beep = value; previous }
     pub const fn caret_blink_ms(&self) -> u32 { self.caret_blink_ms }
 
     /// Store the Win32 UINT value and return the previous value.
@@ -50,6 +56,16 @@ mod tests {
         assert_eq!(settings.double_click_ms(), 120);
         assert_eq!(settings.set_mouse_hover_ms(0), DEFAULT_MOUSE_HOVER_MS);
         assert_eq!(settings.mouse_hover_ms(), 0);
+    }
+
+    #[test]
+    fn the_beep_setting_defaults_on_and_round_trips() {
+        let mut settings = UserSettings::new();
+        assert_eq!(settings.beep_enabled(), DEFAULT_BEEP);
+        assert!(settings.set_beep_enabled(false));
+        assert!(!settings.beep_enabled());
+        assert!(!settings.set_beep_enabled(true));
+        assert!(settings.beep_enabled());
     }
 
     #[test]

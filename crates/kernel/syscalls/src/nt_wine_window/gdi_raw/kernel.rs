@@ -123,7 +123,7 @@ fn measure_request(dc: u64, kind: u32) -> Option<MeasureRequest> {
         break_extra: state.break_extra, break_rem: state.break_rem })
 }
 
-fn ext_text_out(dc: u64, x: i32, y: i32, flags: u32, rect: u64, text: u64, count: u32, dx: u64, code_page: u32) -> u64 {
+pub(crate) fn ext_text_out(dc: u64, x: i32, y: i32, flags: u32, rect: u64, text: u64, count: u32, dx: u64, code_page: u32) -> u64 {
     let Ok(state) = crate::nt_gdi::text_snapshot_for_current(dc) else { return 0; };
     let Ok(input) = super::text_output::validate(flags, rect, text, count, dx, code_page) else { return 0; };
     let metrics = match crate::nt_gdi::text_metrics_for_current(dc) { Ok(metrics) => metrics, Err(_) => return 0 };

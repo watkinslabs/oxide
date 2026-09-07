@@ -665,6 +665,21 @@ pub(crate) fn begin_wndproc_callback(hwnd: u64, message: u64, wparam: u64, lpara
 
 #[cfg(target_arch = "x86_64")]
 pub(crate) fn begin_wndproc_callback_with_completion(hwnd: u64, message: u64, wparam: u64, lparam: u64, wndproc: u64, completion: sched::nt_callback::Completion) -> u64 {
+    begin_callback_with_payload(hwnd, message, wparam, lparam, wndproc, completion, None)
+}
+
+/// Enter one client callback whose third argument is a record the kernel
+/// publishes on the callback stack, above the callee's shadow space. The
+/// monitor enumeration procedure takes its rectangle that way.
+/// # C: O(payload bytes)
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn begin_callback_with_record(first: u64, second: u64, record: &[u8], fourth: u64, procedure: u64) -> u64 {
+    begin_callback_with_payload(first, second, 0, fourth, procedure, sched::nt_callback::Completion::NONE, Some(record))
+}
+
+#[cfg(target_arch = "x86_64")]
+fn begin_callback_with_payload(hwnd: u64, message: u64, wparam: u64, lparam: u64, wndproc: u64,
+    completion: sched::nt_callback::Completion, payload: Option<&[u8]>) -> u64 {
     klog::write_raw(b"[WINDOWS-WNDPROC-ENTER] hwnd=");
     klog::write_hex_u64(hwnd);
     klog::write_raw(b" msg=");
@@ -687,7 +702,12 @@ pub(crate) fn begin_wndproc_callback_with_completion(hwnd: u64, message: u64, wp
     let regs = hal_x86_64::current_pt_regs();
     if regs.is_null() { return STATUS_INVALID_PARAMETER; }
     let frame = unsafe { &mut *regs };
-    let callback_rsp = frame.rsp.checked_sub(48).unwrap_or(0);
+    // Shadow space plus, when the callee takes a record, room for it above
+    // that shadow space where the callee will not write.
+    const SHADOW_BYTES: u64 = 48;
+    const RECORD_BYTES: u64 = 64;
+    let reserved = if payload.is_some() { SHADOW_BYTES + RECORD_BYTES } else { SHADOW_BYTES };
+    let callback_rsp = frame.rsp.checked_sub(reserved).unwrap_or(0);
     if callback_rsp == 0 || callback_rsp & 0xf != 8 {
         // The frame this builds must land where the Windows ABI expects it.
         // A call site whose stack does not satisfy that gets no callback at
@@ -715,6 +735,14 @@ pub(crate) fn begin_wndproc_callback_with_completion(hwnd: u64, message: u64, wp
     frame.rdx = message;
     frame.r8 = wparam;
     frame.r9 = lparam;
+    if let Some(record) = payload {
+        let at = callback_rsp + SHADOW_BYTES;
+        if record.len() as u64 > RECORD_BYTES || uaccess::copy_to_user(at, record).is_err() {
+            reject_create_callback(b"callback-record-write", hwnd, message, at);
+            return STATUS_INVALID_PARAMETER;
+        }
+        frame.r8 = at;
+    }
     STATUS_PENDING
 }
 
@@ -791,6 +819,9 @@ pub(crate) fn begin_wndproc_callback(_: u64, _: u64, _: u64, _: u64, _: u64) -> 
 
 #[cfg(target_arch = "aarch64")]
 pub(crate) fn begin_wndproc_callback_with_completion(_: u64, _: u64, _: u64, _: u64, _: u64, _: sched::nt_callback::Completion) -> u64 { STATUS_NOT_SUPPORTED }
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn begin_callback_with_record(_: u64, _: u64, _: &[u8], _: u64, _: u64) -> u64 { STATUS_NOT_SUPPORTED }
 
 #[cfg(target_arch = "aarch64")]
 pub(crate) fn begin_wndproc_create_callback(_: u64, _: u64, _: u64, _: crate::nt_window::CreateStructArgs, _: sched::nt_callback::Completion) -> u64 { STATUS_NOT_SUPPORTED }
