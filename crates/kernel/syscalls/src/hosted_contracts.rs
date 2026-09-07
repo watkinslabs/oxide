@@ -116,3 +116,5 @@ pub(crate) mod nt_wndproc_payload_contract;
 pub(crate) mod nt_scroll_contract;
 #[path = "028_madvise.rs"]
 pub(crate) mod s028_madvise;
+#[path = "nt_window/hosted_policy.rs"]
+pub(crate) mod nt_window;

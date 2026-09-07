@@ -185,3 +185,15 @@ path = "src/nt_window/redraw/joined_hosted.rs"
 [[test]]
 name = "nt-window-scroll-boundary"
 path = "src/nt_window/scroll/joined_hosted.rs"
+
+[[test]]
+name = "nt-window-redraw-live"
+path = "src/nt_window/redraw/hosted.rs"
+
+[[test]]
+name = "nt-window-erase-live"
+path = "src/nt_window/redraw/erase_hosted.rs"
+
+[[test]]
+name = "nt-window-send-live"
+path = "src/nt_window/send/tests/live_hosted.rs"

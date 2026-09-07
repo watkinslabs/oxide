@@ -132,6 +132,14 @@ mod nt_window{
     mod paint_cleanup{pub fn window_for_current(_:u64){}}
     mod send{pub fn cancel_window<T>(_:&T,_:u64){}}
     mod position{pub fn cancel_position_window<T>(_:&T,_:u64){}}
+    mod menu_raw{pub mod bar{
+        pub fn nc_paint_for_current(_:u64)->bool{false}
+        pub fn nc_calc_size_for_current(_:u64,_:u64)->Option<u64>{None}
+        pub fn hit_test_for_current(_:u64,_:i64)->Option<i16>{None}
+        pub fn default_proc_for_current(_:u64,_:u32,_:u64,_:i64)->Option<u64>{None}}}
+    mod hardware{
+        #[derive(Clone,Copy,Debug,Eq,PartialEq)]pub enum Stage{Ready,Again,Pending(u64)}
+        pub fn process_for_current(_:super::NtCall,_:bool,_:syscall::nt::NtWindowCall)->Stage{Stage::Ready}}
     mod bridge{pub fn publish_destroy_current(_:u64)->Result<(),()>{Ok(())}pub fn publish_visibility_current(_:u64)->Result<(),()>{Ok(())}
         pub fn publish_title_current(_:u64)->Result<(),()>{Ok(())}pub fn publish_geometry_current(_:u64)->Result<(),()>{Ok(())}}
     pub mod production{include!(concat!(env!("CARGO_MANIFEST_DIR"),"/src/nt_window/dispatch.rs"));}
