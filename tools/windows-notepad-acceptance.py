@@ -9,19 +9,19 @@ import hashlib
 import atexit
 import os
 import re
-import select
 import socket
 import subprocess
 import sys
 import time
 from pathlib import Path
 from notepad_qmp import QmpTransactions, QmpError
+from uart_reader import UartReader
+from notepad_fault_drain import drain as drain_fault
 from screenshot_evidence import screenshot_completed, record_screenshot
 from notepad_evidence import token_in_notepad_window, locate_notepad_window, image_size
 from gnome_overview import overview_showing, pill_stats, window_activated
 from notepad_uart_audit import audit as uart_audit, render_table as uart_audit_table, \
     render_markdown as uart_audit_markdown, load_win32u_ordinals
-from notepad_fault_drain import drain as drain_fault
 
 ROOT = Path(__file__).resolve().parents[1]
 IMAGES = ROOT.parent / "images"
@@ -165,44 +165,25 @@ def wait_for_rendered_desktop(conn, deadline):
     die("GNOME session marker appeared without a rendered desktop frame")
 
 
-def uart_pump(conn, buffer, log, seconds):
-    deadline = time.monotonic() + seconds
+def wait_marker(reader, marker, deadline):
+    """The console is drained by UartReader throughout the run, so this only
+    inspects what has already arrived. A wait that also owned the reading left
+    the console unread whenever no wait was outstanding."""
     while time.monotonic() < deadline:
-        # A passed deadline makes this difference negative, and select rejects a
-        # negative timeout outright: the run then dies mid-flight with a
-        # ValueError and leaves no evidence of what the guest was doing. Line 86
-        # already clamps the same computation; these two did not.
-        ready, _, _ = select.select([conn], [], [], max(0.0, min(0.25, deadline - time.monotonic())))
-        if not ready:
-            continue
-        data = conn.recv(65536)
-        if not data:
-            return
-        buffer.extend(data)
-        log.write(data)
-        log.flush()
-
-
-def pump_bytes(conn, buffer, log, seconds):
-    """One pump slice, reporting how many new bytes it captured."""
-    before = len(buffer)
-    uart_pump(conn, buffer, log, seconds)
-    return len(buffer) - before
-
-
-def wait_marker(conn, buffer, log, marker, deadline):
-    while time.monotonic() < deadline:
-        text = buffer.decode("utf-8", "replace")
+        text = reader.text()
         if FAULT.search(text):
             # The oops is still being written when its first line matches.
-            # die() kills QEMU, so drain the rest of the report first --
-            # without this the retained evidence was four hex digits of a
-            # sixteen-digit vector and no rip, GPRs or stack-guard line.
-            drain_fault(lambda: pump_bytes(conn, buffer, log, 0.25), time.monotonic)
+            # die() kills QEMU, so let the reader collect the rest of the
+            # report first (vector, rip, GPRs, stack-guard line).
+            def pump_slice():
+                before = len(reader.text())
+                time.sleep(0.25)
+                return len(reader.text()) - before
+            drain_fault(pump_slice, time.monotonic)
             die(f"guest fault before {marker}")
         if marker in text:
             return
-        uart_pump(conn, buffer, log, max(0.0, min(1, deadline - time.monotonic())))
+        time.sleep(0.05)
     die(f"missing guest marker {marker}")
 
 
@@ -235,9 +216,9 @@ def type_token(conn):
         keys(conn, "minus" if char == "-" else char)
 
 
-def launch_on_desktop(uart, buffer, log, qmp_sock, deadline):
-    wait_marker(uart, buffer, log, "sh-5.2#", deadline)
-    wait_marker(uart, buffer, log, "Entering running state", deadline)
+def launch_on_desktop(uart, reader, qmp_sock, deadline):
+    wait_marker(reader, "sh-5.2#", deadline)
+    wait_marker(reader, "Entering running state", deadline)
     wait_for_rendered_desktop(qmp_sock, deadline)
     leave_overview(qmp_sock, deadline, "launch")
     screenshot(qmp_sock, "gnome-before-notepad")
@@ -418,11 +399,11 @@ def main():
     deadline = time.monotonic() + TIMEOUT
     uart = wait_socket(UART, deadline, "UART socket")
     qmp_sock = QmpTransactions(lambda: wait_socket(QMP, deadline, "QMP socket"))
-    buffer = bytearray()
     with UART_LOG.open("ab", buffering=0) as log:
-        launch_on_desktop(uart, buffer, log, qmp_sock, deadline)
+        reader = UartReader(uart, log)
+        launch_on_desktop(uart, reader, qmp_sock, deadline)
         for marker in MILESTONES:
-            wait_marker(uart, buffer, log, marker, deadline)
+            wait_marker(reader, marker, deadline)
         # The kernel has reported the window shown; confirm it is also the
         # active window on screen (not just present in a thumbnail behind a
         # reopened overview) before any input is typed into it (KI-0472).
@@ -454,11 +435,12 @@ def main():
         if cleared == after or TOKEN in ocr(cleared_path):
             die("scratch token did not clear before close")
         keys(qmp_sock, "alt", "f4")
-        wait_marker(uart, buffer, log, "[WINDOWS-NOTEPAD] runtime-exit status=", deadline)
-        if "[WINDOWS-NOTEPAD] runtime-exit status=0" not in buffer.decode("utf-8", "replace"):
+        wait_marker(reader, "[WINDOWS-NOTEPAD] runtime-exit status=", deadline)
+        if "[WINDOWS-NOTEPAD] runtime-exit status=0" not in reader.text():
             die("Notepad runtime exited without status 0")
         print("windows-notepad-acceptance: A4/A5 PASS (close, exit, wrapper cleanup)")
         qmp(qmp_sock, "quit")
+        reader.stop()
     uart.close()
     qemu.wait(timeout=20)
     result = run_uart_audit()
