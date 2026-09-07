@@ -29,7 +29,7 @@ mod families;
 pub(crate) use families::*;
 #[path = "nt_window/class_long.rs"]
 mod class_long_state;
-pub(crate) use class_long_state::{class_long_for_current, set_class_long_for_current, class_cursor_for_current, shared_oem_cursor_for_current, set_current_cursor_for_current, current_cursor_for_current};
+pub(crate) use class_long_state::{class_long_for_current, set_class_long_for_current, exchange_class_menu_name_for_current, class_cursor_for_current, shared_oem_cursor_for_current, set_current_cursor_for_current, current_cursor_for_current};
 #[path = "nt_window/erase_background.rs"]
 mod erase_background;
 #[cfg(target_os = "oxide-kernel")]
@@ -400,14 +400,14 @@ pub(crate) fn user_atom_name(atom: u16, out: &mut Vec<u16>) -> Option<()> {
 /// Unregister one process-local Wine class through the canonical owner.
 /// # C: O(N_process_gui_states + N_classes + N_windows)
 #[cfg(target_os = "oxide-kernel")]
-pub(crate) fn unregister_class_for_current(name: &[u16]) -> bool {
+pub(crate) fn unregister_class_for_current(name: &[u16], instance: u64) -> bool {
     let Some(cur) = sched::live::current() else { return false; };
     if !cur.is_nt_personality() { return false; }
     let group = Arc::clone(&cur.thread_group);
     let mut entries = GUI.lock();
     entries.retain(|entry| entry.group.upgrade().is_some());
     let Some(index) = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group))) else { return false; };
-    entries[index].state.unregister_class(name).is_ok()
+    entries[index].state.unregister_class_from(name, instance).is_ok()
 }
 
 #[path = "nt_window/menu.rs"]
@@ -497,14 +497,14 @@ pub(crate) fn window_class_name_for_current(hwnd: u64) -> Option<Vec<u16>> {
 /// Resolve canonical class metadata for Wine's class-information query.
 /// # C: O(N_process_gui_states + N_classes)
 #[cfg(target_os = "oxide-kernel")]
-pub(crate) fn class_info_for_current(name: &[u16]) -> Option<(u16, u64, Vec<u16>, u32)> {
+pub(crate) fn class_info_for_current(name: &[u16], instance: u64) -> Option<(u16, u64, Vec<u16>, u32)> {
     let cur = sched::live::current()?;
     if !cur.is_nt_personality() { return None; }
     let group = Arc::clone(&cur.thread_group);
     let mut entries = GUI.lock();
     entries.retain(|entry| entry.group.upgrade().is_some());
     let index = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group)))?;
-    let (atom, wndproc, class_name) = entries[index].state.class_info(name)?;
+    let (atom, wndproc, class_name) = entries[index].state.class_info_from(name, instance)?;
     Some((atom, wndproc, class_name.to_vec(), entries[index].state.class_extra_by_atom(atom)?))
 }
 

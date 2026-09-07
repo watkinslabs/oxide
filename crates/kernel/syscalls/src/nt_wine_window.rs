@@ -335,7 +335,7 @@ fn get_class_info_ex(args: &[u64; 17]) -> u64 {
         crate::nt_window::class_info_by_atom_for_current(args[1] as u16)
     } else {
         let Some(name) = read_unicode_string(args[1]) else { return 0; };
-        crate::nt_window::class_info_for_current(&name)
+        crate::nt_window::class_info_for_current(&name, args[0])
     };
     let Some((atom, wndproc, _, extra)) = info else { return 0; };
     let Some(class) = crate::nt_window::class_description_by_atom_for_current(atom) else { return 0; };

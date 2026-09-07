@@ -66,7 +66,7 @@ pub use property::{WindowProperties, WindowProperty, PropertyName, PropertyOrigi
 pub use extra::{OwnedWindow, WindowExtra, LongPtrError};
 #[path = "win32_window/class_long.rs"]
 mod class_long;
-pub use class_long::{GCL_MENUNAME, GCLP_HBRBACKGROUND, GCLP_HCURSOR, GCLP_HICON, GCLP_HMODULE, GCL_CBWNDEXTRA, GCL_CBCLSEXTRA, GCLP_WNDPROC, GCL_STYLE, GCW_ATOM, GCLP_HICONSM};
+pub use class_long::{GCL_MENUNAME, GCLP_MENUNAME, GCLP_HBRBACKGROUND, GCLP_HCURSOR, GCLP_HICON, GCLP_HMODULE, GCL_CBWNDEXTRA, GCL_CBCLSEXTRA, GCLP_WNDPROC, GCL_STYLE, GCW_ATOM, GCLP_HICONSM};
 #[path = "win32_window/styles.rs"]
 pub mod styles;
 #[path = "win32_window/tree.rs"]
@@ -420,6 +420,10 @@ pub mod nonclient_create;
 
 #[path = "win32_window/class_info_abi.rs"]
 pub mod class_info_abi;
+
+#[path = "win32_window/class_find.rs"]
+mod class_find;
+pub use class_find::{CS_GLOBALCLASS, MAX_CLASS_EXTRA, instance_matches, registration_is_local, extra_size_admitted};
 
 #[path = "win32_window/class_types.rs"]
 mod class_types;

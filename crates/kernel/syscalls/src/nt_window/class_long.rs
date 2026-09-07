@@ -5,9 +5,17 @@ use ipc::win32_window::LongPtrError;
 use super::owner::{with_state, with_state_mut};
 
 /// # C: O(processes + windows + classes)
-pub(crate) fn class_long_for_current(hwnd: u64, offset: i32, width: usize) -> Result<u64, LongPtrError> {
+pub(crate) fn class_long_for_current(hwnd: u64, offset: i32, width: usize, ansi: bool) -> Result<u64, LongPtrError> {
     let Some(id) = valid_window(hwnd) else { return Err(LongPtrError::InvalidWindow); };
-    with_state(|state| state.class_long(id, offset, width)).unwrap_or(Err(LongPtrError::InvalidWindow))
+    with_state(|state| state.class_long_for(id, offset, width, ansi)).unwrap_or(Err(LongPtrError::InvalidWindow))
+}
+
+/// Exchange the class menu-name record of a window the calling process owns.
+/// # C: O(processes + windows + classes)
+pub(crate) fn exchange_class_menu_name_for_current(hwnd: u64, menu_name: ipc::win32_window::ClassMenuName)
+    -> Result<ipc::win32_window::ClassMenuName, LongPtrError> {
+    let Some(id) = valid_window(hwnd) else { return Err(LongPtrError::InvalidWindow); };
+    with_state_mut(|state| state.exchange_class_menu_name(id, menu_name)).unwrap_or(Err(LongPtrError::InvalidWindow))
 }
 
 /// # C: O(processes + windows + classes)
