@@ -17,11 +17,14 @@ pub(super) fn capture_window(state: &mut ipc::win32_gdi::GdiManager, hwnd: u32, 
     output::prepare_explicit(state, hwnd, backing).map_err(|_| STATUS_INVALID_PARAMETER)
 }
 
-/// Exact canonical paint coverage is validated before reservation. # C: O(DCs + pixels + region)
-pub(super) fn capture_window_region(state: &mut ipc::win32_gdi::GdiManager, hwnd: u32, dc: u32, left: i32, top: i32, right: i32, bottom: i32, snapshot: Option<(ipc::win32_gdi::PaintBacking, ipc::win32_window::PaintRegion)>) -> Result<output::PreparedFrame, u64> {
+/// Exact canonical paint coverage is validated before the merge. The paint's
+/// pixels join the window backing and its coverage becomes pending output; the
+/// message pump flushes it with whatever else the burst drew, which is what the
+/// reference's window surface does with its accumulated bounds.
+/// # C: O(DCs + damage pixels + region)
+pub(super) fn merge_window_region(state: &mut ipc::win32_gdi::GdiManager, hwnd: u32, dc: u32, left: i32, top: i32, right: i32, bottom: i32, snapshot: Option<(ipc::win32_gdi::PaintBacking, ipc::win32_window::PaintRegion)>) -> Result<(), u64> {
     let (layout, region) = snapshot.ok_or(STATUS_INVALID_HANDLE)?;
     if region.bounds() != Some(ipc::win32_window::WindowRect { left, top, right, bottom }) { return Err(STATUS_INVALID_PARAMETER); }
-    let frame = paint_frame::capture_region(state, hwnd, dc, &region, layout).map_err(|_| STATUS_INVALID_PARAMETER)?;
-    let backing = state.window_dc(hwnd).ok_or(STATUS_INVALID_HANDLE)?;
-    output::reserve_captured(state, hwnd, backing, frame).map_err(|_| STATUS_INVALID_PARAMETER)
+    paint_frame::merge_region(state, hwnd, dc, &region, layout).map_err(|_| STATUS_INVALID_PARAMETER)?;
+    Ok(())
 }

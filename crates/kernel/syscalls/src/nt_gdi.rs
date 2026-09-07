@@ -34,7 +34,7 @@ mod clip;
 mod system_brush;
 mod paint_frame;
 mod presentation;
-use presentation::{capture_window, capture_window_region};
+use presentation::{capture_window, merge_window_region};
 mod paint_seed;
 mod position_preserve;
 pub(crate) use position_preserve::position_preserve_for_current;
@@ -130,12 +130,20 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         entries.len() - 1
     });
     let state = &mut entries[index].state;
+    // A paint's coverage joins the window backing and becomes pending output
+    // under this lock; the flush that serializes and sends it runs outside the
+    // lock, on the message pump's schedule. Presenting one paint at a time
+    // stops the application for a display round trip per paint, and a burst of
+    // paints pays it once per paint instead of once for the burst.
+    if let NtGdiCall::PresentWindowRegion { hwnd, dc, left, top, right, bottom } = operation {
+        let merged = merge_window_region(state, hwnd, dc, left, top, right, bottom, present_region);
+        drop(entries);
+        return Some(match merged { Ok(()) => { output::flush_pending_for_current(false); STATUS_SUCCESS } Err(status) => status });
+    }
     // Snapshot while GDI owns the pixels, then release its lock before the
-    // transport can sleep waiting for the desktop's acknowledgement.
+    // transport hands the record over.
     let frame = match operation {
         NtGdiCall::PresentWindow { hwnd, dc } => Some(capture_window(state, hwnd, dc, present)),
-        NtGdiCall::PresentWindowRegion { hwnd, dc, left, top, right, bottom } =>
-            Some(capture_window_region(state, hwnd, dc, left, top, right, bottom, present_region)),
         _ => None,
     };
     if let Some(frame) = frame {
@@ -219,17 +227,13 @@ fn present_surface(state: &ipc::win32_gdi::GdiManager, dc: u32, x: i32, y: i32) 
 }
 
 
+/// Drawing output is handed over, not transacted with the desktop; see the
+/// output transport's own submission.
 fn submit_frame(frame: Result<syscall::nt_compositor::Record, u64>) -> u64 {
     let frame = match frame { Ok(frame) => frame, Err(status) => return status };
-    let ticket = match crate::nt_compositor::enqueue_current(frame.header.opcode, frame.header.hwnd, frame.payload) {
-        Ok(ticket) => ticket, Err(_) => return STATUS_INVALID_PARAMETER,
-    };
-    match crate::nt_compositor::wait_completion_current(ticket, 5_000_000_000) {
-        Ok(crate::nt_compositor::Completion::Presented) => {
-            crate::nt_milestone::desktop_ack();
-            STATUS_SUCCESS
-        }
-        _ => STATUS_INVALID_PARAMETER,
+    match crate::nt_compositor::submit_current(frame.header.opcode, frame.header.hwnd, frame.payload) {
+        Ok(_) => STATUS_SUCCESS,
+        Err(_) => STATUS_INVALID_PARAMETER,
     }
 }
 
