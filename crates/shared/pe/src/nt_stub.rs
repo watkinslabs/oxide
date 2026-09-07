@@ -420,10 +420,17 @@ pub fn encode_x64_six_arg_stub(selector: u64) -> [u8; X64_SIX_ARG_STUB_BYTES] {
     code
 }
 
+#[path = "nt_stub/c_specific.rs"]
+mod c_specific;
+pub use c_specific::{encode_x64_c_specific_handler, unwind_entry_placeholder, X64_C_SPECIFIC_HANDLER_BYTES};
+
 #[cfg(test)]
 #[path = "nt_stub/tests/contracts.rs"]
 mod tests;
 #[cfg(all(test, target_arch = "x86_64", target_os = "linux"))]
 #[path = "nt_stub/tests/execution.rs"]
 mod execution;
+#[cfg(all(test, target_arch = "x86_64", target_os = "linux"))]
+#[path = "nt_stub/tests/c_specific.rs"]
+mod c_specific_execution;
 use alloc::vec::Vec;

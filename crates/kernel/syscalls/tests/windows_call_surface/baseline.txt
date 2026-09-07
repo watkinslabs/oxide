@@ -1,70 +1,4 @@
 # Windows call-surface gaps still open. Ratchet: entries only leave.
-bind advpack.dll kernel32.dll __chkstk
-bind bcrypt.dll kernel32.dll __chkstk
-bind comdlg32.dll kernel32.dll __chkstk
-bind cryptui.dll kernel32.dll __chkstk
-bind dbghelp.dll kernelbase.dll __chkstk
-bind dbghelp.dll ntdll.dll RtlComputeCrc32
-bind dbghelp.dll ntdll.dll RtlImageRvaToSection
-bind dbghelp.dll ntdll.dll RtlIsCurrentProcess
-bind dinput8.dll kernel32.dll __chkstk
-bind dnsapi.dll kernel32.dll __chkstk
-bind gdi32.dll kernel32.dll __chkstk
-bind gdiplus.dll kernel32.dll ReleaseSRWLockExclusive
-bind gdiplus.dll kernel32.dll TryAcquireSRWLockExclusive
-bind ieframe.dll kernel32.dll __chkstk
-bind iertutil.dll kernel32.dll __chkstk
-bind imagehlp.dll ntdll.dll RtlImageRvaToSection
-bind kernel32.dll ntdll.dll RtlAddFunctionTable
-bind kernel32.dll ntdll.dll RtlCopyUnicodeString
-bind kernel32.dll ntdll.dll RtlDeleteFunctionTable
-bind kernel32.dll ntdll.dll RtlInstallFunctionTableCallback
-bind kernel32.dll ntdll.dll __C_specific_handler
-bind kernelbase.dll ntdll.dll __C_specific_handler
-bind kernelbase.dll ntdll.dll __chkstk
-bind kernelbase.dll ntdll.dll _wcslwr
-bind msacm32.dll kernel32.dll __chkstk
-bind msvcrt.dll ntdll.dll __chkstk
-bind ole32.dll kernelbase.dll __chkstk
-bind rpcrt4.dll kernel32.dll __chkstk
-bind secur32.dll kernel32.dll AcquireSRWLockExclusive
-bind secur32.dll kernel32.dll AcquireSRWLockShared
-bind secur32.dll kernel32.dll ReleaseSRWLockExclusive
-bind secur32.dll kernel32.dll ReleaseSRWLockShared
-bind secur32.dll ntdll.dll RtlCompareString
-bind secur32.dll ntdll.dll RtlEqualUnicodeString
-bind secur32.dll ntdll.dll RtlInitString
-bind setupapi.dll kernelbase.dll __chkstk
-bind shell32.dll kernel32.dll __chkstk
-bind shlwapi.dll kernelbase.dll __chkstk
-bind ucrtbase.dll ntdll.dll __chkstk
-bind urlmon.dll kernel32.dll __chkstk
-bind user32.dll kernelbase.dll __chkstk
-bind userenv.dll kernel32.dll __chkstk
-bind uxtheme.dll kernel32.dll __chkstk
-bind windowscodecs.dll kernel32.dll __chkstk
-bind wininet.dll kernel32.dll __chkstk
-bind winmm.dll kernel32.dll WakeConditionVariable
-bind winmm.dll kernel32.dll __chkstk
-ntdll RtlAcquireSRWLockExclusive
-ntdll RtlAcquireSRWLockShared
-ntdll RtlAddFunctionTable
-ntdll RtlCompareString
-ntdll RtlComputeCrc32
-ntdll RtlCopyUnicodeString
-ntdll RtlDeleteFunctionTable
-ntdll RtlEqualUnicodeString
-ntdll RtlImageRvaToSection
-ntdll RtlInitString
-ntdll RtlInstallFunctionTableCallback
-ntdll RtlIsCurrentProcess
-ntdll RtlReleaseSRWLockExclusive
-ntdll RtlReleaseSRWLockShared
-ntdll RtlTryAcquireSRWLockExclusive
-ntdll RtlWakeConditionVariable
-ntdll __C_specific_handler
-ntdll __chkstk
-ntdll _wcslwr
 usermode-trap ntdll ApiSetQueryApiSetPresenceEx
 usermode-trap ntdll DbgBreakPoint
 usermode-trap ntdll DbgUiConnectToDbg
@@ -101,6 +35,8 @@ usermode-trap ntdll NtGetTickCount
 usermode-trap ntdll NtdllDefWindowProc_A
 usermode-trap ntdll NtdllDefWindowProc_W
 usermode-trap ntdll RtlAcquirePebLock
+usermode-trap ntdll RtlAcquireSRWLockExclusive
+usermode-trap ntdll RtlAcquireSRWLockShared
 usermode-trap ntdll RtlActivateActivationContext
 usermode-trap ntdll RtlActivateActivationContextEx
 usermode-trap ntdll RtlAddAccessAllowedAce
@@ -114,6 +50,7 @@ usermode-trap ntdll RtlAddAtomToAtomTable
 usermode-trap ntdll RtlAddAuditAccessAce
 usermode-trap ntdll RtlAddAuditAccessAceEx
 usermode-trap ntdll RtlAddAuditAccessObjectAce
+usermode-trap ntdll RtlAddFunctionTable
 usermode-trap ntdll RtlAddMandatoryAce
 usermode-trap ntdll RtlAddRefActivationContext
 usermode-trap ntdll RtlAllocateAndInitializeSid
@@ -128,11 +65,14 @@ usermode-trap ntdll RtlCaptureContext
 usermode-trap ntdll RtlCharToInteger
 usermode-trap ntdll RtlClearBits
 usermode-trap ntdll RtlCompactHeap
+usermode-trap ntdll RtlCompareString
 usermode-trap ntdll RtlCompareUnicodeStrings
+usermode-trap ntdll RtlComputeCrc32
 usermode-trap ntdll RtlConvertSidToUnicodeString
 usermode-trap ntdll RtlConvertToAutoInheritSecurityObject
 usermode-trap ntdll RtlCopyContext
 usermode-trap ntdll RtlCopySid
+usermode-trap ntdll RtlCopyUnicodeString
 usermode-trap ntdll RtlCreateAcl
 usermode-trap ntdll RtlCreateActivationContext
 usermode-trap ntdll RtlCreateAtomTable
@@ -150,6 +90,7 @@ usermode-trap ntdll RtlDeleteAce
 usermode-trap ntdll RtlDeleteAtomFromAtomTable
 usermode-trap ntdll RtlDeleteBarrier
 usermode-trap ntdll RtlDeleteCriticalSection
+usermode-trap ntdll RtlDeleteFunctionTable
 usermode-trap ntdll RtlDeleteSecurityObject
 usermode-trap ntdll RtlDeleteTimer
 usermode-trap ntdll RtlDeleteTimerQueueEx
@@ -170,6 +111,7 @@ usermode-trap ntdll RtlDuplicateUnicodeString
 usermode-trap ntdll RtlEnterCriticalSection
 usermode-trap ntdll RtlEqualPrefixSid
 usermode-trap ntdll RtlEqualSid
+usermode-trap ntdll RtlEqualUnicodeString
 usermode-trap ntdll RtlExitUserProcess
 usermode-trap ntdll RtlExitUserThread
 usermode-trap ntdll RtlExpandEnvironmentStrings_U
@@ -224,11 +166,13 @@ usermode-trap ntdll RtlIdnToNameprepUnicode
 usermode-trap ntdll RtlIdnToUnicode
 usermode-trap ntdll RtlImageDirectoryEntryToData
 usermode-trap ntdll RtlImageNtHeader
+usermode-trap ntdll RtlImageRvaToSection
 usermode-trap ntdll RtlImageRvaToVa
 usermode-trap ntdll RtlImpersonateSelf
 usermode-trap ntdll RtlInitAnsiString
 usermode-trap ntdll RtlInitBarrier
 usermode-trap ntdll RtlInitCodePageTable
+usermode-trap ntdll RtlInitString
 usermode-trap ntdll RtlInitUnicodeString
 usermode-trap ntdll RtlInitUnicodeStringEx
 usermode-trap ntdll RtlInitializeBitMap
@@ -238,6 +182,7 @@ usermode-trap ntdll RtlInitializeCriticalSectionEx
 usermode-trap ntdll RtlInitializeExtendedContext2
 usermode-trap ntdll RtlInitializeNtUserPfn
 usermode-trap ntdll RtlInitializeSid
+usermode-trap ntdll RtlInstallFunctionTableCallback
 usermode-trap ntdll RtlInterlockedFlushSList
 usermode-trap ntdll RtlInterlockedPushEntrySList
 usermode-trap ntdll RtlIpv4AddressToStringA
@@ -253,6 +198,7 @@ usermode-trap ntdll RtlIpv6StringToAddressA
 usermode-trap ntdll RtlIpv6StringToAddressExA
 usermode-trap ntdll RtlIpv6StringToAddressExW
 usermode-trap ntdll RtlIpv6StringToAddressW
+usermode-trap ntdll RtlIsCurrentProcess
 usermode-trap ntdll RtlIsDosDeviceName_U
 usermode-trap ntdll RtlIsNameLegalDOS8Dot3
 usermode-trap ntdll RtlIsNormalizedString
@@ -302,6 +248,8 @@ usermode-trap ntdll RtlRegisterWait
 usermode-trap ntdll RtlReleaseActivationContext
 usermode-trap ntdll RtlReleasePath
 usermode-trap ntdll RtlReleasePebLock
+usermode-trap ntdll RtlReleaseSRWLockExclusive
+usermode-trap ntdll RtlReleaseSRWLockShared
 usermode-trap ntdll RtlRestoreContext
 usermode-trap ntdll RtlRetrieveNtUserPfn
 usermode-trap ntdll RtlRunOnceBeginInitialize
@@ -337,6 +285,7 @@ usermode-trap ntdll RtlSystemTimeToLocalTime
 usermode-trap ntdll RtlTimeFieldsToTime
 usermode-trap ntdll RtlTimeToSecondsSince1970
 usermode-trap ntdll RtlTimeToTimeFields
+usermode-trap ntdll RtlTryAcquireSRWLockExclusive
 usermode-trap ntdll RtlTryEnterCriticalSection
 usermode-trap ntdll RtlUTF8ToUnicodeN
 usermode-trap ntdll RtlUnicodeStringToAnsiSize
@@ -360,6 +309,7 @@ usermode-trap ntdll RtlValidSecurityDescriptor
 usermode-trap ntdll RtlValidSid
 usermode-trap ntdll RtlValidateHeap
 usermode-trap ntdll RtlWaitOnAddress
+usermode-trap ntdll RtlWakeConditionVariable
 usermode-trap ntdll RtlWalkHeap
 usermode-trap ntdll RtlWow64EnableFsRedirection
 usermode-trap ntdll RtlWow64EnableFsRedirectionEx
@@ -377,6 +327,8 @@ usermode-trap ntdll TpCallbackMayRunLong
 usermode-trap ntdll TpQueryPoolStackInformation
 usermode-trap ntdll TpSetPoolStackInformation
 usermode-trap ntdll TpSimpleTryPost
+usermode-trap ntdll __C_specific_handler
+usermode-trap ntdll __chkstk
 usermode-trap ntdll __wine_dbg_get_channel_flags
 usermode-trap ntdll __wine_dbg_header
 usermode-trap ntdll __wine_dbg_output
@@ -387,6 +339,7 @@ usermode-trap ntdll _strnicmp
 usermode-trap ntdll _vsnprintf
 usermode-trap ntdll _vsnwprintf
 usermode-trap ntdll _wcsicmp
+usermode-trap ntdll _wcslwr
 usermode-trap ntdll _wcsnicmp
 usermode-trap ntdll isalnum
 usermode-trap ntdll isalpha

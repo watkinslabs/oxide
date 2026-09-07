@@ -12,7 +12,11 @@ fn the_two_halves_do_not_overlap() {
     assert_eq!(exclusive(word(0, 0xffff)), 0);
     assert_eq!(owners(word(0xffff, 7)), 7);
     assert_eq!(exclusive(word(0x1234, 7)), 0x1234);
-    assert_eq!(ONE_OWNER, 1 << OWNERS_SHIFT);
+    // The owner unit is the value the layout pins, not a restatement of its
+    // own definition: comparing it to `1 << OWNERS_SHIFT` could not fail.
+    assert_eq!(ONE_OWNER, 0x0001_0000);
+    assert_eq!(EXCLUSIVE_MASK, 0x0000_ffff);
+    assert_eq!(OWNERS_SHIFT, 16);
     assert_eq!(EXCLUSIVE_WAITER, EXCLUSIVE_HELD << 1);
     // The owner half must not be the low half: a blocked writer parks on the
     // owner bytes alone, which is only a distinct address above the base.
