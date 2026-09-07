@@ -119,7 +119,8 @@ fn measure_request(dc: u64, kind: u32) -> Option<MeasureRequest> {
         .unwrap_or((stock.height, 0, 0, 0));
     Some(MeasureRequest { version: text_abi::VERSION, size: core::mem::size_of::<MeasureRequest>() as u32,
         dc, kind, count: 0, height, width, weight, italic, max_extent: 0, flags: 0,
-        text: 0, metrics: 0, extent: 0, fit: 0, cumulative: 0 })
+        text: 0, metrics: 0, extent: 0, fit: 0, cumulative: 0,
+        break_extra: state.break_extra, break_rem: state.break_rem })
 }
 
 fn ext_text_out(dc: u64, x: i32, y: i32, flags: u32, rect: u64, text: u64, count: u32, dx: u64, code_page: u32) -> u64 {
@@ -138,6 +139,7 @@ fn ext_text_out(dc: u64, x: i32, y: i32, flags: u32, rect: u64, text: u64, count
         width, weight, italic, foreground: state.attributes.foreground,
         background: state.attributes.background, has_rect: has_rect as u32, reserved: 0,
         background_mode: state.attributes.background_mode, alignment: state.attributes.alignment,
-        current_x: state.attributes.current_position.0, current_y: state.attributes.current_position.1 };
+        current_x: state.attributes.current_position.0, current_y: state.attributes.current_position.1,
+        break_extra: state.break_extra, break_rem: state.break_rem };
     crate::nt_native_gdi::begin(request)
 }

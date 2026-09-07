@@ -1,4 +1,5 @@
 use syscall::nt_native_gdi as abi;
+use super::{measure::measure, native};
 
 fn request(count: usize) -> abi::MeasureRequest {
     abi::MeasureRequest { version: 1, size: std::mem::size_of::<abi::MeasureRequest>() as u32, dc: 1, kind: abi::MEASURE_EXTENT, count: count as u32,
@@ -157,4 +158,44 @@ fn logical_width_expands_actual_glyph_coverage_not_only_the_advance() {
     assert_eq!(scaled.width, 20);
     assert!(scaled.pixels.iter().any(|pixel| *pixel >> 24 > 0 && *pixel >> 24 < 255));
     assert!(scaled.pixels.iter().filter(|pixel| **pixel >> 24 != 0).all(|pixel| *pixel & 0xffffff == 0x123456));
+}
+
+#[test]
+fn justification_spreads_the_extra_over_break_characters_and_nowhere_else() {
+    native::prepare_fonts().unwrap();
+    let font = native::selected_font_with_width(16, 0, 400, 0).unwrap();
+    let text: Vec<u16> = "a b c".encode_utf16().collect();
+    let plain = measure(&font, &request(text.len()), &text).unwrap();
+    let justified = measure(&font, &abi::MeasureRequest { break_extra: 4, break_rem: 1,
+        ..request(text.len()) }, &text).unwrap();
+    // The break character itself is the first position that carries the extra,
+    // and the first break also takes the single remainder unit.
+    let expected = [0, 5, 5, 9, 9];
+    for (index, added) in expected.into_iter().enumerate() {
+        assert_eq!(justified.cumulative[index] - plain.cumulative[index], added, "unit {index}");
+    }
+    assert_eq!(justified.output.width, plain.output.width + 9);
+    assert_eq!(justified.output.width, *justified.cumulative.last().unwrap());
+    // Text without a break character is unchanged by any justification amount.
+    let solid: Vec<u16> = "abc".encode_utf16().collect();
+    assert_eq!(measure(&font, &abi::MeasureRequest { break_extra: 40, break_rem: 3,
+        ..request(solid.len()) }, &solid).unwrap().cumulative,
+        measure(&font, &request(solid.len()), &solid).unwrap().cumulative);
+}
+
+#[test]
+fn drawn_text_carries_the_same_justified_advances_as_the_measurement() {
+    native::prepare_fonts().unwrap();
+    let font = native::selected_font_with_width(16, 0, 400, 0).unwrap();
+    let text: Vec<u16> = "a b".encode_utf16().collect();
+    let measured = measure(&font, &abi::MeasureRequest { break_extra: 6, break_rem: 0,
+        ..request(text.len()) }, &text).unwrap();
+    let advances = super::render::justified_advances(&font, 0, 400, 0, 6, 0, &text).unwrap().unwrap();
+    let mut running = 0;
+    for (index, delta) in advances.iter().enumerate() {
+        running += delta;
+        assert_eq!(running, measured.cumulative[index]);
+    }
+    // No justification produces no synthesized advances at all.
+    assert_eq!(super::render::justified_advances(&font, 0, 400, 0, 0, 0, &text).unwrap(), None);
 }

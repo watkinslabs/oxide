@@ -96,6 +96,23 @@ mod tests {
     }
 
     #[test]
+    fn justification_is_device_context_state_read_back_with_the_text_snapshot() {
+        let mut gdi = GdiManager::new();
+        let dc = gdi.create_dc(4, 4).unwrap();
+        let state = gdi.text_state(dc).unwrap();
+        assert_eq!((state.break_extra, state.break_rem), (0, 0));
+        assert_eq!(gdi.set_justification(dc, (3, 1)), Ok(()));
+        let state = gdi.text_state(dc).unwrap();
+        assert_eq!((state.break_extra, state.break_rem), (3, 1));
+        // A second device context keeps its own justification.
+        let other = gdi.create_dc(4, 4).unwrap();
+        assert_eq!(gdi.text_state(other).unwrap().break_extra, 0);
+        assert_eq!(gdi.set_justification(0, (1, 0)), Err(GdiError::NoSuchObject));
+        gdi.delete_object(dc).unwrap();
+        assert_eq!(gdi.set_justification(dc, (1, 0)), Err(GdiError::NoSuchObject));
+    }
+
+    #[test]
     fn mutation_returns_old_value_and_invalid_requests_are_atomic() {
         let mut gdi = GdiManager::new();
         let dc = gdi.create_dc(1, 1).unwrap();
