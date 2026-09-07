@@ -18,7 +18,7 @@ from pathlib import Path
 from notepad_qmp import QmpTransactions, QmpError
 from screenshot_evidence import screenshot_completed, record_screenshot
 from notepad_evidence import token_in_notepad_window, locate_notepad_window, image_size
-from gnome_overview import overview_visible, window_activated
+from gnome_overview import overview_showing, pill_stats, window_activated
 from notepad_uart_audit import audit as uart_audit, render_table as uart_audit_table, \
     render_markdown as uart_audit_markdown, load_win32u_ordinals
 
@@ -246,6 +246,10 @@ def ocr(path):
     return re.sub(r"[^a-z0-9-]", "", ocr_raw(path))
 
 
+def overview_on_screen(path):
+    return overview_showing(ocr_raw(path), *pill_stats(path))
+
+
 def screendump_probe(conn, path, deadline):
     """One-off screendump not journaled as A1-A5 evidence; used for retries."""
     path.unlink(missing_ok=True)
@@ -266,7 +270,7 @@ def leave_overview(conn, deadline, label):
     probe = Path(f"{SCREEN}-{label}-overview-probe.ppm")
     attempts = 0
     while time.monotonic() < deadline and attempts < 10:
-        if screendump_probe(conn, probe, deadline) and not overview_visible(ocr_raw(probe)):
+        if screendump_probe(conn, probe, deadline) and not overview_on_screen(probe):
             return
         keys(conn, "esc")
         time.sleep(0.5)
@@ -296,7 +300,7 @@ def ensure_notepad_active(conn, deadline):
     click(conn, (left + right) // 2, (top + bottom) // 2, width, height)
     time.sleep(0.5)
     activated_path, _ = screenshot(conn, "activated")
-    if not window_activated(ocr_raw(activated_path), locate_notepad_window(activated_path)):
+    if overview_on_screen(activated_path) or not window_activated(ocr_raw(activated_path), locate_notepad_window(activated_path)):
         die(f"Notepad window not active after click; retained {activated_path}")
 
 
