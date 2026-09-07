@@ -87,9 +87,6 @@ mkdir -p "$OUT/x86_64-windows" "$OUT/x86_64-unix" "$OUT/nls"
 cp -a "$PREFIX/lib/wine/x86_64-windows/." "$OUT/x86_64-windows/"
 cp -a "$PREFIX/lib/wine/x86_64-unix/." "$OUT/x86_64-unix/"
 cp -a "$PREFIX/share/wine/nls/." "$OUT/nls/"
-# The kernel publishes the NT runtime module itself: a PE ntdll.dll in the
-# guest catalog would be a second, disagreeing source for those exports.
-rm -f "$OUT/x86_64-windows/ntdll.dll"
 printf '%s\n' "$WINE_VERSION" > "$OUT/wine-version"
 
 modules=$(find "$OUT/x86_64-windows" -maxdepth 1 -type f \( -name '*.dll' -o -name '*.exe' \) | wc -l)
@@ -98,6 +95,11 @@ unixlibs=$(find "$OUT/x86_64-unix" -maxdepth 1 -type f -name '*.so' | wc -l)
 [ "$unixlibs" -gt 0 ] || die "no unixlibs installed"
 [ -f "$OUT/x86_64-windows/notepad.exe" ] || die "notepad.exe absent from the PE catalog"
 [ -f "$OUT/x86_64-unix/ntdll.so" ] || die "ntdll.so absent from the unixlib catalog"
+# The runtime tree is the complete upstream build. The image, not the package,
+# decides which modules the guest catalog carries: the NT runtime module is
+# held back there so exactly one ntdll reaches a process, and the audit gate
+# reads the real image out of this tree to measure what that costs.
+[ -f "$OUT/x86_64-windows/ntdll.dll" ] || die "ntdll.dll absent from the PE catalog"
 [ -f "$OUT/x86_64-unix/win32u.so" ] || die "win32u.so absent from the unixlib catalog"
 grep -q wine_oxide_attach_thread <(nm -D --defined-only "$OUT/x86_64-unix/ntdll.so") \
     || die "ntdll.so does not export the Oxide attach entry — the patch set did not reach the build"

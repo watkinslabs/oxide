@@ -33,6 +33,8 @@ const IMAGE_WINDOWS_PATH: &str = r"C:\windows\system32\notepad.exe";
 const REGISTRY_DB: &str = "/var/lib/oxide/registry.db";
 const REGISTRY_SOCKET: &str = "/run/oxide/registry.sock";
 const EMPTY_REGISTRY: &[u8] = b"OXREG\0\x01\0\0\0\0\0";
+/// The NT runtime module the kernel publishes itself; see the hold-back below.
+pub(super) const RUNTIME_MODULE: &str = "ntdll.dll";
 
 /// Stage the complete 64-bit launcher boundary into the boot root image.
 /// # C: O(cargo + Wine catalog files + debugfs writes)
@@ -74,6 +76,13 @@ pub(super) fn inject(root_img: &Path, arch: &str) -> Result<(), u8> {
     dbg(root_img, &format!("symlink {DOS_SYSTEM32} {WINDOWS_DIR}"))?;
     let _ = dbg(root_img, &format!("rm {DOS_DRIVE_Z}"));
     dbg(root_img, &format!("symlink {DOS_DRIVE_Z} {UNIX_ROOT}"))?;
+    // Exactly one NT runtime module reaches a process. The kernel publishes
+    // its own export page for `ntdll.dll` and is itself the loader that binds
+    // every other module against it, so a second, real image in the guest
+    // catalog would be a disagreeing source for the same 533 names. The
+    // package carries the complete upstream build; the hold-back is here, in
+    // one place, and it is what the NT user-mode split reverses.
+    dbg(root_img, &format!("rm {WINDOWS_DIR}/{RUNTIME_MODULE}"))?;
     payload::verify(root_img, &wine.version)?;
     eprintln!("xtask rootfs: staged Windows runtime image boundary wine={} PE_DLLS={} UNIXLIBS={} root={}", wine.version, wine.modules, wine.unixlibs, root_img.display());
     Ok(())

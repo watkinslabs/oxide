@@ -354,14 +354,9 @@ pub fn build_with_modules_and_params_and_stack(input: &EnvironmentInput<'_>, mod
 
 #[cfg(target_os = "oxide-kernel")]
 fn map_user_shared_data(as_: &AddressSpace) -> Result<(), Error> {
+    use super::user_shared_data::{page_bytes, USER_SHARED_DATA_BASE, USER_SHARED_DATA_BYTES};
     let base = UserVirtAddr::new(USER_SHARED_DATA_BASE).ok_or(Error::Einval)?;
-    let mut page = vec![0u8; USER_SHARED_DATA_BYTES];
-    let root = utf16("C:\\Windows")?;
-    for (index, value) in root.iter().enumerate() { put_u16(&mut page, 0x30 + index * 2, *value); }
-    put_u32(&mut page, 0x260, 0x0a000000);
-    put_u32(&mut page, 0x26c, 10);
-    put_u32(&mut page, 0x270, 0);
-    let data = as_.stash_bytes(page.into_boxed_slice());
+    let data = as_.stash_bytes(page_bytes()?.into_boxed_slice());
     as_.mmap_with_may_at(MmapPlacement::FixedNoReplace(base), USER_SHARED_DATA_BYTES,
         VmaProt::READ, VmaProt::READ, VmaFlags::PRIVATE,
         VmaBacking::KernelBytes { data, off: 0 }).map_err(|_| Error::Einval)?;

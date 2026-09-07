@@ -1,4 +1,70 @@
 # Windows call-surface gaps still open. Ratchet: entries only leave.
+bind advpack.dll kernel32.dll __chkstk
+bind bcrypt.dll kernel32.dll __chkstk
+bind comdlg32.dll kernel32.dll __chkstk
+bind cryptui.dll kernel32.dll __chkstk
+bind dbghelp.dll kernelbase.dll __chkstk
+bind dbghelp.dll ntdll.dll RtlComputeCrc32
+bind dbghelp.dll ntdll.dll RtlImageRvaToSection
+bind dbghelp.dll ntdll.dll RtlIsCurrentProcess
+bind dinput8.dll kernel32.dll __chkstk
+bind dnsapi.dll kernel32.dll __chkstk
+bind gdi32.dll kernel32.dll __chkstk
+bind gdiplus.dll kernel32.dll ReleaseSRWLockExclusive
+bind gdiplus.dll kernel32.dll TryAcquireSRWLockExclusive
+bind ieframe.dll kernel32.dll __chkstk
+bind iertutil.dll kernel32.dll __chkstk
+bind imagehlp.dll ntdll.dll RtlImageRvaToSection
+bind kernel32.dll ntdll.dll RtlAddFunctionTable
+bind kernel32.dll ntdll.dll RtlCopyUnicodeString
+bind kernel32.dll ntdll.dll RtlDeleteFunctionTable
+bind kernel32.dll ntdll.dll RtlInstallFunctionTableCallback
+bind kernel32.dll ntdll.dll __C_specific_handler
+bind kernelbase.dll ntdll.dll __C_specific_handler
+bind kernelbase.dll ntdll.dll __chkstk
+bind kernelbase.dll ntdll.dll _wcslwr
+bind msacm32.dll kernel32.dll __chkstk
+bind msvcrt.dll ntdll.dll __chkstk
+bind ole32.dll kernelbase.dll __chkstk
+bind rpcrt4.dll kernel32.dll __chkstk
+bind secur32.dll kernel32.dll AcquireSRWLockExclusive
+bind secur32.dll kernel32.dll AcquireSRWLockShared
+bind secur32.dll kernel32.dll ReleaseSRWLockExclusive
+bind secur32.dll kernel32.dll ReleaseSRWLockShared
+bind secur32.dll ntdll.dll RtlCompareString
+bind secur32.dll ntdll.dll RtlEqualUnicodeString
+bind secur32.dll ntdll.dll RtlInitString
+bind setupapi.dll kernelbase.dll __chkstk
+bind shell32.dll kernel32.dll __chkstk
+bind shlwapi.dll kernelbase.dll __chkstk
+bind ucrtbase.dll ntdll.dll __chkstk
+bind urlmon.dll kernel32.dll __chkstk
+bind user32.dll kernelbase.dll __chkstk
+bind userenv.dll kernel32.dll __chkstk
+bind uxtheme.dll kernel32.dll __chkstk
+bind windowscodecs.dll kernel32.dll __chkstk
+bind wininet.dll kernel32.dll __chkstk
+bind winmm.dll kernel32.dll WakeConditionVariable
+bind winmm.dll kernel32.dll __chkstk
+ntdll RtlAcquireSRWLockExclusive
+ntdll RtlAcquireSRWLockShared
+ntdll RtlAddFunctionTable
+ntdll RtlCompareString
+ntdll RtlComputeCrc32
+ntdll RtlCopyUnicodeString
+ntdll RtlDeleteFunctionTable
+ntdll RtlEqualUnicodeString
+ntdll RtlImageRvaToSection
+ntdll RtlInitString
+ntdll RtlInstallFunctionTableCallback
+ntdll RtlIsCurrentProcess
+ntdll RtlReleaseSRWLockExclusive
+ntdll RtlReleaseSRWLockShared
+ntdll RtlTryAcquireSRWLockExclusive
+ntdll RtlWakeConditionVariable
+ntdll __C_specific_handler
+ntdll __chkstk
+ntdll _wcslwr
 usermode-trap ntdll ApiSetQueryApiSetPresenceEx
 usermode-trap ntdll DbgBreakPoint
 usermode-trap ntdll DbgUiConnectToDbg
@@ -174,12 +240,19 @@ usermode-trap ntdll RtlInitializeNtUserPfn
 usermode-trap ntdll RtlInitializeSid
 usermode-trap ntdll RtlInterlockedFlushSList
 usermode-trap ntdll RtlInterlockedPushEntrySList
+usermode-trap ntdll RtlIpv4AddressToStringA
 usermode-trap ntdll RtlIpv4AddressToStringExA
+usermode-trap ntdll RtlIpv4AddressToStringW
 usermode-trap ntdll RtlIpv4StringToAddressA
 usermode-trap ntdll RtlIpv4StringToAddressExA
+usermode-trap ntdll RtlIpv4StringToAddressExW
+usermode-trap ntdll RtlIpv4StringToAddressW
 usermode-trap ntdll RtlIpv6AddressToStringExA
+usermode-trap ntdll RtlIpv6AddressToStringExW
 usermode-trap ntdll RtlIpv6StringToAddressA
 usermode-trap ntdll RtlIpv6StringToAddressExA
+usermode-trap ntdll RtlIpv6StringToAddressExW
+usermode-trap ntdll RtlIpv6StringToAddressW
 usermode-trap ntdll RtlIsDosDeviceName_U
 usermode-trap ntdll RtlIsNameLegalDOS8Dot3
 usermode-trap ntdll RtlIsNormalizedString

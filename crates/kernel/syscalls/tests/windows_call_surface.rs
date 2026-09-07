@@ -33,6 +33,7 @@ mod nt_wine_gdi_shape { pub(crate) use super::gdi_shape_ordinals as ordinals; }
 #[path = "windows_call_surface/baseline.rs"] mod baseline;
 #[path = "windows_call_surface/catalog.rs"] mod catalog;
 #[path = "windows_call_surface/closure.rs"] mod closure;
+#[path = "windows_call_surface/ntdll_services.rs"] mod ntdll_services;
 #[path = "windows_call_surface/report.rs"] mod report;
 #[path = "windows_call_surface/user_mode_ntdll.rs"] mod user_mode_ntdll;
 #[path = "windows_call_surface/win32u.rs"] mod win32u;
@@ -254,4 +255,86 @@ fn the_closure_delays_no_module_whose_symbols_this_audit_must_see() {
         }
     }
     assert!(delayed.is_empty(), "delayed dependencies whose symbols the audit cannot enumerate:\n{}", delayed.join("\n"));
+}
+
+/// The service numbering is fixed when the runtime is built, so it is read out
+/// of the module the image stages rather than transcribed here. This is what
+/// makes a version bump unable to renumber the services under the tree: the
+/// boundary table only claims which names are services, and the module the
+/// guest runs supplies every number.
+#[test]
+fn the_shipped_runtime_module_numbers_its_own_system_services() {
+    let Some(root) = catalog::root() else { return };
+    let Some(decoded) = ntdll_services::decode(&root) else {
+        eprintln!("windows-call-surface: no ntdll image in the catalog, service decode skipped"); return;
+    };
+    // A handful of decoded stubs would pass every assertion below vacuously.
+    assert!(decoded.len() > 200, "the runtime module must carry its service table, decoded {}", decoded.len());
+    let by_name = ntdll_services::by_name(&decoded);
+    // Each service is exported twice, once as `Nt` and once as the `Zw`
+    // alias, and both names carry the same ordinal. Counting names as if they
+    // were services would double the table, so the identity is asserted here:
+    // every ordinal is reached by exactly one `Nt` name and one `Zw` alias.
+    let mut names_by_ordinal: BTreeMap<u32, Vec<&str>> = BTreeMap::new();
+    for service in &decoded { names_by_ordinal.entry(service.ordinal).or_default().push(&service.name); }
+    let malformed: Vec<String> = names_by_ordinal.iter()
+        .filter(|(_, names)| names.len() != 2
+            || names.iter().filter(|name| name.starts_with("Nt")).count() != 1
+            || names.iter().filter(|name| name.starts_with("Zw")).count() != 1)
+        .map(|(ordinal, names)| format!("service {ordinal} is exported as {names:?}")).collect();
+    assert!(malformed.is_empty(), "services not exported as one Nt name and one Zw alias ({}):\n{}",
+        malformed.len(), malformed.join("\n"));
+    let ordinals: Vec<u32> = names_by_ordinal.keys().copied().collect();
+    assert_eq!(*ordinals.first().unwrap(), 0, "the service numbering starts at zero");
+    assert_eq!(*ordinals.last().unwrap() as usize, ordinals.len() - 1, "the service numbering is dense");
+    eprintln!("windows-call-surface: {} services decoded from the shipped module, {} exported names",
+        ordinals.len(), decoded.len());
+    // Every decoded name must be one the boundary table calls a service, and
+    // every service the boundary table names must be one the module numbers.
+    let mut misclassified: Vec<String> = by_name.keys()
+        .filter(|name| !pe::ntdll::syscalls::is_kernel_syscall(name.as_bytes()))
+        .map(|name| format!("{name} has a service stub the boundary table calls user mode")).collect();
+    misclassified.extend(pe::ntdll::syscalls::service_names()
+        .filter(|name| !by_name.contains_key(*name))
+        .map(|name| format!("{name} is a boundary-table service the module does not number")));
+    assert!(misclassified.is_empty(), "boundary disagreements ({}):\n{}", misclassified.len(), misclassified.join("\n"));
+}
+
+/// Every service stub reaches the kernel the same way: it tests one byte of
+/// the fixed shared page and, while that byte is clear, executes the
+/// architectural syscall instruction. A stub testing some other address would
+/// read a byte this kernel does not control.
+#[test]
+fn every_shipped_service_stub_tests_the_shared_page_this_kernel_maps() {
+    let Some(root) = catalog::root() else { return };
+    let Some(decoded) = ntdll_services::decode(&root) else { return };
+    assert!(decoded.len() > 200, "the service decode must reach the whole table, decoded {}", decoded.len());
+    let elsewhere: Vec<String> = decoded.iter()
+        .filter(|service| service.flag_address != elf_load::process_env::USER_SHARED_DATA_SYSTEM_CALL_ADDRESS)
+        .map(|service| format!("{} tests {:#x}", service.name, service.flag_address)).collect();
+    assert!(elsewhere.is_empty(), "service stubs testing an address this kernel does not map ({}):\n{}",
+        elsewhere.len(), elsewhere.join("\n"));
+}
+
+/// The size of the service work the split needs, as a number the tree can
+/// watch: of the services the shipped module numbers, how many does the
+/// Notepad closure actually reach. That subset, not the whole table, is what
+/// the kernel entry has to answer.
+#[test]
+fn the_closure_reaches_a_bounded_subset_of_the_shipped_service_table() {
+    let Some(root) = catalog::root() else { return };
+    let Some(decoded) = ntdll_services::decode(&root) else { return };
+    let Some(findings) = audit() else { return };
+    let by_name = ntdll_services::by_name(&decoded);
+    let reached: Vec<(&report::NtdllCall, String)> = findings.ntdll.iter()
+        .map(|call| (call, report::text(&call.name)))
+        .filter(|(_, name)| by_name.contains_key(name.as_str())).collect();
+    assert!(!reached.is_empty(), "the closure must reach system services");
+    eprintln!("windows-call-surface: closure reaches {} of {} shipped service names",
+        reached.len(), decoded.len());
+    // The names the closure reaches that the kernel page cannot answer today.
+    let unserved: Vec<String> = reached.iter().filter(|(call, _)| !call.present)
+        .map(|(_, name)| format!("{name} (service {})", by_name[name.as_str()])).collect();
+    assert!(unserved.is_empty(), "shipped services the closure reaches that no runtime export answers ({}):\n{}",
+        unserved.len(), unserved.join("\n"));
 }

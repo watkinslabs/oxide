@@ -162,6 +162,14 @@ class Ext4ValidatorTests(unittest.TestCase):
         with self.assertRaisesRegex(MODULE.Failure, "imm32.dll"):
             self.run_validator()
 
+    def test_real_ext4_fixture_rejects_a_guest_catalog_carrying_the_held_back_runtime(self):
+        # The kernel publishes the NT runtime module's exports itself, so a
+        # real image of the same name in the guest catalog is a second source
+        # for them. The image holds it back; this is what notices if it stops.
+        self.write("/usr/local/lib/oxide/windows/x86_64-windows/ntdll.dll", b"MZ")
+        with self.assertRaisesRegex(MODULE.Failure, "ntdll.dll"):
+            self.run_validator()
+
     def test_real_ext4_fixture_rejects_non_elf_native_copy(self):
         self.debugfs("unlink /usr/local/lib/oxide/windows/x86_64-unix/win32u.so")
         self.write("/usr/local/lib/oxide/windows/x86_64-unix/win32u.so", b"not an ELF")

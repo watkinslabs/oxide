@@ -73,6 +73,11 @@ pub(crate) const SERVICES: [&[u8]; 264] = [
     b"NtWorkerFactoryWorkerReady", b"NtWriteFile", b"NtWriteFileGather", b"NtWriteRequestData", b"NtWriteVirtualMemory", b"NtYieldExecution"
 ];
 
+/// The service names, in table order. # C: O(1) per item
+pub fn service_names() -> impl Iterator<Item = &'static str> {
+    SERVICES.iter().map(|name| core::str::from_utf8(name).unwrap_or(""))
+}
+
 /// Classify one NTDLL export name.
 /// # C: O(log N) over the system-service table
 pub fn role(name: &[u8]) -> Role {
