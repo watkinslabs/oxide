@@ -29,6 +29,8 @@ pub mod msg_layout;
 // One thread's kernel-owned text runs and the paint ends they gate: the
 // ordering decision is hosted-testable, the Task binding is not.
 mod nt_text_order;
+// Where one menu item's glyphs start and what record the run carries.
+mod nt_menu_text;
 pub mod nt_dispatch;
 pub(crate) mod nt_transition_measure;
 include!("nt_manifest.rs");

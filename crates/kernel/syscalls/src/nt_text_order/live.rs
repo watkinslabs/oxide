@@ -55,14 +55,17 @@ fn drain(tid: u64, first: Next) -> Option<u64> {
 
 /// Take one kernel-owned text run of the pass being drawn. The first run of
 /// an idle thread enters the font backend at once; the rest of the plan's
-/// runs follow it one at a time. # C: O(text units)
-pub(crate) fn submit_for_current(request: TextRequest, text: &[u16]) {
-    let Some(tid) = current_tid() else { return; };
+/// runs follow it one at a time. `Some` is the redirect status of a run this
+/// call launched, which the syscall the pass runs under must return: the
+/// callback reads its payload out of the frame the launch rewrote.
+/// # C: O(text units)
+pub(crate) fn submit_for_current(request: TextRequest, text: &[u16]) -> Option<u64> {
+    let tid = current_tid()?;
     let mut owned = Vec::new();
-    if owned.try_reserve_exact(text.len()).is_err() { return; }
+    if owned.try_reserve_exact(text.len()).is_err() { return None; }
     owned.extend_from_slice(text);
-    let Some(first) = with_row(tid, |queue| queue.submit(Run { request, text: owned })) else { return; };
-    let _ = drain(tid, first);
+    let first = with_row(tid, |queue| queue.submit(Run { request, text: owned }))?;
+    drain(tid, first)
 }
 
 /// End the paint of one window once every kernel-owned run the same pass

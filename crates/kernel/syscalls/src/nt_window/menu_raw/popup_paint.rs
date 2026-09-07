@@ -7,16 +7,17 @@ use ipc::win32_window::WindowId;
 
 /// Draw the menu one popup window carries into the device context of the
 /// paint that is still open on it. A window of any other class draws nothing.
+/// `Some` is the redirect status of the run that entered the font backend.
 /// # C: O(N_items + pixels)
-pub(crate) fn paint_popup_menu_window(hwnd: u64, dc: u64) {
-    let Some(window) = u32::try_from(hwnd).ok().and_then(WindowId::from_raw) else { return; };
-    let Some(menu) = with_entry(|entry| {
+pub(crate) fn paint_popup_menu_window(hwnd: u64, dc: u64) -> Option<u64> {
+    let window = u32::try_from(hwnd).ok().and_then(WindowId::from_raw)?;
+    let menu = with_entry(|entry| {
         let name = entry.state.class_name(window)?;
         if name != super::popup_window::POPUP_MENU_CLASS { return None; }
         let raw = entry.state.get_window_long_ptr(window, POPUP_MENU_EXTRA_OFFSET).ok()?;
         MenuId::from_raw(u32::try_from(raw).ok()?)
-    }).flatten() else { return; };
-    let Some(layout) = layout_of(menu.raw()) else { return; };
-    let Some(plan) = with_entry(|entry| entry.menus.popup_draw_plan(menu, &layout).ok()).flatten() else { return; };
-    crate::nt_window::menu_draw::run(dc, menu, &plan, (0, 0));
+    }).flatten()?;
+    let layout = layout_of(menu.raw())?;
+    let plan = with_entry(|entry| entry.menus.popup_draw_plan(menu, &layout).ok()).flatten()?;
+    crate::nt_window::menu_draw::run(dc, menu, &plan, (0, 0))
 }

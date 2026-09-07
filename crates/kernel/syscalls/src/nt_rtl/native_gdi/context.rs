@@ -30,7 +30,10 @@ pub(crate) fn begin(mut request: abi::TextRequest) -> u64 {
 pub(crate) fn begin_kernel_text(mut request: abi::TextRequest, text: &[u16]) -> Option<u64> {
     request.count = match u32::try_from(text.len()) { Ok(count) => count, Err(_) => return None };
     request.advances = 0;
-    let Some(bytes) = request.payload_bytes() else { return None; };
+    // The text pointer is written by the payload placement below, so the
+    // record is sized on the fields that are final here: the user-facing
+    // check would reject it for the null pointer it still carries.
+    let Some(bytes) = request.kernel_payload_bytes() else { return None; };
     let mut copy = Vec::new();
     if copy.try_reserve_exact(bytes).is_err() { return None; }
     copy.resize(bytes, 0);
@@ -105,11 +108,12 @@ pub(super) fn complete(task: &Task, result: u64) -> u64 {
         #[cfg(target_arch = "aarch64")]
         { (*regs).x30 = saved.completion.argument; (*regs).gp[0] = result; (*regs).retval = result; }
     }
-    // The thread owns its own frame again only at depth zero: there the next
-    // kernel-owned run, or the paint that owes its present to the runs now
-    // finished, takes the frame this completion just restored.
-    if task.nt_callback_stack.lock().len() == 0 {
-        if let Some(status) = crate::nt_text_order::advance_for_current() { return status; }
-    }
+    // The frame just restored is the one the finished run was issued from,
+    // whatever depth that issuer sits at: a menu bar is drawn from the
+    // default procedure of a window whose own procedure the kernel entered by
+    // callback, so its plan owes its remaining runs and its present at depth
+    // one. The next run, or the paint end the runs gate, takes that frame and
+    // its redirect status is what this completion returns.
+    if let Some(status) = crate::nt_text_order::advance_for_current() { return status; }
     result
 }
