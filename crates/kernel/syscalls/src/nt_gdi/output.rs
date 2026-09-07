@@ -66,8 +66,11 @@ pub(crate) fn snapshot(state:&GdiManager,token:OutputToken)->Result<Record,()>{
     if state.pending_output(token.hwnd,token.dc)!=Some(token){return Err(());}
     let (width,height,pixels)=state.surface(token.dc).ok_or(())?;
     let d=token.damage;
-    crate::nt_gdi_frame::snapshot(token.hwnd,1,width,height,pixels,
-        syscall::nt_compositor::Damage{left:d.left,top:d.top,right:d.right,bottom:d.bottom}).map_err(|_|())
+    let start=crate::nt_gdi_frame_trace::now();
+    let record=crate::nt_gdi_frame::snapshot(token.hwnd,1,width,height,pixels,
+        syscall::nt_compositor::Damage{left:d.left,top:d.top,right:d.right,bottom:d.bottom}).map_err(|_|())?;
+    crate::nt_gdi_frame_trace::serialised(start,record.payload.len());
+    Ok(record)
 }
 
 /// Reservation and serialization share one owner lock; allocation failure releases reservation.

@@ -14,25 +14,30 @@ pub(crate) fn client_damage(bounds: ipc::win32_window::WindowRect, client: ipc::
 
 /// Snapshot XRGB pixels while the caller protects the GDI surface. The returned
 /// record has no borrowed surface memory and is enqueued only after unlocking.
-/// The surface travels whole because a re-expose repaints from it; `damage`
-/// names the part of it that changed, which is the only part the display has
-/// to be given. A caller with no narrower coverage passes the whole surface.
-/// # C: O(width * height)
+/// Only the damaged sub-rectangle travels, at its own stride: the display
+/// retains the surface across frames and repaints a re-expose from its own
+/// copy, so a whole window on the wire is a line of typed text's worth of
+/// pixels plus the rest of the window nobody changed. The payload states the
+/// surface extent it belongs to and the sub-rectangle it carries.
+/// # C: O(damage width * damage height)
 pub(crate) fn snapshot(hwnd: u32, sequence: u64, width: i32, height: i32, pixels: &[u32], damage: Damage) -> Result<Record, Error> {
     let width = u32::try_from(width).map_err(|_| Error::Payload)?;
     let height = u32::try_from(height).map_err(|_| Error::Payload)?;
-    let stride = width.checked_mul(4).ok_or(Error::Overflow)?;
-    let bytes = wire::pixel_len(width, height, stride, wire::PIXEL_BGRA8888)?;
-    if pixels.len() != bytes / 4 { return Err(Error::Length); }
+    let row = u32::try_from(damage.right.checked_sub(damage.left).ok_or(Error::Overflow)?).map_err(|_| Error::Payload)?.checked_mul(4).ok_or(Error::Overflow)?;
+    let bytes = wire::frame_pixel_len(width, height, row, wire::PIXEL_BGRA8888, damage)?;
+    let surface = (width as usize).checked_mul(height as usize).ok_or(Error::Overflow)?;
+    if pixels.len() != surface { return Err(Error::Length); }
     let mut payload = Vec::new();
-    if !damage.valid(width, height) { return Err(Error::Payload); }
     payload.try_reserve_exact(wire::FRAME_HEADER_BYTES + bytes).map_err(|_| Error::Allocation)?;
-    for value in [width, height, stride, wire::PIXEL_BGRA8888] {
+    for value in [width, height, row, wire::PIXEL_BGRA8888] {
         payload.extend_from_slice(&value.to_le_bytes());
     }
     payload.extend_from_slice(&damage.encode());
-    for pixel in pixels {
-        payload.extend_from_slice(&(pixel | 0xff00_0000).to_le_bytes());
+    for y in damage.top as usize..damage.bottom as usize {
+        let start = y * width as usize + damage.left as usize;
+        for pixel in &pixels[start..start + (row / 4) as usize] {
+            payload.extend_from_slice(&(pixel | 0xff00_0000).to_le_bytes());
+        }
     }
     Record::new(Opcode::Frame, sequence, hwnd as u64, payload)
 }
@@ -53,6 +58,37 @@ mod tests {
         assert!(record.validate().is_ok());
     }
 
+    /// A typed character damages one line of a window. The payload that
+    /// carries it must be that line, not the window: the whole surface is
+    /// what made a keystroke cost a megabyte and a half of copying.
+    #[test]
+    fn a_one_line_damage_carries_that_line_and_not_the_window() {
+        const W: i32 = 725; const H: i32 = 528; const LINE: i32 = 14;
+        let pixels = alloc::vec![0x00ab_cdefu32; (W * H) as usize];
+        let line = Damage { left: 3, top: 40, right: W - 3, bottom: 40 + LINE };
+        let record = snapshot(7, 1, W, H, &pixels, line).unwrap();
+        let carried = ((W - 6) * LINE * 4) as usize;
+        assert_eq!(record.payload.len(), wire::FRAME_HEADER_BYTES + carried);
+        assert!(record.payload.len() * 24 < (W * H * 4) as usize, "one line still costs a whole-surface payload");
+        assert_eq!(u32::from_le_bytes(record.payload[0..4].try_into().unwrap()), W as u32);
+        assert_eq!(u32::from_le_bytes(record.payload[4..8].try_into().unwrap()), H as u32);
+        assert_eq!(u32::from_le_bytes(record.payload[8..12].try_into().unwrap()), ((W - 6) * 4) as u32);
+        assert_eq!(Damage::decode(&record.payload[16..32]).unwrap(), line);
+        assert!(record.validate().is_ok());
+    }
+
+    /// The rows a sub-rectangle carries are its own, taken from the surface
+    /// at the damage origin - not the surface's first rows.
+    #[test]
+    fn the_carried_rows_are_the_damaged_ones_at_their_own_origin() {
+        let pixels: [u32; 12] = core::array::from_fn(|i| i as u32);
+        let part = Damage { left: 1, top: 1, right: 3, bottom: 3 };
+        let record = snapshot(7, 1, 4, 3, &pixels, part).unwrap();
+        let carried: alloc::vec::Vec<u32> = record.payload[32..].chunks_exact(4)
+            .map(|b| u32::from_le_bytes(b.try_into().unwrap()) & 0x00ff_ffff).collect();
+        assert_eq!(carried, alloc::vec![5, 6, 9, 10]);
+    }
+
     #[test]
     fn client_coverage_reaches_the_backing_at_the_client_origin() {
         let bounds = ipc::win32_window::WindowRect { left: 4, top: 1, right: 725, bottom: 15 };
@@ -70,6 +106,7 @@ mod tests {
         let part = Damage { left: 1, top: 0, right: 4, bottom: 2 };
         let record = snapshot(7, 1, 4, 2, &pixels, part).unwrap();
         assert_eq!(Damage::decode(&record.payload[16..32]).unwrap(), part);
+        assert_eq!(record.payload.len(), wire::FRAME_HEADER_BYTES + 3 * 2 * 4);
         assert!(record.validate().is_ok());
         for bad in [Damage { left: 0, top: 0, right: 5, bottom: 2 }, Damage { left: 2, top: 0, right: 2, bottom: 2 },
             Damage { left: -1, top: 0, right: 4, bottom: 2 }, Damage { left: 0, top: 0, right: 4, bottom: 3 }] {

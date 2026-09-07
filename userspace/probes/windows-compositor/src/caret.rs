@@ -1,6 +1,5 @@
 //! Presentation only: derive each XOR overlay from unmodified HWND backing pixels.
-use crate::{Frame,TransportError};
-use std::borrow::Cow;
+use crate::TransportError;
 use syscall::nt_compositor::caret::Snapshot;
 /// A caret overlay's coverage, in the backing surface's own coordinates.
 pub(crate) type Bounds=crate::Rect;
@@ -32,26 +31,21 @@ impl Surface {
     }
 
     /// Where this surface currently draws, if anywhere. # C: O(1)
-    fn covered(&self)->Option<Bounds>{
+    pub(crate) fn covered(&self)->Option<Bounds>{
         let s=self.snapshot.as_ref().filter(|s|s.visible)?;
         Some(Bounds{left:s.rect.x,top:s.rect.y,right:s.rect.x.saturating_add(s.rect.width as i32),
             bottom:s.rect.y.saturating_add(s.rect.height as i32)})
     }
-    /// Output is disposable presentation pixels. Caller never replaces the pristine base with these.
-    pub(crate) fn compose<'a>(&self,base:&'a Frame)->Result<Cow<'a,[u32]>,TransportError>{
-        let n=(base.stride as usize).checked_mul(base.height as usize).ok_or(TransportError::InvalidFrame)?;
-        if base.width==0||base.height==0||base.stride<base.width||n>crate::protocol::MAX_PIXELS||n!=base.pixels.len(){return Err(TransportError::InvalidFrame);}
-        let Some(s)=self.snapshot.as_ref().filter(|s|s.visible)else{return Ok(Cow::Borrowed(&base.pixels));};
-        let x0=(s.rect.x as i64).max(0);let y0=(s.rect.y as i64).max(0);
-        let x1=(s.rect.x as i64+s.rect.width as i64).min(base.width as i64);
-        let y1=(s.rect.y as i64+s.rect.height as i64).min(base.height as i64);
-        if x0>=x1||y0>=y1{return Ok(Cow::Borrowed(&base.pixels));}
-        let mut out=Vec::new();out.try_reserve_exact(n).map_err(|_|TransportError::InvalidFrame)?;out.extend_from_slice(&base.pixels);
-        for y in y0..y1{for x in x0..x1{
-            let src=(y-s.rect.y as i64) as usize*s.rect.width as usize+(x-s.rect.x as i64) as usize;
-            let dst=y as usize*base.stride as usize+x as usize;
-            out[dst]^=s.mask[src];
-        }}Ok(Cow::Owned(out))
+    /// The value one surface pixel is XORed with, or zero where the overlay
+    /// draws nothing. The overlay is presentation only: it is read while the
+    /// damaged pixels are assembled for the display, so the retained surface
+    /// keeps the pristine pixels the application drew and no copy of it is
+    /// made to hold a composite. # C: O(1)
+    pub(crate) fn xor_at(&self,x:i32,y:i32)->u32{
+        let Some(s)=self.snapshot.as_ref().filter(|s|s.visible)else{return 0;};
+        let (Some(dx),Some(dy))=(x.checked_sub(s.rect.x),y.checked_sub(s.rect.y))else{return 0;};
+        if dx<0||dy<0||dx as i64>=s.rect.width as i64||dy as i64>=s.rect.height as i64{return 0;}
+        s.mask.get(dy as usize*s.rect.width as usize+dx as usize).copied().unwrap_or(0)
     }
 }
 #[cfg(test)]

@@ -22,7 +22,11 @@ fn getdc_draw_release_without_endpaint_publishes_canonical_backing_then_becomes_
         state.release_dc_lease(dc).unwrap();}
     assert_eq!(flush_one(||capture(&owner),|frame|{
         assert!(owner.try_lock().is_ok());assert_eq!(frame.header.hwnd,7);
-        assert_eq!(&frame.payload[PIXELS+5*4..PIXELS+4+5*4],&0xffabcdefu32.to_le_bytes());true
+        // The lease sits at (1,1) in a 4x4 backing, so the 2x2 fill damages
+        // (1,1)-(3,3) and that sub-rectangle is the whole payload: the first
+        // carried pixel is the fill, not the backing's untouched origin.
+        assert_eq!(frame.payload.len(),PIXELS+2*2*4);
+        assert_eq!(&frame.payload[PIXELS..PIXELS+4],&0xffabcdefu32.to_le_bytes());true
     },|token,success|{assert_eq!(token.dc,backing);assert!(success);owner.lock().unwrap().finish_output(token,success);}),Ok(FlushOutcome::Presented));
     assert!(owner.lock().unwrap().pending_outputs().unwrap().is_empty());
     assert_eq!(flush_one(||capture(&owner),|_|panic!("clean output published"),|_,_|panic!("clean ACK")),Ok(FlushOutcome::Clean));

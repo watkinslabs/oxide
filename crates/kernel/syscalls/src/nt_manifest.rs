@@ -73,6 +73,19 @@ mod nt_window_policy;
 #[cfg(any(test, target_os = "oxide-kernel"))]
 #[path = "nt_gdi/frame.rs"]
 mod nt_gdi_frame;
+// The flush trace is a diagnostic: `debug-winframe` selects the reporting
+// implementation, and its absence selects the empty one, so no call site
+// carries the feature test.
+#[cfg(any(test, target_os = "oxide-kernel"))]
+#[path = "nt_gdi/frame_trace.rs"]
+mod nt_gdi_frame_trace_on;
+#[cfg(any(test, target_os = "oxide-kernel"))]
+#[path = "nt_gdi/frame_trace_off.rs"]
+mod nt_gdi_frame_trace_off;
+#[cfg(all(any(test, target_os = "oxide-kernel"), feature = "debug-winframe"))]
+pub(crate) use nt_gdi_frame_trace_on as nt_gdi_frame_trace;
+#[cfg(all(any(test, target_os = "oxide-kernel"), not(feature = "debug-winframe")))]
+pub(crate) use nt_gdi_frame_trace_off as nt_gdi_frame_trace;
 #[cfg(any(test, target_os = "oxide-kernel"))]
 #[path = "nt_compositor/mod.rs"]
 mod nt_compositor;

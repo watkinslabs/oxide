@@ -9,8 +9,8 @@ impl Backend {
         if !error.is_null(){unsafe{libc::free(error as *mut _);}return Err(BackendError::X11);}
         // Rendering into an unmapped window does not retain its server pixels.
         // Replay before acknowledgement; a WM-delayed map still repaints on Expose.
-        let damage=window.last_frame.as_ref().filter(|f|f.width==window.width&&f.height==window.height)
-            .map(|f|Rect{left:0,top:0,right:f.width as i32,bottom:f.height as i32});
+        let damage=window.surface.as_ref().filter(|s|s.width==window.width&&s.height==window.height)
+            .map(|s|Rect{left:0,top:0,right:s.width as i32,bottom:s.height as i32});
         if let Some(damage)=damage{self.repaint(hwnd,damage)?;}
         Ok(())
     }

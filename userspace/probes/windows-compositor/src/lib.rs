@@ -11,6 +11,7 @@ mod protocol;
 mod readiness;
 mod x11;
 mod caret;
+mod retained;
 
 pub use geometry::{decode_cardinals, decode_work_area, MonitorSnapshot, Rect};
 pub use pointer::{buttons_from_state, button_mask, wheel_for, MK_ALL, MK_LBUTTON, WHEEL_DELTA};

@@ -9,9 +9,9 @@ impl Backend {
         let damage={
             let window=self.windows.get_mut(&hwnd).ok_or(BackendError::InvalidCommand)?;
             let Some(changed)=window.caret.update(snapshot).map_err(BackendError::Transport)?else{return Ok(());};
-            window.last_frame.as_ref().map(|frame|Rect{
+            window.surface.as_ref().map(|surface|Rect{
                 left:changed.left.max(0),top:changed.top.max(0),
-                right:changed.right.min(frame.width as i32),bottom:changed.bottom.min(frame.height as i32)})
+                right:changed.right.min(surface.width as i32),bottom:changed.bottom.min(surface.height as i32)})
                 .filter(|r|r.left<r.right&&r.top<r.bottom)
         };
         if let Some(damage)=damage{self.repaint(hwnd,damage)?;}Ok(())
