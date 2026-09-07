@@ -21,6 +21,7 @@ from notepad_evidence import token_in_notepad_window, locate_notepad_window, ima
 from gnome_overview import overview_showing, pill_stats, window_activated
 from notepad_uart_audit import audit as uart_audit, render_table as uart_audit_table, \
     render_markdown as uart_audit_markdown, load_win32u_ordinals
+from notepad_fault_drain import drain as drain_fault
 
 ROOT = Path(__file__).resolve().parents[1]
 IMAGES = ROOT.parent / "images"
@@ -182,10 +183,22 @@ def uart_pump(conn, buffer, log, seconds):
         log.flush()
 
 
+def pump_bytes(conn, buffer, log, seconds):
+    """One pump slice, reporting how many new bytes it captured."""
+    before = len(buffer)
+    uart_pump(conn, buffer, log, seconds)
+    return len(buffer) - before
+
+
 def wait_marker(conn, buffer, log, marker, deadline):
     while time.monotonic() < deadline:
         text = buffer.decode("utf-8", "replace")
         if FAULT.search(text):
+            # The oops is still being written when its first line matches.
+            # die() kills QEMU, so drain the rest of the report first --
+            # without this the retained evidence was four hex digits of a
+            # sixteen-digit vector and no rip, GPRs or stack-guard line.
+            drain_fault(lambda: pump_bytes(conn, buffer, log, 0.25), time.monotonic)
             die(f"guest fault before {marker}")
         if marker in text:
             return
