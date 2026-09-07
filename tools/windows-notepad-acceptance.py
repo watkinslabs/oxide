@@ -36,6 +36,8 @@ QEMU_LOG = OUT / f"qemu-{RUN}.log"
 SCREEN = OUT / f"screen-{RUN}"
 AUDIT_MD = OUT / f"audit-{RUN}.md"
 TIMEOUT = int(os.environ.get("WINDOWS_NOTEPAD_ACCEPTANCE_TIMEOUT", "900"))
+# Bound on the desktop framing the shown window before the activation click.
+LOCATE_SECONDS = 15
 TOKEN = os.environ.get("OXIDE_NOTEPAD_TOKEN", f"oxide-{RUN}").lower()
 DEFAULT_WINE_NTDLL = ROOT / "target/lanes/wine-10.20-build/dlls/ntdll/ntdll.so"
 DEFAULT_WINE_WIN32U = ROOT / "target/lanes/wine-10.20-build/dlls/win32u/win32u.so"
@@ -282,13 +284,24 @@ def ensure_notepad_active(conn, deadline):
     so the desktop's focused window is Notepad, not whatever was focused
     behind the overview.
     """
-    leave_overview(conn, deadline, "activation")
+    # The kernel's present precedes the desktop's framing of the X window
+    # by however long mutter takes to start its frames client the first time
+    # an X11 client maps (measured: framed and white one second after the
+    # present in one run, still black and unframed one second after it in
+    # another). Poll the title for a bounded time instead of one probe.
     probe = Path(f"{SCREEN}-locate-probe.ppm")
-    if not screendump_probe(conn, probe, deadline):
-        die("QMP did not produce a screenshot to locate the Notepad window")
-    rect = locate_notepad_window(probe)
+    rect = None
+    locate_deadline = min(deadline, time.monotonic() + LOCATE_SECONDS)
+    while True:
+        leave_overview(conn, deadline, "activation")
+        if not screendump_probe(conn, probe, deadline):
+            die("QMP did not produce a screenshot to locate the Notepad window")
+        rect = locate_notepad_window(probe)
+        if rect is not None or time.monotonic() >= locate_deadline:
+            break
+        time.sleep(1)
     if rect is None:
-        die("no Notepad window title located before activation click")
+        die(f"no Notepad window title located within {LOCATE_SECONDS}s of the kernel's window-show; retained {probe}")
     width, height = image_size(probe)
     left, top, right, bottom = rect
     click(conn, (left + right) // 2, (top + bottom) // 2, width, height)
@@ -367,6 +380,50 @@ def run_uart_audit():
     return result
 
 
+
+def run_desktop_checks(uart, reader, qmp_sock, deadline):
+    """Drive the desktop checks; the caller owns the reader and the log."""
+    launch_on_desktop(uart, reader, qmp_sock, deadline)
+    for marker in MILESTONES:
+        wait_marker(reader, marker, deadline)
+    # The kernel has reported the window shown; confirm it is also the
+    # active window on screen (not just present in a thumbnail behind a
+    # reopened overview) before any input is typed into it (KI-0472).
+    ensure_notepad_active(qmp_sock, deadline)
+    _, before = screenshot(qmp_sock, "before-token")
+    type_token(qmp_sock)
+    time.sleep(2)
+    after_path, after = screenshot(qmp_sock, "after-token")
+    if before == after:
+        die("framebuffer did not change after token injection")
+    # A screenshot diff plus a whole-frame OCR is satisfied by the token
+    # landing in GNOME's overview search box instead of Notepad (KI-0435).
+    # Locate the Notepad window by its title-bar text and require the
+    # token inside that crop specifically.
+    found, rect = token_in_notepad_window(after_path, TOKEN, crop_path=Path(f"{SCREEN}-after-token-notepad-crop.png"))
+    if rect is None:
+        die(f"no Notepad window title located on screen; retained {after_path}")
+    if not found:
+        die(f"token not found inside located Notepad window {rect}; retained {after_path}")
+    print("windows-notepad-acceptance: A1/A2/A3 PASS (PE, window, present, token)")
+    # This fixture is an untitled scratch document. Delete our own token
+    # through real input before testing close. Notepad's DoCloseFile prompts
+    # to save a nonempty modified buffer; waiting for exit at that prompt
+    # would test the wrong state and eventually time out.
+    keys(qmp_sock, "ctrl", "a")
+    keys(qmp_sock, "backspace")
+    time.sleep(1)
+    cleared_path, cleared = screenshot(qmp_sock, "cleared-token")
+    if cleared == after or TOKEN in ocr(cleared_path):
+        die("scratch token did not clear before close")
+    keys(qmp_sock, "alt", "f4")
+    wait_marker(reader, "[WINDOWS-NOTEPAD] runtime-exit status=", deadline)
+    if "[WINDOWS-NOTEPAD] runtime-exit status=0" not in reader.text():
+        die("Notepad runtime exited without status 0")
+    print("windows-notepad-acceptance: A4/A5 PASS (close, exit, wrapper cleanup)")
+    qmp(qmp_sock, "quit")
+
+
 def main():
     global qemu
     if not re.fullmatch(r"[a-z0-9-]{4,64}", TOKEN):
@@ -401,46 +458,12 @@ def main():
     qmp_sock = QmpTransactions(lambda: wait_socket(QMP, deadline, "QMP socket"))
     with UART_LOG.open("ab", buffering=0) as log:
         reader = UartReader(uart, log)
-        launch_on_desktop(uart, reader, qmp_sock, deadline)
-        for marker in MILESTONES:
-            wait_marker(reader, marker, deadline)
-        # The kernel has reported the window shown; confirm it is also the
-        # active window on screen (not just present in a thumbnail behind a
-        # reopened overview) before any input is typed into it (KI-0472).
-        ensure_notepad_active(qmp_sock, deadline)
-        _, before = screenshot(qmp_sock, "before-token")
-        type_token(qmp_sock)
-        time.sleep(2)
-        after_path, after = screenshot(qmp_sock, "after-token")
-        if before == after:
-            die("framebuffer did not change after token injection")
-        # A screenshot diff plus a whole-frame OCR is satisfied by the token
-        # landing in GNOME's overview search box instead of Notepad (KI-0435).
-        # Locate the Notepad window by its title-bar text and require the
-        # token inside that crop specifically.
-        found, rect = token_in_notepad_window(after_path, TOKEN, crop_path=Path(f"{SCREEN}-after-token-notepad-crop.png"))
-        if rect is None:
-            die(f"no Notepad window title located on screen; retained {after_path}")
-        if not found:
-            die(f"token not found inside located Notepad window {rect}; retained {after_path}")
-        print("windows-notepad-acceptance: A1/A2/A3 PASS (PE, window, present, token)")
-        # This fixture is an untitled scratch document. Delete our own token
-        # through real input before testing close. Notepad's DoCloseFile prompts
-        # to save a nonempty modified buffer; waiting for exit at that prompt
-        # would test the wrong state and eventually time out.
-        keys(qmp_sock, "ctrl", "a")
-        keys(qmp_sock, "backspace")
-        time.sleep(1)
-        cleared_path, cleared = screenshot(qmp_sock, "cleared-token")
-        if cleared == after or TOKEN in ocr(cleared_path):
-            die("scratch token did not clear before close")
-        keys(qmp_sock, "alt", "f4")
-        wait_marker(reader, "[WINDOWS-NOTEPAD] runtime-exit status=", deadline)
-        if "[WINDOWS-NOTEPAD] runtime-exit status=0" not in reader.text():
-            die("Notepad runtime exited without status 0")
-        print("windows-notepad-acceptance: A4/A5 PASS (close, exit, wrapper cleanup)")
-        qmp(qmp_sock, "quit")
-        reader.stop()
+        try:
+            run_desktop_checks(uart, reader, qmp_sock, deadline)
+        finally:
+            # The reader writes the log; it must stop before the file closes,
+            # on the failure path as well as the success path.
+            reader.stop()
     uart.close()
     qemu.wait(timeout=20)
     result = run_uart_audit()
