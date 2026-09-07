@@ -1,5 +1,5 @@
 use super::*;
-use ipc::win32_window::{WindowId,WindowRect,WindowPosition,RDW_INVALIDATE,RDW_ERASE,RDW_FRAME};
+use ipc::win32_window::{WindowId,WindowRect,WindowPosition,RDW_INVALIDATE,RDW_ERASE,RDW_FRAME,RDW_VALIDATE,RDW_NOFRAME};
 fn setup(flags:u32)->(u32,u32){
     let group=Arc::new(thread_group::ThreadGroup);ENV.with(|e|*e.borrow_mut()=Env{task:Some(Task{tid:7,thread_group:group.clone()}),..Default::default()});
     let mut state=WindowManager::new();let id=state.create(7,None,0).unwrap();
@@ -125,4 +125,31 @@ fn return_send(result:Result<u64,()>)->u64{
     assert_eq!(return_send(Ok(1)),0);assert!(!GDI.lock().unwrap().as_ref().unwrap().contains_object(dc));
     paint_callbacks::reap_retired_current();paint_callbacks::cancel_window_current(hwnd as u64);
     ENV.with(|e|{let e=e.borrow();assert_eq!(e.erase_finished.len(),1);assert_eq!(e.deletions.iter().filter(|h|**h==dc).count(),1);});
+}
+// The application shape the guest measured: a window whose menu bar reserves a
+// band off the top of the client area, made visible, then painted. Its whole
+// frame is damaged, so the reference's whole-window sentinel goes out as
+// WM_NCPAINT's wParam, ahead of WM_ERASEBKGND and the client paint. Without a
+// frame request on the show transition no WM_NCPAINT is ever sent and the bar
+// band stays unpainted.
+#[test]fn a_shown_window_with_a_menu_band_paints_nonclient_before_erase(){
+    let _serial=SERIAL.lock().unwrap();
+    let group=Arc::new(thread_group::ThreadGroup);ENV.with(|e|*e.borrow_mut()=Env{task:Some(Task{tid:7,thread_group:group.clone()}),..Default::default()});
+    let mut state=WindowManager::new();let id=state.create(7,None,0).unwrap();
+    state.apply_position(7,WindowPosition{window:id,rect:WindowRect{left:0,top:0,right:729,bottom:546},
+        client:Some(WindowRect{left:0,top:19,right:729,bottom:546}),order:None,visible:None,flags:0x10,notify_geometry:false}).unwrap();
+    // Nothing but the show transition may account for the damage under test.
+    state.redraw_damage(id,None,RDW_VALIDATE|RDW_NOFRAME,false).unwrap();
+    assert!(!state.erase_damage(id).unwrap().nonclient);
+    state.show(7,id,true).unwrap();
+    state.begin_paint(id).unwrap();
+    let mut gdi=GdiManager::new();let dc=gdi.create_dc(729,546).unwrap();state.bind_paint_dc(id,dc).unwrap();
+    *GDI.lock().unwrap()=Some(gdi);*GUI.lock()=vec![Entry{group:Arc::downgrade(&group),state,paint_callbacks:paint_callbacks::Queue::new(),sent:send::Queue::new()}];
+    assert_eq!(paint_prepare::prepare_for_current(id.raw(),dc,4096),STATUS_PENDING);
+    ENV.with(|e|{let e=e.borrow();assert_eq!(e.messages[0].1,0x85,"the first message of the paint is WM_NCPAINT");
+        assert_eq!(e.messages[0].2,1,"a whole covered frame uses the whole-window sentinel");});
+    assert_eq!(return_send(Ok(u64::MAX)),STATUS_PENDING);
+    ENV.with(|e|assert_eq!(e.borrow().messages[1].1,0x14,"WM_ERASEBKGND follows WM_NCPAINT"));
+    assert_eq!(return_send(Ok(STATUS_PENDING)),dc as u64);
+    ENV.with(|e|assert_eq!(e.borrow().milestones,1));
 }

@@ -11,6 +11,13 @@ pub const RDW_UPDATENOW: u32 = 0x0100;
 pub const RDW_ERASENOW: u32 = 0x0200;
 pub const RDW_FRAME: u32 = 0x0400;
 pub const RDW_NOFRAME: u32 = 0x0800;
+/// What a frame change requests: a window becoming visible, or a frame-changed
+/// position request, exposes the whole window, so the nonclient band is
+/// invalidated alongside the client area for the window and every descendant.
+/// Without RDW_FRAME the paint carries no nonclient damage and the window never
+/// receives WM_NCPAINT, so a frame the window draws itself (the menu bar band)
+/// never appears.
+pub const FRAME_REDRAW: u32 = RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct PaintDamage {
