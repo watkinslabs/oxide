@@ -14,7 +14,7 @@ mod caret;
 mod visibility;
 
 #[derive(Debug)]
-pub enum BackendError { DisplayUnavailable, X11, InvalidCommand, Transport(TransportError) }
+pub enum BackendError { DisplayUnavailable, X11, InvalidCommand, Transport(TransportError), Wait(std::io::Error) }
 
 struct Window { xid: Xid, parent: Xid, gc: ffi::Gcontext, rect: Rect, width: u32, height: u32, requested_visible: bool, suppress_backing_configure: bool, surface: Option<crate::retained::Retained>, caret: crate::caret::Surface }
 
@@ -39,6 +39,24 @@ impl Backend {
     pub(crate) fn map_input_for_test(&mut self, input: InputEvent) -> Option<BridgeEvent> { self.map_input(input) }
     #[cfg(test)]
     pub(crate) fn pending_event_for_test(&mut self) -> Option<BridgeEvent> { self.pending.pop_front() }
+    /// The X connection's socket, so a caller can block on it instead of
+    /// asking for events that have not arrived. Events already decoded and
+    /// queued inside the library do not make it readable, so a caller drains
+    /// `poll_event` to empty before waiting on it.
+    ///
+    /// # C: O(1)
+    pub fn connection_fd(&self) -> std::os::fd::RawFd { unsafe { ffi::xcb_get_file_descriptor(self.conn) } }
+    /// Whether the connection can still carry requests. A broken one never
+    /// produces another event, so a wait on its descriptor would never end.
+    ///
+    /// # C: O(1)
+    pub fn connected(&self) -> bool { unsafe { ffi::xcb_connection_has_error(self.conn) == 0 } }
+    /// Pushes queued requests to the server. A caller that blocks without
+    /// doing this waits for a reply to a request still sitting in the
+    /// library's output buffer.
+    ///
+    /// # C: O(1) amortised
+    pub fn flush(&self) { unsafe { ffi::xcb_flush(self.conn); } }
     /// Name the connect stage that is taking the time. Startup is a series of
     /// synchronous X round trips and the bridge handshake is bounded, so when
     /// it does not finish, which round trip is outstanding is the diagnosis.

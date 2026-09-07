@@ -1,5 +1,5 @@
 use std::io::{self, Read, Write};
-use std::os::fd::{FromRawFd, RawFd};
+use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::os::unix::net::UnixStream;
 
 use crate::{MonitorSnapshot, Rect};
@@ -101,6 +101,12 @@ impl StreamTransport {
         let record = Record { header, payload: bytes[wire::HEADER_LEN..].to_vec() }; record.validate().map_err(|_| TransportError::Unsupported)?; Ok(Some(record))
     }
 }
+
+/// The bridge socket, so a caller can block on it rather than ask a
+/// non-blocking socket for a record that has not arrived. Bytes already
+/// buffered here do not make it readable, so a caller drains `recv` to
+/// `None` before waiting on it.
+impl AsRawFd for StreamTransport { fn as_raw_fd(&self) -> RawFd { self.stream.as_raw_fd() } }
 
 impl NativeTransport for StreamTransport {
     fn recv(&mut self) -> Result<Option<Inbound>, TransportError> {

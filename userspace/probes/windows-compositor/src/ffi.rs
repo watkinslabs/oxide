@@ -68,6 +68,7 @@ extern "C" {
     pub fn xcb_get_maximum_request_length(c: *mut Connection) -> u32;
     pub fn xcb_flush(c: *mut Connection) -> c_int;
     pub fn xcb_poll_for_event(c: *mut Connection) -> *mut GenericEvent;
+    pub fn xcb_get_file_descriptor(c: *mut Connection) -> c_int;
     pub fn xkb_context_new(flags: u32) -> *mut XkbContext;
     pub fn xkb_context_unref(context: *mut XkbContext);
     pub fn xkb_keymap_unref(keymap: *mut XkbKeymap);
