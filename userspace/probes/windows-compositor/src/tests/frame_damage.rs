@@ -38,3 +38,11 @@ fn damage_outside_the_surface_and_a_truncated_header_are_refused() {
     short.truncate(wire::FRAME_HEADER_BYTES - 1);
     assert!(decode_command(Opcode::Frame, 1, &short).is_err());
 }
+
+/// The bridge trace writes about a hundred bytes to the serial console per
+/// record, inside the loop that delivers input. Off unless asked for.
+#[test]
+fn the_bridge_record_trace_is_off_unless_the_environment_asks_for_it() {
+    assert_eq!(crate::TRACE_ENV, "OXIDE_COMPOSITOR_TRACE");
+    assert!(!crate::trace_events(), "an unset environment must not trace every input record");
+}
