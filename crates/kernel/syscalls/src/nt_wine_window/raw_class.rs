@@ -77,7 +77,7 @@ pub(super) fn create_window_with(args: SyscallArgs, read_arg: impl Fn(usize) -> 
         let Ok(buffer) = uaccess::get_user_u64(address) else { return 0; };
         buffer
     };
-    let child = super::hwnd_param::is_effective_child(style as u32);
+    let child = super::create_menu::is_effective_child(style as u32);
     let child_parent = if child { parent } else { 0 };
     let hwnd = if args.a1 <= u16::MAX as u64 {
         crate::nt_window::create_class_window_by_atom_for_current(args.a1 as u16, child_parent)
@@ -109,10 +109,10 @@ pub(super) fn create_window_with(args: SyscallArgs, read_arg: impl Fn(usize) -> 
     }
     // The style, not the value, decides what this argument is: a child's is
     // its control identifier and is never looked up as a menu handle.
-    let menu_failed = match super::hwnd_param::classify_create_menu(style as u32, menu) {
-        super::hwnd_param::CreateMenuValue::None => false,
-        super::hwnd_param::CreateMenuValue::ChildControlId(id) => crate::nt_window::set_control_id_for_current(hwnd, id).is_err(),
-        super::hwnd_param::CreateMenuValue::MenuHandle(handle) => u32::try_from(handle)
+    let menu_failed = match super::create_menu::classify_create_menu(style as u32, menu) {
+        super::create_menu::CreateMenuValue::None => false,
+        super::create_menu::CreateMenuValue::ChildControlId(id) => crate::nt_window::set_control_id_for_current(hwnd, id).is_err(),
+        super::create_menu::CreateMenuValue::MenuHandle(handle) => u32::try_from(handle)
             .map_or(true, |handle| crate::nt_window::set_window_menu_for_current(hwnd, Some(handle)).is_err()),
     };
     if menu_failed {

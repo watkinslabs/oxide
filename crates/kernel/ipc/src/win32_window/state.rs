@@ -6,7 +6,7 @@ impl WindowManager {
         if parent.is_some_and(|parent| self.get(parent).is_none()) { return Err(WindowError::InvalidParent); }
         let id = WindowId(self.next);
         self.next = self.next.checked_add(1).ok_or(WindowError::NoSuchWindow)?;
-        self.windows.push((id, OwnedWindow::new(WindowRecord { owner_tid, parent, owner: None, wndproc, unicode: true, class_atom: None, visible: false, sys_menu: None, id_menu: 0, presentation_ready: false, style: 0, ex_style: 0, last_focus: None, client_rect: None, imc: None, fnid: 0 }, 0, 0).map_err(|_| WindowError::NoMemory)?));
+        self.windows.push((id, OwnedWindow::new(WindowRecord { owner_tid, parent, owner: None, wndproc, unicode: true, class_atom: None, visible: false, sys_menu: None, id_menu: 0, presentation_ready: false, style: 0, ex_style: 0, last_focus: None, client_rect: None, imc: None, fnid: 0, dlg_info: 0, mdi_client: false }, 0, 0).map_err(|_| WindowError::NoMemory)?));
         self.rects.push((id, WindowRect { left: 0, top: 0, right: 0, bottom: 0 }));
         self.texts.push((id, Vec::new()));
         if self.queues.iter().all(|(tid, _)| *tid != owner_tid) { self.queues.push((owner_tid, MessageQueue::default())); }

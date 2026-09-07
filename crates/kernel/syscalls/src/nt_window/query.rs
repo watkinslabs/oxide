@@ -3,6 +3,9 @@ use super::*;
 use crate::nt_wine_window::hwnd_call::Snapshot;
 
 /// None for a handle the calling process does not own. # C: O(processes + windows * depth)
+/// The extra-area slot an MDI client's info occupies, one pointer in.
+const MDI_CLIENT_INFO_OFFSET: i32 = 8;
+
 pub(crate) fn hwnd_snapshot_for_current(hwnd: u64) -> Option<Snapshot> {
     let cur = sched::live::current().filter(|task| task.is_nt_personality())?;
     let id = valid_window(hwnd)?;
@@ -30,5 +33,9 @@ pub(crate) fn hwnd_snapshot_for_current(hwnd: u64) -> Option<Snapshot> {
         current_thread: record.owner_tid == cur.tid as u64,
         text_length: state.text(id).map(|t| t.len() as u32).unwrap_or(0),
         dpi: drm::primary_system_dpi(),
+        dlg_info: record.dlg_info,
+        // The client info lives at the pointer slot of the extra area, and
+        // only a window marked an MDI client reports it.
+        mdi_client_info: if record.mdi_client { state.get_window_long(id, MDI_CLIENT_INFO_OFFSET, 8).unwrap_or(0) } else { 0 },
     })
 }

@@ -56,6 +56,8 @@ pub(crate) mod nt_wine_input_context_contract;
 pub(crate) mod nt_wine_query_window_contract;
 #[path = "nt_wine_window/brush_raw.rs"]
 pub(crate) mod nt_wine_brush_contract;
+#[path = "nt_wine_window/create_menu.rs"]
+pub(crate) mod nt_wine_create_menu_contract;
 #[path = "nt_wine_window/hwnd_param.rs"]
 pub(crate) mod nt_wine_hwnd_param_contract;
 #[path = "nt_wine_window/hwnd_call.rs"]

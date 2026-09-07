@@ -95,7 +95,7 @@ fn convert_point(hwnd: u64, point: u64, to_physical: bool) -> u64 {
     let system = drm::primary_system_dpi();
     let thread = if awareness() == 0 { USER_DEFAULT_SCREEN_DPI } else { system };
     let (source, target) = if to_physical { (thread, system) } else { (system, thread) };
-    let Some(rect) = rect_query::query_current(window.raw(), false, source) else { return 0; };
+    let Some(rect) = rect_query::query_current(window.raw(), rect_query::RectKind::Window, source) else { return 0; };
     if !point_inside((x, y), rect) { return 0; }
     let mapped = rect_query::map_rect(WindowRect { left: x, top: y, right: x, bottom: y }, source, target);
     if uaccess::put_user_u32(point, mapped.left as u32).is_err() { return 0; }

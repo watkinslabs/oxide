@@ -1,7 +1,7 @@
 use super::*;
 
-const TOP: Snapshot = Snapshot { hwnd: 1, parent: 0, owner: 0, style: WS_VISIBLE, unicode: true, ancestors_visible: true, current_thread: true, text_length: 7, dpi: 96 };
-const CHILD: Snapshot = Snapshot { hwnd: 2, parent: 1, owner: 0, style: WS_CHILD | WS_VISIBLE, unicode: false, ancestors_visible: true, current_thread: false, text_length: 0, dpi: 96 };
+const TOP: Snapshot = Snapshot { hwnd: 1, parent: 0, owner: 0, style: WS_VISIBLE, unicode: true, ancestors_visible: true, current_thread: true, dlg_info: 0, mdi_client_info: 0, text_length: 7, dpi: 96 };
+const CHILD: Snapshot = Snapshot { hwnd: 2, parent: 1, owner: 0, style: WS_CHILD | WS_VISIBLE, unicode: false, ancestors_visible: true, current_thread: false, dlg_info: 0, mdi_client_info: 0, text_length: 0, dpi: 96 };
 
 #[test]
 fn a_null_handle_is_not_a_window_even_when_a_record_is_offered() {
@@ -41,4 +41,18 @@ fn ownership_queries_return_the_handle_or_zero() {
 fn an_unknown_code_is_reported_not_guessed() {
     assert_eq!(answer(99, 1, Some(TOP)), Answer::Unsupported(99));
     assert_eq!(answer(99, 0, None), Answer::Unsupported(99));
+}
+
+#[test]
+fn the_dialog_state_and_mdi_client_info_are_reported_from_the_window() {
+    // Both were answered as a constant zero, so a dialog that stored its state
+    // through the parameter entry read nothing back.
+    let dialog = Snapshot { dlg_info: 0x7fff_0000_1000, ..TOP };
+    assert_eq!(answer(GET_DIALOG_INFO, 1, Some(dialog)), Answer::Value(0x7fff_0000_1000));
+    let mdi = Snapshot { mdi_client_info: 0x7fff_0000_2000, ..TOP };
+    assert_eq!(answer(GET_MDI_CLIENT_INFO, 1, Some(mdi)), Answer::Value(0x7fff_0000_2000));
+    // A window carrying neither still answers zero, and so does a null handle.
+    assert_eq!(answer(GET_DIALOG_INFO, 1, Some(TOP)), Answer::Value(0));
+    assert_eq!(answer(GET_MDI_CLIENT_INFO, 1, Some(TOP)), Answer::Value(0));
+    assert_eq!(answer(GET_DIALOG_INFO, 0, None), Answer::Value(0));
 }

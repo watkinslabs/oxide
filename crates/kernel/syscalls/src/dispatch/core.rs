@@ -90,7 +90,11 @@ fn dispatch_routed_syscall(entry: (Option<u64>, u64), nr: u64, args: &SyscallArg
         if crate::nt_wine_window::unclaimed::is_win32u_ordinal(nr) {
             static SEEN: crate::nt_wine_window::unclaimed::Seen = crate::nt_wine_window::unclaimed::Seen::new();
             if SEEN.first(nr) {
-                klog::write_raw(b"[WINDOWS-RAW-UNCLAIMED] ordinal="); klog::write_hex_u64(nr); klog::write_raw(b"\n");
+                klog::write_raw(b"[WINDOWS-RAW-UNCLAIMED] ordinal="); klog::write_hex_u64(nr);
+                if let Some(method) = crate::nt_wine_window::unclaimed::method_of(nr, &[args.a0, args.a1, args.a2, args.a3, args.a4, args.a5]) {
+                    klog::write_raw(b" method="); klog::write_hex_u64(method);
+                }
+                klog::write_raw(b"\n");
             }
             return crate::nt_wine_window::unclaimed::STATUS_INVALID_SYSTEM_SERVICE as i64;
         }

@@ -15,20 +15,14 @@ use super::styles::WS_EX_LAYOUTRTL;
 pub struct WindowsOffset { pub dx: i32, pub dy: i32, pub mirrored: bool }
 
 impl WindowManager {
-    /// Screen coordinates of one window's client origin, with the mirror term
-    /// a right-to-left window adds. Every window from the named one up to but
-    /// not including the desktop contributes its own client origin, which is
-    /// parent-client-relative for a child and already screen for a top-level
-    /// window. # C: O(N_windows)
-    pub fn client_origin_screen(&self, id: WindowId) -> Option<(i32, i32, bool)> {
-        let record = self.get(id)?;
-        let mirrored = record.ex_style & WS_EX_LAYOUTRTL != 0;
+    /// Screen coordinates of one window's client origin. Every window from the
+    /// named one up to but not including the desktop contributes its own client
+    /// origin, which is parent-client-relative for a child and already screen
+    /// for a top-level window. No layout mirror is applied: a rectangle walk
+    /// wants the plain accumulation. # C: O(N_windows)
+    pub fn client_origin(&self, id: WindowId) -> Option<(i32, i32)> {
         let mut x = 0i32;
         let mut y = 0i32;
-        if mirrored {
-            let client = self.client_rect(id)?;
-            x = x.saturating_add(client.right.saturating_sub(client.left));
-        }
         let mut current = id;
         // The tree is acyclic by construction; the bound keeps a corrupted
         // parent link from spinning here rather than answering.
@@ -36,9 +30,22 @@ impl WindowManager {
             let rect = self.client_rect_raw(current)?;
             x = x.saturating_add(rect.left);
             y = y.saturating_add(rect.top);
-            match self.get(current)?.parent { Some(parent) => current = parent, None => return Some((x, y, mirrored)) }
+            match self.get(current)?.parent { Some(parent) => current = parent, None => return Some((x, y)) }
         }
         None
+    }
+
+    /// One window's client origin as a point mapping reads it: the plain
+    /// accumulation plus the client width a right-to-left window mirrors
+    /// about. # C: O(N_windows)
+    pub fn client_origin_screen(&self, id: WindowId) -> Option<(i32, i32, bool)> {
+        let mirrored = self.get(id)?.ex_style & WS_EX_LAYOUTRTL != 0;
+        let (mut x, y) = self.client_origin(id)?;
+        if mirrored {
+            let client = self.client_rect(id)?;
+            x = x.saturating_add(client.right.saturating_sub(client.left));
+        }
+        Some((x, y, mirrored))
     }
 
     /// Offset carrying points from `from`'s client space to `to`'s, with the

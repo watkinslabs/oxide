@@ -122,30 +122,35 @@ fn apply_step(step: SendStep) -> bool {
 fn send_input(args: &[u64]) -> u64 {
     let (count, inputs, size) = (args[0] as u32, args[1], args[2] as u32 as u64);
     if !check_send_input(count, inputs, size) { return 0; }
-    let screen = owner::virtual_screen();
     for index in 0..count as u64 {
         let Some(base) = inputs.checked_add(index * INPUT_BYTES) else { return index; };
-        let Ok(kind) = uaccess::get_user_u32(base) else { return index; };
-        match kind {
-            INPUT_MOUSE => {
-                let Ok(dx) = uaccess::get_user_u32(base + MOUSE_DX) else { return index; };
-                let Ok(dy) = uaccess::get_user_u32(base + MOUSE_DY) else { return index; };
-                let Ok(data) = uaccess::get_user_u32(base + MOUSE_DATA) else { return index; };
-                let Ok(flags) = uaccess::get_user_u32(base + MOUSE_FLAGS) else { return index; };
-                let (steps, used) = mouse_steps(dx as i32, dy as i32, data, flags, screen);
-                for step in &steps[..used] { if !apply_step(*step) { return index; } }
-            }
-            INPUT_KEYBOARD => {
-                let Ok(vkey) = uaccess::get_user_u16(base + KEY_VK) else { return index; };
-                let Ok(flags) = uaccess::get_user_u32(base + KEY_FLAGS) else { return index; };
-                if !apply_step(key_step(vkey, flags)) { return index; }
-            }
-            // The reference refuses hardware records outright.
-            INPUT_HARDWARE => return 0,
-            _ => return index,
-        }
+        // A hardware record is refused outright, and refuses the whole run.
+        if uaccess::get_user_u32(base) == Ok(INPUT_HARDWARE) { return 0; }
+        if !apply_one_input(base) { return index; }
     }
     count as u64
+}
+
+/// Apply one `INPUT` record at `base`, answering whether it was accepted. The
+/// hardware-input entry sends exactly one record through this same path.
+/// # C: O(N_windows + N_queues)
+pub(crate) fn apply_one_input(base: u64) -> bool {
+    if base == 0 { return false; }
+    let screen = owner::virtual_screen();
+    let Ok(kind) = uaccess::get_user_u32(base) else { return false; };
+    match kind {
+        INPUT_MOUSE => {
+            let (Ok(dx), Ok(dy)) = (uaccess::get_user_u32(base + MOUSE_DX), uaccess::get_user_u32(base + MOUSE_DY)) else { return false; };
+            let (Ok(data), Ok(flags)) = (uaccess::get_user_u32(base + MOUSE_DATA), uaccess::get_user_u32(base + MOUSE_FLAGS)) else { return false; };
+            let (steps, used) = mouse_steps(dx as i32, dy as i32, data, flags, screen);
+            steps[..used].iter().all(|step| apply_step(*step))
+        }
+        INPUT_KEYBOARD => {
+            let (Ok(vkey), Ok(flags)) = (uaccess::get_user_u16(base + KEY_VK), uaccess::get_user_u32(base + KEY_FLAGS)) else { return false; };
+            apply_step(key_step(vkey, flags))
+        }
+        _ => false,
+    }
 }
 
 /// # C: O(N_hotkeys)

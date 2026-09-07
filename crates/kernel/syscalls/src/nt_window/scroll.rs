@@ -1,7 +1,7 @@
 //! Raw Win32 scroll ABI codecs and validation. Main owns dispatch wiring.
 
 #[path = "scroll/raw.rs"]
-mod raw;
+pub(crate) mod raw;
 #[path = "scroll/bar_raw.rs"]
 pub(crate) mod bar_raw;
 #[path = "scroll/dc_raw.rs"]
@@ -17,11 +17,9 @@ pub(crate) mod bar_live;
 mod kernel;
 #[cfg(target_os = "oxide-kernel")]
 pub(crate) use kernel::dispatch;
-pub(crate) use raw::{decode_scroll_info, encode_scroll_info, SBM_SETSCROLLINFO};
+pub(crate) use raw::{decode_scroll_info, encode_scroll_info, GetScrollInfoParams, SetScrollInfoArgs, SBM_SETSCROLLINFO};
 #[cfg(target_os = "oxide-kernel")]
-pub(crate) use raw::SCROLLINFO_BYTES;
-#[cfg(test)]
-pub(crate) use raw::{GetScrollInfoParams, SetScrollInfoArgs};
+pub(crate) use raw::{GET_PARAMS_BYTES, SCROLLINFO_BYTES, SET_SCROLL_INFO_ORDINAL};
 
 pub trait ScrollActionSink {
     fn show_scrollbar(&mut self, hwnd: u64, bar: i32) -> bool;

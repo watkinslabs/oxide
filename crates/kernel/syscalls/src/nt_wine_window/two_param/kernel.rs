@@ -2,7 +2,7 @@
 use super::*;
 use crate::nt_wine_window::metrics;
 
-fn primary(monitors: &[Monitor]) -> Option<usize> { metrics::primary(monitors).and_then(|p| monitors.iter().position(|m| *m == p)) }
+pub(crate) fn primary(monitors: &[Monitor]) -> Option<usize> { metrics::primary(monitors).and_then(|p| monitors.iter().position(|m| *m == p)) }
 
 fn read<const N: usize>(pointer: u64) -> Option<[u8; N]> {
     if pointer == 0 { return None; }
