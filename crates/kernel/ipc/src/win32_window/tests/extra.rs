@@ -19,10 +19,10 @@ fn extra_class_encoding_is_copied_to_each_canonical_window() {
 #[test]
 fn extra_edit_state_pointer_round_trip_and_previous_value() {
     let mut bytes = WindowExtra::new(8, 0x1800_0000).unwrap();
-    assert_eq!(bytes.read(0, 8), Ok(0));
-    assert_eq!(bytes.write(0, 8, 0x7f65_1234_5678), Ok(0));
-    assert_eq!(bytes.read(0, 8), Ok(0x7f65_1234_5678));
-    assert_eq!(bytes.write(0, 8, 0), Ok(0x7f65_1234_5678));
+    assert_eq!(bytes.read(0, 8, false), Ok(0));
+    assert_eq!(bytes.write(0, 8, 0x7f65_1234_5678, false), Ok(0));
+    assert_eq!(bytes.read(0, 8, false), Ok(0x7f65_1234_5678));
+    assert_eq!(bytes.write(0, 8, 0, false), Ok(0x7f65_1234_5678));
     assert_eq!(bytes.userdata, 0);
     assert_eq!(bytes.instance, 0x1800_0000);
 }
@@ -30,11 +30,11 @@ fn extra_edit_state_pointer_round_trip_and_previous_value() {
 #[test]
 fn extra_unaligned_overlapping_ranges_are_byte_indexed() {
     let mut bytes = WindowExtra::new(12, 0).unwrap();
-    bytes.write(1, 8, 0x8877_6655_4433_2211).unwrap();
-    assert_eq!(bytes.read(2, 4), Ok(0x5544_3322));
-    assert_eq!(bytes.write(4, 2, 0xffff_aa99), Ok(0x5544));
-    assert_eq!(bytes.read(1, 8), Ok(0x8877_66aa_9933_2211));
-    assert_eq!(bytes.read(0, 2), Ok(0x1100));
+    bytes.write(1, 8, 0x8877_6655_4433_2211, false).unwrap();
+    assert_eq!(bytes.read(2, 4, false), Ok(0x5544_3322));
+    assert_eq!(bytes.write(4, 2, 0xffff_aa99, false), Ok(0x5544));
+    assert_eq!(bytes.read(1, 8, false), Ok(0x8877_66aa_9933_2211));
+    assert_eq!(bytes.read(0, 2, false), Ok(0x1100));
 }
 
 #[test]
@@ -42,28 +42,28 @@ fn extra_extent_and_invalid_access_never_mutate() {
     assert!(matches!(WindowExtra::new(-1, 0), Err(LongPtrError::InvalidSize)));
     assert!(matches!(WindowExtra::new(4097, 0), Err(LongPtrError::InvalidSize)));
     let mut empty = WindowExtra::new(0, 0).unwrap();
-    assert_eq!(empty.write(0, 8, 1), Err(LongPtrError::InvalidIndex));
+    assert_eq!(empty.write(0, 8, 1, false), Err(LongPtrError::InvalidIndex));
     let mut bytes = WindowExtra::new(4096, 0).unwrap();
     assert_eq!(bytes.len(), 4096);
-    assert_eq!(bytes.write(4088, 8, u64::MAX), Ok(0));
+    assert_eq!(bytes.write(4088, 8, u64::MAX, false), Ok(0));
     for (offset, width) in [(-1, 8), (4089, 8), (4096, 2), (i32::MAX, 8)] {
-        assert_eq!(bytes.write(offset, width, 0), Err(LongPtrError::InvalidIndex));
+        assert_eq!(bytes.write(offset, width, 0, false), Err(LongPtrError::InvalidIndex));
     }
     for width in [0, 1, 3, 16, usize::MAX] {
-        assert_eq!(bytes.write(0, width, 0), Err(LongPtrError::InvalidSize));
+        assert_eq!(bytes.write(0, width, 0, false), Err(LongPtrError::InvalidSize));
     }
-    assert_eq!(bytes.read(4088, 8), Ok(u64::MAX));
-    assert_eq!(bytes.read(0, 8), Ok(0));
+    assert_eq!(bytes.read(4088, 8, false), Ok(u64::MAX));
+    assert_eq!(bytes.read(0, 8, false), Ok(0));
 }
 
 #[test]
 fn extra_window_storage_is_independent() {
     let mut first = WindowExtra::new(8, 1).unwrap();
     let second = WindowExtra::new(8, 2).unwrap();
-    first.write(0, 8, u64::MAX).unwrap();
-    assert_eq!(second.read(0, 8), Ok(0));
+    first.write(0, 8, u64::MAX, false).unwrap();
+    assert_eq!(second.read(0, 8, false), Ok(0));
     drop(first);
-    assert_eq!(WindowExtra::new(8, 1).unwrap().read(0, 8), Ok(0));
+    assert_eq!(WindowExtra::new(8, 1).unwrap().read(0, 8, false), Ok(0));
 }
 
 #[test]
