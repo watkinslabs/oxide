@@ -39,6 +39,7 @@ use crate::nt_loader_dir_policy::{self,
     LOAD_WITH_ALTERED_SEARCH_PATH};
 
 mod dynamic;
+mod legacy_path;
 
 /// Load the module a delay-load descriptor names and publish its handle into
 /// the descriptor's module slot. The ASCII name is the descriptor's own.
@@ -194,7 +195,7 @@ fn get_path(module: u64, flags: u32, path_output: u64, unknown_output: u64) -> u
         Err(status) => return status,
     };
     for directory in directories { append_directory(&mut path, &directory); }
-    if path.is_empty() { append_directory(&mut path, &utf16_bytes_const(b"C:\\Windows")); }
+    if path.is_empty() { append_directory(&mut path, &utf16_bytes_const(nt_loader_dir_policy::WINDOWS_DIRECTORY)); }
     if uaccess::put_user_u64(unknown_output, 0).is_err() { return STATUS_INVALID_PARAMETER; }
     let Some(buffer) = allocate_utf16(&path) else { return STATUS_DLL_NOT_FOUND; };
     if uaccess::put_user_u64(path_output, buffer).is_err() {
@@ -216,6 +217,11 @@ pub(super) fn search_directories(cur: &sched::Task, module_name: &[u8], flags: u
         && !nt_loader_dir_policy::dll_load_directory_path_valid(module_name) {
         return Err(STATUS_INVALID_PARAMETER);
     }
+    // No search set in force anywhere: the reference's default load path
+    // (image directory, current directory, system32, system, windows, PATH).
+    if search_flags & (nt_loader_dir_policy::SEARCH_DIRECTORY_FLAGS | LOAD_WITH_ALTERED_SEARCH_PATH) == 0 {
+        return Ok(legacy_path::directories(cur));
+    }
     let mut directories = Vec::new();
     if search_flags & LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR != 0
         || flags & LOAD_WITH_ALTERED_SEARCH_PATH != 0 {
@@ -236,9 +242,9 @@ pub(super) fn search_directories(cur: &sched::Task, module_name: &[u8], flags: u
         push_unique_directory(&mut directories, &override_dir);
     }
     if search_flags & (LOAD_LIBRARY_SEARCH_SYSTEM32 | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS) != 0 {
-        push_unique_directory(&mut directories, &utf16_bytes_const(b"C:\\Windows\\System32"));
+        push_unique_directory(&mut directories, &utf16_bytes_const(nt_loader_dir_policy::SYSTEM_DIRECTORY));
     }
-    if directories.is_empty() { push_unique_directory(&mut directories, &utf16_bytes_const(b"C:\\Windows")); }
+    if directories.is_empty() { push_unique_directory(&mut directories, &utf16_bytes_const(nt_loader_dir_policy::WINDOWS_DIRECTORY)); }
     Ok(directories)
 }
 

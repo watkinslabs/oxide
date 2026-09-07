@@ -20,6 +20,16 @@ WINDOWS_ROOT = "/usr/local/lib/oxide/windows"
 WINDOWS_CATALOG = f"{WINDOWS_ROOT}/x86_64-windows"
 UNIX_CATALOG = f"{WINDOWS_ROOT}/x86_64-unix"
 NLS_ROOT = "/usr/local/share/oxide/windows/nls"
+# The native DOS drive namespace. A drive letter directory under the DOS root
+# is the drive; the system drive's windows/system32 is where the loader and
+# every native file open resolve a module named by a DOS path.
+DOS_SYSTEM32 = "/windows/c/windows/system32"
+DOS_DRIVE_Z = "/windows/z"
+UNIX_ROOT = "/"
+# Modules no launch-time catalog supplies: user32 loads imm32 from its DllMain
+# and the ImmGetContext delay thunk resolves it, both at runtime through the
+# system directory.
+RUNTIME_LOADED_MODULES = ("imm32.dll",)
 
 REQUIRED_FILES = (
     "/usr/local/bin/windows-runtime",
@@ -35,10 +45,12 @@ REQUIRED_FILES = (
     "/etc/xdg/mimeapps.list",
     "/var/lib/oxide/registry.db",
 )
-REQUIRED_LINKS = (
-    "/usr/lib/wine/x86_64-windows",
-    "/usr/lib64/wine/x86_64-windows",
-)
+REQUIRED_LINKS = {
+    "/usr/lib/wine/x86_64-windows": WINDOWS_CATALOG,
+    "/usr/lib64/wine/x86_64-windows": WINDOWS_CATALOG,
+    DOS_SYSTEM32: WINDOWS_CATALOG,
+    DOS_DRIVE_Z: UNIX_ROOT,
+}
 
 
 class Failure(Exception):
@@ -46,13 +58,19 @@ class Failure(Exception):
 
 
 def required_paths():
-    return REQUIRED_FILES + REQUIRED_LINKS
+    return REQUIRED_FILES + tuple(REQUIRED_LINKS)
 
 
 def validate_manifest(paths):
     """Return missing paths from a materialized guest manifest."""
     present = set(paths)
     return tuple(path for path in required_paths() if path not in present)
+
+
+def missing_runtime_modules(catalog):
+    """Return runtime-loaded modules the DOS system directory cannot resolve."""
+    present = {name.lower() for name in catalog}
+    return tuple(name for name in RUNTIME_LOADED_MODULES if name not in present)
 
 
 class Image:
@@ -123,11 +141,11 @@ def check_image(path, expected_ntdll=None, expected_win32u=None):
             image.stat(guest_path)
         except Failure:
             missing.append(guest_path)
-    for guest_path in REQUIRED_LINKS:
+    for guest_path, expected in REQUIRED_LINKS.items():
         try:
             target = image.link_target(guest_path)
-            if target != WINDOWS_CATALOG:
-                missing.append(f"{guest_path} (target {target!r}, expected {WINDOWS_CATALOG!r})")
+            if target != expected:
+                missing.append(f"{guest_path} (target {target!r}, expected {expected!r})")
         except Failure:
             missing.append(guest_path)
     if missing:
@@ -138,6 +156,9 @@ def check_image(path, expected_ntdll=None, expected_win32u=None):
         raise Failure("PE catalog has no structural DLL payload")
     if not any(name.lower().endswith(".so") for name in unix_catalog):
         raise Failure("Unixlib catalog has no structural Unixlib payload")
+    absent = missing_runtime_modules(pe_catalog)
+    if absent:
+        raise Failure(f"{DOS_SYSTEM32} resolves no " + ", ".join(absent))
 
     check_native_elf(image, f"{UNIX_CATALOG}/ntdll.so", require_attach=True)
     check_native_elf(image, f"{UNIX_CATALOG}/win32u.so", require_attach=False)

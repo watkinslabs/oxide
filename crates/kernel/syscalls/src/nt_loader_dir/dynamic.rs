@@ -3,7 +3,7 @@
 #[cfg(target_arch = "x86_64")]
 use alloc::{string::String, vec, vec::Vec};
 #[cfg(target_arch = "x86_64")]
-use elf_load::pe_loader::{ImportResolver, PeExportModule, PeExportResolver};
+use elf_load::pe_loader::{ImportResolver, PeExportModule, PeExportRef, PeGraphResolver};
 use super::STATUS_INVALID_PARAMETER;
 #[cfg(target_arch = "x86_64")]
 use super::{LDR_LOAD_LIST_OFFSET, LIST_LINK_OFFSET, MAX_MODULE_SCAN, MODULE_BASE_NAME_OFFSET, MODULE_BASE_OFFSET, PEB_LDR_OFFSET, STATUS_DLL_NOT_FOUND, STATUS_SUCCESS, TEB_PEB_OFFSET};
@@ -11,17 +11,21 @@ use super::{LDR_LOAD_LIST_OFFSET, LIST_LINK_OFFSET, MAX_MODULE_SCAN, MODULE_BASE
 #[cfg(target_arch = "aarch64")]
 const STATUS_NOT_SUPPORTED: u64 = 0xc000_00bb;
 
+/// The ntdll half of a runtime load's import resolution: ntdll is the native
+/// runtime, not a PE module, so its names resolve through the runtime export
+/// table. Everything else is answered by the loaded-module graph in front of
+/// this fallback, which also chases forwarded exports the way the reference
+/// follows a forwarder into whichever loaded module owns the target.
 #[cfg(target_arch = "x86_64")]
-struct Resolver<'a> { exports: PeExportResolver<'a>, ntdll: u64 }
+struct NtRuntimeFallback { ntdll: u64 }
 #[cfg(target_arch = "x86_64")]
-impl ImportResolver for Resolver<'_> {
+impl ImportResolver for NtRuntimeFallback {
     fn resolve(&self, dll: &[u8], import: &pe::ImportThunk<'_>) -> Result<u64, pe::Error> {
-        if dll.eq_ignore_ascii_case(b"ntdll.dll") {
-            if let pe::ImportThunk::Name { name, .. } = import {
-                if let Some(address) = elf_load::pe_loader::resolve_nt_runtime_export(self.ntdll, name) { return Ok(address); }
-            }
+        if !dll.eq_ignore_ascii_case(b"ntdll.dll") { return Err(pe::Error::Unsupported); }
+        match import {
+            pe::ImportThunk::Name { name, .. } => elf_load::pe_loader::resolve_nt_runtime_export(self.ntdll, name).ok_or(pe::Error::Unsupported),
+            pe::ImportThunk::Ordinal(_) => Err(pe::Error::Unsupported),
         }
-        self.exports.resolve(dll, import)
     }
 }
 
@@ -85,9 +89,9 @@ impl FilesystemCatalog {
         if let Some(parent) = parent { push_candidate(&mut candidates, &crate::nt_loader_dir_policy::join_windows_path(parent, name)); }
         for directory in &self.directories { push_candidate(&mut candidates, &crate::nt_loader_dir_policy::join_windows_path(directory, name)); }
         let Some((candidate, blob)) = crate::nt_loader_dir_policy::first_readable_candidate(&candidates, |candidate| {
-            let unix_path = crate::nt_loader_dir_policy::windows_path_to_vfs(candidate)?;
+            let unix_path = crate::nt_path::normalize_narrow_path(candidate)?;
             let path = core::str::from_utf8(&unix_path).ok()?;
-            vfs::read_abs(path).ok()
+            vfs::read_abs_flags(path, crate::nt_path::windows_lookup_flags()).ok()
         }) else { return Err(STATUS_DLL_NOT_FOUND); };
         pe::parse(&blob).map_err(|_| STATUS_INVALID_IMAGE_FORMAT)?;
         if self.catalog.add(name, &blob).is_err() { return Err(STATUS_INVALID_IMAGE_FORMAT); }
@@ -98,13 +102,13 @@ impl FilesystemCatalog {
     fn location_for(&self, name: &[u8]) -> Vec<u8> {
         self.locations.iter().find(|(known, _)| pe::loader_name::matches_ascii(known, name))
             .map(|(_, path)| directory_of_narrow(path).to_vec())
-            .unwrap_or_else(|| b"C:\\Windows\\System32".to_vec())
+            .unwrap_or_else(|| crate::nt_loader_dir_policy::SYSTEM_DIRECTORY.to_vec())
     }
 
     fn full_name_for(&self, name: &[u8]) -> Vec<u8> {
         self.locations.iter().find(|(known, _)| pe::loader_name::matches_ascii(known, name))
             .map(|(_, path)| path.clone())
-            .unwrap_or_else(|| { let mut path = b"C:\\Windows\\System32\\".to_vec(); path.extend_from_slice(name); path })
+            .unwrap_or_else(|| crate::nt_loader_dir_policy::join_windows_path(crate::nt_loader_dir_policy::SYSTEM_DIRECTORY, name))
     }
 }
 
@@ -180,6 +184,17 @@ pub(super) fn load_unixlib(name_descriptor: u64, module_output: u64) -> u64 {
     }
 }
 
+
+/// Bounded trace naming which loader step refused a dynamic load: a delay
+/// import that fails is otherwise indistinguishable from a missing file.
+fn ldr_fail(step: &'static [u8], name: &[u8]) {
+    use core::sync::atomic::{AtomicU32, Ordering};
+    static BUDGET: AtomicU32 = AtomicU32::new(0);
+    if BUDGET.fetch_add(1, Ordering::Relaxed) >= 64 { return; }
+    klog::write_raw(b"[WINDOWS-LDR-FAIL] step="); klog::write_raw(step);
+    klog::write_raw(b" name="); klog::write_raw(name); klog::write_raw(b"\n");
+}
+
 #[cfg(target_arch = "x86_64")]
 fn load_locked(cur: &sched::Task, name_descriptor: u64, module_output: u64) -> u64 {
     if name_descriptor == 0 { return STATUS_INVALID_PARAMETER; }
@@ -205,23 +220,25 @@ fn load_wide_locked(cur: &sched::Task, wanted: &[u8], module_output: u64) -> u64
         Err(status) => return status,
     };
     let mut filesystem = FilesystemCatalog::new(seed.as_deref(), directories);
-    if filesystem.ensure_root(&narrow_wanted, &narrow_wanted).is_err() { return STATUS_DLL_NOT_FOUND; }
-    if filesystem.populate_dependencies().is_err() { return STATUS_DLL_NOT_FOUND; }
+    if let Err(status) = filesystem.ensure_root(&narrow_wanted, &narrow_wanted) { ldr_fail(b"root", &narrow_wanted); return status; }
+    if let Err(status) = filesystem.populate_dependencies() { ldr_fail(b"dependencies", &narrow_wanted); return status; }
     let Some(root) = filesystem.catalog.modules().iter()
-        .find(|module| pe::loader_name::matches_ascii(&narrow_wanted, &module.name)) else { return STATUS_DLL_NOT_FOUND; };
+        .find(|module| pe::loader_name::matches_ascii(&narrow_wanted, &module.name)) else { ldr_fail(b"catalog", &narrow_wanted); return STATUS_DLL_NOT_FOUND; };
     let name = root.name.clone();
     let blob = root.blob.clone();
     let (exports, ntdll) = match loaded_exports(peb, &filesystem.catalog) { Ok(value) => value, Err(status) => return status };
-    let resolver = Resolver { exports: PeExportResolver { modules: &exports }, ntdll };
+    let references: Vec<PeExportRef<'_, '_>> = exports.iter().map(|module| PeExportRef { name: module.name, image: &module.image, base: module.base }).collect();
+    let fallback = NtRuntimeFallback { ntdll };
+    let resolver = PeGraphResolver { modules: &references, fallback: &fallback };
     let catalog_source = &filesystem.catalog;
     let modules = match pe::discover_owned_modules_with_builtins(&name, &blob, &catalog_source,
         |candidate| pe::loader_name::matches_ascii(candidate, b"ntdll.dll") || loaded_module(peb, candidate)) {
         Ok(modules) => modules,
-        Err(_) => return STATUS_DLL_NOT_FOUND,
+        Err(_) => { ldr_fail(b"discover", &narrow_wanted); return STATUS_DLL_NOT_FOUND; }
     };
     let loaded = match elf_load::pe_loader::load_owned_pe_module_graph(&modules, &as_, &resolver, 0) {
         Ok(loaded) => loaded,
-        Err(_) => return STATUS_DLL_NOT_FOUND,
+        Err(_) => { ldr_fail(b"map", &narrow_wanted); return STATUS_DLL_NOT_FOUND; }
     };
     let mut names = Vec::new();
     let mut inputs = Vec::new();

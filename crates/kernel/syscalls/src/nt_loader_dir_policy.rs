@@ -1,6 +1,5 @@
 //! Untargeted Windows DLL search-policy decisions.
 
-#[cfg(target_arch = "x86_64")]
 use alloc::vec::Vec;
 
 pub const LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR: u32 = 0x0000_0100;
@@ -9,6 +8,13 @@ pub const LOAD_LIBRARY_SEARCH_USER_DIRS: u32 = 0x0000_0400;
 pub const LOAD_LIBRARY_SEARCH_SYSTEM32: u32 = 0x0000_0800;
 pub const LOAD_LIBRARY_SEARCH_DEFAULT_DIRS: u32 = 0x0000_1000;
 pub const LOAD_WITH_ALTERED_SEARCH_PATH: u32 = 0x0000_0008;
+
+/// Canonical native system directory, in the reference spelling.
+pub const SYSTEM_DIRECTORY: &[u8] = b"C:\\windows\\system32";
+/// Legacy 16-bit system directory, second entry of the reference default path.
+pub const SYSTEM_LEGACY_DIRECTORY: &[u8] = b"C:\\windows\\system";
+/// Canonical native Windows directory, used when no other directory applies.
+pub const WINDOWS_DIRECTORY: &[u8] = b"C:\\windows";
 
 pub const DEFAULT_DIRECTORY_FLAGS: u32 = LOAD_LIBRARY_SEARCH_APPLICATION_DIR
     | LOAD_LIBRARY_SEARCH_USER_DIRS | LOAD_LIBRARY_SEARCH_SYSTEM32
@@ -73,20 +79,6 @@ pub fn join_windows_path(directory: &[u8], name: &[u8]) -> Vec<u8> {
     path
 }
 
-/// Convert an absolute Z-drive Windows path into the mounted Linux VFS path.
-/// Other drive mappings remain explicit rather than silently selecting a host
-/// directory that could disagree with the process DOS-device namespace.
-/// # C: O(path length)
-#[cfg(target_arch = "x86_64")]
-pub fn windows_path_to_vfs(path: &[u8]) -> Option<Vec<u8>> {
-    let mut path = path.to_vec();
-    if path.starts_with(b"\\??\\") { path.drain(..4); }
-    for byte in &mut path { if *byte == b'\\' { *byte = b'/'; } }
-    if path.len() >= 2 && (path[0] == b'Z' || path[0] == b'z') && path[1] == b':' { path.drain(..2); }
-    if path.first().copied() != Some(b'/') { return None; }
-    Some(path)
-}
-
 /// Select the first readable candidate while preserving the caller's order.
 /// # C: O(N_candidates)
 #[cfg(target_arch = "x86_64")]
@@ -96,6 +88,31 @@ where F: FnMut(&[u8]) -> Option<Vec<u8>> {
         if let Some(blob) = read(candidate) { return Some((candidate.clone(), blob)); }
     }
     None
+}
+
+/// Reference default DLL load path, used whenever neither the request nor the
+/// process defaults name a `LOAD_LIBRARY_SEARCH_*` set: the image directory,
+/// the DLL-directory override or else the current directory, system32, the
+/// legacy system directory, the Windows directory, then every `PATH` entry in
+/// order. Inputs and outputs are UTF-16LE byte strings; empty inputs and
+/// duplicates contribute nothing. # C: O(len(PATH))
+pub fn legacy_search_order(image_dir: &[u8], dll_directory: Option<&[u8]>, current_dir: &[u8], path_env: &[u8]) -> Vec<Vec<u8>> {
+    fn wide(value: &[u8]) -> Vec<u8> { value.iter().flat_map(|byte| [*byte, 0]).collect() }
+    fn push(out: &mut Vec<Vec<u8>>, dir: &[u8]) {
+        if dir.is_empty() || out.iter().any(|known| known == dir) { return; }
+        out.push(dir.to_vec());
+    }
+    let mut out = Vec::new();
+    push(&mut out, image_dir);
+    match dll_directory { Some(dir) if !dir.is_empty() => push(&mut out, dir), _ => push(&mut out, current_dir) }
+    push(&mut out, &wide(SYSTEM_DIRECTORY));
+    push(&mut out, &wide(SYSTEM_LEGACY_DIRECTORY));
+    push(&mut out, &wide(WINDOWS_DIRECTORY));
+    for entry in path_env.chunks(2).collect::<Vec<_>>().split(|unit| unit == &[b';', 0]) {
+        let bytes: Vec<u8> = entry.iter().flat_map(|unit| unit.iter().copied()).collect();
+        push(&mut out, &bytes);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -159,6 +176,25 @@ mod tests {
         assert!(!dll_load_directory_path_valid(&u16_bytes(b"x.dll")));
     }
 
+    /// The search order a delay-loaded `imm32.dll` reaches from a Notepad
+    /// image staged in the system directory must name paths the boot image
+    /// actually publishes, through the one DOS drive mapping the native file
+    /// opens use.
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn system_and_application_candidates_map_through_the_one_drive_owner() {
+        let image = b"C:\\windows\\system32\\notepad.exe";
+        let application = &image[..image.len() - b"\\notepad.exe".len()];
+        let candidates = vec![join_windows_path(application, b"imm32.dll"),
+            join_windows_path(SYSTEM_DIRECTORY, b"imm32.dll")];
+        assert_eq!(candidates[0], b"C:\\windows\\system32\\imm32.dll".to_vec());
+        assert_eq!(candidates[1], candidates[0]);
+        assert_eq!(crate::nt_path::normalize_narrow_path(&candidates[1]).as_deref(),
+            Some(&b"/windows/c/windows/system32/imm32.dll"[..]));
+        assert_eq!(crate::nt_path::normalize_narrow_path(WINDOWS_DIRECTORY).as_deref(),
+            Some(&b"/windows/c/windows"[..]));
+    }
+
     #[test]
     fn filesystem_probe_preserves_search_order_and_skips_missing_candidates() {
         let candidates = vec![b"Z:\\first\\foo.dll".to_vec(), b"Z:\\second\\foo.dll".to_vec()];
@@ -176,10 +212,18 @@ mod tests {
         assert_eq!(found.0, candidates[0]);
     }
 
+
     #[test]
-    fn filesystem_probe_maps_only_absolute_z_drive_paths_into_vfs() {
-        assert_eq!(windows_path_to_vfs(b"Z:\\usr\\lib\\foo.dll"), Some(b"/usr/lib/foo.dll".to_vec()));
-        assert_eq!(windows_path_to_vfs(b"C:\\Windows\\System32\\foo.dll"), None);
-        assert_eq!(windows_path_to_vfs(b"foo.dll"), None);
+    fn legacy_order_is_image_current_system32_system_windows_then_path() {
+        fn wide(value: &[u8]) -> Vec<u8> { value.iter().flat_map(|byte| [*byte, 0]).collect() }
+        let order = legacy_search_order(&wide(b"C:\\windows\\system32"), None, &wide(b"C:\\users\\me"),
+            &wide(b"C:\\windows\\system32;D:\\tools;;C:\\windows"));
+        let expect: Vec<Vec<u8>> = [b"C:\\windows\\system32".as_slice(), b"C:\\users\\me", b"C:\\windows\\system",
+            b"C:\\windows", b"D:\\tools"].iter().map(|dir| wide(dir)).collect();
+        assert_eq!(order, expect);
+        let with_override = legacy_search_order(&wide(b"C:\\app"), Some(&wide(b"C:\\dlls")), &wide(b"C:\\cwd"), &[]);
+        assert_eq!(with_override[1], wide(b"C:\\dlls"));
+        assert!(!with_override.contains(&wide(b"C:\\cwd")));
+        assert_eq!(legacy_search_order(&[], None, &[], &[]).len(), 3);
     }
 }

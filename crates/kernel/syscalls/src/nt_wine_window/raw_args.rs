@@ -16,6 +16,7 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x11db, 2), // NtGdiGetAppClipBox
     (0x11ef, 3), // NtGdiGetDCDword
     (0x11f0, 2), // NtGdiGetDCObject
+    (0x11f4, 2), // NtGdiGetDeviceCaps
     (0x121e, 2), // NtGdiGetRgnBox
     (0x1227, 8), // NtGdiGetTextExtentExW
     (0x1229, 3), // NtGdiGetTextMetricsW

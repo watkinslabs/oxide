@@ -89,22 +89,30 @@ pub fn rva_target(base: u64, rva: u32) -> Option<u64> {
     base.checked_add(rva as u64)
 }
 
-/// Index of one thunk within its import address table. The thunk must lie at
-/// or after the table, be entry-aligned, and stay inside the bound.
+/// Index of one thunk relative to its import address table: the SIGNED
+/// entry distance, exactly the reference's pointer subtraction. A linker may
+/// place the descriptor's table RVA past the slot a thunk names (the shipped
+/// Wine user32 puts `__imp_ImmGetContext` thirteen entries before its
+/// descriptor's IAT), and the name table is laid out with the same offset, so
+/// only the relative index is meaningful. The thunk must stay entry-aligned
+/// and within the bound in either direction.
 /// # C: O(1)
-pub fn thunk_index(thunk: u64, iat: u64) -> Option<u64> {
-    if thunk == 0 || iat == 0 || thunk < iat { return None; }
-    let delta = thunk - iat;
-    if delta % THUNK_BYTES != 0 { return None; }
-    let index = delta / THUNK_BYTES;
-    (index <= MAX_THUNK_INDEX).then_some(index)
+pub fn thunk_index(thunk: u64, iat: u64) -> Option<i64> {
+    if thunk == 0 || iat == 0 { return None; }
+    let delta = (thunk as i64).wrapping_sub(iat as i64);
+    if delta % THUNK_BYTES as i64 != 0 { return None; }
+    let index = delta / THUNK_BYTES as i64;
+    (index.unsigned_abs() <= MAX_THUNK_INDEX).then_some(index)
 }
 
-/// Address of one entry in an eight-byte-per-entry import table.
+/// Address of one entry in an eight-byte-per-entry import table, indexed by
+/// the signed distance `thunk_index` produced.
 /// # C: O(1)
-pub fn slot_address(table: u64, index: u64) -> Option<u64> {
+pub fn slot_address(table: u64, index: i64) -> Option<u64> {
     if table == 0 { return None; }
-    table.checked_add(index.checked_mul(THUNK_BYTES)?)
+    let magnitude = index.unsigned_abs().checked_mul(THUNK_BYTES)?;
+    let address = if index >= 0 { table.checked_add(magnitude)? } else { table.checked_sub(magnitude)? };
+    (address != 0).then_some(address)
 }
 
 /// Classify one import name table entry.

@@ -35,11 +35,13 @@ fn thunk_index_is_the_entry_distance_from_the_import_address_table() {
 #[test]
 fn thunk_index_rejects_misaligned_below_table_and_unbounded_thunks() {
     assert_eq!(thunk_index(0x1004, 0x1000), None);
-    assert_eq!(thunk_index(0x0ff8, 0x1000), None);
+    assert_eq!(thunk_index(0x0ff8, 0x1000), Some(-1));
+    let far = 0x1_0000_0000u64;
+    assert_eq!(thunk_index(far - (MAX_THUNK_INDEX + 1) * THUNK_BYTES, far), None);
     assert_eq!(thunk_index(0, 0x1000), None);
     assert_eq!(thunk_index(0x1000, 0), None);
     assert_eq!(thunk_index(0x1000 + (MAX_THUNK_INDEX + 1) * THUNK_BYTES, 0x1000), None);
-    assert_eq!(thunk_index(0x1000 + MAX_THUNK_INDEX * THUNK_BYTES, 0x1000), Some(MAX_THUNK_INDEX));
+    assert_eq!(thunk_index(0x1000 + MAX_THUNK_INDEX * THUNK_BYTES, 0x1000), Some(MAX_THUNK_INDEX as i64));
 }
 
 #[test]
@@ -122,4 +124,17 @@ fn the_hook_frame_rejects_a_misaligned_or_underflowing_stack() {
     assert_eq!(hook_frame(0x7fff_0000), None);
     assert_eq!(hook_frame(0x10), None);
     assert_eq!(hook_frame(0), None);
+}
+
+#[test]
+fn a_thunk_before_its_descriptor_table_indexes_the_name_table_by_the_same_signed_distance() {
+    // Shipped Wine 10.20 user32: descriptor IAT 0x96f78, INT 0xbade8, and the
+    // `__imp_ImmGetContext` slot at 0x96f10; the name entry naming
+    // ImmGetContext sits at INT - 13 entries (measured on the file).
+    let base = 0x1_8000_0000u64;
+    let index = thunk_index(base + 0x96f10, base + 0x96f78).unwrap();
+    assert_eq!(index, -13);
+    assert_eq!(slot_address(base + 0x96f78, index), Some(base + 0x96f10));
+    assert_eq!(slot_address(base + 0xbade8, index), Some(base + 0xbad80));
+    assert_eq!(slot_address(0x10, -3), None);
 }
