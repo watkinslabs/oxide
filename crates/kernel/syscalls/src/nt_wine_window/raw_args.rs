@@ -34,7 +34,9 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x126e, 2), // NtGdiSelectFont
     (0x126f, 2), // NtGdiSelectPen
     (0x1287, 5), // NtGdiSetRectRgn
+    (0x1321, 3), // NtUserAssociateInputContext
     (0x1327, 2), // NtUserBeginPaint
+    (0x132c, 4), // NtUserBuildHimcList
     (0x1332, 2), // NtUserCallHwnd
     (0x1336, 3), // NtUserCallHwndParam
     (0x133a, 2), // NtUserCallMsgFilter
@@ -46,14 +48,17 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x135a, 3), // NtUserCopyAcceleratorTable
     (0x135c, 2), // NtUserCreateAcceleratorTable
     (0x1360, 4), // NtUserCreateCaret
+    (0x1364, 1), // NtUserCreateInputContext
     (0x1366, 0), // NtUserCreateMenu
     (0x1368, 0), // NtUserCreatePopupMenu
     (0x136b, 17), // NtUserCreateWindowEx
     (0x1378, 3), // NtUserDeleteMenu
     (0x137b, 1), // NtUserDestroyAcceleratorTable
     (0x137e, 0), // NtUserDestroyCaret
+    (0x1381, 1), // NtUserDestroyInputContext
     (0x1382, 1), // NtUserDestroyMenu
     (0x1384, 1), // NtUserDestroyWindow
+    (0x1389, 1), // NtUserDisableThreadIme
     (0x138b, 1), // NtUserDispatchMessage
     (0x139b, 1), // NtUserDrawMenuBar
     (0x139c, 5), // NtUserDrawMenuBarTemp
@@ -85,9 +90,12 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x148c, 3), // NtUserInvalidateRect
     (0x14b5, 7), // NtUserMessageCall
     (0x14ba, 6), // NtUserMoveWindow
+    (0x14be, 2), // NtUserNotifyIMEStatus
     (0x14c2, 2), // NtUserOpenClipboard
     (0x14ca, 5), // NtUserPeekMessage
     (0x14d0, 4), // NtUserPostMessage
+    (0x14dd, 2), // NtUserQueryInputContext
+    (0x14df, 2), // NtUserQueryWindow
     (0x14e9, 4), // NtUserRedrawWindow
     (0x14eb, 7), // NtUserRegisterClassExWOW
     (0x1507, 1), // NtUserRegisterWindowMessage
@@ -118,6 +126,7 @@ const RAW_CALLS: &[(u64, usize)] = &[
     (0x15d0, 6), // NtUserThunkedMenuItemInfo
     (0x15d7, 3), // NtUserTranslateAccelerator
     (0x15d8, 2), // NtUserTranslateMessage
+    (0x15e5, 3), // NtUserUpdateInputContext
 ];
 
 /// # C: O(log(number of admitted ordinals))

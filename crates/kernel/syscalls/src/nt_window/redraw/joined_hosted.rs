@@ -57,6 +57,7 @@ pub mod live {
         while !ready(){assert!(std::time::Instant::now()<end,"hosted sender failed to wake");std::thread::yield_now();}
     }
 }
+#[path = "../../../../ipc/src/win32_imc.rs"] pub mod win32_imc;
 #[path="../../../../ipc/src/win32_window.rs"] pub mod win32_window;
 static CALLS:Mutex<Vec<(u64,u64,u64,u64,u64)>>=Mutex::new(Vec::new());
 mod nt_rtl {

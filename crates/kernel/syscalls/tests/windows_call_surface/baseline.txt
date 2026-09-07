@@ -149,10 +149,8 @@ win32u 0x1319 NtUserActivateKeyboardLayout
 win32u 0x131a NtUserAddClipboardFormatListener
 win32u 0x131e NtUserAlterWindowStyle
 win32u 0x1320 NtUserArrangeIconicWindows
-win32u 0x1321 NtUserAssociateInputContext
 win32u 0x1322 NtUserAttachThreadInput
 win32u 0x1325 NtUserBeginDeferWindowPos
-win32u 0x132c NtUserBuildHimcList
 win32u 0x132d NtUserBuildHwndList
 win32u 0x132e NtUserBuildNameList
 win32u 0x132f NtUserBuildPropList
@@ -165,12 +163,9 @@ win32u 0x1352 NtUserCloseDesktop
 win32u 0x1353 NtUserCloseWindowStation
 win32u 0x135b NtUserCountClipboardFormats
 win32u 0x1362 NtUserCreateDesktopEx
-win32u 0x1364 NtUserCreateInputContext
 win32u 0x136d NtUserCreateWindowStation
 win32u 0x1374 NtUserDeferWindowPosAndBand
 win32u 0x137f NtUserDestroyCursor
-win32u 0x1381 NtUserDestroyInputContext
-win32u 0x1389 NtUserDisableThreadIme
 win32u 0x138c NtUserDisplayConfigGetDeviceInfo
 win32u 0x1393 NtUserDragDetect
 win32u 0x1394 NtUserDragObject
@@ -256,7 +251,6 @@ win32u 0x14b3 NtUserMenuItemFromPoint
 win32u 0x14b4 NtUserMessageBeep
 win32u 0x14b8 NtUserModifyUserStartupInfoFlags
 win32u 0x14bb NtUserMsgWaitForMultipleObjectsEx
-win32u 0x14be NtUserNotifyIMEStatus
 win32u 0x14c1 NtUserNotifyWinEvent
 win32u 0x14c3 NtUserOpenDesktop
 win32u 0x14c4 NtUserOpenInputDesktop
@@ -266,8 +260,6 @@ win32u 0x14d1 NtUserPostQuitMessage
 win32u 0x14d2 NtUserPostThreadMessage
 win32u 0x14d4 NtUserPrintWindow
 win32u 0x14db NtUserQueryDisplayConfig
-win32u 0x14dd NtUserQueryInputContext
-win32u 0x14df NtUserQueryWindow
 win32u 0x14e1 NtUserRealChildWindowFromPoint
 win32u 0x14e4 NtUserRealizePalette
 win32u 0x14f3 NtUserRegisterHotKey
@@ -323,7 +315,6 @@ win32u 0x15db NtUserUnhookWindowsHook
 win32u 0x15dc NtUserUnhookWindowsHookEx
 win32u 0x15df NtUserUnregisterClass
 win32u 0x15e0 NtUserUnregisterHotKey
-win32u 0x15e5 NtUserUpdateInputContext
 win32u 0x15e7 NtUserUpdateLayeredWindow
 win32u 0x15f1 NtUserValidateRect
 win32u 0x15f2 NtUserValidateRgn

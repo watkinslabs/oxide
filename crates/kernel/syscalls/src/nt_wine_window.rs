@@ -25,6 +25,8 @@ mod gdi_raw;
 mod gdi_route;
 mod bitmap_raw;
 mod device_caps;
+pub(crate) mod input_context;
+pub(crate) mod query_window;
 mod brush_raw;
 mod clip_raw;
 #[cfg(target_os = "oxide-kernel")]

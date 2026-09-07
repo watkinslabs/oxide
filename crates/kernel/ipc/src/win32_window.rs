@@ -47,6 +47,11 @@ mod dc_lease;
 pub use dc_lease::DcLeaseContext;
 #[path = "win32_window/redraw.rs"]
 mod redraw;
+#[path = "win32_window/hung.rs"]
+mod hung;
+pub use hung::HUNG_QUEUE_NS;
+#[path = "win32_window/imc_assoc.rs"]
+mod imc_assoc;
 #[path = "win32_window/paint_session.rs"]
 mod paint_session;
 pub use paint_session::{PaintSession, PaintSessionError};
@@ -160,7 +165,9 @@ pub enum QueueError { Full }
 const MESSAGE_QUEUE_LIMIT: usize = 10_000;
 
 #[derive(Default)]
-pub struct MessageQueue { messages: VecDeque<QueuedMessage>, quit: Option<i32>, keyboard: KeyboardState, caret: CaretState, caret_generation: u64, caret_blink: CaretBlink }
+pub struct MessageQueue { messages: VecDeque<QueuedMessage>, quit: Option<i32>, keyboard: KeyboardState, caret: CaretState, caret_generation: u64, caret_blink: CaretBlink,
+    /// Monotonic nanoseconds at which the owning thread last read this queue.
+    access_ns: u64 }
 
 impl MessageQueue {
     pub fn post(&mut self, message: WinMessage) -> Result<(), QueueError> {
@@ -202,7 +209,10 @@ impl MessageQueue {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct WindowRecord { pub owner_tid: u64, pub parent: Option<WindowId>, pub owner: Option<WindowId>, pub wndproc: u64, pub unicode: bool, pub class_atom: Option<u16>, pub visible: bool, pub menu: Option<u32>, pub id_menu: u64, pub presentation_ready: bool, pub style: u32, pub ex_style: u32, pub last_focus: Option<WindowId>, pub client_rect: Option<WindowRect> }
+pub struct WindowRecord { pub owner_tid: u64, pub parent: Option<WindowId>, pub owner: Option<WindowId>, pub wndproc: u64, pub unicode: bool, pub class_atom: Option<u16>, pub visible: bool, pub menu: Option<u32>, pub id_menu: u64, pub presentation_ready: bool, pub style: u32, pub ex_style: u32, pub last_focus: Option<WindowId>, pub client_rect: Option<WindowRect>,
+    /// Input context associated with this window, as the reference keeps it on
+    /// the window record itself.
+    pub imc: Option<crate::win32_imc::ImcId> }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WindowClass { pub name: Vec<u16>, pub wndproc: u64, pub unicode: bool, pub atom: u16, pub cb_wnd_extra: u32, pub style: u32,

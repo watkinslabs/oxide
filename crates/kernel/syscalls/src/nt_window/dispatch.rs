@@ -70,6 +70,7 @@ pub(super) fn dispatch_mode(call: NtCall, raw: bool) -> Option<u64> {
                     if parent > u32::MAX as u64 { return Some(STATUS_INVALID_HANDLE); }
                     let parent = if parent == 0 { None } else { match ipc::win32_window::WindowId::from_raw(parent as u32) { Some(parent) => Some(parent), None => return Some(STATUS_INVALID_HANDLE) } };
                     let result = match state.create(cur.tid as u64, parent, wndproc) { Ok(window) => window.raw() as u64, Err(_) => STATUS_INVALID_PARAMETER };
+                    state.note_queue_access(cur.tid as u64, timekeeper::monotonic_ns());
                     (Some(result), None, None)
                 }
                 NtWindowCall::Destroy { hwnd } => {
@@ -105,6 +106,7 @@ pub(super) fn dispatch_mode(call: NtCall, raw: bool) -> Option<u64> {
                 }
                 NtWindowCall::Peek { message, hwnd, first, last, remove } => {
                     let Some(filter) = message_filter(state, hwnd, first, last) else { return Some(STATUS_INVALID_HANDLE); };
+                    state.note_queue_access(cur.tid as u64, timekeeper::monotonic_ns());
                     if let Some(found) = state.peek_for_thread(cur.tid as u64, filter, false) {
                         if copy_message(message, found).is_err() { return Some(STATUS_INVALID_PARAMETER); }
                         if remove != 0 { let _ = state.peek_for_thread(cur.tid as u64, filter, true); }
@@ -113,6 +115,7 @@ pub(super) fn dispatch_mode(call: NtCall, raw: bool) -> Option<u64> {
                 }
                 NtWindowCall::Get { message, hwnd, first, last } => {
                     let Some(filter) = message_filter(state, hwnd, first, last) else { return Some(STATUS_INVALID_HANDLE); };
+                    state.note_queue_access(cur.tid as u64, timekeeper::monotonic_ns());
                     match state.take_for_thread(cur.tid as u64, filter) {
                         ipc::win32_window::QueueResult::Message(found) => {
                             // Which message a pump is handed decides everything

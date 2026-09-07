@@ -4,6 +4,7 @@ extern crate alloc;
 extern crate self as ipc;
 extern crate self as sched;
 use std::sync::{Arc,Weak,Mutex,MutexGuard,LazyLock};
+#[path = "../../../../ipc/src/win32_imc.rs"] pub mod win32_imc;
 #[path="../../../../ipc/src/win32_window.rs"] pub mod win32_window;
 #[path="../../../../ipc/src/win32_gdi.rs"] pub mod win32_gdi;
 use win32_window::{WindowManager,WindowId,WindowRect,PaintRegion,RDW_INVALIDATE,RDW_ERASE,RDW_FRAME};
