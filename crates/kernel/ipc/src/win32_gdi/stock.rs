@@ -7,6 +7,9 @@ pub const SYSTEM_FONT: u32 = 13;
 pub const DEFAULT_DC_FONT_HANDLE: u32 = STOCK_BIT | TYPE_FONT | (FIRST_STOCK_SLOT + SYSTEM_FONT);
 const TYPE_BRUSH: u32 = 0x10_0000;
 const TYPE_PEN: u32 = 0x30_0000;
+const TYPE_PALETTE: u32 = 0x08_0000;
+pub const DEFAULT_PALETTE: u32 = 15;
+pub const DEFAULT_PALETTE_HANDLE: u32 = STOCK_BIT | TYPE_PALETTE | (FIRST_STOCK_SLOT + DEFAULT_PALETTE);
 const ANSI_CHARSET: u8 = 0;
 const OEM_CHARSET: u8 = 255;
 const FIXED_MODERN: u8 = 0x31;
@@ -28,7 +31,7 @@ pub struct StockBrush { pub style: StockStyle, pub color: u32, pub dc_color: boo
 pub struct StockPen { pub style: StockStyle, pub width: i32, pub color: u32, pub dc_color: bool }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum StockDescription { Font(StockFont), Brush(StockBrush), Pen(StockPen) }
+pub enum StockDescription { Font(StockFont), Brush(StockBrush), Pen(StockPen), Palette }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StockObject { pub index: u32, pub handle: u32, pub description: StockDescription }
@@ -56,9 +59,11 @@ pub fn stock_object(index: u32) -> Option<StockObject> {
         14 => font(16, 0, 700, "System", ANSI_CHARSET, VARIABLE_SWISS),
         16 => font(16, 0, 400, "Courier", ANSI_CHARSET, FIXED_MODERN),
         17 => font(-11, 0, 400, "MS Shell Dlg", ANSI_CHARSET, VARIABLE_SWISS),
+        DEFAULT_PALETTE => StockDescription::Palette,
         _ => return None,
     };
-    let kind = match description { StockDescription::Font(_) => TYPE_FONT, StockDescription::Brush(_) => TYPE_BRUSH, StockDescription::Pen(_) => TYPE_PEN };
+    let kind = match description { StockDescription::Font(_) => TYPE_FONT, StockDescription::Brush(_) => TYPE_BRUSH, StockDescription::Pen(_) => TYPE_PEN,
+        StockDescription::Palette => TYPE_PALETTE };
     Some(StockObject { index, handle: STOCK_BIT | kind | (FIRST_STOCK_SLOT + index), description })
 }
 

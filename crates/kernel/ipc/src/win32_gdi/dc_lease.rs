@@ -96,6 +96,8 @@ impl GdiManager {
             self.dcs.push((handle, DeviceContext { width: request.width, height: request.height, attr,
                 font: Some(DEFAULT_DC_FONT_HANDLE), brush: None, dc_brush_color: 0xffffff, pen: super::DEFAULT_DC_PEN_HANDLE, dc_pen_color: 0, text: TextAttributes::default(),
                 clip: None, meta_clip: None, paths: Default::default(), paint_clip: None, pixels: Vec::new(), lease: None, pending_output:Default::default(), saved: Vec::new() }));
+
+                clip: None, paint_clip: None, pixels: Vec::new(), lease: None, pending_output:Default::default(), palette: None }));
             (handle, self.dcs.len() - 1)
         };
         let old_clip = self.dcs[index].1.lease.as_ref().and_then(|lease| lease.clip_handle);
