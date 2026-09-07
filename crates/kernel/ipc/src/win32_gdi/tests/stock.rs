@@ -41,7 +41,7 @@ fn brush_and_pen_stock_descriptions_preserve_null_and_dc_color_semantics() {
 #[test]
 fn unsupported_types_and_forged_stock_identities_are_not_objects() {
     let owner = GdiManager::new();
-    for index in [9, 15, 20, 21, 22, 23, 24, u32::MAX] { assert!(stock_object(index).is_none()); }
+    for index in [9, 20, 21, 22, 23, 24, u32::MAX] { assert!(stock_object(index).is_none()); }
     for handle in [0, 45, TYPE_FONT | 45, STOCK_BIT | super::super::TYPE_DC | 45,
         DEFAULT_DC_FONT_HANDLE | 0x0100_0000, STOCK_BIT | TYPE_FONT | 64] {
         assert!(stock_by_handle(handle).is_none());

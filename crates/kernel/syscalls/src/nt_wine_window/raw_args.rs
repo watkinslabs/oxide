@@ -182,6 +182,8 @@ pub(crate) fn argument_count(ordinal: u64) -> Option<usize> {
     if let Some(count) = crate::nt_xform_raw::argument_count(ordinal) { return Some(count); }
     if let Some(count) = crate::nt_draw_raw::argument_count(ordinal) { return Some(count); }
     if let Some(count) = crate::nt_print_raw::argument_count(ordinal) { return Some(count); }
+
+    if let Some(count) = crate::nt_gdi_bitmap_shape::argument_count(ordinal) { return Some(count); }
     RAW_CALLS.binary_search_by_key(&ordinal, |entry| entry.0).ok().map(|index| RAW_CALLS[index].1)
 }
 

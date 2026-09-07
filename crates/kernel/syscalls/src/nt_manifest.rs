@@ -110,6 +110,8 @@ mod nt_user_callback;
 mod nt_message_call_abi;
 #[path = "nt_wine_window/font_query_raw.rs"]
 mod nt_wine_font_query_contract;
+#[path = "nt_wine_window/gdi_bitmap_shape.rs"]
+mod nt_gdi_bitmap_shape;
 #[path = "nt_wine_window/system_color_raw.rs"]
 mod nt_system_color_raw;
 #[path = "nt_wine_window/nonclient_raw.rs"]

@@ -42,6 +42,13 @@ pub use draw::{ellipse_first_quadrant, arc_points, round_rect_points, flatten_be
 mod dc_state;
 pub use dc_state::{DcKind, SavedDc, GDI_ERROR, SP_ERROR, START_PAGE_RESULT, JOB_RESULT, INIT_SPOOL_RESULT,
     SPOOL_MESSAGE_RESULT, EXT_ESCAPE_RESULT};
+
+#[path = "win32_gdi/blt.rs"]
+mod blt;
+pub use blt::{BltCoords, BlendFunction, TriVertex, GradientMode, StretchMode, rop3, rop_uses_source,
+    SRCCOPY, SRCAND, SRCPAINT, NOMIRRORBITMAP, BLACKONWHITE, WHITEONBLACK, COLORONCOLOR, HALFTONE,
+    AC_SRC_OVER, AC_SRC_ALPHA, GRADIENT_FILL_RECT_H, GRADIENT_FILL_RECT_V, GRADIENT_FILL_TRIANGLE,
+    FLOODFILLBORDER, FLOODFILLSURFACE};
 #[path = "win32_gdi/handles.rs"]
 mod handles;
 #[path = "win32_gdi/projection.rs"]
@@ -59,7 +66,14 @@ pub use path::{GdiPath, PT_BEZIERTO, PT_CLOSEFIGURE, PT_LINETO, PT_MOVETO};
 mod stock;
 #[path = "win32_gdi/bitmap.rs"]
 mod bitmap;
-pub use bitmap::{Bitmap, BitmapPattern, MAX_BITMAP_BYTES, TYPE_BITMAP, bitmap_stride, dib_stride, normalize_bpp};
+pub use bitmap::{Bitmap, BitmapPattern, MAX_BITMAP_BYTES, TYPE_BITMAP, bitmap_stride, dib_stride, normalize_bpp,
+    default_masks, DibHeader, Rgb, BI_RGB, BI_RLE8, BI_RLE4, BI_BITFIELDS, DIB_RGB_COLORS, DIB_PAL_COLORS,
+    DibImage, transfer_band, DIB_PAL_INDICES, CORE_HEADER_BYTES, INFO_HEADER_BYTES, RGBQUAD_BYTES, RGBTRIPLE_BYTES, BITFIELD_BYTES};
+#[path = "win32_gdi/palette.rs"]
+mod palette;
+pub use palette::{Palette, PaletteEntry, TYPE_PALETTE, CLR_INVALID, PC_RESERVED, PALETTE_VERSION,
+    DEFAULT_PALETTE_ENTRIES, HALFTONE_PALETTE_ENTRIES, SYSPAL_ERROR, SYSPAL_STATIC, SYSPAL_NOSTATIC,
+    SYSPAL_NOSTATIC256, default_color_entry, default_color_table_len, default_palette_entry};
 #[path = "win32_gdi/brush.rs"]
 mod brush;
 #[path = "win32_gdi/system_brush.rs"]
@@ -74,8 +88,8 @@ pub use font::{FontRecord, FontQuery, LOGFONTW_BYTES};
 #[cfg(test)]
 #[path = "win32_gdi/tests/font_lifetime.rs"]
 mod font_lifetime_tests;
-pub use stock::{stock_object, stock_by_handle, StockDescription, StockObject, StockFont, StockBrush, StockPen, StockStyle, DEFAULT_DC_FONT_HANDLE};
-pub use brush::{Brush, BrushStyle, SharedDcColors, TYPE_BRUSH};
+pub use stock::{stock_object, stock_by_handle, StockDescription, StockObject, StockFont, StockBrush, StockPen, StockStyle, DEFAULT_DC_FONT_HANDLE, DEFAULT_PALETTE, DEFAULT_PALETTE_HANDLE};
+pub use brush::{Brush, BrushStyle, SharedDcColors, TYPE_BRUSH, hatch_rows, HS_DIAGCROSS, HS_API_MAX, OPAQUE};
 #[path = "win32_gdi/pen.rs"]
 mod pen;
 pub use pen::{Pen, PenRasterState, DashPattern, TYPE_PEN, DEFAULT_DC_PEN_HANDLE, admit_ext_pen, ExtPenRequest,
@@ -121,18 +135,27 @@ impl Default for PathState {
 
 
 #[derive(Debug, PartialEq)]
-struct DeviceContext { width: i32, height: i32, attr: DcAttr, font: Option<u32>, brush: Option<u32>, dc_brush_color: u32, pen: u32, dc_pen_color: u32, text: TextAttributes, clip: Option<crate::win32_window::PaintRegion>, meta_clip: Option<crate::win32_window::PaintRegion>, paths: PathState, paint_clip: Option<crate::win32_window::PaintRegion>, pixels: Vec<u32>, lease: Option<DcLease>, pending_output: PendingOutput, saved: Vec<SavedDc> }
+struct DeviceContext { width: i32, height: i32, attr: DcAttr, font: Option<u32>, brush: Option<u32>, dc_brush_color: u32, pen: u32, dc_pen_color: u32, text: TextAttributes, clip: Option<crate::win32_window::PaintRegion>, meta_clip: Option<crate::win32_window::PaintRegion>, paths: PathState, paint_clip: Option<crate::win32_window::PaintRegion>, pixels: Vec<u32>, lease: Option<DcLease>, pending_output: PendingOutput, saved: Vec<SavedDc>, palette: Option<u32>, bitmap: Option<u32>, memory: bool }
 
-pub struct GdiManager { next: u32, dcs: Vec<(u32, DeviceContext)>, fonts: Vec<(u32, FontRecord)>, brushes: Vec<(u32, Brush)>, bitmaps: Vec<(u32, Bitmap)>, pens: Vec<(u32, Pen)>, system_brushes: SystemBrushes, window_dcs: Vec<(u32, u32)>, regions: Vec<(u32, crate::win32_window::PaintRegion)>, client_objs: Vec<u32> }
+pub struct GdiManager { next: u32, dcs: Vec<(u32, DeviceContext)>, fonts: Vec<(u32, FontRecord)>, brushes: Vec<(u32, Brush)>, bitmaps: Vec<(u32, Bitmap)>, pens: Vec<(u32, Pen)>, system_brushes: SystemBrushes, window_dcs: Vec<(u32, u32)>, regions: Vec<(u32, crate::win32_window::PaintRegion)>, client_objs: Vec<u32>, palettes: Vec<(u32, Palette)>, system_palette_use: u32, primary_palette: Option<u32>, last_realized_palette: Option<u32> }
 
 impl Default for GdiManager { fn default() -> Self { Self::new() } }
 
 impl GdiManager {
     /// Construct an empty process-local GDI object owner. # C: O(1)
-    pub fn new() -> Self { Self { next: FIRST_DYNAMIC_SLOT, dcs: Vec::new(), fonts: Vec::new(), brushes: Vec::new(), bitmaps: Vec::new(), pens: Vec::new(), system_brushes: SystemBrushes::default(), window_dcs: Vec::new(), regions: Vec::new(), client_objs: Vec::new() } }
+    pub fn new() -> Self { Self { next: FIRST_DYNAMIC_SLOT, dcs: Vec::new(), fonts: Vec::new(), brushes: Vec::new(), bitmaps: Vec::new(), pens: Vec::new(), system_brushes: SystemBrushes::default(), window_dcs: Vec::new(), regions: Vec::new(), client_objs: Vec::new(), palettes: Vec::new(), system_palette_use: SYSPAL_STATIC, primary_palette: None, last_realized_palette: None } }
 
     /// Create a memory device context with bounded positive dimensions. # C: O(1)
     pub fn create_dc(&mut self, width: i32, height: i32) -> Result<u32, GdiError> {
+        if width <= 0 || height <= 0 { return Err(GdiError::InvalidDimensions); }
+        let handle = self.create_storage_dc(width, height)?;
+        if let Some((_, state)) = self.dcs.iter_mut().find(|(id, _)| *id == handle) { state.memory = true; }
+        Ok(handle)
+    }
+
+    /// A display device context spans real device pixels and selects no
+    /// bitmap, so it is never a memory context. # C: O(1)
+    pub fn create_display_dc(&mut self, width: i32, height: i32) -> Result<u32, GdiError> {
         if width <= 0 || height <= 0 { return Err(GdiError::InvalidDimensions); }
         self.create_storage_dc(width, height)
     }
@@ -190,6 +213,7 @@ impl GdiManager {
         if self.fonts.iter().any(|(candidate, _)| *candidate == handle) { return self.delete_font(handle); }
         if self.regions.iter().any(|(candidate, _)| *candidate == handle) { return self.delete_region(handle); }
         if self.bitmaps.iter().any(|(candidate, _)| *candidate == handle) { return self.delete_bitmap(handle); }
+        if self.palettes.iter().any(|(candidate, _)| *candidate == handle) { return self.delete_palette(handle); }
         Err(GdiError::NoSuchObject)
     }
 

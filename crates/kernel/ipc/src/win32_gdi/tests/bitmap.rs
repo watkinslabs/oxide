@@ -88,7 +88,7 @@ fn a_monochrome_pattern_names_the_destination_text_and_background_colors() {
 }
 
 #[test]
-fn color_pattern_depths_decode_to_xrgb_and_indexed_depths_do_not() {
+fn color_pattern_depths_decode_to_xrgb_including_the_indexed_ones() {
     let mut gdi = GdiManager::new();
     let direct = gdi.create_bitmap(1, 1, 1, 32, Some(&[0x44, 0x33, 0x22, 0x11])).unwrap();
     assert_eq!(gdi.bitmap_pattern(direct).unwrap().pixel(0, 0, 0, 0), Some(0x0022_3344));
@@ -97,8 +97,11 @@ fn color_pattern_depths_decode_to_xrgb_and_indexed_depths_do_not() {
     // 5-bit channels replicate their high bits: 0x7c00 is full red.
     let high = gdi.create_bitmap(1, 1, 1, 16, Some(&[0x00, 0x7c])).unwrap();
     assert_eq!(gdi.bitmap_pattern(high).unwrap().pixel(0, 0, 0, 0), Some(0x00ff_0000));
+    // An indexed device-dependent bitmap resolves through the depth's default
+    // colour table, which the owner gives it at creation.
     let indexed = gdi.create_bitmap(2, 1, 1, 8, Some(&[0x01, 0x02])).unwrap();
-    assert_eq!(gdi.bitmap_pattern(indexed).unwrap().pixel(0, 0, 0, 0), None);
+    assert_eq!(gdi.bitmap_pattern(indexed).unwrap().pixel(0, 0, 0, 0), Some(0x0080_0000));
+    assert_eq!(gdi.bitmap_pattern(indexed).unwrap().pixel(1, 0, 0, 0), Some(0x0000_8000));
 }
 
 #[test]
