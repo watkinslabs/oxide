@@ -236,22 +236,22 @@ use super::tests::message;
     fn clipboard_open_is_shared_by_window_and_close_is_thread_owned() {
         let mut clipboard = ClipboardManager::new();
         let window = WindowId::from_raw(7);
-        assert!(clipboard.open(11, window));
+        assert!(clipboard.open(11, window).is_ok());
         assert!(clipboard.is_open());
-        assert!(clipboard.open(22, window));
-        assert!(!clipboard.close(11));
-        assert!(clipboard.close(22));
+        assert!(clipboard.open(22, window).is_ok());
+        assert!(clipboard.close(11).is_err());
+        assert!(clipboard.close(22).is_ok());
         assert!(!clipboard.is_open());
     }
 
     #[test]
     fn clipboard_rejects_a_different_window_until_the_owner_closes() {
         let mut clipboard = ClipboardManager::new();
-        assert!(clipboard.open(11, WindowId::from_raw(7)));
-        assert!(!clipboard.open(11, WindowId::from_raw(8)));
-        assert!(!clipboard.open(22, None));
-        assert!(clipboard.close(11));
-        assert!(clipboard.open(22, None));
+        assert!(clipboard.open(11, WindowId::from_raw(7)).is_ok());
+        assert!(clipboard.open(11, WindowId::from_raw(8)).is_err());
+        assert!(clipboard.open(22, None).is_err());
+        assert!(clipboard.close(11).is_ok());
+        assert!(clipboard.open(22, None).is_ok());
     }
 
 #[test]

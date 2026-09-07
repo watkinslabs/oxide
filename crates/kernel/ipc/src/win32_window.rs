@@ -63,6 +63,11 @@ pub use extra::{OwnedWindow, WindowExtra, LongPtrError};
 #[path = "win32_window/class_long.rs"]
 mod class_long;
 pub use class_long::{GCL_MENUNAME, GCLP_HBRBACKGROUND, GCLP_HCURSOR, GCLP_HICON, GCLP_HMODULE, GCL_CBWNDEXTRA, GCL_CBCLSEXTRA, GCLP_WNDPROC, GCL_STYLE, GCW_ATOM, GCLP_HICONSM};
+#[path = "win32_window/clipboard.rs"]
+mod clipboard;
+pub use clipboard::{ClipboardError, ClipboardManager, ClipboardNotify, ClipFormat,
+    CF_BITMAP, CF_DIB, CF_DIBV5, CF_ENHMETAFILE, CF_LOCALE, CF_MAX, CF_METAFILEPICT,
+    CF_OEMTEXT, CF_PALETTE, CF_TEXT, CF_UNICODETEXT};
 #[path = "win32_window/cursor.rs"]
 mod cursor;
 #[path = "win32_window/window_icon.rs"]
@@ -309,40 +314,6 @@ impl UserAtomTable {
 
 impl Default for UserAtomTable { fn default() -> Self { Self::new() } }
 
-/// Shared clipboard admission state for one window station.
-///
-/// Clipboard data is intentionally not stored here yet; this owner records
-/// the server-side open transaction so later format operations cannot invent
-/// a second lock beside the canonical window-station state.
-pub struct ClipboardManager { open_thread: Option<u64>, open_window: Option<WindowId> }
-
-impl ClipboardManager {
-    /// Create an unopened clipboard state. # C: O(1)
-    pub const fn new() -> Self { Self { open_thread: None, open_window: None } }
-
-    /// Admit one `OpenClipboard` request using its window-station lock rule.
-    /// # C: O(1)
-    pub fn open(&mut self, thread: u64, window: Option<WindowId>) -> bool {
-        if self.open_thread.is_some() && self.open_window != window { return false; }
-        self.open_thread = Some(thread);
-        self.open_window = window;
-        true
-    }
-
-    /// Close the clipboard only from the thread that currently opened it.
-    /// # C: O(1)
-    pub fn close(&mut self, thread: u64) -> bool {
-        if self.open_thread != Some(thread) { return false; }
-        self.open_thread = None;
-        self.open_window = None;
-        true
-    }
-
-    /// Return whether this state has an active open transaction. # C: O(1)
-    pub const fn is_open(&self) -> bool { self.open_thread.is_some() }
-}
-
-impl Default for ClipboardManager { fn default() -> Self { Self::new() } }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct WindowRect { pub left: i32, pub top: i32, pub right: i32, pub bottom: i32 }
