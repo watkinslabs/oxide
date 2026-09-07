@@ -103,14 +103,15 @@ impl GdiManager {
 fn stroke(target:&mut DcRaster<'_>,pen:Pen,state:PenRasterState,start:(i32,i32),end:(i32,i32),phase:u64)->Result<(),GdiError>{
     if pen.style==PS_NULL{return Ok(());}
     coverage::line(start,end,target.bounds(),|x,y,step|{
-        let foreground=dash_on(pen.style,phase+step);
+        let foreground=dash_on(pen,phase+step);
         if foreground||state.opaque {let color=if foreground{pen.color}else{state.background};
             target.update(x,y,|old|rop2(state.rop,color,old));}
         Ok(())
     })
 }
-fn dash_on(style:u32,step:u64)->bool{
-    let pattern:&[u64]=match style{PS_SOLID|PS_INSIDEFRAME=>return true,1=>&[18,6],2=>&[3,3],
+fn dash_on(pen:Pen,step:u64)->bool{
+    if pen.pattern.count!=0 {return pen.pattern.covers(step);}
+    let pattern:&[u64]=match pen.style{PS_SOLID|PS_INSIDEFRAME=>return true,1=>&[18,6],2=>&[3,3],
         3=>&[9,6,3,6],4=>&[9,3,3,3,3,3],_=>return false};
     let mut phase=step%pattern.iter().sum::<u64>();
     for (index,length) in pattern.iter().enumerate(){if phase<*length{return index%2==0;}phase-=length;}

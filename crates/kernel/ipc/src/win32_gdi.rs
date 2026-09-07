@@ -80,7 +80,8 @@ pub use stock::{stock_object, stock_by_handle, StockDescription, StockObject, St
 pub use brush::{Brush, BrushStyle, SharedDcColors, TYPE_BRUSH};
 #[path = "win32_gdi/pen.rs"]
 mod pen;
-pub use pen::{Pen, PenRasterState, TYPE_PEN, DEFAULT_DC_PEN_HANDLE};
+pub use pen::{Pen, PenRasterState, DashPattern, TYPE_PEN, DEFAULT_DC_PEN_HANDLE, admit_ext_pen, ExtPenRequest,
+    PS_STYLE_MASK, PS_TYPE_MASK, PS_GEOMETRIC, PS_USERSTYLE, PS_ALTERNATE, BS_SOLID, BS_NULL, MAX_STYLE_ENTRIES};
 pub use handles::{FIRST_DYNAMIC_SLOT, SLOT_LIMIT, SLOT_MASK, TYPE_DC, TYPE_FONT};
 pub use text_state::{TextAttribute, TextAttributes, TextState};
 
