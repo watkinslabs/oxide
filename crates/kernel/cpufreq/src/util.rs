@@ -8,8 +8,7 @@
 // decay, and a resolution — and does nothing at all under a governor that
 // does not consume the signal.
 
-use core::sync::atomic::{AtomicU64, Ordering};
-use sync::{Devices, Spinlock};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::governor::schedutil::{IowaitBoost, Tunables};
 use crate::governor::{Demand, Snapshot, Target};
@@ -19,9 +18,16 @@ use crate::policy::Policy;
 /// Per-CPU wait-for-IO boost. One slot per CPU, not per policy: the boost
 /// follows the task that blocked, and two CPUs sharing a clock can be blocked
 /// on different things.
-static BOOST: Spinlock<[IowaitBoost; cpu::MAX_CPUS], Devices> =
-    Spinlock::new([IowaitBoost { value: 0, pending: false, last_update_ns: 0 };
-                   cpu::MAX_CPUS]);
+///
+/// Held as separate per-CPU cells rather than one array behind a lock. This
+/// runs in hard-interrupt context, so a shared lock here is a lock an
+/// interrupt handler waits on while process context holds it — the wedge this
+/// path exists to avoid. Each CPU touches only its own slot, which is what
+/// the reference's per-CPU governor state gives it for free.
+static BOOST_VALUE: [AtomicU64; cpu::MAX_CPUS] = [const { AtomicU64::new(0) }; cpu::MAX_CPUS];
+static BOOST_PENDING: [AtomicBool; cpu::MAX_CPUS] =
+    [const { AtomicBool::new(false) }; cpu::MAX_CPUS];
+static BOOST_LAST_NS: [AtomicU64; cpu::MAX_CPUS] = [const { AtomicU64::new(0) }; cpu::MAX_CPUS];
 /// Last time each CPU's hook actually programmed something.
 static LAST_UPDATE_NS: [AtomicU64; cpu::MAX_CPUS] =
     [const { AtomicU64::new(0) }; cpu::MAX_CPUS];
@@ -39,16 +45,19 @@ pub fn update_util(cpu: usize, util: u64, capacity: u64, iowait: bool, now_ns: u
 {
     if cpu >= cpu::MAX_CPUS { return; }
     if crate::suspended() { return; }
-    let Some(policy) = crate::driver::policy_for(cpu) else { return; };
+    // The published per-CPU pointer, never the policy registry: this runs with
+    // interrupts masked and must not wait on a lock process context holds.
+    let Some(policy) = crate::update_hook::hook_policy(cpu) else { return; };
     if policy.governor() != UTIL_GOVERNOR { return; }
 
     let boost = {
-        let mut slots = BOOST.lock();
-        let slot = &mut slots[cpu];
+        let mut slot = load_boost(cpu);
         let gap = now_ns.saturating_sub(slot.last_update_ns);
         slot.wakeup(iowait, gap, tick_ns);
         slot.last_update_ns = now_ns;
-        slot.apply(if capacity == 0 { CAPACITY_SCALE } else { capacity })
+        let applied = slot.apply(if capacity == 0 { CAPACITY_SCALE } else { capacity });
+        store_boost(cpu, slot);
+        applied
     };
 
     let tunables = Tunables::from_latency(policy.transition_latency_ns);
@@ -60,20 +69,51 @@ pub fn update_util(cpu: usize, util: u64, capacity: u64, iowait: bool, now_ns: u
     };
     let demand = Demand { load_percent: 0, util, capacity, iowait_boost: boost };
     let Some(target) = crate::governor::schedutil::schedutil(&snapshot, &demand) else { return; };
-    if submit(cpu, &policy, target, now_ns) { LAST_UPDATE_NS[cpu].store(now_ns, Ordering::Relaxed); }
+    if submit(cpu, policy, target, now_ns) { LAST_UPDATE_NS[cpu].store(now_ns, Ordering::Relaxed); }
+}
+
+/// This CPU's boost cell. # C: O(1)
+fn load_boost(cpu: usize) -> IowaitBoost {
+    IowaitBoost {
+        value: BOOST_VALUE[cpu].load(Ordering::Relaxed),
+        pending: BOOST_PENDING[cpu].load(Ordering::Relaxed),
+        last_update_ns: BOOST_LAST_NS[cpu].load(Ordering::Relaxed),
+    }
+}
+
+/// Publish this CPU's boost cell. # C: O(1)
+fn store_boost(cpu: usize, slot: IowaitBoost) {
+    BOOST_VALUE[cpu].store(slot.value, Ordering::Relaxed);
+    BOOST_PENDING[cpu].store(slot.pending, Ordering::Relaxed);
+    BOOST_LAST_NS[cpu].store(slot.last_update_ns, Ordering::Relaxed);
 }
 
 /// Submit one scheduler-originated target. Fast drivers execute directly;
 /// every other driver must be accepted by the scheduler's process-context
 /// handoff, because clock and regulator providers may sleep. # C: O(N_entries)
-pub fn submit(cpu: usize, policy: &alloc::sync::Arc<Policy>, target: Target, now_ns: u64) -> bool {
-    let Some(driver) = crate::driver::driver() else { return false; };
+pub fn submit(cpu: usize, policy: &Policy, target: Target, now_ns: u64) -> bool {
+    let Some(driver) = crate::driver::driver_ref() else { return false; };
     if driver.ops.fast_switch_possible(policy) {
         let _ = crate::driver::fast_switch(policy, target, now_ns);
         return true;
     }
     crate::driver::defer_transition(cpu, target, now_ns)
 }
+
+/// Forget every per-CPU rate limit and boost between tests. # C: O(MAX_CPUS)
+#[cfg(test)]
+pub fn clear_for_tests() {
+    for cpu in 0..cpu::MAX_CPUS {
+        LAST_UPDATE_NS[cpu].store(0, Ordering::Relaxed);
+        BOOST_VALUE[cpu].store(0, Ordering::Relaxed);
+        BOOST_PENDING[cpu].store(false, Ordering::Relaxed);
+        BOOST_LAST_NS[cpu].store(0, Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/hook_irq.rs"]
+mod hook_irq_tests;
 
 #[cfg(test)]
 mod tests {

@@ -16,6 +16,8 @@
 // - `governor`: the policies, each a pure function over a snapshot.
 // - `driver`: registration, driving a target, applying a limit change.
 // - `attrs`: the `cpufreq/` and `cpufreq/stats/` attribute contract.
+// - `update_hook`: the per-CPU policy pointer the scheduler's hook reads.
+// - `irqgate`: the cfg-selected interrupt gate this crate's IRQ-shared locks close.
 // - `util`: the scheduler-side utilisation hook (kernel builds only).
 
 #![no_std]
@@ -27,12 +29,14 @@ extern crate std;
 
 pub mod attrs;
 pub mod driver;
+mod irqgate;
 pub mod governor;
 pub mod limits;
 pub mod policy;
 pub mod stats;
 pub mod table;
 pub mod uapi;
+pub mod update_hook;
 
 pub mod util;
 

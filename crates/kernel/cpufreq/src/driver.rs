@@ -7,7 +7,8 @@
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use core::ptr;
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 use sync::{Devices, Spinlock};
 use vfs::{KResult, VfsError};
 
@@ -49,6 +50,14 @@ pub trait CpufreqOps: Send + Sync {
 pub struct Driver { pub name: String, pub ops: Arc<dyn CpufreqOps> }
 
 static DRIVER: Spinlock<Option<Arc<Driver>>, Devices> = Spinlock::new(None);
+/// The registered driver, published for the scheduler's utilisation hook.
+///
+/// That hook runs with interrupts masked and may not wait on `DRIVER`, which
+/// process context holds with interrupts enabled. Registration is one-shot and
+/// `DRIVER` keeps the driver alive, so a plain published pointer is the whole
+/// of what the hook needs — the reference reads its scaling driver on the
+/// scheduler's fast-switch path the same way.
+static DRIVER_PTR: AtomicPtr<Driver> = AtomicPtr::new(ptr::null_mut());
 static POLICIES: Spinlock<Vec<Arc<Policy>>, Devices> = Spinlock::new(Vec::new());
 /// Monotonic time of the last programmed transition, for the rate limit.
 static LAST_UPDATE_NS: AtomicU64 = AtomicU64::new(0);
@@ -64,6 +73,7 @@ pub fn register_driver(name: &str, ops: Arc<dyn CpufreqOps>) -> KResult<Arc<Driv
     let mut slot = DRIVER.lock();
     if slot.is_some() { return Err(VfsError::Ebusy); }
     let driver = Arc::new(Driver { name: String::from(name), ops });
+    DRIVER_PTR.store(Arc::as_ptr(&driver) as *mut Driver, Ordering::Release);
     *slot = Some(Arc::clone(&driver));
     Ok(driver)
 }
@@ -76,6 +86,18 @@ pub fn policy_for(cpu: usize) -> Option<Arc<Policy>> {
     policies().into_iter().find(|policy| policy.related_cpus.contains(&cpu))
 }
 
+/// The registered driver, read without taking a lock an interrupt handler
+/// would have to wait for. Callers on the scheduler's hook path use this;
+/// process context uses `driver`. # C: O(1)
+pub fn driver_ref() -> Option<&'static Driver> {
+    let raw = DRIVER_PTR.load(Ordering::Acquire);
+    if raw.is_null() { return None; }
+    // SAFETY: register_driver publishes only a pointer into the Arc `DRIVER`
+    // then holds, and nothing but the test reset clears either, so the target
+    // outlives this read.
+    Some(unsafe { &*raw })
+}
+
 /// Register a policy, refusing one whose CPUs another policy already governs.
 /// # C: O(N_policies * N_cpus)
 pub fn register_policy(policy: Arc<Policy>) -> KResult<Arc<Policy>> {
@@ -86,11 +108,14 @@ pub fn register_policy(policy: Arc<Policy>) -> KResult<Arc<Policy>> {
         }
     }
     registered.push(Arc::clone(&policy));
+    // Publish the scheduler hook's per-CPU pointer while the registry holds the
+    // reference that keeps it alive.
+    for cpu in policy.related_cpus.iter() { crate::update_hook::add_update_util_hook(*cpu, &policy); }
     Ok(policy)
 }
 
 /// Build the governor's view of a policy. # C: O(1)
-pub fn snapshot(policy: &Arc<Policy>) -> Snapshot {
+pub fn snapshot(policy: &Policy) -> Snapshot {
     let state = policy.with_state(|state| (state.limits, state.cur, state.setspeed));
     Snapshot { limits: state.0, hw: policy.hw, cur: state.1, setspeed: state.2 }
 }
@@ -100,7 +125,7 @@ pub fn snapshot(policy: &Arc<Policy>) -> Snapshot {
 /// A resolution that lands on the frequency already in force programs nothing:
 /// the transition cost is real, and a governor that recomputes the same answer
 /// every sample would otherwise pay it every time. # C: O(N_entries)
-pub fn drive(policy: &Arc<Policy>, target: Target, now_ns: u64) -> KResult<u32> {
+pub fn drive(policy: &Policy, target: Target, now_ns: u64) -> KResult<u32> {
     let (driver, index, freq, cur) = resolve_target(policy, target)?;
     if freq == cur { return Ok(freq); }
     driver.ops.target_index(policy, index)?;
@@ -111,7 +136,7 @@ pub fn drive(policy: &Arc<Policy>, target: Target, now_ns: u64) -> KResult<u32> 
 /// Program a scheduler-originated target through a driver's non-sleeping
 /// callback. Callers must first establish that this policy admits it.
 /// # C: O(N_entries + provider)
-pub fn fast_switch(policy: &Arc<Policy>, target: Target, now_ns: u64) -> KResult<u32> {
+pub fn fast_switch(policy: &Policy, target: Target, now_ns: u64) -> KResult<u32> {
     let (driver, index, freq, cur) = resolve_target(policy, target)?;
     if freq == cur { return Ok(freq); }
     driver.ops.fast_switch(policy, index)?;
@@ -121,8 +146,10 @@ pub fn fast_switch(policy: &Arc<Policy>, target: Target, now_ns: u64) -> KResult
 
 /// Resolve a request and preserve the state snapshot that made it valid.
 /// # C: O(N_entries)
-fn resolve_target(policy: &Arc<Policy>, target: Target) -> KResult<(Arc<Driver>, usize, u32, u32)> {
-    let driver = driver().ok_or(VfsError::Enodev)?;
+fn resolve_target(policy: &Policy, target: Target) -> KResult<(&'static Driver, usize, u32, u32)> {
+    // The published pointer, not `DRIVER`: this is reached from the scheduler's
+    // hook with interrupts masked, and that lock is held with them enabled.
+    let driver = driver_ref().ok_or(VfsError::Enodev)?;
     let (limits, boost, cur) = policy.with_state(|state| (state.limits, state.boost, state.cur));
     let index = policy.table.resolve(target.freq_khz, limits.min, limits.max, target.relation, boost)
         .ok_or(VfsError::Einval)?;
@@ -130,13 +157,13 @@ fn resolve_target(policy: &Arc<Policy>, target: Target) -> KResult<(Arc<Driver>,
 }
 
 /// Commit the exact rate accepted by the provider. # C: O(N_entries)
-fn record_transition(policy: &Arc<Policy>, freq: u32, now_ns: u64) {
+fn record_transition(policy: &Policy, freq: u32, now_ns: u64) {
     policy.with_state(|state| { state.cur = freq; state.stats.record(freq, now_ns); });
     LAST_UPDATE_NS.store(now_ns, Ordering::Relaxed);
 }
 
 /// Resolve the policy governor's target without programming hardware. # C: O(N_entries)
-pub fn govern_target(policy: &Arc<Policy>, demand: &Demand) -> Option<Target> {
+pub fn govern_target(policy: &Policy, demand: &Demand) -> Option<Target> {
     let governor = by_name(policy.governor()).unwrap_or_else(default_governor);
     let tunables = ondemand::Tunables::from_latency(policy.transition_latency_ns);
     let snapshot = snapshot(policy);
@@ -144,7 +171,7 @@ pub fn govern_target(policy: &Arc<Policy>, demand: &Demand) -> Option<Target> {
 }
 
 /// Run the policy's governor and program whatever it asks for. # C: O(N_entries)
-pub fn govern(policy: &Arc<Policy>, demand: &Demand, now_ns: u64) -> KResult<Option<u32>> {
+pub fn govern(policy: &Policy, demand: &Demand, now_ns: u64) -> KResult<Option<u32>> {
     if suspended() { return Ok(None); }
     let Some(target) = govern_target(policy, demand) else { return Ok(None); };
     drive(policy, target, now_ns).map(Some)
@@ -153,7 +180,7 @@ pub fn govern(policy: &Arc<Policy>, demand: &Demand, now_ns: u64) -> KResult<Opt
 /// Apply a limit request and re-drive the policy, because a cap that does not
 /// take effect until the next sample is a cap that is not in force.
 /// # C: O(N_entries + N_sources + N_thermal)
-pub fn set_limits(policy: &Arc<Policy>, source: LimitSource, request: Request, now_ns: u64)
+pub fn set_limits(policy: &Policy, source: LimitSource, request: Request, now_ns: u64)
     -> KResult<()>
 {
     policy.set_request(source, request);
@@ -163,7 +190,7 @@ pub fn set_limits(policy: &Arc<Policy>, source: LimitSource, request: Request, n
 /// Apply one firmware processor's thermal request and re-drive its shared
 /// policy. Releasing one processor does not release a cap held by another
 /// processor in the same clock domain. # C: O(N_entries + N_sources + N_thermal)
-pub fn set_thermal_limit(policy: &Arc<Policy>, key: usize, request: Request, now_ns: u64)
+pub fn set_thermal_limit(policy: &Policy, key: usize, request: Request, now_ns: u64)
     -> KResult<()>
 {
     policy.set_thermal_request(key, request);
@@ -171,7 +198,7 @@ pub fn set_thermal_limit(policy: &Arc<Policy>, key: usize, request: Request, now
 }
 
 /// Re-target a policy after its aggregated constraints changed. # C: O(N_entries)
-fn retarget_limits(policy: &Arc<Policy>, now_ns: u64) -> KResult<()> {
+fn retarget_limits(policy: &Policy, now_ns: u64) -> KResult<()> {
     let limits = policy.limits();
     let cur = policy.cur();
     if cur > limits.max {
@@ -183,7 +210,7 @@ fn retarget_limits(policy: &Arc<Policy>, now_ns: u64) -> KResult<()> {
 }
 
 /// Select a governor for one policy. # C: O(N_governors)
-pub fn set_governor(policy: &Arc<Policy>, name: &str) -> KResult<()> {
+pub fn set_governor(policy: &Policy, name: &str) -> KResult<()> {
     let governor = by_name(name).ok_or(VfsError::Einval)?;
     policy.with_state(|state| state.governor = governor.name);
     Ok(())
@@ -191,7 +218,7 @@ pub fn set_governor(policy: &Arc<Policy>, name: &str) -> KResult<()> {
 
 /// Frequency the hardware reports, falling back to the cached one where the
 /// driver cannot read it. # C: O(provider)
-pub fn cur_freq(policy: &Arc<Policy>) -> Option<u32> {
+pub fn cur_freq(policy: &Policy) -> Option<u32> {
     let cpu = *policy.cpus.first()?;
     driver().and_then(|driver| driver.ops.get(cpu)).or_else(|| Some(policy.cur()))
 }
@@ -199,7 +226,7 @@ pub fn cur_freq(policy: &Arc<Policy>) -> Option<u32> {
 /// Frequency the driver reads back from the hardware, with no fallback. What
 /// `cpuinfo_cur_freq` reports, and `None` where the platform cannot say.
 /// # C: O(provider)
-pub fn hardware_freq(policy: &Arc<Policy>) -> Option<u32> {
+pub fn hardware_freq(policy: &Policy) -> Option<u32> {
     let cpu = *policy.cpus.first()?;
     driver()?.ops.get(cpu)
 }
@@ -225,7 +252,7 @@ pub fn defer_transition(cpu: usize, target: Target, now_ns: u64) -> bool {
 }
 
 /// Whether a resolution would land on a boost point. # C: O(1)
-pub fn set_boost(policy: &Arc<Policy>, enabled: bool) -> bool {
+pub fn set_boost(policy: &Policy, enabled: bool) -> bool {
     if enabled && !policy.table.boost_supported() { return false; }
     policy.with_state(|state| state.boost = enabled);
     true
@@ -234,6 +261,9 @@ pub fn set_boost(policy: &Arc<Policy>, enabled: bool) -> bool {
 /// Empty the registry between tests. # C: O(1)
 #[cfg(test)]
 pub fn clear_for_tests() {
+    crate::update_hook::clear_hooks();
+    crate::util::clear_for_tests();
+    DRIVER_PTR.store(ptr::null_mut(), Ordering::Release);
     *DRIVER.lock() = None;
     POLICIES.lock().clear();
     LAST_UPDATE_NS.store(0, Ordering::Relaxed);
@@ -252,6 +282,19 @@ pub fn test_guard() -> std::sync::MutexGuard<'static, ()> {
     let guard = TEST_LOCK.lock().unwrap_or_else(|err| err.into_inner());
     clear_for_tests();
     guard
+}
+
+/// Hold the policy registry, so a test can prove the scheduler's hook path
+/// reads nothing that acquisition would make it wait for. # C: O(1)
+#[cfg(test)]
+pub fn lock_registry_for_tests() -> sync::Guard<'static, Vec<Arc<Policy>>, Devices> {
+    POLICIES.lock()
+}
+
+/// Hold the driver slot, for the same reason. # C: O(1)
+#[cfg(test)]
+pub fn lock_driver_for_tests() -> sync::Guard<'static, Option<Arc<Driver>>, Devices> {
+    DRIVER.lock()
 }
 
 /// Relation a limits-driven re-target uses. # C: O(1)

@@ -12,6 +12,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use sync::{Devices, Spinlock};
 
+use crate::irqgate::CfIrq;
 use crate::table::FreqTable;
 use crate::uapi::Relation;
 
@@ -74,6 +75,11 @@ pub struct Policy {
     pub transition_latency_ns: u64,
     /// Table entry the platform selected for system suspend, if any.
     suspend_index: Option<usize>,
+    /// The mutable half. Taken with interrupts masked at EVERY acquisition:
+    /// the scheduler's utilisation hook reads it from hard-interrupt context,
+    /// and a lock an interrupt handler takes that process context holds with
+    /// interrupts enabled wedges the CPU the first time the two meet
+    /// (`06§3.1`).
     state: Spinlock<PolicyState, Devices>,
 }
 
@@ -127,15 +133,15 @@ impl Policy {
     }
 
     /// The limits in force. # C: O(1)
-    pub fn limits(&self) -> Limits { self.state.lock().limits }
+    pub fn limits(&self) -> Limits { self.state.lock_irqsave::<CfIrq>().limits }
     /// Frequency the policy is at, kilohertz. # C: O(1)
-    pub fn cur(&self) -> u32 { self.state.lock().cur }
+    pub fn cur(&self) -> u32 { self.state.lock_irqsave::<CfIrq>().cur }
     /// Governor in force. # C: O(1)
-    pub fn governor(&self) -> &'static str { self.state.lock().governor }
+    pub fn governor(&self) -> &'static str { self.state.lock_irqsave::<CfIrq>().governor }
     /// Whether boost points are reachable. # C: O(1)
-    pub fn boost(&self) -> bool { self.state.lock().boost }
+    pub fn boost(&self) -> bool { self.state.lock_irqsave::<CfIrq>().boost }
     /// What `scaling_setspeed` last asked for. # C: O(1)
-    pub fn setspeed(&self) -> Option<u32> { self.state.lock().setspeed }
+    pub fn setspeed(&self) -> Option<u32> { self.state.lock_irqsave::<CfIrq>().setspeed }
     /// Platform-selected suspend OPP table index. # C: O(1)
     pub fn suspend_index(&self) -> Option<usize> { self.suspend_index }
     /// Platform-selected suspend frequency, kilohertz. # C: O(1)
@@ -145,18 +151,18 @@ impl Policy {
     /// Resolve the suspend OPP through the limits in force. # C: O(N_entries)
     pub fn suspend_target_index(&self) -> Option<usize> {
         let frequency = self.suspend_freq()?;
-        let state = self.state.lock();
+        let state = self.state.lock_irqsave::<CfIrq>();
         self.table.resolve(frequency, state.limits.min, state.limits.max, Relation::Highest, state.boost)
     }
 
     /// Run a closure against the mutable half. # C: O(closure)
     pub fn with_state<R>(&self, f: impl FnOnce(&mut PolicyState) -> R) -> R {
-        f(&mut self.state.lock())
+        f(&mut self.state.lock_irqsave::<CfIrq>())
     }
 
     /// Record one source's request and re-aggregate. # C: O(N_sources + N_thermal)
     pub fn set_request(&self, source: LimitSource, request: Request) -> Limits {
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave::<CfIrq>();
         if let Some(slot) = state.requests.iter_mut().find(|(src, _)| *src == source) {
             slot.1 = request;
         }
@@ -169,7 +175,7 @@ impl Policy {
     /// Clearing it removes only that device's cap; another CPU in the same
     /// policy continues to constrain the shared clock. # C: O(N_sources + N_thermal)
     pub fn set_thermal_request(&self, key: usize, request: Request) -> Limits {
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave::<CfIrq>();
         let empty = request == Request::default();
         if let Some(index) = state.thermal_requests.iter().position(|(entry, _)| *entry == key) {
             if empty { state.thermal_requests.remove(index); }
@@ -184,13 +190,13 @@ impl Policy {
 
     /// One source's current request. # C: O(N_sources)
     pub fn request(&self, source: LimitSource) -> Request {
-        self.state.lock().requests.iter().find(|(src, _)| *src == source)
+        self.state.lock_irqsave::<CfIrq>().requests.iter().find(|(src, _)| *src == source)
             .map(|(_, request)| *request).unwrap_or_default()
     }
 
     /// Resolve a target against the limits in force. # C: O(N_entries)
     pub fn resolve(&self, target_khz: u32, relation: Relation) -> Option<u32> {
-        let (limits, boost) = { let state = self.state.lock(); (state.limits, state.boost) };
+        let (limits, boost) = { let state = self.state.lock_irqsave::<CfIrq>(); (state.limits, state.boost) };
         let index = self.table.resolve(target_khz, limits.min, limits.max, relation, boost)?;
         Some(self.table.entries[index].frequency)
     }

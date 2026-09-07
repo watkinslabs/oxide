@@ -348,6 +348,8 @@ name = "cpufreq"
 version = "0.1.0"
 dependencies = [
  "cpu",
+ "hal-aarch64",
+ "hal-x86_64",
  "kstrtox",
  "sync",
  "timekeeper",
