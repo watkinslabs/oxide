@@ -64,4 +64,3 @@ const _: () = assert!(MOD_OFF + MAX_MODULES * MOD_STRIDE <= STR_OFF);
 const _: () = assert!(ENV_OFF + ENV_BYTES <= API_SET_OFF);
 // The shared page carries its own layout in `user_shared_data`, which builds
 // the bytes ungated so the syscall-entry flag can be tested off-target.
-
