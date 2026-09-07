@@ -277,6 +277,21 @@ fn a_doubled_ampersand_is_not_a_mnemonic() {
     assert_eq!(menus.item_by_key(menu, 'b' as u16), None);
 }
 
+/// The keyboard side and the drawn side read one label the same way: the
+/// character the rule sits under is the one that selects the item, and a
+/// second prefix in the same label selects nothing.
+#[test]
+fn only_the_marked_character_of_a_label_selects_its_item() {
+    use crate::win32_menu::mnemonic::{display_text, mnemonic_char};
+    let mut menus = MenuManager::new();
+    let menu = menus.create_popup().unwrap();
+    menus.insert(menu, 0, MenuItem { id: 1, state: 0, text: text("&Save &As"), submenu: None }).unwrap();
+    assert_eq!(menus.item_by_key(menu, 's' as u16), Some(0));
+    assert_eq!(menus.item_by_key(menu, 'a' as u16), None);
+    let drawn = display_text(&text("&Save &As"));
+    assert_eq!(drawn.units[drawn.mnemonic.unwrap()], mnemonic_char(&text("&Save &As")).unwrap());
+}
+
 #[test]
 fn switching_between_two_bars_moves_the_top_menu_and_closes_the_old_one() {
     let (mut menus, bar, popup) = chain();

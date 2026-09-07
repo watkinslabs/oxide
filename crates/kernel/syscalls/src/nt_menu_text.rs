@@ -6,6 +6,11 @@ use ipc::win32_gdi::{Font, TextState};
 use ipc::win32_menu::MenuRect;
 use syscall::nt_native_gdi::{TextRequest, TRANSPARENT, VERSION};
 
+/// Thickness of the rule drawn under a mnemonic character.
+pub(crate) const UNDERLINE_RULE: i32 = 1;
+/// Rows between the run's baseline and the rule under it.
+const UNDERLINE_DROP: i32 = 1;
+
 /// Glyph advance one menu character occupies. The layout that produced the
 /// item rectangles is measured with the same cell.
 pub(crate) const CHAR_WIDTH: i32 = ipc::win32_gdi::MENU_CHAR_WIDTH;
@@ -20,6 +25,16 @@ pub(crate) fn origin(rect: MenuRect, units: usize, centered: bool, glyph_height:
     let x = if centered { rect.left + ((rect.right - rect.left) - run_width(units)).max(0) / 2 } else { rect.left };
     let y = rect.top + ((rect.bottom - rect.top) - glyph_height).max(0) / 2;
     (x, y)
+}
+
+/// The rule drawn under the mnemonic character of one run: it spans that
+/// character's own cell less its last pixel column, one row below the
+/// baseline the ascent names. # C: O(1)
+pub(crate) fn underline(rect: MenuRect, units: usize, mnemonic: usize, centered: bool, glyph_height: i32, ascent: i32) -> MenuRect {
+    let (x, y) = origin(rect, units, centered, glyph_height);
+    let left = x.saturating_add(run_width(mnemonic));
+    let top = y.saturating_add(ascent).saturating_add(UNDERLINE_DROP);
+    MenuRect { left, top, right: left.saturating_add(CHAR_WIDTH).saturating_sub(1), bottom: top.saturating_add(UNDERLINE_RULE) }
 }
 
 /// The face one run is rasterized in: the device context's selected font, or
