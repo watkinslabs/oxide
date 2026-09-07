@@ -21,6 +21,10 @@ pub(crate) mod nt_window_send_contract;
 pub(crate) mod nt_wine_bitmap_contract;
 #[path = "nt_wine_window/device_caps.rs"]
 pub(crate) mod nt_wine_device_caps_contract;
+#[path = "nt_wine_window/input_context.rs"]
+pub(crate) mod nt_wine_input_context_contract;
+#[path = "nt_wine_window/query_window.rs"]
+pub(crate) mod nt_wine_query_window_contract;
 #[path = "nt_wine_window/brush_raw.rs"]
 pub(crate) mod nt_wine_brush_contract;
 #[path = "nt_wine_window/hwnd_param.rs"]

@@ -7,6 +7,7 @@ extern crate self as uaccess;
 #[path = "../../../../ipc/src/win32_gdi.rs"] pub mod win32_gdi;
 pub fn copy_from_user(_: &mut [u8], _: u64) -> Result<(), ()> { Err(()) }
 mod nt_gdi { pub fn region_snapshot_for_current(_: u64) -> Result<crate::win32_window::PaintRegion, ()> { Err(()) } }
+#[path = "../../../../ipc/src/win32_imc.rs"] pub mod win32_imc;
 #[path = "../../../../ipc/src/win32_window.rs"]
 pub mod win32_window;
 use std::sync::{Arc, Weak, Mutex, MutexGuard};

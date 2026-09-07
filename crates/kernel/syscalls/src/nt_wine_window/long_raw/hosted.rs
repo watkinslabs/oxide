@@ -2,6 +2,7 @@
 #![allow(dead_code, unused_imports, unexpected_cfgs)]
 extern crate alloc;
 extern crate self as ipc;
+#[path = "../../../../ipc/src/win32_imc.rs"] pub mod win32_imc;
 #[path = "../../../../ipc/src/win32_window.rs"]
 pub mod win32_window;
 #[path = "../long_raw.rs"]

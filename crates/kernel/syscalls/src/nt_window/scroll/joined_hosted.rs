@@ -15,6 +15,7 @@ pub use ipc_types::win32_gdi;
 use std::cell::{Cell, RefCell};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
+#[path = "../../../../ipc/src/win32_imc.rs"] pub mod win32_imc;
 #[path = "../../../../ipc/src/win32_window.rs"]
 pub mod win32_window;
 
