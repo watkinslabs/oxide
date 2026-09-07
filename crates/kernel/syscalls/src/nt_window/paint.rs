@@ -36,6 +36,7 @@ pub(crate) fn presentation_for_current(hwnd: u32) -> Option<(ipc::win32_gdi::Pai
 }
 
 /// Exact session coverage, copied before entering the GDI owner. # C: O(processes + windows + region)
+#[allow(dead_code)] // KI-0673
 pub(crate) fn current_region(hwnd: u64) -> Option<ipc::win32_window::PaintRegion> {
     let window = valid_window(hwnd)?;
     let cur = sched::live::current().filter(|cur| cur.is_nt_personality())?;

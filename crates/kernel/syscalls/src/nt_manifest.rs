@@ -84,7 +84,11 @@ mod nt_gdi_frame_trace_on;
 mod nt_gdi_frame_trace_off;
 #[cfg(all(any(test, target_os = "oxide-kernel"), feature = "debug-winframe"))]
 pub(crate) use nt_gdi_frame_trace_on as nt_gdi_frame_trace;
+// Every real call site (nt_gdi::output::snapshot's callers, nt_compositor::worker)
+// is behind target_os = "oxide-kernel"; a hosted `cargo test -p syscalls --lib`
+// cannot reach it.
 #[cfg(all(any(test, target_os = "oxide-kernel"), not(feature = "debug-winframe")))]
+#[allow(unused_imports)]
 pub(crate) use nt_gdi_frame_trace_off as nt_gdi_frame_trace;
 #[cfg(any(test, target_os = "oxide-kernel"))]
 #[path = "nt_compositor/mod.rs"]

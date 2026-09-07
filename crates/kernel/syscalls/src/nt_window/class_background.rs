@@ -2,18 +2,6 @@
 //! registration and read by the default erase; the process DPI context.
 use super::*;
 
-/// # C: O(processes + classes); the raw hbrBackground enters the canonical class owner.
-pub(crate) fn register_class_with_background_for_current(name: &[u16], wndproc: u64, extra: i32, unicode: bool, style: u32, background: u64) -> Option<u64> {
-    let cur = sched::live::current()?;
-    if !cur.is_nt_personality() { return None; }
-    let group = Arc::clone(&cur.thread_group);
-    let mut entries = GUI.lock();
-    entries.retain(|entry| entry.group.upgrade().is_some());
-    let index = entries.iter().position(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group)))
-        .unwrap_or_else(|| { entries.push(new_entry(&group)); entries.len() - 1 });
-    entries[index].state.register_class_with_background(name, wndproc, extra, unicode, style, background).ok().map(|atom| atom as u64)
-}
-
 /// Admit a whole WNDCLASSEXW, cursor included, into the canonical class owner.
 /// # C: O(processes + classes)
 pub(crate) fn register_class_desc_for_current(desc: ipc::win32_window::ClassRegistration<'_>) -> Option<u64> {

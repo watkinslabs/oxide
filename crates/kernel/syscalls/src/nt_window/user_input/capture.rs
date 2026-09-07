@@ -25,6 +25,7 @@ pub(crate) fn release_capture_for_current() -> bool {
 }
 
 /// # C: O(N_nt_processes)
+#[allow(dead_code)] // KI-0673
 pub(crate) fn capture_window_for_current() -> u64 {
     with_state(|state| state.capture_window().map_or(0, |id| id.raw() as u64)).unwrap_or(0)
 }

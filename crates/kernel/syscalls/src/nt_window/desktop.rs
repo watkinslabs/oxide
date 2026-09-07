@@ -67,6 +67,7 @@ pub(crate) fn offer_root_for_current(hwnd: u64) -> bool {
 
 /// GDI must use the returned root process for its object/backing lookup and lease lifetime.
 /// # C: O(processes + windows² + regions²); # Sleeps: no
+#[allow(dead_code)] // KI-0673
 pub(crate) fn dc_context_for_current(flags: u32) -> Option<(Arc<ThreadGroup>, DcLeaseContext)> {
     let target = resolve_for_current()?;
     let context = {

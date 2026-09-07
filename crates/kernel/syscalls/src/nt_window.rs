@@ -13,7 +13,7 @@ use syscall::nt::{self, NtCall, NtWindowCall, NtWindowMessage};
 pub(crate) mod owner;
 #[path = "nt_window/class_background.rs"]
 mod class_background;
-pub(crate) use class_background::{register_class_with_background_for_current, register_class_desc_for_current, class_background_for_current, class_description_by_atom_for_current, dpi_context_for_current, set_dpi_context_for_current};
+pub(crate) use class_background::{register_class_desc_for_current, class_background_for_current, class_description_by_atom_for_current, dpi_context_for_current, set_dpi_context_for_current};
 #[path = "nt_window/client_procs.rs"]
 mod client_procs;
 pub(crate) use client_procs::{publish_client_procs_for_current, claim_builtin_registration_for_current, claim_init_builtin_classes_callback_for_current};
@@ -364,28 +364,6 @@ fn read_rect(source: syscall::UserPtr<syscall::nt::NtWindowRect>) -> Option<ipc:
     uaccess::copy_from_user(&mut bytes, source.as_u64()).ok()?;
     let field = |index: usize| i32::from_le_bytes(bytes[index * 4..index * 4 + 4].try_into().unwrap());
     Some(ipc::win32_window::WindowRect { left: field(0), top: field(1), right: field(2), bottom: field(3) })
-}
-
-/// Register one Wine class in the same process-scoped window owner used by
-/// direct native window calls. # C: O(N_process_gui_states + N_classes)
-#[cfg(target_os = "oxide-kernel")]
-pub(crate) fn register_class_for_current(name: &[u16], wndproc: u64) -> Option<u64> {
-    register_class_with_extra_for_current(name, wndproc, 0)
-}
-
-/// # C: O(processes + classes); canonical storage is initialized before callbacks.
-pub(crate) fn register_class_with_extra_for_current(name: &[u16], wndproc: u64, extra: i32) -> Option<u64> {
-    register_class_with_encoding_for_current(name, wndproc, extra, true)
-}
-
-/// # C: O(processes + classes); destination encoding follows the registered procedure.
-pub(crate) fn register_class_with_encoding_for_current(name: &[u16], wndproc: u64, extra: i32, unicode: bool) -> Option<u64> {
-    register_class_with_style_for_current(name, wndproc, extra, unicode, 0)
-}
-
-/// # C: O(processes + classes); raw class flags enter the canonical class owner.
-pub(crate) fn register_class_with_style_for_current(name: &[u16], wndproc: u64, extra: i32, unicode: bool, style: u32) -> Option<u64> {
-    register_class_with_background_for_current(name, wndproc, extra, unicode, style, 0)
 }
 
 /// Name of one system-wide user atom, copied into `out`. # C: O(N_user_atoms)

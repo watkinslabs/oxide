@@ -35,6 +35,7 @@ pub(crate) struct AdmittedHandle {
 
 impl AdmittedHandle {
     /// Admit an existing source-table handle without widening its rights.
+    #[allow(dead_code)] // KI-0673
     pub(crate) fn from_table(table: &NtHandleTable, handle: NtHandle) -> Result<Self, DesktopMembershipError> {
         let object = table.get(handle, 0).ok_or(DesktopMembershipError::InvalidHandle)?;
         let access = table.access(handle).ok_or(DesktopMembershipError::InvalidHandle)?;

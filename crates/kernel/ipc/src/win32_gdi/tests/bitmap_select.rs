@@ -1,5 +1,4 @@
 //! Binding a bitmap to a memory device context.
-use super::*;
 use super::super::{GdiManager, GdiError};
 
 #[test]

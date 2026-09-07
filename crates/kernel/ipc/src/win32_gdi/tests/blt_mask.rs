@@ -1,5 +1,4 @@
 //! Masked and parallelogram copies.
-use super::*;
 use super::super::{GdiManager, GdiError, SharedDcColors, SRCCOPY};
 
 fn colors() -> SharedDcColors { SharedDcColors { brush: 0, text: 0, background: 0x00ff_ffff, background_mode: 2 } }

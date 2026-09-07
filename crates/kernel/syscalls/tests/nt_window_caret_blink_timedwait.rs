@@ -35,6 +35,11 @@ mod nt_window {
     pub struct GuiEntry { pub group: Weak<sched::thread_group::ThreadGroup>, pub state: ipc::win32_window::WindowManager }
     pub static GUI: HostedLock<Vec<GuiEntry>> = HostedLock::new(Vec::new());
     pub static USER_SETTINGS: HostedLock<ipc::win32_window::UserSettings> = HostedLock::new(ipc::win32_window::UserSettings::new());
+    // double_click_time_for_current/mouse_hover_time_for_current have real
+    // production callers (nt_wine_window/input_raw/kernel.rs) not included
+    // in this narrow harness; set_double_click_time/set_mouse_hover_time
+    // have none anywhere yet (KI-0670).
+    #[allow(dead_code)]
     pub mod settings { include!("../src/nt_window/settings.rs"); use crate::sched; }
 
     pub mod caret {
@@ -84,6 +89,11 @@ mod nt_window {
     }
 }
 
+// This hosted (non-oxide-kernel) build compiles caret_raw's hosted `dispatch`
+// stub, which the real kernel build never uses (chain/kernel.rs calls the
+// target_os="oxide-kernel" variant instead); the test drives
+// dispatch_with_copyout directly.
+#[allow(dead_code)]
 mod raw_impl { include!("../src/nt_wine_window/caret_raw.rs"); }
 
 use ipc::win32_window::{MessageFilter, WindowId, WindowManager, WM_TIMER};

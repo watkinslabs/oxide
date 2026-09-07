@@ -35,6 +35,7 @@ pub(crate) fn end_for_current(hwnd: u32, dc: u32) -> Result<PaintSession, PaintS
 }
 
 /// Consume a current-thread session during HWND destruction before GDI deletion.
+#[allow(dead_code)] // KI-0673
 pub(crate) fn remove_for_current(hwnd: u32) -> Option<PaintSession> {
     let window = WindowId::from_raw(hwnd)?;
     let current = sched::live::current()?;
