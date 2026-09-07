@@ -20,99 +20,91 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     Some(header)
 }
 
-const STATUS_SUCCESS: u64 = 0;
-const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
-const STATUS_RESOURCE_DATA_NOT_FOUND: u64 = 0xc000_008b;
-const STATUS_RESOURCE_TYPE_NOT_FOUND: u64 = 0xc000_008d;
-const STATUS_RESOURCE_NAME_NOT_FOUND: u64 = 0xc000_008f;
-const STATUS_RESOURCE_LANG_NOT_FOUND: u64 = 0xc000_0090;
-const RESOURCE_DIRECTORY_BYTES: u64 = 16;
-const RESOURCE_ENTRY_BYTES: u64 = 8;
-const RESOURCE_MAX_ENTRIES: u16 = 4096;
+use crate::nt_resource::{find_entry, resource_root, ImageReader, ResourceLcids, ResourceQuery};
+use crate::nt_resource::{STATUS_INVALID_PARAMETER, STATUS_RESOURCE_DATA_NOT_FOUND, STATUS_SUCCESS};
+
+/// The caller's image, read through the fault-recovering user accessors.
+struct UserImage;
+
+impl ImageReader for UserImage {
+    /// # C: O(1) fault-recovering user read
+    fn u16(&self, address: u64) -> Option<u16> { uaccess::get_user_u16(address).ok() }
+    /// # C: O(1) fault-recovering user read
+    fn u32(&self, address: u64) -> Option<u32> { uaccess::get_user_u32(address).ok() }
+}
+
+const RESOURCE_INFO_NAME_OFFSET: u64 = 8;
+const RESOURCE_INFO_LANGUAGE_OFFSET: u64 = 16;
+const LEVEL_LANGUAGE: u64 = 3;
+
+/// Read the `LDR_RESOURCE_INFO` a caller passes: two keys that are either
+/// ordinals or UTF-16 string pointers, then the language id.
+fn resource_query(info: u64) -> Option<ResourceQuery> {
+    Some(ResourceQuery {
+        ty: read_u64(info)?,
+        name: read_u64_at(info, RESOURCE_INFO_NAME_OFFSET)?,
+        language: read_u32_at(info, RESOURCE_INFO_LANGUAGE_OFFSET)? as u16,
+    })
+}
 
 fn access_resource(call: NtCall) -> u64 {
-    if call.args.a0 == 0 || call.args.a1 == 0 || call.args.a2 == 0 { return STATUS_INVALID_PARAMETER; }
+    if call.args.a0 == 0 || call.args.a1 == 0 { return STATUS_INVALID_PARAMETER; }
     let module = call.args.a0 & !3;
+    if resource_root(&UserImage, module).is_none() { return STATUS_RESOURCE_DATA_NOT_FOUND; }
     let offset = match read_u32(call.args.a1) { Some(value) => value, None => return STATUS_INVALID_PARAMETER };
     let size = match read_u32_at(call.args.a1, 4) { Some(value) => value, None => return STATUS_INVALID_PARAMETER };
-    let address = if call.args.a0 & 1 == 0 {
-        module.checked_add(offset as u64).unwrap_or(0)
-    } else { raw_rva(module, offset).unwrap_or(0) };
-    if address == 0 || uaccess::put_user_u64(call.args.a2, address).is_err() { return STATUS_INVALID_PARAMETER; }
+    if call.args.a2 != 0 {
+        let address = if call.args.a0 & 1 == 0 {
+            module.checked_add(offset as u64).unwrap_or(0)
+        } else { raw_rva(module, offset).unwrap_or(0) };
+        if address == 0 || uaccess::put_user_u64(call.args.a2, address).is_err() { return STATUS_INVALID_PARAMETER; }
+    }
     if call.args.a3 != 0 && uaccess::put_user_u32(call.args.a3, size).is_err() { return STATUS_INVALID_PARAMETER; }
     STATUS_SUCCESS
 }
 
 fn find_resource_directory(call: NtCall) -> u64 {
-    if call.args.a0 == 0 || call.args.a3 == 0 || call.args.a2 > 3 { return STATUS_INVALID_PARAMETER; }
-    let module = call.args.a0 & !3;
-    let Some(root) = resource_root(module) else { return STATUS_RESOURCE_DATA_NOT_FOUND; };
-    if call.args.a2 == 0 {
-        return write_resource_result(call.args.a3, root);
-    }
-    if call.args.a1 == 0 { return STATUS_INVALID_PARAMETER; }
-    let type_key = read_u64(call.args.a1).unwrap_or(0);
-    let Some(type_dir) = resource_child(root, type_key, true) else { return STATUS_RESOURCE_TYPE_NOT_FOUND; };
-    if call.args.a2 == 1 { return write_resource_result(call.args.a3, type_dir); }
-    let name_key = read_u64_at(call.args.a1, 8).unwrap_or(0);
-    let Some(name_dir) = resource_child(type_dir, name_key, true) else { return STATUS_RESOURCE_NAME_NOT_FOUND; };
-    if call.args.a2 == 2 { return write_resource_result(call.args.a3, name_dir); }
-    let language_key = read_u32_at(call.args.a1, 16).unwrap_or(0) as u64;
-    let Some(language_dir) = resource_child(name_dir, language_key, true) else { return STATUS_RESOURCE_LANG_NOT_FOUND; };
-    write_resource_result(call.args.a3, language_dir)
+    resource_lookup(call, true)
 }
 
 fn find_resource(call: NtCall) -> u64 {
-    if call.args.a0 == 0 || call.args.a1 == 0 || call.args.a3 == 0 || call.args.a2 != 3 { return STATUS_INVALID_PARAMETER; }
+    if call.args.a2 != LEVEL_LANGUAGE { return STATUS_INVALID_PARAMETER; }
+    resource_lookup(call, false)
+}
+
+/// Shared body of both loader resource lookups: the level walk, then the
+/// caller's output word. A level of zero names no type, so no info block is
+/// required for it.
+fn resource_lookup(call: NtCall, want_directory: bool) -> u64 {
+    if call.args.a0 == 0 || call.args.a3 == 0 || call.args.a2 > LEVEL_LANGUAGE { return STATUS_INVALID_PARAMETER; }
     let module = call.args.a0 & !3;
-    let Some(root) = resource_root(module) else { return STATUS_RESOURCE_DATA_NOT_FOUND; };
-    let type_key = read_u64(call.args.a1).unwrap_or(0);
-    let Some(type_dir) = resource_child(root, type_key, true) else { return STATUS_RESOURCE_TYPE_NOT_FOUND; };
-    let name_key = read_u64_at(call.args.a1, 8).unwrap_or(0);
-    let Some(name_dir) = resource_child(type_dir, name_key, true) else { return STATUS_RESOURCE_NAME_NOT_FOUND; };
-    let language_key = read_u32_at(call.args.a1, 16).unwrap_or(0) as u64;
-    let Some(entry) = resource_child(name_dir, language_key, false) else { return STATUS_RESOURCE_LANG_NOT_FOUND; };
-    if uaccess::put_user_u64(call.args.a3, entry).is_err() { STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
+    let Some(root) = resource_root(&UserImage, module) else { return STATUS_RESOURCE_DATA_NOT_FOUND; };
+    if call.args.a2 == 0 { return write_resource_result(call.args.a3, root); }
+    if call.args.a1 == 0 { return STATUS_INVALID_PARAMETER; }
+    let Some(query) = resource_query(call.args.a1) else { return STATUS_INVALID_PARAMETER; };
+    let level = call.args.a2 as u32;
+    let found = find_entry(&UserImage, root, &query, &ResourceLcids::baseline(), level, want_directory);
+    trace_resource(&query, level, want_directory, found);
+    match found {
+        Ok(entry) => write_resource_result(call.args.a3, entry),
+        Err(status) => status,
+    }
+}
+
+fn trace_resource(query: &ResourceQuery, level: u32, want_directory: bool, found: Result<u64, u64>) {
+    klog::write_raw(b"[WINDOWS-RESOURCE] type=");
+    klog::write_hex_u64(query.ty); klog::write_raw(b" name=");
+    klog::write_hex_u64(query.name); klog::write_raw(b" lang=");
+    klog::write_hex_u64(query.language as u64); klog::write_raw(b" level=");
+    klog::write_hex_u64(level as u64); klog::write_raw(b" dir=");
+    klog::write_hex_u64(want_directory as u64); klog::write_raw(b" result=");
+    klog::write_hex_u64(found.unwrap_or_else(|status| status)); klog::write_raw(b"\n");
 }
 
 fn write_resource_result(output: u64, directory: u64) -> u64 {
     if uaccess::put_user_u64(output, directory).is_err() { STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
 }
 
-fn resource_child(directory: u64, key: u64, want_directory: bool) -> Option<u64> {
-    let named = read_u16(directory.checked_add(12)?)?;
-    let ids = read_u16(directory.checked_add(14)?)?;
-    let count = named.checked_add(ids)?;
-    if count > RESOURCE_MAX_ENTRIES { return None; }
-    let entries = directory.checked_add(RESOURCE_DIRECTORY_BYTES)?;
-    for index in 0..count {
-        let entry = entries.checked_add((index as u64) * RESOURCE_ENTRY_BYTES)?;
-        let name = read_u32(entry)?;
-        if name & 0x8000_0000 != 0 { continue; }
-        if name as u64 != key { continue; }
-        let offset = read_u32(entry.checked_add(4)?)?;
-        let is_directory = offset & 0x8000_0000 != 0;
-        if is_directory != want_directory { return None; }
-        return directory.checked_add((offset & 0x7fff_ffff) as u64);
-    }
-    None
-}
-
-fn resource_root(module: u64) -> Option<u64> {
-    let e_lfanew = read_u32(module.checked_add(0x3c)?)? as u64;
-    let nt = module.checked_add(e_lfanew)?;
-    if read_u32(nt)? != PE_MAGIC { return None; }
-    let optional = nt.checked_add(24)?;
-    if read_u32(optional)? & 0xffff != OPTIONAL_MAGIC_PE32_PLUS { return None; }
-    let directories = read_u32(optional.checked_add(OPTIONAL_HEADER_NUMBER_DIRECTORIES_OFFSET)?)?.min(DIRECTORY_COUNT);
-    if directories <= 2 { return None; }
-    let entry = optional.checked_add(OPTIONAL_HEADER_BYTES_BEFORE_DIRECTORIES + 2 * DIRECTORY_BYTES)?;
-    let rva = read_u32(entry)?;
-    if rva == 0 { return None; }
-    module.checked_add(rva as u64)
-}
-
-fn read_u16(address: u64) -> Option<u16> { uaccess::get_user_u32(address).ok().map(|value| value as u16) }
 fn read_u64(address: u64) -> Option<u64> { uaccess::get_user_u64(address).ok() }
 fn read_u32_at(address: u64, offset: u64) -> Option<u32> { read_u32(address.checked_add(offset)?) }
 fn read_u64_at(address: u64, offset: u64) -> Option<u64> { read_u64(address.checked_add(offset)?) }
