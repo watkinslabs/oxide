@@ -413,6 +413,9 @@ pub(crate) fn unregister_class_for_current(name: &[u16], instance: u64) -> bool 
 #[path = "nt_window/menu.rs"]
 mod menu;
 pub(crate) use menu::*;
+#[path = "nt_window/menu_item_info.rs"]
+mod menu_item_info;
+pub(crate) use menu_item_info::*;
 
 #[path = "nt_window/message_queue.rs"]
 pub(crate) mod message_queue;

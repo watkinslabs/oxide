@@ -33,6 +33,10 @@ pub mod bar_hit;
 mod info;
 #[path = "win32_menu/item_info.rs"]
 pub mod item_info;
+#[path = "win32_menu/method.rs"]
+pub mod method;
+#[path = "win32_menu/query.rs"]
+mod query;
 #[path = "win32_menu/mnemonic.rs"]
 pub mod mnemonic;
 #[path = "win32_menu/draw.rs"]

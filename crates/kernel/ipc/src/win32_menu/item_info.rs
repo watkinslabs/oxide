@@ -149,6 +149,24 @@ impl ItemInfo {
     }
 }
 
+/// A query naming the older combined type field beside any field later split
+/// out of it describes two answers for one word, and is refused rather than
+/// answered from either.
+/// # C: O(1)
+pub const fn query_mask_conflict(mask: u32) -> bool {
+    mask & MIIM_TYPE != 0 && mask & (MIIM_STRING | MIIM_FTYPE | MIIM_BITMAP) != 0
+}
+
+/// Whether a query writes the item's type word: either the combined field or
+/// the one split out of it names it.
+/// # C: O(1)
+pub const fn query_writes_type(mask: u32) -> bool { mask & (MIIM_TYPE | MIIM_FTYPE) != 0 }
+
+/// Whether a query writes the item's text: either the combined field or the
+/// string field split out of it names it.
+/// # C: O(1)
+pub const fn query_writes_text(mask: u32) -> bool { mask & (MIIM_TYPE | MIIM_STRING) != 0 }
+
 /// How far a query copies an item's text into the caller's buffer: one unit
 /// of the buffer belongs to the terminator, and a query with no buffer copies
 /// nothing. Both directions report the same number the copy produced.

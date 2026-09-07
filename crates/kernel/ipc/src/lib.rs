@@ -57,6 +57,9 @@ pub mod win32_hook;
 pub mod win32_gdi;
 /// Win32 input contexts (HIMC) used by the native NT GUI layer.
 pub mod win32_imc;
+/// The wide-to-ANSI code page conversion every ANSI Win32 entry point answers
+/// through.
+pub mod win32_text;
 pub use signal::{
     SigAction, SigInfo, Signal, SignalSet, SignalState, SIG_DFL, SIG_IGN,
 };
