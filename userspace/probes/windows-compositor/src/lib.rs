@@ -130,3 +130,6 @@ mod xvfb_integration;
 #[cfg(test)]
 #[path = "tests/xvfb_windows.rs"]
 mod xvfb_windows;
+#[cfg(test)]
+#[path = "tests/xvfb_partial.rs"]
+mod xvfb_partial;
