@@ -18,7 +18,13 @@ pub struct DecodedService { pub name: String, pub ordinal: u32, pub flag_address
 /// `None` when the catalog carries no runtime module to read.
 /// # C: O(export names * name bytes)
 pub fn decode(root: &Path) -> Option<Vec<DecodedService>> {
-    let blob = catalog::read(root, catalog::RUNTIME_MODULE)?;
+    let Some(blob) = catalog::read(root, catalog::RUNTIME_MODULE) else {
+        assert!(std::env::var_os(catalog::DECLARED).is_none(),
+            "{} declares this run audits the shipped catalog, and it carries no {}: the guest loads that \
+             module for its own numbering, so an audit without it proves nothing",
+            catalog::DECLARED, catalog::RUNTIME_MODULE);
+        return None;
+    };
     let image = pe::parse(&blob).ok()?;
     let exports = image.exports().ok()??;
     let mut decoded = Vec::new();
