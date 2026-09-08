@@ -33,6 +33,8 @@ pub struct Screen { pub root: Window, pub default_colormap: u32, pub white_pixel
 
 pub const KEY_PRESS: u8 = 2; pub const KEY_RELEASE: u8 = 3; pub const BUTTON_PRESS: u8 = 4; pub const BUTTON_RELEASE: u8 = 5; pub const MOTION_NOTIFY: u8 = 6; pub const FOCUS_IN: u8 = 9; pub const FOCUS_OUT: u8 = 10; pub const EXPOSE: u8 = 12; pub const CONFIGURE_NOTIFY: u8 = 22; pub const PROPERTY_NOTIFY: u8 = 28; pub const CLIENT_MESSAGE: u8 = 33;
 pub const PROP_MODE_REPLACE: u8 = 0; pub const ATOM_NONE: Atom = 0; pub const ATOM_ATOM: Atom = 4; pub const ATOM_CARDINAL: Atom = 6; pub const ATOM_WINDOW: Atom = 33;
+/// Predefined property atoms the window-name convention uses.
+pub const ATOM_STRING: Atom = 31; pub const ATOM_WM_ICON_NAME: Atom = 37; pub const ATOM_WM_NAME: Atom = 39;
 pub const WINDOW_CLASS_INPUT_OUTPUT: u16 = 1; pub const IMAGE_FORMAT_Z_PIXMAP: u8 = 2;
 pub const CW_OVERRIDE_REDIRECT: u32 = 1 << 9; pub const CW_EVENT_MASK: u32 = 1 << 11;
 pub const EVENT_KEY_PRESS: u32 = 1; pub const EVENT_KEY_RELEASE: u32 = 1 << 1; pub const EVENT_BUTTON_PRESS: u32 = 1 << 2; pub const EVENT_BUTTON_RELEASE: u32 = 1 << 3; pub const EVENT_POINTER_MOTION: u32 = 1 << 6; pub const EVENT_EXPOSURE: u32 = 1 << 15; pub const EVENT_STRUCTURE_NOTIFY: u32 = 1 << 17; pub const EVENT_FOCUS_CHANGE: u32 = 1 << 21; pub const EVENT_PROPERTY_CHANGE: u32 = 1 << 22;

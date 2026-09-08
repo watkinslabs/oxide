@@ -18,7 +18,7 @@ mod dc_lease;
 pub use dc_lease::{DcLease, DcLeaseRequest, LeaseOwner, dc_lease_flags, DCX_WINDOW, DCX_CACHE, DCX_NORESETATTRS, DCX_CLIPCHILDREN, DCX_CLIPSIBLINGS, DCX_PARENTCLIP, DCX_EXCLUDERGN, DCX_INTERSECTRGN, DCX_USESTYLE};
 #[path = "win32_gdi/nonclient.rs"]
 mod nonclient;
-pub use nonclient::{nonclient_defaults, system_metric_default, menu_font, MENU_HEIGHT};
+pub use nonclient::{nonclient_defaults, system_metric_default, menu_font, logfont, NonclientFont, MENU_HEIGHT, NONCLIENT_BYTES, NONCLIENT_LEGACY_BYTES};
 #[path = "win32_gdi/menu_metrics.rs"]
 mod menu_metrics;
 pub use menu_metrics::{MenuMetrics, menu_metrics, menu_bar_metrics};

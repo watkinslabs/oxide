@@ -2,9 +2,7 @@
 // A narrow #[test] set exercises a slice of the production surface pulled in
 // through nonclient.rs/metrics.rs; the rest is real code with no caller here.
 #![allow(dead_code, unused_imports)]
-use ipc::win32_gdi::{stock_object, Font, StockDescription, FontRecord, GdiError};
-#[path = "../../ipc/src/win32_gdi/nonclient.rs"]
-mod owner;
+use ipc::win32_gdi as owner;
 #[path = "../src/nt_wine_window/metrics.rs"]
 mod metrics;
 
