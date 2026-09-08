@@ -808,13 +808,14 @@ fn dispatch_service(call: NtCall) -> u64 {
     if call.service == syscall::nt::NtService::NtOpenSection {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
         if !cur.is_nt_personality() || call.args.a0 == 0 || call.args.a2 == 0 { return STATUS_INVALID_PARAMETER; }
-        const SECTION_ALL_ACCESS: u32 = 0x000f_001f;
-        const SECTION_ALLOWED_ACCESS: u32 = SECTION_ALL_ACCESS | 0xf000_0000;
-        if call.args.a1 as u32 & !SECTION_ALLOWED_ACCESS != 0 { return STATUS_INVALID_PARAMETER; }
+        // The section type owns its own generic-right expansion, including a
+        // request for whatever the type grants; this arm never re-states it.
+        let desired = call.args.a1 as u32;
+        if !crate::nt_section_image::access_admitted(desired) { return STATUS_INVALID_PARAMETER; }
         let table = cur.thread_group.nt_handles();
         let Some(path) = crate::nt_directory::resolve_object_path(call.args.a2, &table) else { return STATUS_INVALID_PARAMETER; };
         let Some(object) = sched::nt_object::lookup_object(&path, sched::nt_object::NtObjectType::Section) else { return STATUS_OBJECT_NAME_NOT_FOUND; };
-        let access = if call.args.a1 as u32 & GENERIC_ALL != 0 { call.args.a1 as u32 | SECTION_ALL_ACCESS } else { call.args.a1 as u32 };
+        let access = crate::nt_section_image::map_access(desired);
         let Some(handle) = table.insert(object, access) else { return STATUS_NO_MEMORY; };
         if uaccess::put_user_u64(call.args.a0, u64::from(handle.raw())).is_err() { let _ = table.close(handle); return STATUS_INVALID_PARAMETER; }
         return STATUS_SUCCESS;

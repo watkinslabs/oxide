@@ -1,4 +1,5 @@
 use super::*;
+use vmm::{VmaBacking, VmaFlags, VmaProt};
 use alloc::vec::Vec;
 
 const CATALOG: &str = "target/artifacts/wine/x86_64/x86_64-windows";
@@ -30,7 +31,7 @@ fn the_handover_maps_two_images_and_enters_the_runtimes_initialization_thunk() {
     let _guard = crate::nt_ordinals::TABLE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let (Some(exe), Some(runtime_blob)) = (staged("notepad.exe"), staged("ntdll.dll")) else { return };
     let as_ = vmm::AddressSpace::new(0x100_000).expect("address space must initialize");
-    let stack_bytes = 0x10_000usize;
+    let stack_bytes = 0x20_000usize;
     let stack = as_.mmap(None, stack_bytes, VmaProt::READ | VmaProt::WRITE, VmaFlags::PRIVATE,
         VmaBacking::Anonymous, false).expect("thread stack must map");
     let stack_base = stack.as_u64();
@@ -54,16 +55,21 @@ fn the_handover_maps_two_images_and_enters_the_runtimes_initialization_thunk() {
     assert_eq!(handover.entry.rcx, handover.context.as_u64());
     assert_eq!(handover.entry.personality, ExecutionPersonality::Nt);
 
-    // The context is user-writable: the thunk rewrites the entry field before
-    // resuming on it.
+    // The context lives on the thread stack, inside the same writable
+    // anonymous mapping, with the extent the thunk scrubs entirely below it.
     let vma = as_.find_vma(handover.context).expect("the startup context must be mapped");
     assert!(vma.prot.contains(VmaProt::READ | VmaProt::WRITE));
-    let data = match vma.backing { VmaBacking::KernelBytes { data, .. } => data, _ => panic!("context must be kernel-backed") };
-    let off = (handover.context.as_u64() - vma.start.as_u64()) as usize;
-    let at64 = |field: usize| u64::from_le_bytes(data[off + field..off + field + 8].try_into().unwrap());
+    assert!(matches!(vma.backing, VmaBacking::Anonymous), "the record belongs on the thread stack");
+    assert_eq!((vma.start.as_u64(), vma.end.as_u64()), (stack_base, stack_top));
+    let placed = startup_stack::place(stack_base, stack_top).expect("the stack must carry a record");
+    assert_eq!(handover.context.as_u64(), placed.context);
+    assert_eq!(handover.entry.rsp.as_u64(), placed.stack_pointer);
+    assert!(placed.scrub_floor >= stack_base);
+    let at64 = |field: usize| u64::from_le_bytes(handover.context_image[field..field + 8].try_into().unwrap());
     assert_eq!(at64(nt_context::CTX_RCX), handover.image.entry.as_u64());
     assert_eq!(at64(nt_context::CTX_RIP), handover.image.entry.as_u64());
-    assert_eq!(at64(nt_context::CTX_RSP), handover.entry.rsp.as_u64());
+    // The context resumes on the ordinary top-of-stack pointer, above the record.
+    assert!(at64(nt_context::CTX_RSP) > placed.context);
 
     // The runtime owns the heap now: the block must not name one.
     assert_eq!(process_env::peb_process_heap(&as_, &handover.environment), Some(0));
@@ -105,7 +111,7 @@ fn the_handover_fills_the_runtime_modules_dispatcher_slots_in_the_mapped_image()
     let _guard = crate::nt_ordinals::TABLE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let (Some(exe), Some(runtime_blob)) = (staged("notepad.exe"), staged("ntdll.dll")) else { return };
     let as_ = vmm::AddressSpace::new(0x100_100).expect("address space must initialize");
-    let stack_bytes = 0x10_000usize;
+    let stack_bytes = 0x20_000usize;
     let stack = as_.mmap(None, stack_bytes, VmaProt::READ | VmaProt::WRITE, VmaFlags::PRIVATE,
         VmaBacking::Anonymous, false).expect("thread stack must map");
     syscall::nt::ordinals::clear();
@@ -147,7 +153,7 @@ fn the_runtime_finds_its_own_module_handle_by_querying_its_text() {
     let _guard = crate::nt_ordinals::TABLE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let (Some(exe), Some(runtime_blob)) = (staged("notepad.exe"), staged("ntdll.dll")) else { return };
     let as_ = vmm::AddressSpace::new(0x100_200).expect("address space must initialize");
-    let stack_bytes = 0x10_000usize;
+    let stack_bytes = 0x20_000usize;
     let stack = as_.mmap(None, stack_bytes, VmaProt::READ | VmaProt::WRITE, VmaFlags::PRIVATE,
         VmaBacking::Anonymous, false).expect("thread stack must map");
     syscall::nt::ordinals::clear();
