@@ -58,18 +58,17 @@ fn locale_dispatch(call: NtCall) -> Option<u64> {
             Err(status) => status,
         },
         NtService::NtSetDefaultLocale => match crate::nt_locale::admit_locale_set(call.args.a0, call.args.a1) {
-            Ok((crate::nt_locale::Which::System, lcid)) => { group.nt_system_lcid.store(lcid, Ordering::Relaxed); STATUS_SUCCESS }
-            Ok((crate::nt_locale::Which::User, lcid)) => { group.nt_user_lcid.store(lcid, Ordering::Relaxed); STATUS_SUCCESS }
-            Err(status) => status,
+            (crate::nt_locale::Which::System, lcid) => { group.nt_system_lcid.store(lcid, Ordering::Relaxed); STATUS_SUCCESS }
+            (crate::nt_locale::Which::User, lcid) => { group.nt_user_lcid.store(lcid, Ordering::Relaxed); STATUS_SUCCESS }
         },
         NtService::NtQueryDefaultUILanguage => match crate::nt_locale::admit_language_query(call.args.a0) {
             Ok(()) => write_u16(call.args.a0, stored.ui),
             Err(status) => status,
         },
-        NtService::NtSetDefaultUILanguage => match crate::nt_locale::admit_language_set(call.args.a0) {
-            Ok(language) => { group.nt_user_ui_language.store(language as u32, Ordering::Relaxed); STATUS_SUCCESS }
-            Err(status) => status,
-        },
+        NtService::NtSetDefaultUILanguage => {
+            group.nt_user_ui_language.store(crate::nt_locale::language_argument(call.args.a0) as u32, Ordering::Relaxed);
+            STATUS_SUCCESS
+        }
         _ => match crate::nt_locale::admit_language_query(call.args.a0) {
             Ok(()) => write_u16(call.args.a0, stored.install_language()),
             Err(status) => status,
@@ -177,7 +176,9 @@ fn get_section(call: NtCall) -> u64 {
     let Ok(NtThreadCall::GetNlsSection { section, id, unknown, pointer, size }) = syscall::nt::decode_thread(call) else {
         return STATUS_INVALID_PARAMETER;
     };
-    if unknown != 0 { return STATUS_INVALID_PARAMETER; }
+    // The third argument names nothing this service reads; a caller is free
+    // to pass whatever it likes there.
+    let _ = unknown;
     let name = match section {
         NLS_SORTKEYS if id == 0 => "sortdefault",
         NLS_CASEMAP if id == 0 => "l_intl",
