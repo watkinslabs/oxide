@@ -3,7 +3,7 @@
 use hal::UserVirtAddr;
 use pe::Error;
 use core::ops::Deref;
-use vmm::{AddressSpace, VmaBacking, VmaProt};
+use vmm::{AddressSpace, VmaProt};
 
 /// Immutable facts carried by the first NT user context.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
