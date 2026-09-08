@@ -70,6 +70,7 @@ mod nt_capability;
 mod nt_exists;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_search_path;
+mod nt_access;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_acl;
 #[cfg(target_os = "oxide-kernel")]
