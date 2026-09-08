@@ -301,7 +301,9 @@ fn xvfb_pointer_wire_carries_win32_buttons_and_wheel_not_x11_state() {
 
     let mut seen = Vec::new();
     for _ in 0..500 {
-        while let Some(event) = backend.poll_event() { seen.push(event); }
+        // The server exposes the window as it maps it, which this test's
+        // window has no pixels to answer; that is a separate contract.
+        while let Some(event) = backend.poll_event() { if !matches!(event, BridgeEvent::Damage { .. }) { seen.push(event); } }
         if seen.len() >= 4 { break; }
         std::thread::sleep(Duration::from_millis(2));
     }

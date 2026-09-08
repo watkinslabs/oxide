@@ -54,7 +54,7 @@ mod dc_query;
 pub(crate) mod dc_state;
 mod dc_lease;
 mod output;
-pub(crate) use output::flush_pending_for_current;
+pub(crate) use output::{flush_pending_for_current, request_output_for_group};
 pub(crate) use dc_lease::{get_dc_ex_for_current, release_dc_lease_for_current, lease_window_for_current};
 mod pen;
 #[path = "nt_gdi/polygon.rs"]

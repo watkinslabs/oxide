@@ -36,8 +36,32 @@ impl WindowManager {
             self.post_to_window(id, WinMessage { hwnd: Some(id), message: WM_SIZE, wparam: 0,
                 lparam: mouse_lparam(client.right - client.left, client.bottom - client.top) })?;
         }
-        if repaint { self.invalidate(id, None)?; }
+        // A window that only moved keeps its pixels: the display moved them
+        // with it and nothing of it was revealed. A window that changed size
+        // exposes area no paint has ever covered, and the band its frame
+        // occupies is sized from the window rectangle, so the frame and every
+        // descendant are invalidated with it and the background is erased.
+        if repaint { self.redraw_tree(id, None, FRAME_REDRAW, |_, _, region| region.try_copy())?; }
         Ok(())
+    }
+
+    /// One rectangle of a window the display no longer holds pixels for,
+    /// stated in the window's own coordinates with its origin at the window's
+    /// top left. Canonical damage is stated in client coordinates, so the
+    /// client origin comes off the rectangle before it is unioned in.
+    /// # C: O(windows^2 + region operations); # Sleeps: no
+    pub fn expose_compositor_window(&mut self, id: WindowId, exposed: WindowRect) -> Result<(), WindowError> {
+        let window = self.rect(id).ok_or(WindowError::NoSuchWindow)?;
+        let client = self.client_rect_raw(id).unwrap_or(window);
+        let (dx, dy) = nonclient_create::client_origin(window, client);
+        let local = WindowRect {
+            left: exposed.left.checked_sub(dx).ok_or(WindowError::InvalidParent)?,
+            top: exposed.top.checked_sub(dy).ok_or(WindowError::InvalidParent)?,
+            right: exposed.right.checked_sub(dx).ok_or(WindowError::InvalidParent)?,
+            bottom: exposed.bottom.checked_sub(dy).ok_or(WindowError::InvalidParent)? };
+        if local.left >= local.right || local.top >= local.bottom { return Err(WindowError::InvalidParent); }
+        let region = PaintRegion::from_rect(local)?;
+        self.redraw_tree(id, Some(&region), EXPOSE_REDRAW, |_, _, region| region.try_copy())
     }
 
     /// A child's canonical rectangle is stated in its parent's client

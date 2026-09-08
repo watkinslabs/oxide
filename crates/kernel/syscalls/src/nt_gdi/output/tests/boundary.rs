@@ -54,3 +54,23 @@ fn whole(width: i32, height: i32) -> syscall::nt_compositor::Damage {
 
 /// First pixel byte of a frame payload, after the extent, format and damage.
 const PIXELS: usize = syscall::nt_compositor::FRAME_HEADER_BYTES;
+
+/// A repaint the display asked for is not one of the application's own paints:
+/// the grace period that batches a burst of those must not hold it, and one
+/// request covers one flush, not every flush after it.
+#[test]
+fn a_display_request_publishes_inside_the_grace_period_and_covers_one_flush(){
+    let mut pump=OutputPump::default();
+    assert!(pump.allow(true,100_000_000));
+    assert!(!pump.allow(false,110_000_000),"an application's own paint waits out the grace period");
+    pump.request();
+    assert!(pump.allow(false,110_000_001),"the display asked for these pixels and waits for no batch");
+    assert!(!pump.allow(false,110_000_002),"one request covers one flush");
+    // An idle flush is the batch closing; nothing is owed to the display after it.
+    pump.request();
+    assert!(pump.allow(true,120_000_000));
+    assert!(!pump.allow(false,120_000_001));
+    // The grace period is not extended or shortened by a request.
+    pump.request();assert!(pump.allow(false,120_000_002));
+    assert!(!pump.allow(false,169_999_999));assert!(pump.allow(false,170_000_000));
+}

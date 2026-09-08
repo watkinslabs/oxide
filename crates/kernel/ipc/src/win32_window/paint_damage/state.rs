@@ -18,6 +18,10 @@ pub const RDW_NOFRAME: u32 = 0x0800;
 /// receives WM_NCPAINT, so a frame the window draws itself (the menu bar band)
 /// never appears.
 pub const FRAME_REDRAW: u32 = RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN;
+/// What a display-reported exposure requests: the display is restating pixels
+/// the window already owns and nothing underneath it changed, so the frame and
+/// every descendant are invalidated and no background erase is asked for.
+pub const EXPOSE_REDRAW: u32 = RDW_INVALIDATE | RDW_FRAME | RDW_ALLCHILDREN;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct PaintDamage {

@@ -28,6 +28,15 @@ pub(crate) fn submit_prepared_for_current(prepared:Result<PreparedFrame,u64>)->u
     if status!=STATUS_SUCCESS&&retained{STATUS_PENDING}else{status}
 }
 
+/// The display asked for pixels of a window this process owns, so the next
+/// flush publishes rather than waiting out the grace period that batches an
+/// application's own paints. Caller holds no GDI lock. # C: O(processes)
+pub(crate) fn request_output_for_group(group:&Arc<sched::thread_group::ThreadGroup>){
+    let weak=Arc::downgrade(group);
+    let mut entries=GDI.lock();
+    if let Some(entry)=entries.iter_mut().find(|entry|entry.group.ptr_eq(&weak)){entry.output_pump.request();}
+}
+
 /// Main calls outside GUI/client locks before message-pump blocking. # C: O(windows + dirty frame pixels + transport)
 pub(crate) fn flush_pending_for_current(idle:bool){
     let Some(current)=sched::live::current().filter(|task|task.is_nt_personality())else{return;};

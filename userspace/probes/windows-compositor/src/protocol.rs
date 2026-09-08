@@ -50,6 +50,10 @@ pub enum BridgeEvent {
     Ack { sequence: u64, hwnd: u64, status: u32 },
     WorkArea(MonitorSnapshot),
     Configure { hwnd: u32, rect: Rect },
+    /// One rectangle of a window whose pixels the display has lost and cannot
+    /// restore from the surface this backend retains, in the window's own
+    /// coordinates.
+    Damage { hwnd: u32, rect: Rect },
     Input(InputEvent),
     Close { hwnd: u32 },
     Destroyed { hwnd: u32 },
@@ -148,6 +152,7 @@ pub(crate) fn encode_event(event: &BridgeEvent, next: u64) -> Result<(Opcode, u6
         BridgeEvent::Ack { sequence, hwnd, status } => Ok((Opcode::Ack, *hwnd, status.to_le_bytes().to_vec(), *sequence)),
         BridgeEvent::WorkArea(snapshot) => { let mut p = Vec::with_capacity(36); p.extend_from_slice(&1u32.to_le_bytes()); for r in [snapshot.monitor, snapshot.work_area] { let x = r.left; let y = r.top; let w = (r.right - r.left) as u32; let h = (r.bottom - r.top) as u32; p.extend_from_slice(&(x as u32).to_le_bytes()); p.extend_from_slice(&(y as u32).to_le_bytes()); p.extend_from_slice(&w.to_le_bytes()); p.extend_from_slice(&h.to_le_bytes()); } Ok((Opcode::Monitors, 0, p, next)) }
         BridgeEvent::Configure { hwnd, rect } => Ok((Opcode::Configure, *hwnd as u64, wire_rect(*rect)?, next)),
+        BridgeEvent::Damage { hwnd, rect } => Ok((Opcode::Damage, *hwnd as u64, wire_rect(*rect)?, next)),
         BridgeEvent::Close { hwnd } => Ok((Opcode::Close, *hwnd as u64, Vec::new(), next)),
         BridgeEvent::Destroyed { hwnd } => Ok((Opcode::Ack, *hwnd as u64, 0u32.to_le_bytes().to_vec(), next)),
         BridgeEvent::Input(InputEvent::Key { hwnd, press, virtual_key, scan_code, modifiers }) => { if *virtual_key == 0 || *virtual_key > 0xff || *modifiers & !(crate::keyboard::KEY_EXTENDED | crate::keyboard::KEY_ALT | crate::keyboard::KEY_PREVIOUS) != 0 { return Err(TransportError::Unsupported); } let mut p = Vec::new(); p.extend_from_slice(&virtual_key.to_le_bytes()); p.extend_from_slice(&(*scan_code as u32).to_le_bytes()); p.extend_from_slice(&(*press as u32).to_le_bytes()); p.extend_from_slice(&modifiers.to_le_bytes()); Ok((Opcode::Key, *hwnd as u64, p, next)) }
