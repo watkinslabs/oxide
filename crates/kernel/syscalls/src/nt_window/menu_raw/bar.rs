@@ -97,6 +97,11 @@ fn release_band_dc(hwnd: u64, dc: u64) {
 /// # C: O(N_messages * N_items); # Sleeps: yes
 #[inline(never)]
 pub(crate) fn track_for_current(hwnd: u64, command: MenuCommand, point: (i32, i32)) -> Option<u64> {
+    // The request names the window the input reached, which for a keyboard
+    // request is whatever holds focus - an edit control, in an application
+    // whose client area is one. Only a window a menu is allowed on can be
+    // tracked, so climb to the first ancestor that qualifies.
+    let hwnd = menu_owner(hwnd)?;
     let menu = match command {
         MenuCommand::Mouse { hit } if hit == HTSYSMENU => system_menu_of(hwnd),
         MenuCommand::Mouse { .. } => bar_of(hwnd).map(|(menu, _)| menu.raw()),
@@ -163,6 +168,22 @@ fn post_open(hwnd: u64) {
 
 /// The window menu one press on the window-menu icon opens. # C: O(N_windows)
 #[inline(never)]
+/// The window a menu request tracks on: the first ancestor a menu is allowed
+/// on, starting at the window the input reached. # C: O(N_ancestors)
+fn menu_owner(hwnd: u64) -> Option<u64> {
+    let mut window = WindowId::from_raw(u32::try_from(hwnd).ok()?)?;
+    for _ in 0..MENU_OWNER_DEPTH {
+        let Some(record) = with_entry(|entry| entry.state.get(window)).flatten() else { return None; };
+        if !ipc::win32_window::nonclient_menu::menu_disallowed(record.style) { return Some(u64::from(window.raw())); }
+        window = record.parent?;
+    }
+    None
+}
+
+/// Bound on the climb. A window tree deeper than this names a cycle, and a
+/// menu request must answer rather than walk one.
+const MENU_OWNER_DEPTH: usize = 64;
+
 fn system_menu_of(hwnd: u64) -> Option<u32> {
     let window = WindowId::from_raw(u32::try_from(hwnd).ok()?)?;
     with_entry(|entry| entry.state.get(window).and_then(|record| record.sys_menu)).flatten()

@@ -37,10 +37,19 @@ pub const KEYMENU_SPACE: u32 = b' ' as u32;
 /// Only a top-level or popup window carries a menu bar; a child window's menu
 /// handle is its control id instead. # C: O(1)
 pub const fn window_has_menu_bar(style: u32, ex_style: u32, menu: Option<u32>) -> bool {
+    let _ = ex_style;
+    !menu_disallowed(style) && menu.is_some()
+}
+
+/// Whether a window is barred from owning a menu at all. A child that is not
+/// also a popup cannot: a keyboard menu request delivered to one names the
+/// window the key reached, not the window whose bar opens, so the request
+/// climbs from here to the first ancestor this answers false for.
+/// # C: O(1)
+pub const fn menu_disallowed(style: u32) -> bool {
     const WS_CHILD: u32 = 0x4000_0000;
     const WS_POPUP: u32 = 0x8000_0000;
-    let _ = ex_style;
-    style & (WS_CHILD | WS_POPUP) != WS_CHILD && menu.is_some()
+    style & (WS_CHILD | WS_POPUP) == WS_CHILD
 }
 
 /// The band a menu bar occupies between the top of the window's nonclient area
