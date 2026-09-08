@@ -1,7 +1,23 @@
 use super::*;
 use crate::win32_menu::{MenuItem, MF_GRAYED};
 
-fn metrics() -> PopupMetrics { PopupMetrics { char_width: 8, char_height: 16 } }
+fn metrics() -> MenuMetrics { MenuMetrics::uniform(CELL, CELL_HEIGHT, BAR_HEIGHT) }
+
+/// One advance, one cell height and one band, so a run's extent is its length
+/// times the cell and every rule below reads as the reference states it.
+const CELL: i32 = 8;
+const CELL_HEIGHT: i32 = 16;
+const BAR_HEIGHT: i32 = 19;
+/// The check column, the gap and the one character size a row reserves before
+/// its text.
+fn lead() -> i32 { check_width(CELL_HEIGHT) + 4 + CELL }
+/// The rule a row's height follows: the taller of the face's cell plus two and
+/// its character height plus four.
+const ROW: i32 = CELL_HEIGHT + 4;
+/// Half a band, which is what a separator row claims.
+fn rule_row() -> i32 { separator_height(BAR_HEIGHT) }
+/// What a row adds behind its name: the arrow column and the text margin.
+const TRAIL: i32 = ARROW_WIDTH + 2;
 
 fn menu_of(texts: &[(&str, u32)]) -> (MenuManager, MenuId) {
     let mut menus = MenuManager::new();
@@ -16,28 +32,28 @@ fn menu_of(texts: &[(&str, u32)]) -> (MenuManager, MenuId) {
 #[test]
 fn a_popup_is_as_wide_as_its_widest_item_and_stacks_its_rows() {
     let (menus, menu) = menu_of(&[("New", 0), ("Save As", 0), ("", MF_SEPARATOR), ("Exit", MF_GRAYED)]);
-    let layout = menus.popup_layout(menu, metrics(), i32::MAX).unwrap();
-    assert_eq!(layout.width, CHECK_WIDTH + 7 * 8 + ARROW_WIDTH + POPUP_BORDER * 2);
-    assert_eq!(layout.height, POPUP_BORDER * 2 + 16 * 3 + SEPARATOR_HEIGHT);
+    let layout = menus.popup_layout(menu, &metrics(), i32::MAX).unwrap();
+    assert_eq!(layout.width, lead() + 7 * CELL + TRAIL + POPUP_BORDER * 2);
+    assert_eq!(layout.height, POPUP_BORDER * 2 + ROW * 3 + rule_row());
     assert_eq!(layout.items.len(), 4);
     assert_eq!(layout.items[0].top, POPUP_BORDER);
-    assert_eq!(layout.items[1].top, POPUP_BORDER + 16);
-    assert_eq!(layout.items[2].bottom - layout.items[2].top, SEPARATOR_HEIGHT);
-    assert_eq!(layout.items[3].top, POPUP_BORDER + 32 + SEPARATOR_HEIGHT);
+    assert_eq!(layout.items[1].top, POPUP_BORDER + ROW);
+    assert_eq!(layout.items[2].bottom - layout.items[2].top, rule_row());
+    assert_eq!(layout.items[3].top, POPUP_BORDER + ROW * 2 + rule_row());
     assert!(layout.items.iter().all(|rect| rect.right == layout.width - POPUP_BORDER));
 }
 
 #[test]
 fn an_empty_popup_is_only_its_border() {
     let (menus, menu) = menu_of(&[]);
-    let layout = menus.popup_layout(menu, metrics(), i32::MAX).unwrap();
+    let layout = menus.popup_layout(menu, &metrics(), i32::MAX).unwrap();
     assert_eq!((layout.width, layout.height, layout.items.len()), (POPUP_BORDER * 2, POPUP_BORDER * 2, 0));
 }
 
 #[test]
 fn the_maximum_height_clips_a_tall_popup() {
     let (menus, menu) = menu_of(&[("a", 0), ("b", 0), ("c", 0), ("d", 0)]);
-    assert_eq!(menus.popup_layout(menu, metrics(), 40).unwrap().height, 40);
+    assert_eq!(menus.popup_layout(menu, &metrics(), 40).unwrap().height, 40);
 }
 
 const WORK: MenuRect = MenuRect { left: 0, top: 0, right: 800, bottom: 600 };
@@ -77,10 +93,10 @@ fn an_anchor_flips_the_popup_past_the_item_it_belongs_to() {
 #[test]
 fn the_hit_test_names_the_item_under_a_screen_point() {
     let (menus, menu) = menu_of(&[("New", 0), ("Open", 0)]);
-    let layout = menus.popup_layout(menu, metrics(), i32::MAX).unwrap();
+    let layout = menus.popup_layout(menu, &metrics(), i32::MAX).unwrap();
     let window = MenuRect { left: 100, top: 50, right: 100 + layout.width, bottom: 50 + layout.height };
     assert_eq!(hit_test(&layout, window, (110, 50 + POPUP_BORDER)), PopupHit::Item(0));
-    assert_eq!(hit_test(&layout, window, (110, 50 + POPUP_BORDER + 16)), PopupHit::Item(1));
+    assert_eq!(hit_test(&layout, window, (110, 50 + POPUP_BORDER + ROW)), PopupHit::Item(1));
     assert_eq!(hit_test(&layout, window, (110, 51)), PopupHit::Border);
     assert_eq!(hit_test(&layout, window, (99, 60)), PopupHit::Nowhere);
     assert_eq!(hit_test(&layout, window, (110, 50 + layout.height)), PopupHit::Nowhere);
@@ -96,33 +112,33 @@ fn text_length_stops_at_the_terminator() {
 #[test]
 fn a_label_splits_at_its_tab_and_the_two_halves_are_measured_apart() {
     let (menus, menu) = menu_of(&[("Save\tCtrl+S", 0)]);
-    let layout = menus.popup_layout(menu, metrics(), i32::MAX).unwrap();
+    let layout = menus.popup_layout(menu, &metrics(), i32::MAX).unwrap();
     // "Save" is the name column, "Ctrl+S" the accelerator column, and one
     // cell separates them.
-    assert_eq!(layout.tab, CHECK_WIDTH + 4 * 8);
-    assert_eq!(layout.width, CHECK_WIDTH + 4 * 8 + 8 + 6 * 8 + ARROW_WIDTH + POPUP_BORDER * 2);
+    assert_eq!(layout.tab, lead() + 4 * CELL);
+    assert_eq!(layout.width, lead() + 4 * CELL + TRAIL + CELL + 6 * CELL + POPUP_BORDER * 2);
 }
 
 #[test]
 fn the_tab_column_is_the_widest_name_of_the_menu_and_the_width_holds_the_widest_accelerator() {
     let (menus, menu) = menu_of(&[("New\tCtrl+N", 0), ("Page Setup...\tF5", 0), ("Print\tCtrl+Shift+P", 0)]);
-    let layout = menus.popup_layout(menu, metrics(), i32::MAX).unwrap();
-    assert_eq!(layout.tab, CHECK_WIDTH + "Page Setup...".len() as i32 * 8);
-    assert_eq!(layout.width, layout.tab + 8 + "Ctrl+Shift+P".len() as i32 * 8 + ARROW_WIDTH + POPUP_BORDER * 2);
+    let layout = menus.popup_layout(menu, &metrics(), i32::MAX).unwrap();
+    assert_eq!(layout.tab, lead() + "Page Setup...".len() as i32 * CELL);
+    assert_eq!(layout.width, layout.tab + TRAIL + CELL + "Ctrl+Shift+P".len() as i32 * CELL + POPUP_BORDER * 2);
 }
 
 #[test]
-fn a_menu_with_no_tab_in_any_label_is_measured_exactly_as_before() {
+fn a_menu_with_no_tab_in_any_label_reserves_no_accelerator_column() {
     let (menus, menu) = menu_of(&[("Undo", 0), ("Select All", 0)]);
-    let layout = menus.popup_layout(menu, metrics(), i32::MAX).unwrap();
-    assert_eq!(layout.tab, CHECK_WIDTH + 10 * 8);
-    assert_eq!(layout.width, CHECK_WIDTH + 10 * 8 + ARROW_WIDTH + POPUP_BORDER * 2);
+    let layout = menus.popup_layout(menu, &metrics(), i32::MAX).unwrap();
+    assert_eq!(layout.tab, lead() + 10 * CELL);
+    assert_eq!(layout.width, lead() + 10 * CELL + TRAIL + POPUP_BORDER * 2);
 }
 
 #[test]
 fn a_flush_right_label_is_measured_the_same_way_a_tab_is() {
     let (menus, menu) = menu_of(&[("Help\u{8}F1", 0)]);
-    let layout = menus.popup_layout(menu, metrics(), i32::MAX).unwrap();
-    assert_eq!(layout.tab, CHECK_WIDTH + 4 * 8);
-    assert_eq!(layout.width, layout.tab + 8 + 2 * 8 + ARROW_WIDTH + POPUP_BORDER * 2);
+    let layout = menus.popup_layout(menu, &metrics(), i32::MAX).unwrap();
+    assert_eq!(layout.tab, lead() + 4 * CELL);
+    assert_eq!(layout.width, layout.tab + TRAIL + CELL + 2 * CELL + POPUP_BORDER * 2);
 }

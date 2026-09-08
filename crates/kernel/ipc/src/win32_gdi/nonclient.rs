@@ -91,15 +91,30 @@ pub fn logfont(role: NonclientFont) -> Result<[u8; LOGFONTW_BYTES], GdiError> {
     Ok(record)
 }
 
-/// Logical font the profile names for menu text. It is the same face the
-/// profile's own `lfMenuFont` carries, so the face a menu is measured with and
-/// the face a caller reads out of the profile are one description.
-/// # C: O(1)
+/// Logical font the profile names for menu text: the live `lfMenuFont` while a
+/// client has written one, and the stock description until then. It is the
+/// same face the profile's own `lfMenuFont` carries, so the face a menu is
+/// measured with and the face a caller reads out of the profile are one
+/// description. # C: O(1)
 pub fn menu_font() -> Option<Font> {
+    if let Some(font) = written_face(super::super::win32_sysparams::NONCLIENT_MENU_FACE) { return Some(font); }
+    stock_face()
+}
+
+/// The stock description every profile face starts from. # C: O(1)
+fn stock_face() -> Option<Font> {
     let StockDescription::Font(font) = stock_object(DEFAULT_GUI_FONT)?.description else { return None; };
     let mut logical = font.logical;
     logical.weight = BODY_WEIGHT;
     Some(logical)
+}
+
+/// The face a client wrote into one profile slot, read from the settings owner
+/// so a written face and the layout drawn with it cannot disagree. Absent
+/// while nothing has written that slot. # C: O(1)
+fn written_face(index: usize) -> Option<Font> {
+    let record = *super::super::win32_sysparams::parameters().lock().nonclient_font(index)?;
+    Some(FontRecord::from_bytes(record).ok()?.metrics())
 }
 
 #[cfg(test)]

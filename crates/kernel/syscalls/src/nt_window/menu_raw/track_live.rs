@@ -13,7 +13,6 @@ use crate::nt_window::send::{self, Continuation, SendOutcome};
 use crate::nt_window::STATUS_PENDING;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use ipc::win32_menu::bar_hit::BarMetrics;
 use ipc::win32_menu::chain::{self, BarChain, OpenMenu};
 use ipc::win32_menu::popup::{PopupHit, TPM_POPUPMENU};
 use ipc::win32_menu::track::PointerEvent;
@@ -26,7 +25,7 @@ const ANY_MESSAGE: MessageFilter = MessageFilter { hwnd: None, first: 0, last: 0
 /// Capture claimed for menu tracking rather than an application drag.
 const CAPTURE_MENU: u32 = ipc::win32_window::CAPTURE_MENU;
 /// The cell metrics one menu bar is measured, drawn and hit-tested with.
-fn bar_metrics() -> BarMetrics { BarMetrics::menu() }
+fn bar_metrics() -> ipc::win32_gdi::MenuMetrics { ipc::win32_gdi::menu_bar_metrics() }
 
 /// Take the calling thread's parked loop out of the process record; exactly
 /// one driver owns it at a time. # C: O(N_process_gui_states)
@@ -94,7 +93,7 @@ fn bar_chain(owner: u64, top: u32) -> Option<BarChain> {
 #[inline(never)]
 fn menu_from_point(session: &MenuSession, top: u32, point: (i32, i32)) -> (Option<u32>, PopupHit) {
     let (open, bar) = chain_of(session, top);
-    with_entry(|entry| chain::menu_from_point(&entry.menus, &open, bar, point)).unwrap_or((None, PopupHit::Nowhere))
+    with_entry(|entry| chain::menu_from_point(&entry.menus, &open, bar.as_ref(), point)).unwrap_or((None, PopupHit::Nowhere))
 }
 
 /// One pointer event resolved against the open chain. # C: O(N_open * N_items)

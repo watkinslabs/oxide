@@ -3,7 +3,7 @@
 //! area, and which item a screen point names.
 use alloc::vec::Vec;
 use super::mnemonic::label_halves;
-use super::{MenuError, MenuId, MenuManager, MenuRect, MF_BYPOSITION, MF_SEPARATOR};
+use super::{MenuError, MenuId, MenuManager, MenuMetrics, MenuRect, MF_BYPOSITION, MF_SEPARATOR};
 
 /// Track-popup flags. `TPM_LEFTALIGN`, `TPM_TOPALIGN` and `TPM_LEFTBUTTON`
 /// are the zero defaults and carry no bit.
@@ -29,72 +29,96 @@ pub const NO_SELECTED_ITEM: u32 = 0xffff;
 
 /// Popup border thickness on every edge, in pixels.
 pub const POPUP_BORDER: i32 = 3;
-/// Column reserved left of the text for the check mark or item bitmap.
-pub const CHECK_WIDTH: i32 = 12;
-/// Column reserved right of the text for a submenu arrow.
+/// Column reserved right of the text for a submenu arrow, which is the width
+/// of the bitmap the arrow is drawn from.
 pub const ARROW_WIDTH: i32 = 12;
-/// A separator is drawn as a rule, not a line of text.
-pub const SEPARATOR_HEIGHT: i32 = 5;
+/// Pixels the reference leaves between the check column and the text, ahead of
+/// the one character size that follows it.
+const CHECK_GAP: i32 = 4;
+/// Pixels the reference adds to a popup row for the text itself, beside the
+/// extent of the label.
+const TEXT_MARGIN: i32 = 2;
+/// Rows a popup row clears above the face's own cell.
+const ROW_MARGIN: i32 = 2;
+/// Rows a popup row clears above the face's character height, which floors the
+/// row whatever the cell reports.
+const ROW_FLOOR: i32 = 4;
 
-/// Text and cell metrics one popup is measured with.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct PopupMetrics { pub char_width: i32, pub char_height: i32 }
-
-impl PopupMetrics {
-    /// The cells the nonclient profile's menu font measures a popup with.
-    /// # C: O(1)
-    pub fn menu() -> Self {
-        let metrics = crate::win32_gdi::menu_bar_metrics();
-        Self { char_width: metrics.char_width, char_height: metrics.char_height }
-    }
+/// Width of the check-mark column: the face's cell rounded up to the next odd
+/// number of pixels, so a mark centred in it has one column on each side.
+/// # C: O(1)
+pub fn check_width(cell_height: i32) -> i32 {
+    if cell_height <= 0 { return DEFAULT_CHECK_WIDTH; }
+    ((cell_height.saturating_add(1)) / 2).saturating_mul(2).saturating_sub(1)
 }
 
-/// Where every item sits inside the popup window, the window's own size, and
-/// the column every accelerator half is placed against, as an offset from an
-/// item rectangle's left edge.
+/// Check-mark column a face reporting no cell height falls back to.
+const DEFAULT_CHECK_WIDTH: i32 = 13;
+
+/// Height one separator row claims: half the band a bar of the same face
+/// claims. # C: O(1)
+pub fn separator_height(bar_height: i32) -> i32 { (bar_height.saturating_sub(1) / 2).max(1) }
+
+/// Where every item sits inside the popup window, the window's own size, the
+/// check column each row reserves, and the two columns every row's text and
+/// accelerator half are placed against, as offsets from an item rectangle's
+/// left edge.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct PopupLayout { pub width: i32, pub height: i32, pub tab: i32, pub items: Vec<MenuRect> }
+pub struct PopupLayout { pub width: i32, pub height: i32, pub check: i32, pub text: i32, pub tab: i32, pub items: Vec<MenuRect> }
 
 /// What a point inside the popup window names.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum PopupHit { Nowhere, Border, Item(u32) }
 
 impl MenuManager {
-    /// Measure one popup: a single column of items, each a text line except a
-    /// separator, clipped to `max_height` rows. The check and arrow columns
-    /// are always reserved so the text of every item starts in one place. The
-    /// name half and the accelerator half of every label are measured apart
-    /// and the widest of each kept, so the popup is as wide as the widest name
-    /// plus the widest accelerator and every accelerator starts in one column.
-    /// # C: O(N_items)
-    pub fn popup_layout(&self, menu: MenuId, metrics: PopupMetrics, max_height: i32) -> Result<PopupLayout, MenuError> {
+    /// Measure one popup, the way the reference measures one column of items:
+    /// every row reserves the check column, the gap and one character size
+    /// before its text, and the arrow column behind it; the label itself is
+    /// measured under the menu face and an accelerator half is set off from
+    /// the name by one more character size. Every row then takes the widest
+    /// width the column reached, and the accelerator column of every row is
+    /// the widest name, so the accelerators line up. A row is as tall as the
+    /// taller of its own text and the face's character height, and a separator
+    /// is half a band. # C: O(N_items)
+    pub fn popup_layout(&self, menu: MenuId, metrics: &MenuMetrics, max_height: i32) -> Result<PopupLayout, MenuError> {
         let count = self.count(menu)?;
-        let (mut widest_name, mut widest_accel) = (0, 0);
+        let (mut widest, mut widest_tab, mut widest_accel) = (0, 0, 0);
         let mut items = Vec::new();
         items.try_reserve(count).map_err(|_| MenuError::NoSuchMenu)?;
         let mut y = POPUP_BORDER;
+        let lead = check_width(metrics.char_height).saturating_add(CHECK_GAP).saturating_add(metrics.char_width);
         for position in 0..count {
             let item = self.item(menu, position as u32, MF_BYPOSITION)?;
             let separator = item.state & MF_SEPARATOR != 0;
-            let height = if separator { SEPARATOR_HEIGHT } else { metrics.char_height };
+            if separator {
+                items.push(MenuRect { left: POPUP_BORDER, top: y, right: POPUP_BORDER,
+                    bottom: y.saturating_add(separator_height(metrics.bar_height)) });
+                y = y.saturating_add(separator_height(metrics.bar_height));
+                let width = ARROW_WIDTH.saturating_add(metrics.char_width);
+                if width > widest { widest = width; }
+                continue;
+            }
             let halves = label_halves(&item.text);
-            let cells = |units: usize| (units as i32).saturating_mul(metrics.char_width);
-            let name = CHECK_WIDTH.saturating_add(cells(halves.name.units.len()));
-            // The accelerator half is set off from the name by one cell, the
-            // gap the reference leaves for the tab itself.
+            let name = metrics.cells.extent(&halves.name.units);
             let accel = match &halves.accel {
-                Some((_, drawn)) => metrics.char_width.saturating_add(cells(drawn.units.len())).saturating_add(ARROW_WIDTH),
-                None => ARROW_WIDTH,
+                Some((_, drawn)) => metrics.char_width.saturating_add(metrics.cells.extent(&drawn.units)),
+                None => 0,
             };
-            if name > widest_name { widest_name = name; }
-            if accel > widest_accel { widest_accel = accel; }
+            let tab = lead.saturating_add(name);
+            let right = tab.saturating_add(ARROW_WIDTH).saturating_add(TEXT_MARGIN).saturating_add(accel);
+            let height = metrics.char_height.saturating_add(ROW_MARGIN)
+                .max(metrics.cells.height().saturating_add(ROW_FLOOR));
+            if right > widest { widest = right; }
+            if tab > widest_tab { widest_tab = tab; }
+            if right.saturating_sub(tab) > widest_accel { widest_accel = right.saturating_sub(tab); }
             items.push(MenuRect { left: POPUP_BORDER, top: y, right: POPUP_BORDER, bottom: y.saturating_add(height) });
             y = y.saturating_add(height);
         }
+        let widest = widest.max(widest_tab.saturating_add(widest_accel));
         let height = y.saturating_add(POPUP_BORDER).min(max_height.max(POPUP_BORDER * 2));
-        let width = widest_name.saturating_add(widest_accel).saturating_add(POPUP_BORDER * 2);
+        let width = widest.saturating_add(POPUP_BORDER * 2);
         for rect in &mut items { rect.right = width.saturating_sub(POPUP_BORDER); }
-        Ok(PopupLayout { width, height, tab: widest_name, items })
+        Ok(PopupLayout { width, height, check: check_width(metrics.char_height), text: lead, tab: widest_tab.max(lead), items })
     }
 }
 

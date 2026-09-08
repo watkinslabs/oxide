@@ -4,7 +4,7 @@ use core::cell::RefCell;
 
 /// What the surface saw, in the order it saw it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Event { Fill(u32), Launch(u32), Done(u32), Refused(u32), Present(u64) }
+enum Event { Fill(u32), Launch(u32), Done(u32), Refused(u32), Present(u64), Measure(i32) }
 
 fn nothing(_hwnd: u64, _dc: u64) {}
 
@@ -37,8 +37,26 @@ fn pump(thread: &RefCell<Thread>, first: Next) {
             owner.peak = owner.peak.max(depth);
             true
         },
+        |font| {
+            let mut owner = thread.borrow_mut();
+            assert!(owner.backend.is_none(), "a measurement entered the backend while a run was rasterizing");
+            owner.backend = Some(MEASURE_ID);
+            owner.log.push(Event::Measure(font.height));
+            true
+        },
         |owed| { let mut owner = thread.borrow_mut(); owner.log.push(Event::Present(owed.hwnd)); (owed.finish)(owed.hwnd, owed.dc); },
         || thread.borrow_mut().queue.advance());
+}
+
+/// The identity the in-flight slot carries while the face is being measured.
+const MEASURE_ID: u32 = u32::MAX;
+
+/// The menu face one pass asks the backend to measure.
+fn menu_face() -> ipc::win32_gdi::Font { ipc::win32_gdi::Font { height: -11, width: 0, weight: 400, italic: false } }
+
+fn measure(thread: &RefCell<Thread>) {
+    let first = thread.borrow_mut().queue.submit_cells(menu_face());
+    pump(thread, first);
 }
 
 fn fill(thread: &RefCell<Thread>, id: u32) { thread.borrow_mut().log.push(Event::Fill(id)); }
@@ -143,4 +161,25 @@ fn the_queue_is_bounded() {
     let presents = log(&thread).iter().filter(|event| matches!(event, Event::Present(_))).count();
     assert_eq!(presents, 1, "the present happens exactly once even when the plan overflowed the queue");
     assert_eq!(log(&thread).last(), Some(&Event::Present(3)), "a full queue still holds the present until its runs drain");
+}
+
+/// The measurement of the menu face rides the same one-at-a-time queue the
+/// runs do: it enters the backend first, the runs of the pass that asked for
+/// it wait behind it, and the paint end still waits for all of them.
+#[test]
+fn a_face_measurement_takes_the_backend_before_the_runs_that_wait_on_it() {
+    let thread = Thread::new();
+    measure(&thread);
+    fill(&thread, 1);
+    text(&thread, 1);
+    text(&thread, 2);
+    end_paint(&thread, 0x99);
+    assert_eq!(thread.borrow().log, alloc::vec![Event::Measure(-11), Event::Fill(1)]);
+    backend_completes(&thread);
+    backend_completes(&thread);
+    backend_completes(&thread);
+    assert_eq!(thread.borrow().log, alloc::vec![Event::Measure(-11), Event::Fill(1),
+        Event::Done(MEASURE_ID), Event::Launch(1), Event::Done(1), Event::Launch(2), Event::Done(2),
+        Event::Present(0x99)]);
+    assert!(thread.borrow().queue.idle());
 }

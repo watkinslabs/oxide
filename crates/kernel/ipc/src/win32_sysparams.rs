@@ -22,6 +22,15 @@ use table::{slot, DEFAULT_DPI, TWIPS_PER_INCH};
 /// Bytes one `LOGFONTW` occupies, as the graphics owner writes one.
 pub use crate::win32_gdi::LOGFONTW_BYTES;
 
+/// The one session-wide settings record. One process's write is the value the
+/// next process reads, as a session-wide setting is. Every owner that needs a
+/// stored setting - the system-parameter entry point, and the graphics owner
+/// that draws the faces this record names - reads it from here, so a client's
+/// write and the layout drawn from it cannot disagree. # C: O(1)
+pub fn parameters() -> &'static sync::Spinlock<SystemParameters, sync::TaskList> { &PARAMETERS }
+
+static PARAMETERS: sync::Spinlock<SystemParameters, sync::TaskList> = sync::Spinlock::new(SystemParameters::new());
+
 /// What one system-parameter call must transfer once the action is decoded.
 /// `Refused` is the answer to an action this kernel names no entry for, which
 /// is the same `FALSE` the reference answers an unknown action with.

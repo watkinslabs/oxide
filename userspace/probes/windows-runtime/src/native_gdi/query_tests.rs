@@ -109,3 +109,55 @@ fn query_wire_and_copyout_bounds_reject_untrusted_lengths_before_writes() {
     for bad in [abi::QueryRequest { count: abi::MAX_UNITS + 1, ..req }, abi::QueryRequest { output: u64::MAX, ..req },
         abi::QueryRequest { height: i32::MIN, ..req }, abi::QueryRequest { reserved: 1, ..req }] { assert!(!bad.valid()); }
 }
+
+/// The menu layout measures a label by summing this table and rounding once.
+/// That sum must be the extent the same run measures whole, or an item box
+/// and the glyphs drawn inside it are laid out on different numbers.
+#[test]
+fn the_menu_cell_table_reproduces_the_extent_of_a_run_measured_whole() {
+    native::prepare_fonts().unwrap();
+    let req = request(abi::QUERY_MENU_CELLS);
+    let req = abi::QueryRequest { dc: 0, output: 0, capacity: abi::MENU_CELL_BYTES, ..req };
+    assert!(req.valid(), "the kernel-consumed measurement is a well-formed request");
+    let (result, table) = run(&req, &[]).unwrap();
+    assert_eq!(result, 1);
+    assert_eq!(table.len() as u32, abi::MENU_CELL_BYTES);
+    let font = native::selected_font_with_width(req.height, req.width, req.weight, req.italic).unwrap();
+    // The table's own cell height is the face's.
+    assert_eq!(word(&table, 0) as i32, i32::from_le_bytes(font.text_metrics_w(req.weight, req.italic).unwrap()[0..4].try_into().unwrap()));
+    let advance = |unit: u16| -> i64 {
+        let index = (u32::from(unit) - abi::MENU_CELL_FIRST) as usize;
+        i64::from(u16::from_le_bytes(table[4 + index * 2..6 + index * 2].try_into().unwrap()))
+    };
+    for label in ["File", "Edit", "Format", "View", "Help", "Save As...", "Ctrl+Shift+P", "WWWiiill"] {
+        let units: Vec<u16> = label.encode_utf16().collect();
+        let summed = (units.iter().map(|unit| advance(*unit)).sum::<i64>() + i64::from(abi::MENU_CELL_SCALE) - 1)
+            / i64::from(abi::MENU_CELL_SCALE);
+        let whole = font.measure_utf16(&units, i32::MAX).unwrap().width;
+        assert!((summed - i64::from(whole)).abs() <= 1,
+            "{label}: table sums to {summed}, the run measures {whole}");
+    }
+    // Every character of the block carries a real advance, so a label is
+    // never measured as nothing.
+    for unit in abi::MENU_CELL_FIRST..abi::MENU_CELL_FIRST + abi::MENU_CELL_COUNT {
+        assert!(advance(unit as u16) > 0, "character {unit:#x} has no advance");
+    }
+    assert!(font.measure_utf16(&"Format".encode_utf16().collect::<Vec<u16>>(), i32::MAX).unwrap().width
+        > font.measure_utf16(&"File".encode_utf16().collect::<Vec<u16>>(), i32::MAX).unwrap().width);
+}
+
+/// The measurement writes into kernel state, so it names no caller buffer and
+/// a request that names one is refused.
+#[test]
+fn the_menu_cell_request_carries_no_caller_buffer() {
+    let base = abi::QueryRequest { dc: 0, output: 0, capacity: abi::MENU_CELL_BYTES, ..request(abi::QUERY_MENU_CELLS) };
+    assert!(base.valid());
+    for bad in [abi::QueryRequest { output: 0x10000, ..base }, abi::QueryRequest { capacity: 0, ..base },
+        abi::QueryRequest { count: 4, ..base }, abi::QueryRequest { aux: 0x10000, ..base }] {
+        assert!(!bad.valid());
+    }
+    let out = abi::QueryOutput { result: 1, length: abi::MENU_CELL_BYTES, data: 0x20000, reserved: 0 };
+    assert!(base.accepts(&out), "an answer with no caller buffer is admitted for a kernel-consumed kind");
+    assert!(!base.accepts(&abi::QueryOutput { length: abi::MENU_CELL_BYTES - 2, ..out }));
+    assert!(!base.accepts(&abi::QueryOutput { result: 0, ..out }));
+}

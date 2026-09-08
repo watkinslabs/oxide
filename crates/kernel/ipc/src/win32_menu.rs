@@ -1,6 +1,11 @@
 //! Canonical Win32 menu handles and item state for one NT GUI process.
 
 use alloc::vec::Vec;
+pub use crate::win32_gdi::MenuMetrics;
+
+/// Rows of top border one menu bar begins with, which is the difference the
+/// reference leaves between the band a bar claims and the row its items fill.
+pub const BAR_TOP_BORDER: i32 = 1;
 
 pub const MF_GRAYED: u32 = 0x0000_0001;
 pub const MF_DISABLED: u32 = 0x0000_0002;
@@ -80,20 +85,29 @@ impl MenuManager {
 
     pub fn is_popup(&self, id: MenuId) -> Result<bool, MenuError> { Ok(self.menus[self.index(id).ok_or(MenuError::NoSuchMenu)?].1.popup) }
 
-    pub fn bar_item_rect(&self, menu: MenuId, position: usize, origin: MenuRect, char_width: i32, char_height: i32, bar_height: i32) -> Result<MenuRect, MenuError> {
+    /// The rectangle one bar item occupies. The reference measures the label
+    /// itself under the menu face and pads the box by twice that face's
+    /// character size, so a proportional label sits inside its own box with
+    /// the same gap on either side whatever its glyphs are; the row is as tall
+    /// as the taller of the face's cell and the band the profile reserves,
+    /// under the one row of top border a bar begins with. # C: O(N_items)
+    pub fn bar_item_rect(&self, menu: MenuId, position: usize, origin: MenuRect, metrics: &MenuMetrics) -> Result<MenuRect, MenuError> {
         let record = self.menus.get(self.index(menu).ok_or(MenuError::NoSuchMenu)?).ok_or(MenuError::NoSuchMenu)?;
         let item = record.1.items.get(position).ok_or(MenuError::NoSuchItem)?;
-        let text_len = mnemonic::display_len(&item.text) as i32;
-        let width = text_len.checked_mul(char_width).ok_or(MenuError::InvalidPosition)?.checked_add(char_width.checked_mul(2).ok_or(MenuError::InvalidPosition)?).ok_or(MenuError::InvalidPosition)?;
-        let height = char_height.max(bar_height.saturating_sub(1));
-        let left = if position == 0 { origin.left } else { self.bar_item_rect(menu, position - 1, origin, char_width, char_height, bar_height)?.right };
-        Ok(MenuRect { left, top: origin.top.saturating_add(1), right: left.saturating_add(width), bottom: origin.top.saturating_add(1).saturating_add(height) })
+        let extent = metrics.cells.extent(&mnemonic::display_text(&item.text).units);
+        let width = extent.checked_add(metrics.char_width.checked_mul(2).ok_or(MenuError::InvalidPosition)?).ok_or(MenuError::InvalidPosition)?;
+        let height = metrics.char_height.max(metrics.bar_height.saturating_sub(BAR_TOP_BORDER));
+        let left = if position == 0 { origin.left } else { self.bar_item_rect(menu, position - 1, origin, metrics)?.right };
+        let top = origin.top.saturating_add(BAR_TOP_BORDER);
+        Ok(MenuRect { left, top, right: left.saturating_add(width), bottom: top.saturating_add(height) })
     }
 
-    pub fn bar_rect(&self, menu: MenuId, origin: MenuRect, char_width: i32, char_height: i32, bar_height: i32) -> Result<MenuRect, MenuError> {
+    /// The band one bar of items claims: the top border plus the tallest row.
+    /// # C: O(N_items^2)
+    pub fn bar_rect(&self, menu: MenuId, origin: MenuRect, metrics: &MenuMetrics) -> Result<MenuRect, MenuError> {
         let count = self.count(menu)?;
         if count == 0 { return Ok(MenuRect { left: origin.left, top: origin.top, right: origin.left, bottom: origin.top }); }
-        let last = self.bar_item_rect(menu, count - 1, origin, char_width, char_height, bar_height)?;
+        let last = self.bar_item_rect(menu, count - 1, origin, metrics)?;
         Ok(MenuRect { left: origin.left, top: last.top, right: last.right, bottom: last.bottom })
     }
 
@@ -289,8 +303,9 @@ mod tests {
         menus.insert(menu, 0, MenuItem { id: 1, state: 0, text: alloc::vec![65, 66, 0], submenu: None }).unwrap();
         menus.insert(menu, 1, MenuItem { id: 2, state: 0, text: alloc::vec![67, 0], submenu: None }).unwrap();
         let origin = MenuRect { left: 10, top: 20, right: 100, bottom: 100 };
-        assert_eq!(menus.bar_item_rect(menu, 0, origin, 8, 16, 19), Ok(MenuRect { left: 10, top: 21, right: 42, bottom: 39 }));
-        assert_eq!(menus.bar_item_rect(menu, 1, origin, 8, 16, 19).unwrap().left, 42);
-        assert_eq!(menus.bar_rect(menu, origin, 8, 16, 19).unwrap().right, 66);
+        let cells = MenuMetrics::uniform(8, 16, 19);
+        assert_eq!(menus.bar_item_rect(menu, 0, origin, &cells), Ok(MenuRect { left: 10, top: 21, right: 42, bottom: 39 }));
+        assert_eq!(menus.bar_item_rect(menu, 1, origin, &cells).unwrap().left, 42);
+        assert_eq!(menus.bar_rect(menu, origin, &cells).unwrap().right, 66);
     }
 }

@@ -2,7 +2,7 @@ use super::*;
 use crate::win32_menu::{MenuItem, MF_BYPOSITION};
 use alloc::vec;
 
-const METRICS: BarMetrics = BarMetrics { char_width: 8, char_height: 16, bar_height: 19 };
+fn metrics() -> crate::win32_gdi::MenuMetrics { crate::win32_gdi::MenuMetrics::uniform(8, 16, 19) }
 
 fn text(value: &str) -> Vec<u16> { value.encode_utf16().collect() }
 
@@ -19,24 +19,24 @@ fn fixture() -> (MenuManager, u32, u32, MenuRect) {
 #[test]
 fn a_point_on_a_bar_item_names_that_item_of_the_top_menu() {
     let (menus, bar, _, window) = fixture();
-    let item = menus.bar_item_rect(MenuId::from_raw(bar).unwrap(), 0, window, 8, 16, 19).unwrap();
+    let item = menus.bar_item_rect(MenuId::from_raw(bar).unwrap(), 0, window, &metrics()).unwrap();
     let point = ((item.left + item.right) / 2, (item.top + item.bottom) / 2);
-    let chain = BarChain { menu: bar, bounds: window, metrics: METRICS };
-    assert_eq!(menu_from_point(&menus, &[], Some(chain), point), (Some(bar), PopupHit::Item(0)));
+    let chain = BarChain { menu: bar, bounds: window, metrics: metrics() };
+    assert_eq!(menu_from_point(&menus, &[], Some(&chain), point), (Some(bar), PopupHit::Item(0)));
     // Below the band the bar owns nothing.
-    assert_eq!(menu_from_point(&menus, &[], Some(chain), (point.0, window.top + 200)), (None, PopupHit::Nowhere));
+    assert_eq!(menu_from_point(&menus, &[], Some(&chain), (point.0, window.top + 200)), (None, PopupHit::Nowhere));
 }
 
 #[test]
 fn an_open_popup_outranks_the_bar_underneath_it() {
     let (menus, bar, popup, window) = fixture();
-    let layout = menus.popup_layout(MenuId::from_raw(popup).unwrap(), PopupMetrics { char_width: 8, char_height: 16 }, i32::MAX).unwrap();
+    let layout = menus.popup_layout(MenuId::from_raw(popup).unwrap(), &metrics(), i32::MAX).unwrap();
     let rect = MenuRect { left: window.left, top: window.top, right: window.left + layout.width, bottom: window.top + layout.height };
     let item = layout.items[0];
     let point = (rect.left + (item.left + item.right) / 2, rect.top + (item.top + item.bottom) / 2);
     let open = vec![OpenMenu { menu: popup, rect, layout }];
-    let chain = BarChain { menu: bar, bounds: window, metrics: METRICS };
-    assert_eq!(menu_from_point(&menus, &open, Some(chain), point), (Some(popup), PopupHit::Item(0)));
+    let chain = BarChain { menu: bar, bounds: window, metrics: metrics() };
+    assert_eq!(menu_from_point(&menus, &open, Some(&chain), point), (Some(popup), PopupHit::Item(0)));
 }
 
 #[test]

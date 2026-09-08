@@ -95,12 +95,12 @@ fn a_highlight_moves_to_one_item_at_a_time() {
 fn a_point_selects_the_bar_item_it_falls_inside() {
     let (menus, menu) = menu_with(3);
     let origin = MenuRect { left: 0, top: 0, right: 300, bottom: 20 };
-    let first = menus.bar_item_rect(menu, 0, origin, 8, 16, 18).unwrap();
-    let second = menus.bar_item_rect(menu, 1, origin, 8, 16, 18).unwrap();
-    assert_eq!(menus.item_from_point(menu, (first.left, first.top), origin, 8, 16, 18).unwrap(), Some(0));
-    assert_eq!(menus.item_from_point(menu, (second.left, second.top), origin, 8, 16, 18).unwrap(), Some(1));
-    assert_eq!(menus.item_from_point(menu, (first.left - 1, first.top), origin, 8, 16, 18).unwrap(), None);
-    assert_eq!(menus.item_from_point(menu, (first.left, first.bottom), origin, 8, 16, 18).unwrap(), None);
+    let first = menus.bar_item_rect(menu, 0, origin, &crate::win32_gdi::MenuMetrics::uniform(8, 16, 18)).unwrap();
+    let second = menus.bar_item_rect(menu, 1, origin, &crate::win32_gdi::MenuMetrics::uniform(8, 16, 18)).unwrap();
+    assert_eq!(menus.item_from_point(menu, (first.left, first.top), origin, &crate::win32_gdi::MenuMetrics::uniform(8, 16, 18)).unwrap(), Some(0));
+    assert_eq!(menus.item_from_point(menu, (second.left, second.top), origin, &crate::win32_gdi::MenuMetrics::uniform(8, 16, 18)).unwrap(), Some(1));
+    assert_eq!(menus.item_from_point(menu, (first.left - 1, first.top), origin, &crate::win32_gdi::MenuMetrics::uniform(8, 16, 18)).unwrap(), None);
+    assert_eq!(menus.item_from_point(menu, (first.left, first.bottom), origin, &crate::win32_gdi::MenuMetrics::uniform(8, 16, 18)).unwrap(), None);
 }
 
 #[test]

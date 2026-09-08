@@ -131,20 +131,21 @@ fn a_bar_appended_from_a_template_draws_one_text_run_per_item() {
     }
     let origin = MenuRect { left: 0, top: 0, right: 582 - 261, bottom: 768 - 122 };
     let cells = menu_bar_metrics();
-    let plan = menus.bar_draw_plan(menu, origin, cells.char_width, cells.char_height, cells.bar_height).unwrap();
+    let plan = menus.bar_draw_plan(menu, origin, &cells).unwrap();
     let runs: Vec<(u32, MenuRect)> = plan.iter().filter_map(|op| match op { MenuDrawOp::Text { rect, position, .. } => Some((*position, *rect)), _ => None }).collect();
     assert_eq!(runs.len(), NOTEPAD_BAR.len());
     for (position, label) in NOTEPAD_BAR.iter().enumerate() {
         let item = menus.item(menu, position as u32, MF_BYPOSITION).unwrap();
         assert_eq!(item.text, wide(label));
-        let cell = menus.bar_item_rect(menu, position, origin, cells.char_width, cells.char_height, cells.bar_height).unwrap();
+        let cell = menus.bar_item_rect(menu, position, origin, &cells).unwrap();
         // The cell is measured from the label as it is drawn, so the prefix
         // that marks the mnemonic costs no column, and the run sits inside it.
-        assert_eq!(cell.right - cell.left, (crate::win32_menu::mnemonic::display_len(&item.text) as i32 + 2) * cells.char_width);
-        assert_eq!(cell.right - cell.left, (label.len() as i32 + 1) * cells.char_width, "one prefix per label is consumed");
+        let drawn = crate::win32_menu::mnemonic::display_text(&item.text);
+        assert_eq!(drawn.units.len(), label.len() - 1, "one prefix per label is consumed");
+        assert_eq!(cell.right - cell.left, cells.cells.extent(&drawn.units) + 2 * cells.char_width);
         assert_eq!(runs[position], (position as u32, MenuRect { left: cell.left + cells.char_width, top: cell.top, right: cell.right - cells.char_width, bottom: cell.bottom }));
     }
-    let bar = menus.bar_rect(menu, origin, cells.char_width, cells.char_height, cells.bar_height).unwrap();
+    let bar = menus.bar_rect(menu, origin, &cells).unwrap();
     assert!(bar.bottom - bar.top > 0);
     assert_eq!(bar.right, runs[NOTEPAD_BAR.len() - 1].1.right + cells.char_width);
 }
@@ -164,7 +165,7 @@ fn a_separator_from_a_template_draws_no_run_on_a_bar() {
     }
     let origin = MenuRect { left: 0, top: 0, right: 320, bottom: 240 };
     let cells = menu_bar_metrics();
-    let plan = menus.bar_draw_plan(menu, origin, cells.char_width, cells.char_height, cells.bar_height).unwrap();
+    let plan = menus.bar_draw_plan(menu, origin, &cells).unwrap();
     let runs = plan.iter().filter(|op| matches!(op, MenuDrawOp::Text { .. })).count();
     assert_eq!(runs, 1);
     assert_eq!(vec![menus.item(menu, 1, MF_BYPOSITION).unwrap().state & MF_SEPARATOR], vec![MF_SEPARATOR]);

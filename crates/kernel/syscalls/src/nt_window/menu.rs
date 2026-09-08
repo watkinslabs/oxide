@@ -115,9 +115,7 @@ pub(crate) fn menu_item_rect_for_current(hwnd: u64, raw: u64, position: u64) -> 
     if entries[index].state.menu(hwnd) != Some(menu.raw()) { return None; }
     let rect = entries[index].state.rect(hwnd)?;
     let origin = ipc::win32_menu::MenuRect { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
-    let cells = ipc::win32_gdi::menu_bar_metrics();
-    let (width, height, bar_height) = (cells.char_width, cells.char_height, cells.bar_height);
-    entries[index].menus.bar_item_rect(menu, usize::try_from(position).ok()?, origin, width, height, bar_height).ok()
+    entries[index].menus.bar_item_rect(menu, usize::try_from(position).ok()?, origin, &ipc::win32_gdi::menu_bar_metrics()).ok()
 }
 
 #[cfg(target_os = "oxide-kernel")]
@@ -145,8 +143,7 @@ pub(crate) fn menu_bar_rect_for_current(hwnd: u64) -> Option<ipc::win32_menu::Me
     let menu = ipc::win32_menu::MenuId::from_raw(menu)?;
     let rect = entries[index].state.rect(hwnd_id)?;
     let origin = ipc::win32_menu::MenuRect { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
-    let cells = ipc::win32_gdi::menu_bar_metrics();
-    entries[index].menus.bar_rect(menu, origin, cells.char_width, cells.char_height, cells.bar_height).ok()
+    entries[index].menus.bar_rect(menu, origin, &ipc::win32_gdi::menu_bar_metrics()).ok()
 }
 
 /// Resolve menu geometry for Wine's explicit `NtUserDrawMenuBarTemp` handle.
@@ -165,8 +162,7 @@ pub(crate) fn menu_bar_rect_for_current_menu(hwnd: u64, raw_menu: u64) -> Option
     if !entries[index].menus.contains(menu) { return None; }
     let rect = entries[index].state.rect(hwnd)?;
     let origin = ipc::win32_menu::MenuRect { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
-    let cells = ipc::win32_gdi::menu_bar_metrics();
-    entries[index].menus.bar_rect(menu, origin, cells.char_width, cells.char_height, cells.bar_height).ok()
+    entries[index].menus.bar_rect(menu, origin, &ipc::win32_gdi::menu_bar_metrics()).ok()
 }
 
 /// Redrawing a window's menu bar is a frame change: it invalidates the whole

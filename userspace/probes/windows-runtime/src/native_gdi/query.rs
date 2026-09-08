@@ -29,6 +29,19 @@ pub(super) fn execute(font: &RasterFont, bytes: &[u8], request: &abi::QueryReque
             }
             Some((1, output))
         }
+        abi::QUERY_MENU_CELLS => {
+            // The face's own cell height, then one advance per character of
+            // the printable block, in the sub-pixel units the kernel sums.
+            let metrics = font.text_metrics_w(request.weight, request.italic).ok()?;
+            let height = i32::from_le_bytes(metrics[0..4].try_into().ok()?);
+            let mut output = Vec::with_capacity(abi::MENU_CELL_BYTES as usize);
+            output.extend_from_slice(&height.to_le_bytes());
+            for index in 0..abi::MENU_CELL_COUNT {
+                let character = char::from_u32(abi::MENU_CELL_FIRST + index)?;
+                output.extend_from_slice(&font.scaled_advance(character, abi::MENU_CELL_SCALE).to_le_bytes());
+            }
+            Some((1, output))
+        }
         abi::QUERY_OUTLINE => {
             let mut output = super::outline::metrics(font, bytes, request.weight, request.italic)?;
             if request.output == 0 { Some((output.len() as u32, Vec::new())) }

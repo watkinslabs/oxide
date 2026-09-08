@@ -40,18 +40,19 @@ fn text(dc: u64, rect: MenuRect, drawn: &DisplayText, color: SystemColor, align:
     let units = &drawn.units[..];
     if units.is_empty() { return None; }
     let state = crate::nt_gdi::text_snapshot_for_current(dc).ok()?;
-    // The face selected below is the one the item rectangles were measured
-    // with, so the advance the run is placed on is that face's own.
+    // The run is placed on the very advances the item rectangles were measured
+    // with, so a proportional label is centred on its own extent rather than
+    // on a character count.
     let metrics = crate::nt_gdi::text_metrics_for_current(dc).ok()?;
-    let advance = metrics.character_width;
+    let cells = ipc::win32_gdi::menu_bar_metrics().cells;
     if let Some(mnemonic) = drawn.mnemonic {
-        let rule = crate::nt_menu_text::underline(rect, units.len(), mnemonic, align, advance, metrics.height, metrics.ascent);
+        let rule = crate::nt_menu_text::underline(rect, units, mnemonic, align, &cells, metrics.height, metrics.ascent);
         fill(dc, rule, color);
     }
     let foreground = crate::nt_gdi::system_color_value(color);
     let saved = crate::nt_gdi::set_text_attribute_for_current(dc, ipc::win32_gdi::TextAttribute::Foreground, foreground).ok();
     let saved_mode = crate::nt_gdi::set_text_attribute_for_current(dc, ipc::win32_gdi::TextAttribute::BackgroundMode, TRANSPARENT).ok();
-    let request = crate::nt_menu_text::request(dc, rect, units.len(), align, advance, foreground, &state, metrics.height);
+    let request = crate::nt_menu_text::request(dc, rect, units, align, &cells, foreground, &state, metrics.height);
     // The run does not rasterize inside this call: it enters the font backend
     // after the syscall returns, so it goes through the thread's ordered
     // queue, which also holds this paint's present until it lands.

@@ -94,9 +94,9 @@ impl MenuManager {
 
     /// Position of the bar item under a point, or none. # C: O(N_items)
     pub fn item_from_point(&self, menu: MenuId, point: (i32, i32), origin: MenuRect,
-        char_width: i32, char_height: i32, bar_height: i32) -> Result<Option<usize>, MenuError> {
+        metrics: &super::MenuMetrics) -> Result<Option<usize>, MenuError> {
         for position in 0..self.count(menu)? {
-            let rect = self.bar_item_rect(menu, position, origin, char_width, char_height, bar_height)?;
+            let rect = self.bar_item_rect(menu, position, origin, metrics)?;
             if point.0 >= rect.left && point.0 < rect.right && point.1 >= rect.top && point.1 < rect.bottom {
                 return Ok(Some(position));
             }

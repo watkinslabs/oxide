@@ -2,13 +2,8 @@
 //! ask the settings owner, and transfer the answer. Every decision this file
 //! acts on belongs to the owner or to the decoder beside it.
 use alloc::vec::Vec;
-use ipc::win32_sysparams::{Request, StructWrite, SystemParameters, LOGFONTW_BYTES};
+use ipc::win32_sysparams::{parameters, Request, StructWrite, LOGFONTW_BYTES};
 use super::{carrier, decode, record_size_admitted, Call, Carrier, MAX_PATH_UNITS, SYSTEM_PARAMETERS_INFO};
-
-/// The one session-wide settings record. One process's write is the value the
-/// next process reads, as a session-wide setting is.
-static PARAMETERS: sync::Spinlock<SystemParameters, sync::TaskList> =
-    sync::Spinlock::new(SystemParameters::new());
 
 /// Dots per inch every unscaled system-parameter answer is quoted at.
 const DEFAULT_DPI: u32 = 96;
@@ -23,7 +18,7 @@ const FALSE: u64 = 0;
 /// the record a client wrote is the record the next reader is handed.
 /// # C: O(1), fixed record
 pub(crate) fn live_profile(size: u32, dpi: u32) -> Option<[u8; ipc::win32_gdi::NONCLIENT_BYTES]> {
-    PARAMETERS.lock().nonclient_profile(size, dpi).ok()
+    parameters().lock().nonclient_profile(size, dpi).ok()
 }
 
 /// Answer one system-parameter call. Some for every call on this ordinal: the
@@ -51,7 +46,7 @@ fn perform_at(call: Call, dpi: u32) -> u64 {
     }
     if let Some(result) = window_owned(call) { return result; }
     let pointer = call.ptr != 0;
-    let request = PARAMETERS.lock().read(call.action, dpi, pointer);
+    let request = parameters().lock().read(call.action, dpi, pointer);
     if request != Request::Refused { return answer(call, dpi, request); }
     apply(call, dpi)
 }
@@ -102,18 +97,18 @@ fn answer(call: Call, dpi: u32, request: Request) -> u64 {
 fn apply(call: Call, dpi: u32) -> u64 {
     let _ = dpi;
     match carrier(call.action) {
-        Carrier::None => match PARAMETERS.lock().write(call.action, call.val as i32, None) {
+        Carrier::None => match parameters().lock().write(call.action, call.val as i32, None) {
             Request::Applied => TRUE, Request::Path => FALSE, _ => FALSE,
         },
         Carrier::Words { count, skip, sized } => {
             let Some(words) = read_words(call.ptr, count, skip, sized, call.action) else { return FALSE; };
-            match PARAMETERS.lock().write(call.action, call.val as i32, Some(StructWrite { words: &words, font: None })) {
+            match parameters().lock().write(call.action, call.val as i32, Some(StructWrite { words: &words, font: None })) {
                 Request::Applied => TRUE, _ => FALSE,
             }
         }
         Carrier::Font => {
             let Some(font) = read_font(call.ptr) else { return FALSE; };
-            match PARAMETERS.lock().write(call.action, call.val as i32, Some(StructWrite { words: &[], font: Some(&font) })) {
+            match parameters().lock().write(call.action, call.val as i32, Some(StructWrite { words: &[], font: Some(&font) })) {
                 Request::Applied => TRUE, _ => FALSE,
             }
         }
@@ -121,7 +116,7 @@ fn apply(call: Call, dpi: u32) -> u64 {
             let Some(words) = read_words(call.ptr, 3, 4, Some(super::ICON_METRICS_BYTES), call.action) else { return FALSE; };
             let Some(base) = call.ptr.checked_add(16) else { return FALSE; };
             let Some(font) = read_font(base) else { return FALSE; };
-            match PARAMETERS.lock().write(call.action, call.val as i32, Some(StructWrite { words: &words, font: Some(&font) })) {
+            match parameters().lock().write(call.action, call.val as i32, Some(StructWrite { words: &words, font: Some(&font) })) {
                 Request::Applied => TRUE, _ => FALSE,
             }
         }
@@ -129,13 +124,13 @@ fn apply(call: Call, dpi: u32) -> u64 {
             let Some(words) = read_words(call.ptr, ipc::win32_sysparams::NONCLIENT_DIMENSIONS.len(), 0, None, call.action) else { return FALSE; };
             let Some(menu) = call.ptr.checked_add(ipc::win32_sysparams::NONCLIENT_FACE_OFFSETS[ipc::win32_sysparams::NONCLIENT_MENU_FACE] as u64) else { return FALSE; };
             let Some(font) = read_font(menu) else { return FALSE; };
-            match PARAMETERS.lock().write(call.action, call.val as i32, Some(StructWrite { words: &words, font: Some(&font) })) {
+            match parameters().lock().write(call.action, call.val as i32, Some(StructWrite { words: &words, font: Some(&font) })) {
                 Request::Applied => TRUE, _ => FALSE,
             }
         }
         Carrier::Path => {
             let Some(path) = read_path(call.ptr) else { return FALSE; };
-            if PARAMETERS.lock().set_wallpaper(&path) { TRUE } else { FALSE }
+            if parameters().lock().set_wallpaper(&path) { TRUE } else { FALSE }
         }
     }
 }
@@ -167,7 +162,7 @@ fn write_words(ptr: u64, values: &[u32]) -> u64 {
 /// face while none was written. # C: O(1)
 fn write_font(ptr: u64) -> u64 {
     if ptr == 0 { return FALSE; }
-    let stored = PARAMETERS.lock().icon_font().copied();
+    let stored = parameters().lock().icon_font().copied();
     let bytes = match stored {
         Some(bytes) => bytes,
         None => match ipc::win32_gdi::logfont(ipc::win32_gdi::NonclientFont::Message) { Ok(bytes) => bytes, Err(_) => return FALSE },
@@ -180,7 +175,7 @@ fn write_font(ptr: u64) -> u64 {
 /// always NUL-terminated. # C: O(N_units)
 fn write_path(ptr: u64, units: usize) -> u64 {
     if ptr == 0 || units == 0 { return FALSE; }
-    let path = { let store = PARAMETERS.lock(); let path = store.wallpaper(); let mut owned = Vec::new();
+    let path = { let store = parameters().lock(); let path = store.wallpaper(); let mut owned = Vec::new();
         if owned.try_reserve_exact(path.len()).is_err() { return FALSE; } owned.extend_from_slice(path); owned };
     let copied = path.len().min(units - 1);
     for (index, unit) in path.iter().take(copied).enumerate() {
