@@ -305,9 +305,25 @@ pub fn prepare_pe_process(cur: &sched::Task, path: &[u8], blob: &[u8], command_l
             .map_err(|error| refused(b"runtime-handover", Some(error)))?;
         let process = handover.into_process();
         let startup = process.startup.facts();
-        let (initial_entry, initial_stack, initial_argument) =
-            (startup.transfer_entry.as_u64(), startup.stack_pointer.as_u64(), process.entry.rcx);
-        return Ok(PreparedPeProcess { mm: as_, stack, stack_top, initial_entry, initial_stack, initial_argument, process });
+        let rnd = crate::exec_transition::exec_rnd(cur, 0);
+        // The runtime's Unix side is opened by the process dynamic loader, the
+        // same owner it has on a Unix host: relocation classes that execute a
+        // resolver, allocate a thread pointer, or run initializers belong to
+        // that loader and to nothing else. The bootstrap image therefore runs
+        // before the runtime's initialization thunk and publishes the resolved
+        // Unix-call tables; without it the runtime's first table query has no
+        // registration to find and the kernel has no way to make one.
+        let staged = match bootstrap {
+            Some(image) => Some(prepare_native_bootstrap(&as_, image, environment,
+                startup.transfer_entry.as_u64(), startup.stack_pointer.as_u64(),
+                startup.teb.as_u64(), startup.peb.as_u64(), process.entry.rcx, &rnd, enoexec())?),
+            None => None,
+        };
+        let resolved = crate::pe_transfer::transfer(crate::pe_transfer::PeTransfer {
+            entry: startup.transfer_entry.as_u64(), stack: startup.stack_pointer.as_u64(),
+            argument: process.entry.rcx }, staged);
+        return Ok(PreparedPeProcess { mm: as_, stack, stack_top, initial_entry: resolved.entry,
+            initial_stack: resolved.stack, initial_argument: resolved.argument, process });
     }
     let runtime = map_nt_runtime_box(&as_).map_err(|error| refused(b"map-nt-runtime", Some(error)))?;
     let runtime_module = elf_load::process_env::NtModuleInput {
@@ -326,11 +342,15 @@ pub fn prepare_pe_process(cur: &sched::Task, path: &[u8], blob: &[u8], command_l
     };
     let startup = process.startup.facts();
     let rnd = crate::exec_transition::exec_rnd(cur, 0);
-    let (initial_entry, initial_stack) = match bootstrap {
-        Some(blob) => prepare_native_bootstrap(&as_, blob, environment, startup.transfer_entry.as_u64(), startup.stack_pointer.as_u64(), startup.teb.as_u64(), startup.peb.as_u64(), &rnd, enoexec())?,
-        None => (startup.transfer_entry.as_u64(), startup.stack_pointer.as_u64()),
+    let staged = match bootstrap {
+        Some(blob) => Some(prepare_native_bootstrap(&as_, blob, environment, startup.transfer_entry.as_u64(), startup.stack_pointer.as_u64(), startup.teb.as_u64(), startup.peb.as_u64(), process.entry.rcx, &rnd, enoexec())?),
+        None => None,
     };
-    Ok(PreparedPeProcess { mm: as_, stack, stack_top, initial_entry, initial_stack, initial_argument: process.entry.rcx, process })
+    let resolved = crate::pe_transfer::transfer(crate::pe_transfer::PeTransfer {
+        entry: startup.transfer_entry.as_u64(), stack: startup.stack_pointer.as_u64(),
+        argument: process.entry.rcx }, staged);
+    Ok(PreparedPeProcess { mm: as_, stack, stack_top, initial_entry: resolved.entry,
+        initial_stack: resolved.stack, initial_argument: resolved.argument, process })
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -342,6 +362,7 @@ fn prepare_native_bootstrap(
     pe_stack: u64,
     teb: u64,
     peb: u64,
+    pe_argument: u64,
     rnd: &aslr::ExecRnd,
     enoexec: i64,
 ) -> Result<(u64, u64), i64> {
@@ -366,6 +387,9 @@ fn prepare_native_bootstrap(
     // for the kernel's GS/TEB publication.
     env_storage.push(format!("OXIDE_NT_TEB=0x{teb:x}").into_bytes());
     env_storage.push(format!("OXIDE_NT_PEB=0x{peb:x}").into_bytes());
+    // The runtime's initialization thunk reads its startup context from the
+    // first integer argument; the bootstrap restores it across the jump.
+    env_storage.push(format!("OXIDE_PE_ARG=0x{pe_argument:x}").into_bytes());
     let argv: Vec<&[u8]> = argv_storage.iter().map(|value| value.as_slice()).collect();
     let envp: Vec<&[u8]> = env_storage.iter().map(|value| value.as_slice()).collect();
     let plan = match elf_load::stack::plan_initial_stack(stack_top, BOOTSTRAP_STACK_BYTES as u64, &argv, &envp, rnd) {

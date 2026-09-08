@@ -1,4 +1,4 @@
-use std::ffi::{c_void, CStr, CString};
+use std::ffi::{c_char, c_void, CStr, CString};
 use std::io;
 use std::mem::MaybeUninit;
 use std::os::unix::ffi::OsStrExt;
@@ -127,7 +127,7 @@ unsafe extern "C" fn find_loaded_object(
         // SAFETY: count came from DT_HASH and dynsym is part of this loaded
         // object; each entry is a fixed-size Elf64_Sym.
         let sym = unsafe { &*((symtab as *const libc::Elf64_Sym).add(index)) };
-        let name = unsafe { CStr::from_ptr((strtab + sym.st_name as u64) as *const i8) };
+        let name = unsafe { CStr::from_ptr((strtab + sym.st_name as u64) as *const c_char) };
         if name.to_bytes_with_nul() == wanted {
             result.1 = Some(LoadedObject { base, end, table_count: (sym.st_size as usize) / std::mem::size_of::<u64>() });
             break;
