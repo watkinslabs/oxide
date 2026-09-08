@@ -7,20 +7,22 @@
 //! import, creates the process heap, and resumes on that context. Nothing here
 //! walks the graph: that is the point.
 //!
-//! Deviation, deliberate: the reference builds the context on the initial
-//! thread stack and enters with the stack pointer just below it. Here it is a
-//! mapped page of its own and the thread starts on its ordinary initial stack
-//! pointer. The thunk's contract is the pointer it receives in the first
-//! argument register plus a working stack; both shapes satisfy it, and a page
-//! the kernel owns can be built and checked without writing into a foreign
-//! anonymous mapping.
+//! The context is built on the initial thread stack and the thread enters
+//! with the stack pointer just below it. That placement is load-bearing, not
+//! cosmetic: the thunk's thread-start path rounds the pointer it is given down
+//! to a page and zeroes a fixed extent below it, running on that extent as its
+//! own stack, so the record must sit on a mapping that extends that far below
+//! it. `startup_stack` owns the arithmetic.
 
 use hal::UserVirtAddr;
 use pe::nt_context;
-use vmm::{AddressSpace, VmaBacking, VmaFlags, VmaProt};
+use vmm::AddressSpace;
 
 use crate::pe_loader::{ExecutionPersonality, PeEntryState, PeLoadedImage};
 use crate::process_env;
+
+#[path = "pe_runtime_loader/startup_stack.rs"]
+pub mod startup_stack;
 
 /// The runtime module every NT process enters through.
 pub const RUNTIME_MODULE: &[u8] = b"ntdll.dll";
@@ -43,6 +45,10 @@ pub struct RuntimeHandover {
     pub entry: PeEntryState,
     /// Value the initialization thunk reads from the first argument register.
     pub context: UserVirtAddr,
+    /// The record itself, for the caller that materialises it in the address
+    /// space being built. Placement is decided here; the write needs a
+    /// populated foreign mapping, which only the kernel target can do.
+    pub context_image: [u8; nt_context::CONTEXT_BYTES],
     pub startup: crate::pe_startup::PeStartupTransaction,
 }
 
@@ -91,12 +97,15 @@ pub fn load(blob: &[u8], runtime_blob: &[u8], as_: &AddressSpace,
         &process_env::NtProcessParameters::default_for(), stack_base, stack_top, as_)?;
 
     let entry_state = crate::pe_loader::initial_entry_state_with_environment(&image, stack_top, &environment)?;
-    let context = publish_context(as_, image.entry.as_u64(), entry_state.rsp.as_u64())?;
-    let entry = PeEntryState { rip: init, rsp: entry_state.rsp, rcx: context.as_u64(),
+    let placed = startup_stack::place(stack_base, stack_top).ok_or(pe::Error::Einval)?;
+    let context = UserVirtAddr::new(placed.context).ok_or(pe::Error::Einval)?;
+    let context_image = nt_context::startup_context(image.entry.as_u64(), 0, entry_state.rsp.as_u64());
+    let rsp = UserVirtAddr::new(placed.stack_pointer).ok_or(pe::Error::Einval)?;
+    let entry = PeEntryState { rip: init, rsp, rcx: context.as_u64(),
         gs_base: entry_state.gs_base, personality: ExecutionPersonality::Nt };
     let startup = crate::pe_startup::PeStartupTransaction::begin_with_transfer(as_, &image, &environment,
         stack_base, stack_top, &entry, init)?;
-    Ok(RuntimeHandover { image, runtime, environment, entry, context, startup })
+    Ok(RuntimeHandover { image, runtime, environment, entry, context, context_image, startup })
 }
 
 /// Pair each runtime-owned data slot with the support-region address it must
@@ -124,16 +133,20 @@ pub fn runtime_init_entry(parsed: &pe::Image<'_>, base: u64) -> Result<UserVirtA
     UserVirtAddr::new(base.checked_add(rva as u64).ok_or(pe::Error::Einval)?).ok_or(pe::Error::Einval)
 }
 
-/// Map the startup context the initialization thunk resumes. It is writable:
-/// the thunk rewrites the entry field before resuming.
-/// # C: O(1)
-fn publish_context(as_: &AddressSpace, entry: u64, stack_pointer: u64) -> Result<UserVirtAddr, pe::Error> {
-    let page = hal::PAGE_SIZE_BYTES as usize;
-    let mut bytes = alloc::vec![0u8; page];
-    bytes[..nt_context::CONTEXT_BYTES].copy_from_slice(&nt_context::startup_context(entry, 0, stack_pointer));
-    let data = as_.stash_bytes(bytes.into_boxed_slice());
-    as_.mmap(None, page, VmaProt::READ | VmaProt::WRITE, VmaFlags::PRIVATE,
-        VmaBacking::KernelBytes { data, off: 0 }, false).map_err(|_| pe::Error::Einval)
+/// Materialise the startup context on the thread stack of the address space
+/// being built. The pages are populated first: the running task's fault
+/// handler resolves against its own address space, not this one.
+/// # C: O(CONTEXT_BYTES)
+#[cfg(target_os = "oxide-kernel")]
+pub fn install_startup_context(as_: &AddressSpace, handover: &RuntimeHandover) -> Result<(), pe::Error> {
+    let at = handover.context.as_u64();
+    let bytes = nt_context::CONTEXT_BYTES;
+    pmm::user_as::prefault_user_range(as_, at, bytes as u64).map_err(|_| pe::Error::Einval)?;
+    // SAFETY: install_startup_context's caller retains this AddressSpace, so
+    // root_pa names live page tables, and the record's range was just
+    // populated writable; write_foreign_user reports the bytes it stored.
+    let written = unsafe { pmm::user_as::write_foreign_user(as_.root_pa(), at, &handover.context_image) };
+    if written == bytes { Ok(()) } else { Err(pe::Error::Einval) }
 }
 
 fn base_name(path: &str) -> &str { path.rsplit(['\\', '/']).next().unwrap_or(path) }
