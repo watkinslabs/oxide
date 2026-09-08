@@ -80,3 +80,67 @@ fn a_child_of_a_configured_frame_still_lands_under_the_band(){
     assert_eq!(state.configure_compositor_window(child,rect(0,19,729,546)),Ok(()));
     assert_eq!(presented(&state,frame,child),(0,19),"a child presented above its parent's client origin covers the menu band");
 }
+
+/// A window that changed size exposes area no paint covered and a frame band
+/// sized from the window rectangle, so both the nonclient band and the
+/// descendants take damage and the background is erased. A window that only
+/// moved keeps every pixel it had.
+#[test]
+fn a_resize_invalidates_the_frame_band_and_the_children_while_a_move_invalidates_nothing(){
+    let (mut state,frame,child)=banded_frame();
+    state.set_visible(frame,true).unwrap();state.set_visible(child,true).unwrap();
+    assert_eq!(state.configure_compositor_window(frame,rect(148,146,877,692)),Ok(()));
+    let damage=state.erase_damage(frame).unwrap();
+    assert!(damage.nonclient,"a resized window's frame band is repainted with it");
+    assert!(damage.erase,"a resize reveals area with no pixels, so the background is erased");
+    // The band sits above the client origin, so client-coordinate damage that
+    // covers it starts above zero.
+    assert_eq!(damage.region.bounds(),Some(rect(0,-19,729,527)));
+    assert!(!state.erase_damage(child).unwrap().region.is_empty(),"a resize repaints the descendants");
+    state.begin_paint(frame).unwrap();state.begin_paint(child).unwrap();
+    let moved=rect(200,146,929,692);
+    assert_eq!(state.configure_compositor_window(frame,moved),Ok(()));
+    assert!(state.erase_damage(frame).unwrap().region.is_empty(),"a move carries the window's pixels with it");
+}
+
+/// An exposure is stated in the window's own coordinates; canonical damage is
+/// stated in client coordinates, so the band the frame reserves comes off it.
+#[test]
+fn an_exposure_is_read_in_window_coordinates_and_recorded_in_client_coordinates(){
+    let (mut state,frame,child)=banded_frame();
+    state.set_visible(frame,true).unwrap();state.set_visible(child,true).unwrap();
+    assert_eq!(state.expose_compositor_window(frame,rect(10,29,110,129)),Ok(()));
+    let damage=state.erase_damage(frame).unwrap();
+    assert_eq!(damage.region.bounds(),Some(rect(10,10,110,110)));
+    // Nothing underneath the window changed: the display is restating pixels
+    // the window already owns, so no background erase is requested.
+    assert!(!damage.erase,"an exposure restates owned pixels and asks for no erase");
+    assert!(damage.nonclient,"an exposure covers the frame band as well as the client area");
+    let paint=MessageFilter{hwnd:Some(frame),first:WM_PAINT,last:WM_PAINT};
+    assert!(state.has_message_for_thread(7,paint));
+    assert_eq!(state.begin_paint(frame),Ok(Some(rect(10,10,110,110))));
+    assert!(!state.erase_damage(child).unwrap().region.is_empty(),"an exposure repaints the descendants it covers");
+}
+
+/// Only the band, above the client origin: the client area takes no damage but
+/// the window still owes a paint for its nonclient band.
+#[test]
+fn an_exposure_of_the_band_alone_paints_the_nonclient_area(){
+    let (mut state,frame,_child)=banded_frame();
+    state.set_visible(frame,true).unwrap();
+    assert_eq!(state.expose_compositor_window(frame,rect(0,0,729,19)),Ok(()));
+    let damage=state.erase_damage(frame).unwrap();
+    assert_eq!(damage.region.bounds(),Some(rect(0,-19,729,0)));
+    assert!(damage.nonclient);
+    assert!(state.has_message_for_thread(7,MessageFilter{hwnd:Some(frame),first:WM_PAINT,last:WM_PAINT}));
+    assert_eq!(state.begin_paint(frame),Ok(None),"nothing of the client area was exposed");
+}
+
+#[test]
+fn an_empty_or_unknown_exposure_is_refused(){
+    let (mut state,frame,_child)=banded_frame();
+    state.set_visible(frame,true).unwrap();
+    assert_eq!(state.expose_compositor_window(frame,rect(10,10,10,40)),Err(WindowError::InvalidParent));
+    assert_eq!(state.expose_compositor_window(WindowId::from_raw(0x900).unwrap(),rect(0,0,4,4)),Err(WindowError::NoSuchWindow));
+    assert!(state.erase_damage(frame).unwrap().region.is_empty());
+}

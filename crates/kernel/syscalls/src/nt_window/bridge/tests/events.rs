@@ -466,3 +466,30 @@ fn a_desktop_focus_report_activates_the_window_and_gives_it_the_keyboard() {
     assert!(deliver(&mut state, &key));
     assert_eq!(next(&mut state).map(|message| (message.message, message.wparam)), Some((gui::WM_KEYDOWN, 0x41)));
 }
+
+/// A display-reported exposure carries a rectangle in the window's own
+/// coordinates and reaches the update region, so the window is offered the
+/// paint the display asked for rather than keeping stale pixels.
+#[test]
+fn an_exposure_record_invalidates_that_rectangle_and_offers_a_paint() {
+    let (mut state, id) = state();
+    let paint = gui::MessageFilter { hwnd: Some(id), first: gui::WM_PAINT, last: gui::WM_PAINT };
+    assert!(!state.has_message_for_thread(17, paint));
+    let exposed = wire::Rect { x: 5, y: 7, width: 30, height: 20 }.encode().unwrap().to_vec();
+    assert!(deliver(&mut state, &event(Opcode::Damage, id, exposed)));
+    assert!(state.has_message_for_thread(17, paint), "the exposed rectangle owes a paint");
+    assert_eq!(state.begin_paint(id), Ok(Some(WindowRect { left: 5, top: 7, right: 35, bottom: 27 })));
+}
+
+/// An exposure names pixels; a rectangle with no area names none, and a
+/// rectangle for a window this process does not own reaches no state at all.
+#[test]
+fn an_exposure_record_with_no_area_or_no_window_is_refused() {
+    let (mut state, id) = state();
+    let empty = Record { header: syscall::nt_compositor::Header { opcode: Opcode::Damage, length: 16, sequence: 1, hwnd: id.raw() as u64 },
+        payload: words(&[0, 0, 0, 0]) };
+    assert!(!deliver(&mut state, &empty));
+    let stale = event(Opcode::Damage, id, wire::Rect { x: 0, y: 0, width: 4, height: 4 }.encode().unwrap().to_vec());
+    state.destroy(id).unwrap();
+    assert!(!deliver(&mut state, &stale));
+}

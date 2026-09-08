@@ -36,7 +36,7 @@ mod caret;
 #[path = "win32_window/paint_damage.rs"]
 mod paint_damage;
 pub use paint_damage::{PaintDamage, PaintRegion, region_complexity, RDW_INVALIDATE, RDW_INTERNALPAINT, RDW_ERASE, RDW_VALIDATE,
-    RDW_NOINTERNALPAINT, RDW_NOERASE, RDW_NOCHILDREN, RDW_ALLCHILDREN, RDW_UPDATENOW, RDW_ERASENOW, RDW_FRAME, RDW_NOFRAME, FRAME_REDRAW};
+    RDW_NOINTERNALPAINT, RDW_NOERASE, RDW_NOCHILDREN, RDW_ALLCHILDREN, RDW_UPDATENOW, RDW_ERASENOW, RDW_FRAME, RDW_NOFRAME, FRAME_REDRAW, EXPOSE_REDRAW};
 #[path = "win32_window/caret/blink.rs"]
 mod caret_blink;
 pub use caret_blink::{CaretBlink, ExpiredCaretCommit, CaretBlinkError, DEFAULT_CARET_BLINK_MS};

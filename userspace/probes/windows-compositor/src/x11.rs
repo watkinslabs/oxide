@@ -186,18 +186,26 @@ impl Backend {
         if raw.is_null() { return None; }
         let bytes = unsafe { std::slice::from_raw_parts(raw as *const u8, 32) };
         let synthetic = bytes[0] & 0x80 != 0;
-        let expose = if bytes[0] & 0x7f == ffi::EXPOSE { Some((u32::from_ne_bytes(bytes[4..8].try_into().ok()?), Rect { left: u16::from_ne_bytes([bytes[8], bytes[9]]) as i32, top: u16::from_ne_bytes([bytes[10], bytes[11]]) as i32, right: u16::from_ne_bytes([bytes[8], bytes[9]]) as i32 + u16::from_ne_bytes([bytes[12], bytes[13]]) as i32, bottom: u16::from_ne_bytes([bytes[10], bytes[11]]) as i32 + u16::from_ne_bytes([bytes[14], bytes[15]]) as i32 })) } else { None };
         let event = if bytes[0] & 0x7f == ffi::CLIENT_MESSAGE {
             let type_atom = u32::from_ne_bytes(bytes[8..12].try_into().ok()?);
             let protocol = u32::from_ne_bytes(bytes[12..16].try_into().ok()?);
             if type_atom == self.atoms.wm_protocols && protocol == self.atoms.wm_delete { decode_event(bytes) } else { None }
         } else { decode_event(bytes) };
         unsafe { libc::free(raw as *mut libc::c_void); }
-        if let Some((xid, rect)) = expose {
-            if let Some(hwnd) = self.xid_to_hwnd.get(&xid).copied() { let _ = self.repaint(hwnd, rect); }
-            return None;
-        }
         match event {
+            // The display asks for pixels it no longer holds. The surface this
+            // backend retains for the window is the same pixels the
+            // application last drew, so an exposure it can serve from that
+            // copy is served here and costs the application nothing. Only what
+            // the copy cannot answer - a window that has never presented, or
+            // one whose surface no longer describes its extent - travels on as
+            // damage the window itself must repaint.
+            Some(BridgeEvent::Damage { hwnd: xid, rect }) => {
+                if rect.right <= rect.left || rect.bottom <= rect.top { return None; }
+                let hwnd = self.xid_to_hwnd.get(&xid).copied()?;
+                if self.repaint(hwnd, rect).is_ok() { return None; }
+                Some(BridgeEvent::Damage { hwnd, rect })
+            }
             Some(BridgeEvent::Close { hwnd: xid }) => self.xid_to_hwnd.get(&xid).copied().map(|hwnd| BridgeEvent::Close { hwnd }),
             Some(BridgeEvent::Configure { hwnd: xid, rect }) => {
                 let hwnd = self.xid_to_hwnd.get(&xid).copied()?;
@@ -437,7 +445,10 @@ pub fn decode_event(raw: &[u8]) -> Option<BridgeEvent> {
         // desktop grabs the keyboard, and reactivates it on release.
         ffi::FOCUS_IN | ffi::FOCUS_OUT => { if raw[1] == ffi::NOTIFY_POINTER || raw[8] == ffi::NOTIFY_GRAB || raw[8] == ffi::NOTIFY_UNGRAB { return None; } Some(BridgeEvent::Input(InputEvent::Focus { hwnd: xid(4), focused: kind == ffi::FOCUS_IN })) }
         ffi::PROPERTY_NOTIFY => Some(BridgeEvent::WorkArea(MonitorSnapshot { desktop: 0, monitor: Rect { left: 0, top: 0, right: 0, bottom: 0 }, work_area: Rect { left: 0, top: 0, right: 0, bottom: 0 } })),
-        ffi::EXPOSE => None,
+        ffi::EXPOSE => Some(BridgeEvent::Damage { hwnd: xid(4), rect: Rect {
+            left: u16::from_ne_bytes([raw[8], raw[9]]) as i32, top: u16::from_ne_bytes([raw[10], raw[11]]) as i32,
+            right: u16::from_ne_bytes([raw[8], raw[9]]) as i32 + u16::from_ne_bytes([raw[12], raw[13]]) as i32,
+            bottom: u16::from_ne_bytes([raw[10], raw[11]]) as i32 + u16::from_ne_bytes([raw[14], raw[15]]) as i32 } }),
         _ => None,
     }
 }

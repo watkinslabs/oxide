@@ -4,12 +4,20 @@ use ipc::win32_gdi::{GdiManager,OutputToken};
 const BUSY_IDLE_GRACE_NS:u64=50_000_000;
 
 #[derive(Clone,Copy,Debug,Default)]
-pub(crate) struct OutputPump { last_idle_ns:u64 }
+pub(crate) struct OutputPump { last_idle_ns:u64, requested:bool }
 impl OutputPump {
     /// Caller holds the existing process GDI owner lock. # C: O(1)
     pub(crate) fn allow(&mut self,idle:bool,now_ns:u64)->bool{
-        if idle{self.last_idle_ns=now_ns;true}else{now_ns.saturating_sub(self.last_idle_ns)>=BUSY_IDLE_GRACE_NS}
+        if idle{self.last_idle_ns=now_ns;self.requested=false;return true;}
+        if self.requested{self.requested=false;return true;}
+        now_ns.saturating_sub(self.last_idle_ns)>=BUSY_IDLE_GRACE_NS
     }
+    /// The display asked for these pixels rather than the application choosing
+    /// to draw them, so the window is short of what is already on screen until
+    /// they are sent. The grace period batches an application's own burst of
+    /// paints and must not hold a repaint the display is waiting for.
+    /// # C: O(1)
+    pub(crate) fn request(&mut self){self.requested=true;}
 }
 
 #[derive(Clone,Copy,Debug,Eq,PartialEq)]
@@ -98,7 +106,7 @@ mod transport;
 #[path="output/kernel.rs"]
 mod kernel;
 #[cfg(target_os="oxide-kernel")]
-pub(crate) use kernel::{flush_pending_for_current,submit_prepared_for_current};
+pub(crate) use kernel::{flush_pending_for_current,request_output_for_group,submit_prepared_for_current};
 
 #[cfg(test)]
 #[path="output/tests/boundary.rs"]

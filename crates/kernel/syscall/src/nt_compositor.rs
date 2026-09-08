@@ -52,6 +52,9 @@ pub enum Opcode {
     Ack = 0x107,
     /// u32 active (0 deactivate, 1 activate); HWND identifies a top-level window.
     Focus = 0x108,
+    /// i32 x,y; u32 width,height: the display has lost the pixels of that
+    /// rectangle of the window and cannot restore them from what it retains.
+    Damage = 0x109,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,7 +92,7 @@ impl Opcode {
         Ok(match value { 1 => Self::Create, 2 => Self::Destroy, 3 => Self::Visibility,
             4 => Self::Title, 5 => Self::Geometry, 6 => Self::Frame, 7 => Self::Position, 8 => Self::Caret, 0x101 => Self::Monitors,
             0x102 => Self::Configure, 0x103 => Self::Key, 0x104 => Self::Text,
-            0x105 => Self::Pointer, 0x106 => Self::Close, 0x107 => Self::Ack, 0x108 => Self::Focus, _ => return Err(Error::Opcode) })
+            0x105 => Self::Pointer, 0x106 => Self::Close, 0x107 => Self::Ack, 0x108 => Self::Focus, 0x109 => Self::Damage, _ => return Err(Error::Opcode) })
     }
     /// # C: O(1)
     pub fn from_backend(self) -> bool { (self as u16) >= Self::Monitors as u16 }
@@ -115,7 +118,7 @@ impl Header {
             Opcode::Create => n == 32,
             Opcode::Destroy | Opcode::Close => n == 0,
             Opcode::Visibility | Opcode::Ack | Opcode::Focus => n == 4,
-            Opcode::Geometry | Opcode::Configure | Opcode::Key | Opcode::Position => n == 16,
+            Opcode::Geometry | Opcode::Configure | Opcode::Key | Opcode::Position | Opcode::Damage => n == 16,
             // Position, buttons, and both wheel axes: a tilt wheel is a
             // separate axis, not a second reading of the vertical one.
             Opcode::Pointer => n == 20,
@@ -232,6 +235,9 @@ impl Record {
         if p.len() != self.header.length as usize { return Err(Error::Length); }
         match self.header.opcode {
             Opcode::Create | Opcode::Geometry | Opcode::Configure => { Rect::decode_window(&p[..16])?; }
+            // A lost rectangle with no area names no pixels; a window whose
+            // own extent may still be zero is a different statement.
+            Opcode::Damage => { Rect::decode(&p[..16])?; }
             Opcode::Visibility | Opcode::Focus => { if u32_at(p, 0)? > 1 { return Err(Error::Payload); } }
             Opcode::Position => {
                 let flags = u32_at(p, 8)?;
@@ -280,3 +286,7 @@ mod focus_tests;
 #[cfg(test)]
 #[path = "nt_compositor/tests/position.rs"]
 mod position_tests;
+
+#[cfg(test)]
+#[path = "nt_compositor/tests/damage.rs"]
+mod damage_tests;

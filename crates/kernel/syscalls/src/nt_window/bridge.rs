@@ -110,6 +110,16 @@ pub(super) fn apply_event(
                 right: rect.x + rect.width as i32, bottom: rect.y + rect.height as i32 };
             state.configure_compositor_window(id, next).is_ok()
         }
+        // The display has lost pixels it cannot restore from what it retains.
+        // The rectangle is stated in the window's own coordinates and becomes
+        // an invalidation of that area, so the window repaints it through the
+        // same update region an application-driven invalidation uses.
+        Opcode::Damage => {
+            let Ok(rect) = wire::Rect::decode(p) else { return false; };
+            let exposed = WindowRect { left: rect.x, top: rect.y,
+                right: rect.x + rect.width as i32, bottom: rect.y + rect.height as i32 };
+            state.expose_compositor_window(id, exposed).is_ok()
+        }
         Opcode::Key => {
             let key = wire::u32_at(p, 0).unwrap_or(u32::MAX);
             let scan = wire::u32_at(p, 4).unwrap_or(u32::MAX);
@@ -260,6 +270,12 @@ mod live {
             if accepted && record.header.opcode == Opcode::Focus { entry.foreground = entry.state.active_window().is_some(); }
             (accepted, Arc::clone(&entry.wait))
         };
+        // The display is short of pixels it asked for, not waiting on an
+        // application that chose to draw: the coalescing window that batches an
+        // application's own paints must not hold this window's repaint back.
+        if accepted && matches!(record.header.opcode, Opcode::Damage | Opcode::Configure) {
+            crate::nt_gdi::request_output_for_group(group);
+        }
         wait.wake_all(); accepted
     }
 }

@@ -120,6 +120,8 @@ pub(crate) mod nt_wine_gdi_route_contract;
 pub(crate) mod geom_trace;
 #[path = "nt_window/bridge.rs"]
 pub(crate) mod nt_window_bridge_contract;
+#[path = "nt_gdi/output.rs"]
+pub(crate) mod nt_gdi_output_contract;
 #[path = "nt_rtl/wndproc_payload.rs"]
 pub(crate) mod nt_wndproc_payload_contract;
 #[path = "nt_window/scroll.rs"]
