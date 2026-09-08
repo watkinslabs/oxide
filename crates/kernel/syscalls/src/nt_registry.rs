@@ -9,19 +9,10 @@ const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 const STATUS_INVALID_HANDLE: u64 = 0xc000_0008;
 const STATUS_NO_MEMORY: u64 = 0xc000_0017;
 const STATUS_OBJECT_NAME_NOT_FOUND: u64 = 0xc000_0034;
-const STATUS_BUFFER_OVERFLOW: u64 = 0x8000_0005;
-const STATUS_BUFFER_TOO_SMALL: u64 = 0xc000_0023;
 const STATUS_UNSUCCESSFUL: u64 = 0xc000_0001;
 const STATUS_ACCESS_VIOLATION: u64 = 0xc000_0005;
 const STATUS_NOT_IMPLEMENTED: u64 = 0xc000_0002;
 const STATUS_NO_MORE_ENTRIES: u64 = 0x8000_0001;
-const KEY_VALUE_PARTIAL_INFORMATION: u64 = 2;
-const KEY_VALUE_BASIC_INFORMATION: u64 = 0;
-const KEY_VALUE_FULL_INFORMATION: u64 = 1;
-const KEY_BASIC_INFORMATION: u64 = 0;
-const KEY_NODE_INFORMATION: u64 = 1;
-const KEY_FULL_INFORMATION: u64 = 2;
-const KEY_NAME_INFORMATION: u64 = 3;
 const MAX_REGISTRY_TEXT: usize = 1 << 20;
 const MAX_REGISTRY_VALUE: usize = 1 << 24;
 const STATUS_PENDING: u64 = 0x0000_0103;
@@ -401,25 +392,13 @@ fn query_key_native(call: NtCall) -> u64 {
     let Some(current) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     let key = call.args.a0 as u32; let class = call.args.a1; let info = call.args.a2; let length = call.args.a3; let result = call.args.a4;
     if !current.is_nt_personality() || info == 0 || length > u32::MAX as u64 || result > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
+    let Some(class) = crate::nt_registry_reply::KeyClass::from_raw(class) else { return STATUS_INVALID_PARAMETER; };
     let Some(remote) = remote_key(&current, key, 0) else { return STATUS_INVALID_PARAMETER; };
     let Some(Reply::KeyInfo { name, subkeys, max_subkey, values, max_value_name, max_value_data }) = transact(&frame_key(registry_wire::QUERY_KEY, remote)) else { return STATUS_UNSUCCESSFUL; };
-    let name: Vec<u16> = name.encode_utf16().collect(); let name_bytes = name.len().checked_mul(2).unwrap_or(usize::MAX);
-    let (fixed, record) = match class {
-        KEY_BASIC_INFORMATION => { let mut out = Vec::with_capacity(16 + name_bytes); out.extend_from_slice(&[0; 8]); put_u32(&mut out, 0); put_u32(&mut out, name_bytes as u32); append_utf16(&mut out, &name); (16, out) },
-        KEY_NODE_INFORMATION => { let mut out = Vec::with_capacity(24 + name_bytes); out.extend_from_slice(&[0; 8]); put_u32(&mut out, 0); put_u32(&mut out, u32::MAX); put_u32(&mut out, 0); put_u32(&mut out, name_bytes as u32); append_utf16(&mut out, &name); (24, out) },
-        KEY_FULL_INFORMATION => { let mut out = Vec::with_capacity(syscall::nt_registry::KEY_FULL_INFORMATION_FIXED_BYTES); out.extend_from_slice(&[0; 8]); put_u32(&mut out, 0); put_u32(&mut out, u32::MAX); put_u32(&mut out, 0); put_u32(&mut out, subkeys); put_u32(&mut out, max_subkey); put_u32(&mut out, 0); put_u32(&mut out, values); put_u32(&mut out, max_value_name); put_u32(&mut out, max_value_data); put_u32(&mut out, 0); (syscall::nt_registry::KEY_FULL_INFORMATION_FIXED_BYTES, out) },
-        KEY_NAME_INFORMATION => { let mut out = Vec::with_capacity(4 + name_bytes); put_u32(&mut out, name_bytes as u32); append_utf16(&mut out, &name); (4, out) },
-        _ => return STATUS_INVALID_PARAMETER,
-    };
-    let required = record.len() as u32; if result != 0 && uaccess::put_user_u32(result, required).is_err() { return STATUS_INVALID_PARAMETER; }
-    if length < fixed as u64 { return STATUS_BUFFER_TOO_SMALL; }
-    if length < required as u64 {
-        let available = length as usize;
-        if uaccess::copy_to_user(info, &record[..available]).is_err() { return STATUS_ACCESS_VIOLATION; }
-        return STATUS_BUFFER_OVERFLOW;
-    }
-    if uaccess::copy_to_user(info, &record).is_err() { return STATUS_ACCESS_VIOLATION; }
-    STATUS_SUCCESS
+    let units: Vec<u16> = name.encode_utf16().collect();
+    let facts = crate::nt_registry_reply::KeyFacts { subkeys, max_subkey, values, max_value_name, max_value_data };
+    let record = crate::nt_registry_reply::key_record(class, &units, facts);
+    write_reply(&record, info, length, result, crate::nt_registry_reply::Ladder::HeaderIsMandatory)
 }
 
 fn enumerate_value_native(call: NtCall) -> u64 {
@@ -427,22 +406,14 @@ fn enumerate_value_native(call: NtCall) -> u64 {
     let key = call.args.a0 as u32; let index = call.args.a1; let class = call.args.a2;
     let info = call.args.a3; let length = call.args.a4; let result = call.args.a5;
     if !current.is_nt_personality() || info == 0 || index > u32::MAX as u64 || length > u32::MAX as u64 || result > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
+    let Some(class) = crate::nt_registry_reply::ValueClass::from_raw(class) else { return STATUS_INVALID_PARAMETER; };
     let Some(remote) = remote_key(&current, key, KEY_QUERY_VALUE) else { return STATUS_INVALID_PARAMETER; };
     let mut frame = Vec::new(); frame.push(registry_wire::ENUM_VALUES); frame.extend_from_slice(&remote.to_le_bytes());
     let Some(Reply::Values(values)) = transact(&frame) else { return STATUS_UNSUCCESSFUL; };
     let Some((name, kind, data)) = values.get(index as usize) else { return STATUS_NO_MORE_ENTRIES; };
-    let name: Vec<u16> = name.encode_utf16().collect(); let name_bytes = name.len().checked_mul(2).unwrap_or(usize::MAX);
-    let (fixed, mut record) = match class {
-        KEY_VALUE_BASIC_INFORMATION => { let required = 12usize.checked_add(name_bytes).unwrap_or(usize::MAX); let mut out = Vec::with_capacity(required); put_u32(&mut out, 0); put_u32(&mut out, *kind); put_u32(&mut out, name_bytes as u32); append_utf16(&mut out, &name); (12, out) },
-        KEY_VALUE_FULL_INFORMATION => { let required = 20usize.checked_add(name_bytes).and_then(|v| v.checked_add(data.len())).unwrap_or(usize::MAX); let mut out = Vec::with_capacity(required); put_u32(&mut out, 0); put_u32(&mut out, *kind); put_u32(&mut out, (20 + name_bytes) as u32); put_u32(&mut out, data.len() as u32); put_u32(&mut out, name_bytes as u32); append_utf16(&mut out, &name); out.extend_from_slice(data); (20, out) },
-        KEY_VALUE_PARTIAL_INFORMATION => { let required = 12usize.checked_add(data.len()).unwrap_or(usize::MAX); let mut out = Vec::with_capacity(required); put_u32(&mut out, 0); put_u32(&mut out, *kind); put_u32(&mut out, data.len() as u32); out.extend_from_slice(data); (12, out) },
-        _ => return STATUS_INVALID_PARAMETER,
-    };
-    let required = record.len() as u32; if result != 0 && uaccess::put_user_u32(result, required).is_err() { return STATUS_INVALID_PARAMETER; }
-    if length < fixed as u64 { return STATUS_BUFFER_TOO_SMALL; }
-    if length < required as u64 { record.truncate(length as usize); }
-    if uaccess::copy_to_user(info, &record).is_err() { return STATUS_ACCESS_VIOLATION; }
-    if length < required as u64 { STATUS_BUFFER_OVERFLOW } else { STATUS_SUCCESS }
+    let units: Vec<u16> = name.encode_utf16().collect();
+    let Some(record) = crate::nt_registry_reply::value_enum_record(class, &units, *kind, data) else { return STATUS_INVALID_PARAMETER; };
+    write_reply(&record, info, length, result, crate::nt_registry_reply::Ladder::OverflowOnly)
 }
 
 fn enumerate_key_native(call: NtCall) -> u64 {
@@ -450,34 +421,36 @@ fn enumerate_key_native(call: NtCall) -> u64 {
     let key = call.args.a0 as u32; let index = call.args.a1; let class = call.args.a2; let info = call.args.a3; let length = call.args.a4; let result = call.args.a5;
     if !current.is_nt_personality() || info == 0 || index > u32::MAX as u64 || length > u32::MAX as u64 || result > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
     if index == u32::MAX as u64 { return STATUS_NO_MORE_ENTRIES; }
+    let Some(class) = crate::nt_registry_reply::KeyClass::from_raw(class) else { return STATUS_INVALID_PARAMETER; };
     let Some(remote) = remote_key(&current, key, KEY_ENUMERATE_SUB_KEYS) else { return STATUS_INVALID_PARAMETER; };
     let mut frame = Vec::new(); frame.push(registry_wire::ENUM_KEYS); frame.extend_from_slice(&remote.to_le_bytes());
     let Some(Reply::Keys(keys)) = transact(&frame) else { return STATUS_UNSUCCESSFUL; };
     let Some(child_name) = keys.get(index as usize) else { return STATUS_NO_MORE_ENTRIES; };
-    let name: Vec<u16> = child_name.encode_utf16().collect(); let name_bytes = name.len().checked_mul(2).unwrap_or(usize::MAX);
-    let (fixed, mut record) = match class {
-        KEY_BASIC_INFORMATION => { let mut out = Vec::with_capacity(16 + name_bytes); out.extend_from_slice(&[0; 8]); put_u32(&mut out, 0); put_u32(&mut out, name_bytes as u32); append_utf16(&mut out, &name); (16, out) },
-        KEY_NODE_INFORMATION => { let mut out = Vec::with_capacity(24 + name_bytes); out.extend_from_slice(&[0; 8]); put_u32(&mut out, 0); put_u32(&mut out, u32::MAX); put_u32(&mut out, 0); put_u32(&mut out, name_bytes as u32); append_utf16(&mut out, &name); (24, out) },
-        KEY_FULL_INFORMATION => {
-            let child = match transact(&frame_relative(registry_wire::OPEN_RELATIVE, remote, child_name)) { Some(Reply::Handle(child)) => child, _ => return STATUS_UNSUCCESSFUL };
-            let Reply::KeyInfo { subkeys, max_subkey, values, max_value_name, max_value_data, .. } = (match transact(&frame_key(registry_wire::QUERY_KEY, child)) { Some(reply) => reply, None => return STATUS_UNSUCCESSFUL }) else { return STATUS_UNSUCCESSFUL };
-            let _ = transact(&frame_key(registry_wire::CLOSE, child));
-            let mut out = Vec::with_capacity(syscall::nt_registry::KEY_FULL_INFORMATION_FIXED_BYTES); out.extend_from_slice(&[0; 8]);
-            put_u32(&mut out, u32::MAX); put_u32(&mut out, 0); put_u32(&mut out, subkeys);
-            put_u32(&mut out, max_subkey); put_u32(&mut out, 0); put_u32(&mut out, values);
-            put_u32(&mut out, max_value_name); put_u32(&mut out, max_value_data); put_u32(&mut out, 0); (syscall::nt_registry::KEY_FULL_INFORMATION_FIXED_BYTES, out)
-        },
-        _ => return STATUS_INVALID_PARAMETER,
+    let units: Vec<u16> = child_name.encode_utf16().collect();
+    // Only the counting classes need the subkey's own contents; the classes
+    // that just name it are answered from the enumeration reply alone.
+    let facts = if class.carries_name() { crate::nt_registry_reply::KeyFacts::default() } else {
+        match child_facts(remote, child_name) { Ok(facts) => facts, Err(status) => return status }
     };
-    let required = record.len() as u32; if result != 0 && uaccess::put_user_u32(result, required).is_err() { return STATUS_INVALID_PARAMETER; }
-    if length < fixed as u64 { return STATUS_BUFFER_TOO_SMALL; }
-    if length < required as u64 { record.truncate(length as usize); }
-    if uaccess::copy_to_user(info, &record).is_err() { return STATUS_ACCESS_VIOLATION; }
-    if length < required as u64 { STATUS_BUFFER_OVERFLOW } else { STATUS_SUCCESS }
+    let record = crate::nt_registry_reply::key_record(class, &units, facts);
+    write_reply(&record, info, length, result, crate::nt_registry_reply::Ladder::HeaderIsMandatory)
 }
 
-fn put_u32(out: &mut Vec<u8>, value: u32) { out.extend_from_slice(&value.to_le_bytes()); }
-fn append_utf16(out: &mut Vec<u8>, text: &[u16]) { for unit in text { out.extend_from_slice(&unit.to_le_bytes()); } }
+/// Counts of one subkey, opened for the duration of the enumeration reply.
+fn child_facts(parent: u64, name: &str) -> Result<crate::nt_registry_reply::KeyFacts, u64> {
+    let child = match transact(&frame_relative(registry_wire::OPEN_RELATIVE, parent, name)) {
+        Some(Reply::Handle(child)) => child,
+        Some(reply) => return Err(reply_status(reply)),
+        None => return Err(STATUS_UNSUCCESSFUL),
+    };
+    let reply = transact(&frame_key(registry_wire::QUERY_KEY, child));
+    let _ = transact(&frame_key(registry_wire::CLOSE, child));
+    let Some(Reply::KeyInfo { subkeys, max_subkey, values, max_value_name, max_value_data, .. }) = reply else {
+        return Err(STATUS_UNSUCCESSFUL);
+    };
+    Ok(crate::nt_registry_reply::KeyFacts { subkeys, max_subkey, values, max_value_name, max_value_data })
+}
+
 
 fn query_value(call: NtCall) -> u64 {
     query_value_parts(call.args.a0 as u32, call.args.a1, call.args.a2, call.args.a3, call.args.a4, call.args.a5)
@@ -489,18 +462,18 @@ fn query_value_native(call: NtCall) -> u64 {
 
 fn query_value_parts(key: u32, name_ptr: u64, class: u64, info: u64, length: u64, result: u64) -> u64 {
     let Some(current) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
-    if !current.is_nt_personality() || name_ptr == 0 || info == 0 || length > u32::MAX as u64 || result > u32::MAX as u64 || class != KEY_VALUE_PARTIAL_INFORMATION { return STATUS_INVALID_PARAMETER; }
+    if !current.is_nt_personality() || name_ptr == 0 || info == 0 || length > u32::MAX as u64 || result > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
+    let Some(units) = read_unicode_units(name_ptr) else { return STATUS_INVALID_PARAMETER; };
+    // The name length is judged before the information class, so an
+    // over-long name is reported as an absent value whatever was asked for.
+    if units.len() * 2 > crate::nt_registry_reply::MAX_VALUE_NAME_BYTES { return STATUS_OBJECT_NAME_NOT_FOUND; }
+    let Some(class) = crate::nt_registry_reply::ValueClass::from_raw(class) else { return STATUS_INVALID_PARAMETER; };
+    let Ok(name) = String::from_utf16(&units) else { return STATUS_INVALID_PARAMETER; };
     let Some(remote) = remote_key(&current, key, KEY_QUERY_VALUE) else { return STATUS_INVALID_PARAMETER; };
-    let Some(name) = read_unicode(name_ptr) else { return STATUS_INVALID_PARAMETER; };
     let Some(reply) = transact(&frame_query(remote, &name)) else { return STATUS_UNSUCCESSFUL; };
     let Reply::Value { kind, data } = reply else { return reply_status(reply); };
-    let Some(record) = syscall::nt_registry::encode_partial_value_information(kind, &data) else { return STATUS_UNSUCCESSFUL; };
-    let required = match record.len().try_into() { Ok(value) => value, Err(_) => return STATUS_UNSUCCESSFUL };
-    if result != 0 && uaccess::put_user_u32(result, required).is_err() { return STATUS_INVALID_PARAMETER; }
-    if length < 8 { return STATUS_BUFFER_TOO_SMALL; }
-    if length < required as u64 { return STATUS_BUFFER_OVERFLOW; }
-    if uaccess::copy_to_user(info, &record).is_err() { return STATUS_ACCESS_VIOLATION; }
-    STATUS_SUCCESS
+    let record = crate::nt_registry_reply::value_query_record(class, &units, kind, &data);
+    write_reply(&record, info, length, result, crate::nt_registry_reply::Ladder::HeaderIsMandatory)
 }
 
 fn set_value(call: NtCall) -> u64 {
@@ -514,8 +487,11 @@ fn set_value_native(call: NtCall) -> u64 {
 fn delete_value_native(call: NtCall) -> u64 {
     let Some(current) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !current.is_nt_personality() || call.args.a1 == 0 { return STATUS_INVALID_PARAMETER; }
+    let Some(units) = read_unicode_units(call.args.a1) else { return STATUS_INVALID_PARAMETER; };
+    // An over-long name cannot name a value that exists.
+    if units.len() * 2 > crate::nt_registry_reply::MAX_VALUE_NAME_BYTES { return STATUS_OBJECT_NAME_NOT_FOUND; }
     let Some(remote) = remote_key(&current, call.args.a0 as u32, KEY_SET_VALUE) else { return STATUS_INVALID_PARAMETER; };
-    let Some(name) = read_unicode(call.args.a1) else { return STATUS_INVALID_PARAMETER; };
+    let Ok(name) = String::from_utf16(&units) else { return STATUS_INVALID_PARAMETER; };
     match transact(&frame_delete_value(remote, &name)) {
         Some(Reply::Success) => { notify_registry_key(remote, crate::nt_registry_policy::REG_NOTIFY_CHANGE_LAST_SET); STATUS_SUCCESS }
         Some(reply) => reply_status(reply),
@@ -533,8 +509,11 @@ fn delete_key_native(call: NtCall) -> u64 {
 fn set_value_parts(key: u32, name_ptr: u64, title: u64, kind: u64, data: u64, size: u64) -> u64 {
     let Some(current) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !current.is_nt_personality() || name_ptr == 0 || title != 0 || kind > u32::MAX as u64 || size > MAX_REGISTRY_VALUE as u64 || size != 0 && data == 0 { return STATUS_INVALID_PARAMETER; }
+    let Some(units) = read_unicode_units(name_ptr) else { return STATUS_INVALID_PARAMETER; };
+    // A name this service cannot store is a caller error, not a missing value.
+    if units.len() * 2 > crate::nt_registry_reply::MAX_VALUE_NAME_BYTES { return STATUS_INVALID_PARAMETER; }
     let Some(remote) = remote_key(&current, key, KEY_SET_VALUE) else { return STATUS_INVALID_PARAMETER; };
-    let Some(name) = read_unicode(name_ptr) else { return STATUS_INVALID_PARAMETER; };
+    let Ok(name) = String::from_utf16(&units) else { return STATUS_INVALID_PARAMETER; };
     let mut bytes = Vec::new(); if bytes.try_reserve_exact(size as usize).is_err() { return STATUS_NO_MEMORY; } bytes.resize(size as usize, 0);
     if size != 0 && uaccess::copy_from_user(&mut bytes, data).is_err() { return STATUS_ACCESS_VIOLATION; }
     match transact(&frame_set(remote, &name, kind as u32, &bytes)) { Some(Reply::Success) => { notify_registry_key(remote, crate::nt_registry_policy::REG_NOTIFY_CHANGE_LAST_SET); STATUS_SUCCESS }, Some(reply) => reply_status(reply), None => STATUS_UNSUCCESSFUL }
@@ -571,7 +550,11 @@ fn key_name(attributes: u64, current: &sched::Task) -> Option<(u8, Option<u64>, 
     None
 }
 
-fn read_unicode(address: u64) -> Option<String> {
+fn read_unicode(address: u64) -> Option<String> { String::from_utf16(&read_unicode_units(address)?).ok() }
+
+/// Read one counted Unicode string as the code units the caller supplied, so
+/// a reply that echoes the name back reproduces it exactly.
+fn read_unicode_units(address: u64) -> Option<Vec<u16>> {
     if address == 0 { return None; }
     let mut descriptor = [0u8; 16]; uaccess::copy_from_user(&mut descriptor, address).ok()?;
     let length = u16::from_le_bytes([descriptor[0], descriptor[1]]) as usize;
@@ -580,8 +563,20 @@ fn read_unicode(address: u64) -> Option<String> {
     if length > maximum || length & 1 != 0 || length > MAX_REGISTRY_TEXT * 2 || length != 0 && buffer == 0 { return None; }
     let mut bytes = Vec::new(); bytes.try_reserve_exact(length).ok()?; bytes.resize(length, 0);
     if length != 0 { uaccess::copy_from_user(&mut bytes, buffer).ok()?; }
-    let units: Vec<u16> = bytes.chunks_exact(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]])).collect();
-    String::from_utf16(&units).ok()
+    Some(bytes.chunks_exact(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]])).collect())
+}
+
+/// Report one completed reply record to the caller: the length it needed, the
+/// prefix that fits, and the status its buffer earned.
+fn write_reply(record: &crate::nt_registry_reply::Record, info: u64, length: u64, result: u64,
+    ladder: crate::nt_registry_reply::Ladder) -> u64 {
+    let Ok(required) = u32::try_from(record.result_len()) else { return STATUS_UNSUCCESSFUL; };
+    if result != 0 && uaccess::put_user_u32(result, required).is_err() { return STATUS_INVALID_PARAMETER; }
+    let delivery = crate::nt_registry_reply::deliver(record, length as usize, ladder);
+    if delivery.prefix != 0 && uaccess::copy_to_user(info, &record.bytes()[..delivery.prefix]).is_err() {
+        return STATUS_ACCESS_VIOLATION;
+    }
+    delivery.status
 }
 
 #[cfg(test)]
