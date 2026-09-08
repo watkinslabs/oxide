@@ -134,3 +134,60 @@ fn a_second_view_of_the_same_image_is_placed_away_from_the_preferred_base() {
     assert_eq!(at(0x1000), VmaProt::READ | VmaProt::EXEC);
     assert_eq!(at(0x3000), VmaProt::READ | VmaProt::WRITE);
 }
+
+/// The modules the image stages, which are the only images the guest maps.
+fn staged(name: &str) -> Option<alloc::vec::Vec<u8>> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..")
+        .join("target/artifacts/wine/x86_64/x86_64-windows").join(name);
+    if path.is_file() { std::fs::read(path).ok() } else { None }
+}
+
+/// A view of a real module, then the exact reprotect sequence a loader that
+/// relocates itself performs: every section made writable at its own relative
+/// address for its own raw extent, the whole view written, and every section
+/// restored. A view whose spans a reprotect cannot cover leaves the loader
+/// writing relocations into read-only pages.
+#[test]
+fn the_reprotect_sequence_a_relocating_loader_performs_covers_every_section() {
+    let mut checked = 0usize;
+    for name in ["ntdll.dll", "kernel32.dll", "notepad.exe"] {
+        let Some(blob) = staged(name) else { std::eprintln!("{name} absent, skipped"); continue };
+        let section = build(&blob, blob.len() as u64).expect("a staged module must build an image section");
+        let parsed = pe::parse(&blob).unwrap();
+        let as_ = AddressSpace::new(0x400_000).unwrap();
+        let base = as_.mmap_with_may_at(MmapPlacement::AdvisoryAligned { hint: None, align: crate::nt_memory::ALLOCATION_GRANULARITY },
+            section.size(), VmaProt::READ, span_protection(section.max_prot()) | VmaProt::WRITE,
+            VmaFlags::PRIVATE | VmaFlags::NT_SECTION_VIEW | VmaFlags::NT_IMAGE_VIEW,
+            VmaBacking::KernelBytes { data: Arc::clone(&section.bytes), off: 0 }).unwrap();
+        assert!(as_.set_mapping_origin(base));
+        protect_view(&as_, base, &section.spans).expect("every span installs its own protection");
+        // A query of any address in the view names the view, and names it an
+        // image: native code walking modules selects on exactly that.
+        let interior = UserVirtAddr::new(base.as_u64() + section.size() as u64 / 2).unwrap();
+        let info = crate::nt_memory::query(&as_, interior).unwrap();
+        assert_eq!(info.allocation_base, base, "{name}: an interior address names the view's own base");
+        assert!(info.image_view, "{name}: a view of an image is an image region");
+        assert_eq!(u32::from_le_bytes(crate::nt_memory::encode_basic_information(&info)[40..44].try_into().unwrap()),
+            0x0100_0000, "{name}");
+        let mut restored = 0usize;
+        for header in &parsed.sections {
+            if header.raw_size == 0 { continue; }
+            let at = UserVirtAddr::new(base.as_u64() + header.virtual_address as u64).unwrap();
+            let size = (header.raw_size as usize + 0xfff) & !0xfff;
+            let old = crate::nt_memory::protect(&as_, at, size, VmaProt::READ | VmaProt::WRITE)
+                .unwrap_or_else(|error| panic!("{name}: section at {:#x} cannot be made writable to relocate: {error:?}",
+                    header.virtual_address));
+            crate::nt_memory::protect(&as_, at, size, old).expect("the section's protection is restored");
+            restored += 1;
+        }
+        assert!(restored > 2, "{name}: the module carries sections to relocate");
+        checked += 1;
+        // The restore put every executable section back: a relocation that
+        // leaves .text writable is a relocation that never restored.
+        let text = parsed.sections.iter().find(|s| s.characteristics.contains(pe::SectionFlags::MEM_EXECUTE))
+            .expect("a module carries executable code");
+        let at = UserVirtAddr::new(base.as_u64() + text.virtual_address as u64).unwrap();
+        assert!(!as_.find_vma(at).unwrap().prot.contains(VmaProt::WRITE), "{name}: executable code stayed writable");
+    }
+    assert_eq!(checked, 3, "the staged catalog must supply the three modules this covers");
+}

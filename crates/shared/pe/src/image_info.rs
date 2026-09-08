@@ -87,9 +87,12 @@ pub fn image_information(image: &Image<'_>, file_size: u64) -> Result<ImageInfor
     for section in &image.sections {
         if section.characteristics.contains(crate::parser::SectionFlags::MEM_EXECUTE) { contains_code = true; }
     }
-    let has_relocs = image.directories[crate::parser::IMAGE_DIRECTORY_ENTRY_BASERELOC].size != 0
+    // A directory is present only when it names both an address and an
+    // extent; one half alone describes nothing the image can be read from.
+    let present = |index: usize| { let dir = image.directories[index]; dir.rva != 0 && dir.size != 0 };
+    let has_relocs = present(crate::parser::IMAGE_DIRECTORY_ENTRY_BASERELOC)
         && image_characteristics & FILE_RELOCS_STRIPPED == 0;
-    let managed = image.directories[COM_DESCRIPTOR_DIRECTORY].size != 0;
+    let managed = present(COM_DESCRIPTOR_DIRECTORY);
     let mut image_flags = 0u8;
     if image.section_alignment % page != 0 { image_flags |= IMAGE_FLAGS_MAPPED_FLAT; }
     else if dll_characteristics & DLLCHARACTERISTICS_DYNAMIC_BASE != 0 && (has_relocs || contains_code) && !managed {
