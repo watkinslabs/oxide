@@ -37,12 +37,31 @@ fn parent_client_origin(state: &WindowManager, record: gui::WindowRecord) -> (i3
     gui::nonclient_create::client_origin(window, client)
 }
 
+/// Report one published window name: how many units the manager held and the
+/// bytes that reach the desktop. Bounded, because a name is published on every
+/// title change and a burst must not become the log.
+/// # C: O(reported bytes)
+fn trace_title(hwnd: u64, units: usize, title: &[u8]) {
+    const MAX_REPORTED_TITLES: u32 = 64;
+    static REPORTED: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+    if REPORTED.fetch_add(1, core::sync::atomic::Ordering::Relaxed) >= MAX_REPORTED_TITLES { return; }
+    klog::write_raw(b"[WINDOWS-TITLE] hwnd="); klog::write_hex_u64(hwnd);
+    klog::write_raw(b" units="); klog::write_hex_u64(units as u64);
+    klog::write_raw(b" bytes="); klog::write_hex_u64(title.len() as u64);
+    klog::write_raw(b" text=");
+    for byte in title.iter().take(48) { klog::write_raw(&[if byte.is_ascii_graphic() || *byte == b' ' { *byte } else { b'.' }]); }
+    klog::write_raw(b"\n");
+}
+
 /// Owned copy; caller releases GUI lock before encoding or transport. # C: O(windows + title)
 pub(super) fn snapshot(state: &WindowManager, hwnd: u64) -> Option<Snapshot> {
     let window = window(hwnd)?;
     let record = state.get(window)?;
     let title = String::from_utf16_lossy(state.text(window)?).into_bytes();
     if title.len() > wire::MAX_TITLE || title.contains(&0) { return None; }
+    // The window name a desktop shows comes from here and nowhere else, so
+    // when it is wrong on screen this line says whether the kernel held it.
+    trace_title(hwnd, state.text(window).unwrap_or(&[]).len(), &title);
     let (dx, dy) = parent_client_origin(state, record);
     let rect = state.rect(window)?;
     let own = rect;
