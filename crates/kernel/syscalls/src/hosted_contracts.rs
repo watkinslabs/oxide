@@ -84,6 +84,8 @@ pub(crate) mod nt_wine_window_family_contract;
 pub(crate) mod nt_wine_station_contract;
 #[path = "nt_wine_window/unclaimed.rs"]
 pub(crate) mod nt_wine_unclaimed_contract;
+#[path = "nt_wine_window/tests/shipped_numbering.rs"]
+pub(crate) mod nt_wine_shipped_numbering_contract;
 #[path = "nt_wine_window/long_raw.rs"]
 pub(crate) mod nt_wine_long_contract;
 #[path = "nt_wine_window/class_raw.rs"]

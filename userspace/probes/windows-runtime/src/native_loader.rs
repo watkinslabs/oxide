@@ -19,6 +19,8 @@ pub enum NativeLoaderError {
     /// word, so a failed registration named no cause at all.
     Unresolved(&'static str),
     Host(io::Error),
+    /// The object's Unix library init entry reported a failure NTSTATUS.
+    InitStatus(u32),
     DynamicLoader(String),
     MissingAttach,
     AttachStatus(i32),
@@ -166,25 +168,71 @@ fn gnu_hash_symbol_count(address: u64) -> usize {
     count
 }
 
+/// The entry point a Wine Unix-side object publishes.
+///
+/// A Unix library either exports its function table directly, or exports an
+/// initialization entry that installs its services itself. The table takes
+/// precedence when both are present, and an object exporting neither is not a
+/// Unix library at all.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum UnixlibEntry {
+    /// Address of the exported `unixlib_handle_t` function table.
+    Funcs(u64),
+    /// Address of the exported initialization entry, which the caller runs.
+    Init(u64),
+}
+
+/// STATUS_ENTRYPOINT_NOT_FOUND: the object publishes no Unix library entry.
+pub const STATUS_ENTRYPOINT_NOT_FOUND: u32 = 0xc000_0139;
+
+/// Select the entry a loaded Unix-side object publishes, from the two exported
+/// addresses. Both absent is the entry-point-not-found case; the table wins
+/// when both are present.
+/// # C: O(1)
+pub fn resolve_unixlib_entry(funcs: u64, init: u64) -> Result<UnixlibEntry, NativeLoaderError> {
+    if funcs != 0 { return Ok(UnixlibEntry::Funcs(funcs)); }
+    if init != 0 { return Ok(UnixlibEntry::Init(init)); }
+    Err(NativeLoaderError::Unresolved("the object exports neither a unix-call table nor a unix library init entry"))
+}
+
 /// Let the host ELF loader perform native loading, then publish the resolved
-/// Wine Unix-call table. The handle is intentionally leaked: the table and
-/// relocations remain valid for the lifetime of the NT process.
+/// Wine Unix-call table -- or, for an object that installs its own services,
+/// run its initialization entry.
+///
+/// The handle is intentionally leaked: the table and relocations remain valid
+/// for the lifetime of the NT process.
 pub fn load_and_register_unixlib(path: &Path, name: &[u8]) -> Result<(), NativeLoaderError> {
     if path.as_os_str().as_bytes().contains(&0) || name.is_empty() || name.contains(&0) {
         return Err(NativeLoaderError::InvalidInput);
     }
     let path = CString::new(path.as_os_str().as_bytes()).map_err(|_| NativeLoaderError::InvalidInput)?;
-    let symbol = CString::new("__wine_unix_call_funcs").expect("static symbol has no NUL");
+    let table_symbol = CString::new("__wine_unix_call_funcs").expect("static symbol has no NUL");
+    let init_symbol = CString::new("__wine_unix_lib_init").expect("static symbol has no NUL");
     // SAFETY: both strings are owned NUL-terminated C strings and RTLD_NOW
     // asks the platform loader to complete all relocation/TLS work here.
     let handle = unsafe { libc::dlopen(path.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
     if handle.is_null() {
         return Err(NativeLoaderError::DynamicLoader(dlerror_message()));
     }
-    // SAFETY: `handle` is the live handle returned by dlopen and `symbol` is
-    // NUL-terminated; dlsym returns the exported table address if present.
-    let table_ptr = unsafe { libc::dlsym(handle, symbol.as_ptr()) } as u64;
-    if table_ptr == 0 { return Err(NativeLoaderError::Unresolved("the object exports no unix-call table")); }
+    // SAFETY: `handle` is the live handle returned by dlopen and both symbol
+    // names are NUL-terminated; dlsym returns an address or null.
+    let table_ptr = unsafe { libc::dlsym(handle, table_symbol.as_ptr()) } as u64;
+    // SAFETY: same live dlopen handle and a NUL-terminated static symbol name.
+    let init_ptr = unsafe { libc::dlsym(handle, init_symbol.as_ptr()) } as u64;
+    let table_ptr = match resolve_unixlib_entry(table_ptr, init_ptr)? {
+        UnixlibEntry::Funcs(table_ptr) => table_ptr,
+        UnixlibEntry::Init(init_ptr) => {
+            let init: unsafe extern "C" fn() -> u32 = unsafe { std::mem::transmute(init_ptr) };
+            // SAFETY: the address is an exported entry of the object the
+            // dynamic loader just relocated and initialized, and the Unix
+            // library init entry takes no arguments and returns one NTSTATUS.
+            let status = unsafe { init() };
+            if status != 0 { return Err(NativeLoaderError::InitStatus(status)); }
+            // An object that installs its own services publishes no callable
+            // table for this process to register.
+            return Ok(());
+        }
+    };
     let mut address = MaybeUninit::<libc::Dl_info>::zeroed();
     // SAFETY: table_ptr came from dlsym; dladdr only writes the caller-owned
     // Dl_info structure and does not retain it.
@@ -247,6 +295,26 @@ mod tests {
     fn registration_selector_is_the_nt_memory_query_boundary() {
         assert_eq!(NtService::QueryVirtualMemory.entry() >> 32, syscall::nt::NT_SERVICE_NAMESPACE >> 32);
         assert_eq!(MEMORY_WINE_REGISTER_UNIXLIB, syscall::nt_wine_unix::MEMORY_WINE_REGISTER_UNIXLIB as u64);
+    }
+
+    #[test]
+    fn a_unix_library_exporting_a_table_publishes_it() {
+        assert!(matches!(resolve_unixlib_entry(0x4200, 0), Ok(UnixlibEntry::Funcs(0x4200))));
+        // A table and an init entry together is the table's case: the object
+        // already publishes the functions the handle names.
+        assert!(matches!(resolve_unixlib_entry(0x4200, 0x9000), Ok(UnixlibEntry::Funcs(0x4200))));
+    }
+
+    #[test]
+    fn a_unix_library_exporting_only_an_init_entry_runs_it() {
+        assert!(matches!(resolve_unixlib_entry(0, 0x9000), Ok(UnixlibEntry::Init(0x9000))));
+    }
+
+    #[test]
+    fn an_object_publishing_neither_entry_is_not_a_unix_library() {
+        let refusal = resolve_unixlib_entry(0, 0);
+        assert!(matches!(refusal, Err(NativeLoaderError::Unresolved(step)) if step.contains("init entry")),
+            "the refusal must name the step, got {refusal:?}");
     }
 
     #[test]

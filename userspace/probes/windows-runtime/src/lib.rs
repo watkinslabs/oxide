@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 mod native_loader;
 pub mod native_thread;
 pub mod native_gdi;
-pub use native_loader::{attach_native_thread, load_and_register_unixlib, register_unixlib, NativeLoaderError};
+pub use native_loader::{attach_native_thread, load_and_register_unixlib, register_unixlib, resolve_unixlib_entry, NativeLoaderError, UnixlibEntry, STATUS_ENTRYPOINT_NOT_FOUND};
 
 use pe::catalog::ModuleCatalog;
 use syscall::nt_exec::{NtExecModule, NtExecRequest, NtExecUnixlib};

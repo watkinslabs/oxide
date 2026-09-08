@@ -190,19 +190,6 @@ fn lookup_unixlib_entry(root: u64, table_address: u64, entry: u64) -> Result<u64
 }
 
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
-fn current_x64_unix_call(callable: u64, call: NtCall) -> Result<pe::nt_stub::X64UnixCallHandoff, u64> {
-    let frame = hal_x86_64::current_pt_regs();
-    if frame.is_null() { return Err(STATUS_INVALID_PARAMETER); }
-    // SAFETY: current_pt_regs is this task's live syscall frame and the NT
-    // dispatcher exclusively owns it until the architecture epilogue returns.
-    let (return_rip, syscall_rsp) = unsafe { ((*frame).rip, (*frame).rsp) };
-    pe::nt_stub::prepare_x64_unix_call(
-        call.args.a0, call.args.a1, call.args.a2, callable,
-        return_rip, syscall_rsp, hal::USER_VA_END,
-    ).ok_or(STATUS_INVALID_PARAMETER)
-}
-
-#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 fn enter_x64_native_unix_call(callable: u64, call: NtCall) -> Result<(), u64> {
     let frame = hal_x86_64::current_pt_regs();
     if frame.is_null() { return Err(STATUS_INVALID_PARAMETER); }
@@ -871,33 +858,28 @@ fn dispatch_for_address_space(root: u64, call: NtCall) -> u64 {
     if call.service != NtService::WineUnixCall {
         return STATUS_INVALID_PARAMETER;
     }
-    // The native NTDLL table keeps the fixed bootstrap token for ABI
-    // compatibility. Loaded Unixlibs carry their own table address as the
-    // Wine handle, which lets several modules coexist in one process.
-    let table_address = if call.args.a0 == syscall::nt::WINE_UNIXLIB_HANDLE {
-        if !runtime_table::runtime_index_valid(call.args.a1) {
-            log_unix_failure(b"runtime-table-index", STATUS_INVALID_PARAMETER);
-            return STATUS_INVALID_PARAMETER;
+    // The runtime module's fixed bootstrap handle names the kernel's own
+    // function table: those eight functions are implemented here, so the call
+    // is answered without consulting — or requiring — any guest object's
+    // published table.
+    let table_address = match runtime_table::owner_of(call.args.a0, syscall::nt::WINE_UNIXLIB_HANDLE) {
+        runtime_table::UnixCallOwner::Kernel => {
+            if !runtime_table::runtime_index_valid(call.args.a1) {
+                log_unix_failure(b"runtime-table-index", STATUS_INVALID_PARAMETER);
+                return STATUS_INVALID_PARAMETER;
+            }
+            return serve_runtime_unix_call(call);
         }
-        let named = elf_load::elf_modules::unixlib_descriptor_for_name(root, runtime_table::RUNTIME_UNIXLIB_NAME);
-        let first = elf_load::elf_modules::unixlib_descriptor(root);
-        let Some(table_address) = runtime_table::runtime_table(
-            named.map(|descriptor| descriptor.table_address),
-            first.map(|descriptor| descriptor.table_address)) else {
-            log_unix_failure(b"native-table-missing", STATUS_INVALID_PARAMETER);
-            return STATUS_INVALID_PARAMETER;
-        };
-        table_address
-    } else {
-        call.args.a0
+        runtime_table::UnixCallOwner::Published(table_address) => table_address,
     };
     let callable = match lookup_unixlib_entry(root, table_address, call.args.a1) {
         Ok(callable) => callable,
         Err(status) => { log_unix_failure(b"lookup", status); return status; }
     };
-    let native_table = call.args.a0 != syscall::nt::WINE_UNIXLIB_HANDLE;
+    // A published table belongs to the guest object that registered it: the
+    // call enters that object's own function rather than being answered here.
     #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
-    if native_table {
+    {
         #[cfg(feature = "debug-syscall")]
         {
             klog::write_raw(b"[WINDOWS-NT-UNIX] native handle=");
@@ -918,18 +900,24 @@ fn dispatch_for_address_space(root: u64, call: NtCall) -> u64 {
         return STATUS_SUCCESS;
     }
     #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
-    if native_table {
+    {
         if let Err(status) = enter_aarch64_native_unix_call(callable, call) { return status; }
         crate::nt_milestone::unix_entry();
         return STATUS_SUCCESS;
     }
-    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
-    let handoff = match current_x64_unix_call(callable, call) {
-        Ok(handoff) => handoff,
-        Err(status) => { log_unix_failure(b"managed-handoff", status); return status; }
-    };
+    // A hosted build cannot enter user code; the admitted call is answered by
+    // the same typed function table the tests exercise.
+    #[cfg(not(target_os = "oxide-kernel"))]
+    { let _ = callable; serve_runtime_unix_call(call) }
+}
+
+/// Answer one Unix call out of the kernel's own function table. This is the
+/// whole implementation behind the runtime module's fixed handle: no guest
+/// object supplies these functions, so none has to be loaded for them to work.
+/// # C: O(1) plus the selected function
+fn serve_runtime_unix_call(call: NtCall) -> u64 {
     crate::nt_milestone::unix_entry();
-    let status = match WineUnixFunction::decode(call.args.a1) {
+    match WineUnixFunction::decode(call.args.a1) {
         Some(WineUnixFunction::LoadSoDll) => load_so_dll(call.args.a2),
         Some(WineUnixFunction::UnwindBuiltinDll) => validate_builtin_unwind(call.args.a2),
         // unix_wine_dbg_write: `{ const char *str; size_t len; }`.
@@ -955,11 +943,7 @@ fn dispatch_for_address_space(root: u64, call: NtCall) -> u64 {
         // The remaining entries require Wine's server protocol or a Unix
         // module loader and are deliberately kept behind this typed boundary.
         _ => STATUS_NOT_IMPLEMENTED,
-    };
-    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
-    { pe::nt_stub::complete_x64_unix_call(handoff, status).status }
-    #[cfg(not(all(target_os = "oxide-kernel", target_arch = "x86_64")))]
-    { let _ = (callable, native_table); status }
+    }
 }
 
 /// Enter the native Wine Unix-call boundary for the current address space.
@@ -1155,9 +1139,15 @@ mod tests {
     }
 
     #[test]
-    fn builtin_unwind_rejects_a_null_request_before_runtime_dispatch() {
+    fn the_runtime_handle_reaches_its_function_with_no_published_table() {
+        // No Unix-side object has published a table in this address space.
+        // The runtime's own calls are served by the kernel's function table
+        // regardless: refusing them for want of a stranger's table is what
+        // failed every bootstrap that loaded no Unix-side object.
         let call = NtCall { service: NtService::WineUnixCall, args: syscall::SyscallArgs { a0: syscall::nt::WINE_UNIXLIB_HANDLE, a1: WineUnixFunction::UnwindBuiltinDll as u64, a2: 0, a3: 0, a4: 0, a5: 0 } };
-        assert_eq!(dispatch(call), STATUS_INVALID_PARAMETER);
+        let status = dispatch(call);
+        assert_ne!(status, STATUS_INVALID_PARAMETER, "the runtime handle was refused before reaching its function");
+        assert_eq!(status, crate::nt_wine_unwind::unwind_status(Err(crate::nt_wine_unwind::UnwindRefusal::UnsupportedMachine)));
     }
 
     #[test]
