@@ -20,6 +20,8 @@ mod loader;
 pub use context::{build_load_context, UnixlibLoadContext, UnixlibSourceObject};
 pub use loader::{map_load_context, MappedUnixlibObject, MappedUnixlibTable};
 
+#[cfg(test)] #[path = "unixlib/tests/staged_catalog.rs"] mod staged_catalog_tests;
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct MappedUnixlib {
     pub base: u64,

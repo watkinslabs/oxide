@@ -66,15 +66,21 @@ fn native_bootstrap() -> ExitCode {
         Some(value) => value,
         None => { eprintln!("windows-runtime bootstrap: missing OXIDE_PE_STACK"); return ExitCode::from(1); }
     };
+    // A runtime module entered through its own initialization thunk reads the
+    // startup context from the first integer argument. The kernel publishes it
+    // here because this jump, not the kernel, is what enters that thunk.
+    let argument = env::var("OXIDE_PE_ARG").ok().and_then(|value| parse_hex(&value)).unwrap_or(0);
     release_host_fault_handlers();
-    // SAFETY: the kernel supplied both values in the bootstrap environment;
-    // the registration syscall validated the native table before this jump.
+    // SAFETY: the kernel supplied entry, stack and argument in the bootstrap
+    // environment; the registration syscall validated the native table before
+    // this jump, which never returns to this frame.
     unsafe {
         #[cfg(target_arch = "x86_64")]
-        core::arch::asm!("mov rsp, {stack}; jmp {entry}", stack = in(reg) stack, entry = in(reg) entry, options(noreturn));
+        core::arch::asm!("mov rsp, {stack}; jmp {entry}", stack = in(reg) stack, entry = in(reg) entry,
+            in("rcx") argument, options(noreturn));
         #[cfg(target_arch = "aarch64")]
         core::arch::asm!("mov sp, x16", "mov x18, x15", "br x17",
-            in("x16") stack, in("x17") entry, in("x15") teb, options(noreturn));
+            in("x16") stack, in("x17") entry, in("x15") teb, in("x0") argument, options(noreturn));
     }
 }
 
