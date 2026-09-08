@@ -47,3 +47,19 @@ fn the_whole_system_call_field_is_the_architectural_value() {
         assert!(pe::ntdll::stub::takes_architectural_entry(*byte), "byte {byte:#x} in the field selects a dispatcher");
     }
 }
+
+/// A running image asks whether a processor feature is present by indexing the
+/// page's feature array directly; an unpublished array answers "absent" for
+/// every query, including the extensions the instruction set requires.
+#[test]
+fn the_page_publishes_the_processor_feature_vector_it_is_indexed_for() {
+    use super::processor_features::{PF_COMPARE_EXCHANGE_DOUBLE, PF_FASTFAIL_AVAILABLE, PROCESSOR_FEATURE_MAX};
+    let page = page_bytes().expect("the shared page must build");
+    let features = &page[PROCESSOR_FEATURES_OFF..PROCESSOR_FEATURES_OFF + PROCESSOR_FEATURE_MAX];
+    assert_eq!(features, &super::processor_features::local()[..]);
+    assert_eq!(features[PF_FASTFAIL_AVAILABLE], 1);
+    assert_eq!(features[PF_COMPARE_EXCHANGE_DOUBLE], 1);
+    assert!(features.iter().any(|byte| *byte != 0), "an all-zero vector denies every feature");
+    // The array must not run past its own field into the words that follow.
+    assert!(PROCESSOR_FEATURES_OFF + PROCESSOR_FEATURE_MAX <= 0x2b4);
+}

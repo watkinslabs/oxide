@@ -148,6 +148,7 @@ pub fn build_thread_teb_with_stack(process_id: u32, thread_id: u32, peb: u64,
     put_u64(&mut teb, TEB_ACTIVATION_CONTEXT_STACK_OFFSET,
         base + TEB_ACTIVATION_CONTEXT_STACK_INLINE as u64);
     init_activation_list(&mut teb, 0, base);
+    init_thread_scratch(&mut teb, 0, base);
     put_u32(&mut teb, TEB_CURRENT_LOCALE_OFF, 0x409);
     // TlsSlots and TlsExpansionSlots are deliberately zero-initialized.  A
     // later TlsAlloc/TlsSetValue call owns their contents and must not inherit
@@ -239,6 +240,7 @@ fn build_with_heap_owner(input: &EnvironmentInput<'_>, modules: &[NtModuleInput<
     } else { (stack_base, stack_top) };
     if (stack_base == 0) != (stack_top == 0) || stack_base > stack_top { return Err(Error::Einval); }
     let standard_handles = standard_handle_slots(params.standard_handles).ok_or(Error::Einval)?;
+    let current_directory = normalized_current_directory(params.current_directory);
     let image_path = utf16(input.image_path)?;
     let command_line = utf16(input.command_line)?;
     let mut env = Vec::new();
@@ -257,7 +259,7 @@ fn build_with_heap_owner(input: &EnvironmentInput<'_>, modules: &[NtModuleInput<
     let image_path_off = PROCESS_STR_OFF;
     let command_off = PROCESS_STR_OFF + strings.len() * 2;
     strings.extend_from_slice(&command_line);
-    let current_dir = utf16(params.current_directory)?;
+    let current_dir = utf16(&current_directory)?;
     let current_dir_off = PROCESS_STR_OFF + strings.len() * 2;
     strings.extend_from_slice(&current_dir);
     let mut module_offsets = Vec::new();
@@ -277,7 +279,7 @@ fn build_with_heap_owner(input: &EnvironmentInput<'_>, modules: &[NtModuleInput<
     // addresses, so malformed input cannot leave a reservation behind.
     let command_capacity = command_line.len().checked_mul(2).ok_or(Error::Einval)?;
     let _ = encode_x64_process_parameter_string(input.command_line, 2, command_capacity)?;
-    let _ = encode_x64_process_parameter_string(params.current_directory, 2, CURRENT_DIR_STORAGE)?;
+    let _ = encode_x64_process_parameter_string(&current_directory, 2, CURRENT_DIR_STORAGE)?;
     let reservation = as_.mmap(None, BLOCK_BYTES, VmaProt::READ | VmaProt::WRITE,
         VmaFlags::PRIVATE, VmaBacking::Anonymous, false).map_err(|_| Error::Einval)?;
     let base = reservation.as_u64();
@@ -320,6 +322,7 @@ fn build_with_heap_owner(input: &EnvironmentInput<'_>, modules: &[NtModuleInput<
     put_u64(&mut block, TEB_OFF + TEB_ACTIVATION_CONTEXT_STACK_OFFSET,
         base + TEB_OFF as u64 + TEB_ACTIVATION_CONTEXT_STACK_INLINE as u64);
     init_activation_list(&mut block, TEB_OFF, base + TEB_OFF as u64);
+    init_thread_scratch(&mut block, TEB_OFF, base + TEB_OFF as u64);
     put_u32(&mut block, TEB_OFF + TEB_CURRENT_LOCALE_OFF, 0x409);
     put_u64(&mut block, TEB_OFF + TEB_DEALLOCATION_STACK_OFF, stack_base);
     // The fixed TEB block contains all 64 native TLS slots inline.  The
@@ -339,11 +342,17 @@ fn build_with_heap_owner(input: &EnvironmentInput<'_>, modules: &[NtModuleInput<
     put_unicode(&mut block, PARAM_OFF + 0x60, &image_path, base + image_path_off as u64);
     let (command_desc, command_line) = encode_x64_process_parameter_string(input.command_line,
         base + command_off as u64, command_capacity)?;
-    let (current_dir_desc, current_dir) = encode_x64_process_parameter_string(params.current_directory,
+    let (current_dir_desc, current_dir) = encode_x64_process_parameter_string(&current_directory,
         base + current_dir_off as u64, CURRENT_DIR_STORAGE)?;
     put_x64_unicode(&mut block, PARAM_OFF + PARAM_COMMAND_LINE_OFF, command_desc);
     put_x64_unicode(&mut block, PARAM_OFF + PARAM_CURRENT_DIRECTORY_OFF, current_dir_desc);
     put_unicode(&mut block, PARAM_OFF + PARAM_WINDOW_TITLE_OFF, &image_path, base + image_path_off as u64);
+    // Desktop and shell information are empty rather than absent: the runtime
+    // copies both descriptors verbatim and its callers dereference Buffer.
+    // DLL path and runtime information stay absent, which is what selects the
+    // runtime's own default search-path construction.
+    put_empty_string(&mut block, PARAM_OFF + PARAM_DESKTOP_OFF, base);
+    put_empty_string(&mut block, PARAM_OFF + PARAM_SHELL_INFO_OFF, base);
     put_u64(&mut block, PARAM_OFF + 0x80, base + env_off as u64);
     put_u32(&mut block, LDR_OFF, 0x58);
     block[LDR_OFF + 4] = 1;
@@ -476,6 +485,35 @@ fn put_x64_unicode(b: &mut [u8], o: usize, desc: X64ProcessParameterString) {
     put_u16(b, o, desc.length); put_u16(b, o + 2, desc.maximum_length); put_u64(b, o + 8, desc.buffer);
 }
 fn copy_u16(b: &mut [u8], o: usize, v: &[u16]) { for (i, x) in v.iter().enumerate() { b[o + i * 2..o + i * 2 + 2].copy_from_slice(&x.to_le_bytes()); } }
+
+/// A published current directory always carries its trailing separator: a
+/// relative name is resolved by concatenating the directory and the name with
+/// no separator supplied in between. # C: O(value length)
+pub fn normalized_current_directory(value: &str) -> String {
+    let mut out = String::from(value);
+    if !out.ends_with(PATH_SEPARATOR) { out.push(PATH_SEPARATOR); }
+    out
+}
+
+/// Publish the thread-owned scratch fields a freshly created NT thread is
+/// entitled to find already filled in: the fixed fiber-data marker and the
+/// scratch string descriptor addressing its own inline buffer.
+/// # C: O(1)
+fn init_thread_scratch(block: &mut [u8], teb_off: usize, teb_address: u64) {
+    put_u64(block, teb_off + TEB_FIBER_DATA_OFF, TEB_FIBER_DATA);
+    put_u16(block, teb_off + TEB_STATIC_UNICODE_STRING_OFF, 0);
+    put_u16(block, teb_off + TEB_STATIC_UNICODE_STRING_OFF + 2, TEB_STATIC_UNICODE_BUFFER_BYTES as u16);
+    put_u64(block, teb_off + TEB_STATIC_UNICODE_STRING_OFF + 8,
+        teb_address + TEB_STATIC_UNICODE_BUFFER_OFF as u64);
+}
+
+/// Publish one zero-length process-parameter descriptor that still addresses a
+/// readable empty string. # C: O(1)
+fn put_empty_string(block: &mut [u8], off: usize, base: u64) {
+    put_u16(block, off, 0);
+    put_u16(block, off + 2, PARAM_EMPTY_STRING_BYTES);
+    put_u64(block, off + 8, base + (PARAM_OFF + PARAM_EMPTY_STRING_OFF) as u64);
+}
 
 fn init_activation_list(block: &mut [u8], teb_off: usize, teb_address: u64) {
     let offset = TEB_ACTIVATION_CONTEXT_STACK_INLINE + ACTIVATION_LIST_OFF;
