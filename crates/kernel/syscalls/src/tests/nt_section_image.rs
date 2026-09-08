@@ -58,3 +58,29 @@ use super::*;
     assert_eq!(CREATE_SECTION_ALLOCATION_ATTRIBUTES_ARG, CREATE_SECTION_PROTECT_ARG + 1);
     assert_eq!(CREATE_SECTION_FILE_ARG, CREATE_SECTION_ALLOCATION_ATTRIBUTES_ARG + 1);
 }
+
+/// The mask the shipped runtime's loader asks a module section for. Refusing
+/// the standard rights in it failed every module load with
+/// STATUS_INVALID_PARAMETER and no window ever appeared.
+#[test]
+fn the_loader_mask_for_a_module_section_is_admitted() {
+    let loader = STANDARD_RIGHTS_REQUIRED | SECTION_QUERY | SECTION_MAP_READ | SECTION_MAP_EXECUTE;
+    assert!(access_admitted(loader));
+    assert_eq!(map_access(loader), loader);
+}
+
+#[test]
+fn a_generic_right_reaches_the_object_as_the_specific_rights_it_names() {
+    const GENERIC_READ: u32 = 0x8000_0000;
+    const GENERIC_ALL: u32 = 0x1000_0000;
+    assert_eq!(map_access(GENERIC_READ), STANDARD_RIGHTS_READ | SECTION_QUERY | SECTION_MAP_READ);
+    assert_eq!(map_access(GENERIC_ALL), SECTION_ALL_ACCESS);
+    assert!(access_admitted(GENERIC_READ) && access_admitted(GENERIC_ALL));
+}
+
+#[test]
+fn a_right_this_type_does_not_answer_for_is_refused() {
+    // Bit 6 of the specific range names no section right.
+    assert!(!access_admitted(0x0040));
+    assert!(access_admitted(SECTION_VALID_ACCESS));
+}
