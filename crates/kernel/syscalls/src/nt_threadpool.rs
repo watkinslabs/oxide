@@ -7,13 +7,6 @@ const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 const STATUS_NO_MEMORY: u64 = 0xc000_0017;
 const STATUS_NOT_IMPLEMENTED: u64 = 0xc000_0002;
 const SYNCHRONIZE_ACCESS: u32 = 0x0010_0000;
-const WT_EXECUTEINWAITTHREAD: u32 = 0x0000_0004;
-const WT_EXECUTEONLYONCE: u32 = 0x0000_0008;
-const WT_EXECUTELONGFUNCTION: u32 = 0x0000_0010;
-const WT_EXECUTEINPERSISTENTTHREAD: u32 = 0x0000_0080;
-const WT_TRANSFER_IMPERSONATION: u32 = 0x0000_0100;
-const WT_SUPPORTED: u32 = WT_EXECUTEINWAITTHREAD | WT_EXECUTEONLYONCE
-    | WT_EXECUTELONGFUNCTION | WT_EXECUTEINPERSISTENTTHREAD | WT_TRANSFER_IMPERSONATION;
 
 /// Validate NT callback lifecycle boundaries owned by the current thread group.
 /// # C: O(1)
@@ -174,8 +167,11 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RtlQueueWorkItem {
         let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
         if !cur.is_nt_personality() || call.args.a0 == 0 { return Some(STATUS_INVALID_PARAMETER); }
-        let flags = crate::nt_dispatch::stack_argument(6).unwrap_or(0);
-        if flags > u32::MAX as u64 || flags as u32 & !WT_SUPPORTED != 0 { return Some(STATUS_INVALID_PARAMETER); }
+        // The work item declares three arguments; the flags word is the third
+        // of them, not a frame word past the end of the call. Every flag it
+        // can carry describes how long the callback runs and which pool
+        // thread runs it, which a dedicated callback thread answers already,
+        // so none of them is a reason to refuse the work item.
         #[cfg(target_arch = "x86_64")]
         { return Some(spawn_user_callback_thread(&cur, call.args.a0, call.args.a1, 0, 0)); }
         #[cfg(target_arch = "aarch64")]
@@ -243,12 +239,14 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         .checked_add(0x4000_0000_0000_0000).unwrap_or(0);
     if token == 0 { return Some(STATUS_INVALID_PARAMETER); }
     let queue = match ensure_timer_queue(&cur, call.args.a0) { Some(queue) => queue, None => return Some(STATUS_INVALID_HANDLE) };
-    let flags = crate::nt_dispatch::stack_argument(6).unwrap_or(0);
-    if flags > u32::MAX as u64 { return Some(STATUS_INVALID_PARAMETER); }
+    // The timer's flags word is a frame word: a ULONG stored there leaves
+    // the slot's upper half holding whatever the frame held before, so the
+    // value is the low half and never a reason to refuse the timer.
+    let flags = crate::nt_token_args::ulong(crate::nt_dispatch::stack_argument(6).unwrap_or(0));
     cur.thread_group.nt_callbacks.lock().push(sched::nt_callback::Registration {
         token, callback: call.args.a2, context: call.args.a3,
         kind: sched::nt_callback::RegistrationKind::Timer {
-            queue, due_ms: call.args.a4 as u32, period_ms: call.args.a5 as u32, flags: flags as u32, armed: true,
+            queue, due_ms: crate::nt_token_args::ulong(call.args.a4), period_ms: crate::nt_token_args::ulong(call.args.a5), flags, armed: true,
         },
     });
     if uaccess::put_user_u64(call.args.a1, token).is_err() {
@@ -363,7 +361,8 @@ fn update_timer(call: NtCall) -> u64 {
 fn register(call: NtCall) -> u64 {
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !cur.is_nt_personality() || call.args.a0 == 0 || call.args.a1 == 0 || call.args.a2 == 0 { return STATUS_INVALID_PARAMETER; }
-    if call.args.a1 > u32::MAX as u64 || call.args.a5 > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
+    if call.args.a1 > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
+    let flags = crate::nt_token_args::ulong(call.args.a5);
     let handle = sched::nt_object::NtHandle::from_raw(call.args.a1 as u32);
     let table = cur.thread_group.nt_handles();
     let Some(object) = table.get(handle, SYNCHRONIZE_ACCESS) else { return STATUS_INVALID_HANDLE; };
@@ -371,13 +370,12 @@ fn register(call: NtCall) -> u64 {
         | sched::nt_object::NtObjectType::Semaphore | sched::nt_object::NtObjectType::Mutant
         | sched::nt_object::NtObjectType::Timer | sched::nt_object::NtObjectType::Process
         | sched::nt_object::NtObjectType::Thread) { return STATUS_INVALID_HANDLE; }
-    if call.args.a5 as u32 & !WT_SUPPORTED != 0 { return STATUS_INVALID_PARAMETER; }
     let sequence = cur.thread_group.nt_wait_next.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     let Some(token) = sequence.checked_add(0x8000_0000_0000_0000) else { return STATUS_INVALID_PARAMETER; };
     cur.thread_group.nt_callbacks.lock().push(sched::nt_callback::Registration {
         token, callback: call.args.a2, context: call.args.a3,
         kind: sched::nt_callback::RegistrationKind::Wait {
-            object: call.args.a1, timeout_ms: call.args.a4 as u32, flags: call.args.a5 as u32,
+            object: call.args.a1, timeout_ms: crate::nt_token_args::ulong(call.args.a4), flags,
         },
     });
     if uaccess::put_user_u64(call.args.a0, token).is_err() { let mut waits = cur.thread_group.nt_callbacks.lock(); waits.retain(|wait| wait.token != token); return STATUS_INVALID_PARAMETER; }
