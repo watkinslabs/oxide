@@ -12,18 +12,20 @@ const NAME_POINTER: u64 = 0x7ffe_4ba0_a3d0;
 const NAME: u16 = 78;
 const WNDCLASS_POINTER: u64 = 0x1234_0000;
 const MENU_RECORD: u64 = 0x7ffe_4ba0_b000;
+/// `MAKEINTRESOURCEW` of the menu the shipped editor names on its class.
+const INT_RESOURCE_MENU: u64 = 0x201;
 const WNDPROC: u64 = 0x1_4000_42c0;
 const ATOM: u64 = 21;
 
 #[derive(Default)]
-struct State { wndclass: u64, fields: Vec<(usize, u64)>, size: u32, menu_record: u64,
+struct State { wndclass: u64, fields: Vec<(usize, u64)>, size: u32,
     registered: Option<Registration>, faults: bool }
 
 /// Everything the entry handed the canonical owner.
 #[derive(Default)]
 struct Registration { name: Vec<u16>, wndproc: u64, style: u32, cb_cls_extra: i32, cb_wnd_extra: i32,
     unicode: bool, background: u64, cursor: u64, icon: u64, icon_sm: u64, module: u64, builtin: bool,
-    menu_name: ipc::win32_window::ClassMenuName }
+    menu_name: u64 }
 
 thread_local! { static STATE: RefCell<State> = RefCell::new(State::default()); }
 
@@ -48,13 +50,6 @@ mod uaccess {
             }
             destination.copy_from_slice(&raw);
             Ok(())
-        })
-    }
-    pub fn get_user_u64(address: u64) -> Result<u64, ()> {
-        STATE.with(|s| {
-            let s = s.borrow();
-            if s.menu_record == 0 || address < s.menu_record || address >= s.menu_record + 24 { return Err(()); }
-            Ok(0x100 + (address - s.menu_record))
         })
     }
 }
@@ -144,15 +139,26 @@ fn the_ansi_flag_selects_the_procedure_encoding() {
 }
 
 #[test]
-fn the_client_menu_name_record_travels_beside_the_structure() {
+fn the_client_menu_name_handle_travels_beside_the_structure() {
     let mut args = armed(&[]); args.a3 = MENU_RECORD;
-    STATE.with(|s| s.borrow_mut().menu_record = MENU_RECORD);
     assert_eq!(register::register_class(args), ATOM);
-    registered(|class| assert_eq!((class.menu_name.ansi, class.menu_name.wide, class.menu_name.unicode_string), (0x100, 0x108, 0x110)));
-    // Positive control: no record means no menu name.
+    registered(|class| assert_eq!(class.menu_name, MENU_RECORD));
+    // Positive control: no handle means no menu name.
     let args = armed(&[]);
     assert_eq!(register::register_class(args), ATOM);
-    registered(|class| assert_eq!(class.menu_name, ipc::win32_window::ClassMenuName::default()));
+    registered(|class| assert_eq!(class.menu_name, 0));
+}
+
+/// A class whose menu is named by resource id hands over MAKEINTRESOURCE: a
+/// value below 0x10000 that addresses nothing. Reading through it registers no
+/// menu name, and a window of that class then shows no menu bar.
+#[test]
+fn an_integer_resource_menu_name_survives_registration_unread() {
+    let mut args = armed(&[]); args.a3 = INT_RESOURCE_MENU;
+    // Nothing in the address space answers for this value, and the harness has
+    // no reader for it: an entry that consulted it could only report zero.
+    assert_eq!(register::register_class(args), ATOM);
+    registered(|class| assert_eq!(class.menu_name, INT_RESOURCE_MENU));
 }
 
 #[test]

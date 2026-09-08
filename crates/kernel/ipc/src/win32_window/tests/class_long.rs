@@ -90,15 +90,14 @@ fn an_offset_past_the_class_extra_block_is_refused() {
 #[test]
 fn the_menu_name_long_answers_the_pointer_of_the_callers_own_width() {
     let (mut manager, window, _) = manager();
-    let record = crate::win32_window::ClassMenuName { ansi: 0x66, wide: 0x67, unicode_string: 0x68 };
-    assert_eq!(manager.exchange_class_menu_name(window, record), Ok(crate::win32_window::ClassMenuName::default()));
-    assert_eq!(manager.class_long_for(window, GCLP_MENUNAME, 8, false), Ok(0x67));
-    assert_eq!(manager.class_long_for(window, GCLP_MENUNAME, 8, true), Ok(0x66));
+    let record = 0x67u64;
+    assert_eq!(manager.exchange_class_menu_name(window, record), Ok(0));
+    assert_eq!(manager.class_long_for(window, GCLP_MENUNAME, 8), Ok(0x67));
     // The caller takes back the record the class held, and the class keeps the
     // one the caller handed over.
-    let replacement = crate::win32_window::ClassMenuName { ansi: 0x76, wide: 0x77, unicode_string: 0x78 };
+    let replacement = 0x77u64;
     assert_eq!(manager.exchange_class_menu_name(window, replacement), Ok(record));
-    assert_eq!(manager.class_long_for(window, GCLP_MENUNAME, 8, false), Ok(0x77));
+    assert_eq!(manager.class_long_for(window, GCLP_MENUNAME, 8), Ok(0x77));
 }
 
 #[test]

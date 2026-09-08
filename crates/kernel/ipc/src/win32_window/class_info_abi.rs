@@ -18,7 +18,7 @@ pub const CLASS_NAME: usize = 64;
 pub const ICON_SM: usize = 72;
 
 /// What one class-information reply reports beyond the class's own record.
-pub struct ClassInfoReply { pub wndproc: u64, pub cb_wnd_extra: u32, pub instance: u64, pub class_name: u64, pub ansi: bool }
+pub struct ClassInfoReply { pub wndproc: u64, pub cb_wnd_extra: u32, pub instance: u64, pub class_name: u64 }
 
 /// Encode one registered class as `WNDCLASSEXW`. Window creation loads the
 /// class's menu from `lpszMenuName`, so a class registered with a menu name
@@ -36,7 +36,7 @@ pub fn encode(class: &ClassDescription, reply: &ClassInfoReply) -> [u8; BYTES] {
     field(ICON, &class.icon.to_le_bytes());
     field(CURSOR, &class.cursor.to_le_bytes());
     field(BACKGROUND, &class.background.to_le_bytes());
-    field(MENU_NAME, &menu_name(class, reply.ansi).to_le_bytes());
+    field(MENU_NAME, &class.menu_name.to_le_bytes());
     field(CLASS_NAME, &reply.class_name.to_le_bytes());
     field(ICON_SM, &class.icon_sm.to_le_bytes());
     bytes
@@ -63,11 +63,6 @@ pub fn decode(bytes: &[u8; BYTES]) -> Option<ClassFields> {
     Some(ClassFields { style: word(STYLE), wndproc: quad(WNDPROC), cb_cls_extra: word(CLS_EXTRA) as i32,
         cb_wnd_extra: word(WND_EXTRA) as i32, instance: quad(INSTANCE), icon: quad(ICON), cursor: quad(CURSOR),
         background: quad(BACKGROUND), menu_name: quad(MENU_NAME), class_name: quad(CLASS_NAME), icon_sm: quad(ICON_SM) })
-}
-
-/// The menu-name pointer of the caller's own width. # C: O(1)
-pub const fn menu_name(class: &ClassDescription, ansi: bool) -> u64 {
-    if ansi { class.menu_name.ansi } else { class.menu_name.wide }
 }
 
 #[cfg(test)]

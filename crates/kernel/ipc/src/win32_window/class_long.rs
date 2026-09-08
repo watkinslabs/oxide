@@ -1,7 +1,7 @@
 //! Class-long get/set over the canonical class record: the negative WNDCLASSEX
 //! offsets name one field each, non-negative offsets index the class extra
 //! bytes. Ordering and the values a caller may not change mirror Win32.
-use super::{ClassMenuName, LongPtrError, WindowId, WindowManager};
+use super::{LongPtrError, WindowId, WindowManager};
 
 pub const GCLP_MENUNAME: i32 = -8;
 pub const GCL_MENUNAME: i32 = GCLP_MENUNAME;
@@ -23,11 +23,13 @@ impl WindowManager {
     /// Read one class long of the class a window carries, reporting the menu
     /// name of the caller's own width. # C: O(N_windows + N_classes)
     pub fn class_long(&self, window: WindowId, offset: i32, width: usize) -> Result<u64, LongPtrError> {
-        self.class_long_for(window, offset, width, false)
+        self.class_long_for(window, offset, width)
     }
-    /// Read one class long; `ansi` selects which menu-name pointer answers
-    /// GCLP_MENUNAME. # C: O(N_windows + N_classes)
-    pub fn class_long_for(&self, window: WindowId, offset: i32, width: usize, ansi: bool) -> Result<u64, LongPtrError> {
+    /// Read one class long. GCLP_MENUNAME answers the one opaque client
+    /// menu-name handle whatever the caller's character width: the ANSI half
+    /// of a client's own record is the client's to derive.
+    /// # C: O(N_windows + N_classes)
+    pub fn class_long_for(&self, window: WindowId, offset: i32, width: usize) -> Result<u64, LongPtrError> {
         if !valid_width(width) { return Err(LongPtrError::InvalidSize); }
         let atom = self.get(window).ok_or(LongPtrError::InvalidWindow)?.class_atom.ok_or(LongPtrError::InvalidWindow)?;
         let class = self.classes.iter().find(|class| class.atom == atom).ok_or(LongPtrError::InvalidWindow)?;
@@ -42,7 +44,7 @@ impl WindowManager {
             GCLP_HICON => class.icon,
             GCLP_HICONSM => class.icon_sm,
             GCLP_WNDPROC => class.wndproc,
-            GCLP_MENUNAME => if ansi { class.menu_name.ansi } else { class.menu_name.wide },
+            GCLP_MENUNAME => class.menu_name,
             _ => return class.extra.read(offset, width, false),
         };
         Ok(truncate(value, width))
@@ -64,18 +66,18 @@ impl WindowManager {
             // The class extra size is fixed at registration; Win32 rejects the
             // change rather than reallocating storage other windows share.
             GCL_CBCLSEXTRA => return Err(LongPtrError::InvalidSize),
-            // A menu name is exchanged through a client-owned descriptor, so
-            // the previous value is meaningless to the caller; the exchange
+            // A menu name is exchanged as the client's own handle, which the
+            // caller frees once it holds the previous one back; the exchange
             // itself is `exchange_class_menu_name`.
             GCLP_MENUNAME => 0,
             _ => return class.extra.write(offset, width, value, false),
         };
         Ok(truncate(previous, width))
     }
-    /// Install the caller's menu-name record on the class a window carries and
-    /// hand back the record it replaces, which the caller then frees.
+    /// Install the caller's menu-name handle on the class a window carries and
+    /// hand back the one it replaces, which the caller then frees.
     /// # C: O(N_windows + N_classes)
-    pub fn exchange_class_menu_name(&mut self, window: WindowId, menu_name: ClassMenuName) -> Result<ClassMenuName, LongPtrError> {
+    pub fn exchange_class_menu_name(&mut self, window: WindowId, menu_name: u64) -> Result<u64, LongPtrError> {
         let atom = self.get(window).ok_or(LongPtrError::InvalidWindow)?.class_atom.ok_or(LongPtrError::InvalidWindow)?;
         let class = self.classes.iter_mut().find(|class| class.atom == atom).ok_or(LongPtrError::InvalidWindow)?;
         Ok(core::mem::replace(&mut class.menu_name, menu_name))

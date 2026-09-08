@@ -30,12 +30,16 @@ pub(super) fn route(ordinal: u64, a: &Args) -> Option<u64> {
         WINE_CREATE_WINDOW_EX => raw_class::create_window_descriptor(a),
         WINE_UNREGISTER_CLASS => {
             let Some(name) = read_unicode_string(a[0]) else { return Some(0); };
-            // The call hands back the client-side menu name so the caller can
-            // free it. The class owner keeps none, so the record is cleared.
-            if a[2] != 0 && !clear_client_menu_name(a[2]) { return Some(0); }
+            // The call hands back the client's own menu-name handle so the
+            // caller can free it, and only once the class is gone: a refused
+            // removal leaves the class holding the handle it was registered
+            // with, and a caller that freed it would leave that dangling.
+            let handed = class_menu_name(&name, a[1]);
             // A class another module registered is not this caller's to
             // remove, and the module argument is what says so.
-            win_bool(crate::nt_window::unregister_class_for_current(&name, a[1]).then_some(STATUS_SUCCESS).unwrap_or(STATUS_INVALID_PARAMETER))
+            if !crate::nt_window::unregister_class_for_current(&name, a[1]) { return Some(win_bool(STATUS_INVALID_PARAMETER)); }
+            if a[2] != 0 && uaccess::put_user_u64(a[2], handed).is_err() { return Some(0); }
+            win_bool(STATUS_SUCCESS)
         }
         WINE_REGISTER_WINDOW_MESSAGE => {
             let Some(name) = read_unicode_string(a[0]) else { return Some(0); };

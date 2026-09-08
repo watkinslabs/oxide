@@ -264,11 +264,13 @@ fn read_optional_unicode_string(pointer: u64) -> Option<alloc::vec::Vec<u16>> {
     Some(value)
 }
 
-/// Clear the three pointers of a `client_menu_name` record. # C: O(1)
+/// The client menu-name handle one registered class holds, or zero. The
+/// handle is the client's own value and is never dereferenced here.
+/// # C: O(N_process_gui_states + N_classes)
 #[cfg(target_os = "oxide-kernel")]
-fn clear_client_menu_name(record: u64) -> bool {
-    (0..3u64).all(|slot| record.checked_add(slot * 8)
-        .is_some_and(|address| uaccess::put_user_u64(address, 0).is_ok()))
+fn class_menu_name(name: &[u16], instance: u64) -> u64 {
+    let Some((atom, ..)) = crate::nt_window::class_info_for_current(name, instance) else { return 0; };
+    crate::nt_window::class_description_by_atom_for_current(atom).map_or(0, |class| class.menu_name)
 }
 
 #[cfg(target_os = "oxide-kernel")]
@@ -342,18 +344,13 @@ fn get_class_info_ex(args: &[u64; 17]) -> u64 {
     let Some(class) = crate::nt_window::class_description_by_atom_for_current(atom) else { return 0; };
     if args[2] != 0 {
         let reply = ipc::win32_window::class_info_abi::ClassInfoReply { wndproc, cb_wnd_extra: extra,
-            instance: args[0], class_name: unicode_string_buffer(args[1]), ansi: args[4] != 0 };
+            instance: args[0], class_name: unicode_string_buffer(args[1]) };
         if uaccess::copy_to_user(args[2], &ipc::win32_window::class_info_abi::encode(&class, &reply)).is_err() { return 0; }
     }
-    // The caller's own menu-name record, which it frees; a class with no menu
-    // name reports three null pointers rather than stale ones.
-    if args[3] != 0 {
-        let record = [class.menu_name.ansi, class.menu_name.wide, class.menu_name.unicode_string];
-        for (slot, value) in record.iter().enumerate() {
-            let Some(address) = args[3].checked_add(slot as u64 * 8) else { return 0; };
-            if uaccess::put_user_u64(address, *value).is_err() { return 0; }
-        }
-    }
+    // One pointer-wide slot holds the caller's own menu-name handle, which it
+    // frees; the slot is a single variable of the caller's, so writing more
+    // than one word into it overruns whatever sits beside it.
+    if args[3] != 0 && uaccess::put_user_u64(args[3], class.menu_name).is_err() { return 0; }
     atom as u64
 }
 

@@ -1,6 +1,11 @@
 //! The WNDCLASSEXW registration entry: the caller's whole structure enters the
 //! canonical class owner, keyed by its name and the registering module.
 use super::*;
+// The canonical class owner this entry hands the registration to. Production
+// reaches it at the crate root; the hosted contract that drives this file
+// supplies its own recorder in its place.
+#[cfg(not(test))] use crate::nt_window;
+#[cfg(test)] use super::nt_window;
 
 /// Register a raw Wine WNDCLASSEXW through the process-local canonical owner.
 /// The whole structure enters the class record: style, both extra sizes, the
@@ -22,28 +27,18 @@ pub(crate) fn register_class(args: SyscallArgs) -> u64 {
         return 0;
     };
     // The class menu name never travels inside WNDCLASSEXW across this
-    // boundary: the caller hands it over as its own record of client pointers,
-    // and window creation reads it back to load the class's menu.
-    let menu_name = client_menu_name(args.a3);
-    let result = crate::nt_window::register_class_desc_for_current(ipc::win32_window::ClassRegistration {
+    // boundary: the caller hands over one opaque handle of its own — a client
+    // pointer, or an integer resource id, which is a value below 0x10000 and
+    // addresses nothing. It is kept verbatim and never dereferenced, and
+    // window creation reads it back to load the class's menu.
+    let menu_name = args.a3;
+    let result = nt_window::register_class_desc_for_current(ipc::win32_window::ClassRegistration {
         cb_cls_extra: fields.cb_cls_extra, cb_wnd_extra: fields.cb_wnd_extra, unicode: args.a5 as u32 == 0,
         style: fields.style, background: fields.background, cursor: fields.cursor, icon: fields.icon,
         icon_sm: fields.icon_sm, module: fields.instance, menu_name, builtin: args.a4 != 0,
         ..ipc::win32_window::ClassRegistration::new(&name, fields.wndproc) }).unwrap_or(0);
     wine_window_diag! { klog::write_raw(b"[WINDOWS-PE-WINE-CLASS] result="); klog::write_hex_u64(result); klog::write_raw(b" wndproc="); klog::write_hex_u64(fields.wndproc);
         klog::write_raw(b" instance="); klog::write_hex_u64(fields.instance);
-        klog::write_raw(b" menu-name="); klog::write_hex_u64(menu_name.wide); klog::write_raw(b"\n"); }
+        klog::write_raw(b" menu-name="); klog::write_hex_u64(menu_name); klog::write_raw(b"\n"); }
     result
-}
-
-/// The registering client's menu-name record: ANSI pointer, wide pointer and
-/// counted-string pointer, in that order. A class registered without one
-/// carries no menu name. # C: O(1) plus bounded usercopy
-fn client_menu_name(pointer: u64) -> ipc::win32_window::ClassMenuName {
-    const NAME_ANSI: u64 = 0;
-    const NAME_WIDE: u64 = 8;
-    const NAME_COUNTED: u64 = 16;
-    let field = |offset: u64| pointer.checked_add(offset).and_then(|address| uaccess::get_user_u64(address).ok()).unwrap_or(0);
-    if pointer == 0 { return ipc::win32_window::ClassMenuName::default(); }
-    ipc::win32_window::ClassMenuName { ansi: field(NAME_ANSI), wide: field(NAME_WIDE), unicode_string: field(NAME_COUNTED) }
 }
