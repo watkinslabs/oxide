@@ -54,10 +54,12 @@ fn native_bootstrap() -> ExitCode {
         eprintln!("windows-runtime bootstrap: native text registration failed: {error}");
         return ExitCode::from(1);
     }
-    if let Err(error) = windows_runtime::load_and_register_unixlib(&path, b"win32u.so") {
-        eprintln!("windows-runtime bootstrap: native registration failed: {error:?}");
-        return ExitCode::from(1);
-    }
+    // No Unix-side object is loaded here. The runtime module's own Unix calls
+    // name the kernel's function table, which the kernel serves itself; and the
+    // window/graphics services the shipped win32u module asks for arrive as
+    // system service calls on the kernel's own service table, not as Unix
+    // calls into a second implementation of them. Loading one would publish a
+    // stranger's function list beside the services the kernel already owns.
     let entry = match env::var("OXIDE_PE_ENTRY").ok().and_then(|value| parse_hex(&value)) {
         Some(value) => value,
         None => { eprintln!("windows-runtime bootstrap: missing OXIDE_PE_ENTRY"); return ExitCode::from(1); }
