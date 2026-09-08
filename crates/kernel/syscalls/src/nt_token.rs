@@ -71,9 +71,18 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
             insert_token(&cur, desired_access, handle, &table)
         }
         NtObjectCall::QueryToken { token, class, info, length, return_length } => {
-            let native = sched::nt_object::NtHandle::from_raw(token);
-            let Some(object) = table.get(native, TOKEN_QUERY) else { return Some(if table.contains(native) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE }); };
-            let Some(token) = object.token() else { return Some(STATUS_INVALID_HANDLE); };
+            // A caller reads its own user through a handle that names its own
+            // token rather than one it opened, and never opens one at all.
+            let token = if crate::nt_token_pseudo::names_own_token(call.args.a0) {
+                let object = own_token(&cur, &table);
+                let Some(token) = object.token() else { return Some(STATUS_INVALID_HANDLE); };
+                token
+            } else {
+                let native = sched::nt_object::NtHandle::from_raw(token);
+                let Some(object) = table.get(native, TOKEN_QUERY) else { return Some(if table.contains(native) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE }); };
+                let Some(token) = object.token() else { return Some(STATUS_INVALID_HANDLE); };
+                token
+            };
             let (bytes, required) = match class {
                 TOKEN_BASIC_INFORMATION => { let mut bytes = [0u8; 8]; bytes[..4].copy_from_slice(&token.uid().to_ne_bytes()); bytes[4..].copy_from_slice(&token.gid().to_ne_bytes()); (bytes.to_vec(), 8) }
                 TOKEN_TYPE_INFORMATION => (1u32.to_ne_bytes().to_vec(), 4),
@@ -317,19 +326,27 @@ fn allocate_luid(call: NtCall) -> u64 {
     if uaccess::put_user_u64(call.args.a0, luid).is_err() { STATUS_ACCESS_VIOLATION } else { STATUS_SUCCESS }
 }
 
-fn insert_token(cur: &sched::Task, access: u32, output: syscall::UserPtr<u32>, table: &sched::nt_object::NtHandleTable) -> Option<u64> {
+/// The caller's own token, built from its live credentials. Opening one and
+/// naming one answer the same token, so both reach it here.
+fn own_token(cur: &sched::Task, table: &sched::nt_object::NtHandleTable) -> alloc::sync::Arc<sched::nt_object::NtObject> {
     let uid = cur.security.creds.euid.load(core::sync::atomic::Ordering::Acquire);
     let gid = cur.security.creds.egid.load(core::sync::atomic::Ordering::Acquire);
     let object = table.new_token(uid, gid);
-    let Some(token) = object.token() else { return Some(STATUS_INVALID_PARAMETER); };
-    token.add_privilege(sched::nt_object::NtTokenPrivilege { luid: 23, attributes: 3 });
-    let mut groups = token.groups();
-    if let Some(extra) = cur.security.creds.group_list() {
-        groups.extend(extra.iter().copied().map(|gid| sched::nt_object::NtTokenGroup {
-            sid: sched::nt_object::sid_for_id(gid), attributes: 4,
-        }));
+    if let Some(token) = object.token() {
+        token.add_privilege(sched::nt_object::NtTokenPrivilege { luid: 23, attributes: 3 });
+        let mut groups = token.groups();
+        if let Some(extra) = cur.security.creds.group_list() {
+            groups.extend(extra.iter().copied().map(|gid| sched::nt_object::NtTokenGroup {
+                sid: sched::nt_object::sid_for_id(gid), attributes: 4,
+            }));
+        }
+        token.replace_groups(groups);
     }
-    token.replace_groups(groups);
+    object
+}
+
+fn insert_token(cur: &sched::Task, access: u32, output: syscall::UserPtr<u32>, table: &sched::nt_object::NtHandleTable) -> Option<u64> {
+    let object = own_token(cur, table);
     let Some(handle) = table.insert(object, access) else { return Some(STATUS_INVALID_PARAMETER); };
     if uaccess::put_user_u64(output.as_u64(), u64::from(handle.raw())).is_err() { let _ = table.close(handle); return Some(STATUS_INVALID_PARAMETER); }
     Some(STATUS_SUCCESS)
