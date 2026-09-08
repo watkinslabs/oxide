@@ -169,8 +169,10 @@ fn every_shipped_module_lays_out_a_disjoint_covering_view() {
         if extension != "dll" && extension != "exe" { continue; }
         let name = path.file_name().and_then(|value| value.to_str()).unwrap_or("").to_string();
         let Ok(blob) = std::fs::read(&path) else { continue };
-        let Ok(parsed) = parse(&blob) else { continue };
         count += 1;
+        // A module skipped because it would not parse is a module the loader
+        // cannot map, so the audit must fail on it rather than pass over it.
+        let parsed = match parse(&blob) { Ok(parsed) => parsed, Err(error) => { failures.push(format!("{name}: {error:?}")); continue } };
         let Ok(spans) = view_layout(&parsed) else { failures.push(format!("{name}: no layout")); continue };
         let mut previous_end = 0u32;
         for span in &spans {
@@ -222,3 +224,4 @@ fn a_shared_writable_section_is_recognised() {
     let plain = two_section_image();
     assert_eq!(shared_writable_sections(&parse(&plain).unwrap()), 0);
 }
+

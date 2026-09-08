@@ -17,7 +17,55 @@ pub enum NtStatus { Success, InvalidParameter, NoMemory, ConflictingAddresses, N
 pub struct NtAllocation { pub base: UserVirtAddr, pub size: usize, pub protection: VmaProt, pub reserved: bool }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct NtMemoryInfo { pub base: UserVirtAddr, pub allocation_base: UserVirtAddr, pub size: usize, pub protection: VmaProt, pub may_protection: VmaProt, pub committed: bool, pub mapped_view: bool }
+pub struct NtMemoryInfo { pub base: UserVirtAddr, pub allocation_base: UserVirtAddr, pub size: usize, pub protection: VmaProt, pub may_protection: VmaProt, pub committed: bool, pub mapped_view: bool, pub image_view: bool }
+
+/// Encoded byte length of the basic memory-information record on 64-bit.
+pub const BASIC_MEMORY_INFORMATION_BYTES: usize = 48;
+
+// Region state and region kind, as the encoded record reports them.
+const MEM_COMMIT: u32 = 0x0000_1000;
+const MEM_RESERVE: u32 = 0x0000_2000;
+const MEM_FREE: u32 = 0x0001_0000;
+const MEM_PRIVATE: u32 = 0x0002_0000;
+const MEM_MAPPED: u32 = 0x0004_0000;
+const MEM_IMAGE: u32 = 0x0100_0000;
+
+/// The Windows page-protection word one address-space protection encodes to.
+/// # C: O(1)
+pub fn windows_protection_word(protection: VmaProt) -> u32 {
+    match (protection.contains(VmaProt::READ), protection.contains(VmaProt::WRITE), protection.contains(VmaProt::EXEC)) {
+        (false, false, false) => 0x01,
+        (true, false, false) => 0x02,
+        (true, true, false) => 0x04,
+        (false, false, true) => 0x10,
+        (true, false, true) => 0x20,
+        (true, true, true) => 0x40,
+        _ => 0x01,
+    }
+}
+
+/// Encode the record a basic memory query copies out.
+///
+/// The allocation protection is the widest protection the region was placed
+/// with, not the protection it currently carries: reprotecting one page of a
+/// mapped image must not rewrite the region's own allocation protection. A
+/// region that is reserved and not committed reports no page protection at
+/// all, and the word after the allocation protection is padding the record
+/// leaves zero. # C: O(1)
+pub fn encode_basic_information(info: &NtMemoryInfo) -> [u8; BASIC_MEMORY_INFORMATION_BYTES] {
+    let mut out = [0u8; BASIC_MEMORY_INFORMATION_BYTES];
+    let free = info.allocation_base.as_u64() == 0;
+    out[0..8].copy_from_slice(&info.base.as_u64().to_le_bytes());
+    out[8..16].copy_from_slice(&info.allocation_base.as_u64().to_le_bytes());
+    if !free { out[16..20].copy_from_slice(&windows_protection_word(info.may_protection).to_le_bytes()); }
+    out[24..32].copy_from_slice(&(info.size as u64).to_le_bytes());
+    let state = if free { MEM_FREE } else if info.committed { MEM_COMMIT } else { MEM_RESERVE };
+    out[32..36].copy_from_slice(&state.to_le_bytes());
+    if !free && info.committed { out[36..40].copy_from_slice(&windows_protection_word(info.protection).to_le_bytes()); }
+    let kind = if free { 0 } else if info.image_view { MEM_IMAGE } else if info.mapped_view { MEM_MAPPED } else { MEM_PRIVATE };
+    out[40..44].copy_from_slice(&kind.to_le_bytes());
+    out
+}
 
 /// Result of one native NT process-memory transfer. The destination is
 /// validated by the syscall boundary before this owner is called; a failed
@@ -194,7 +242,18 @@ pub fn protect(as_: &AddressSpace, base: UserVirtAddr, size: usize, protection: 
     if base.as_u64() as usize % PAGE != 0 { return Err(NtStatus::InvalidParameter); }
     let vma = as_.find_vma(base).ok_or(NtStatus::NotMapped)?;
     let end = base.as_u64().checked_add(size as u64).ok_or(NtStatus::InvalidParameter)?;
-    if end > vma.end.as_u64() { return Err(NtStatus::InvalidParameter); }
+    // The range is bounded by the region it belongs to, not by the VMA the
+    // base happens to land in: reprotecting a mapped image walks section by
+    // section, and a region's protections have already split it into one VMA
+    // per distinct protection. A range that leaves the region is refused; one
+    // that crosses a split inside it is the ordinary case.
+    let region_end = match vma.mapping_origin {
+        Some(origin) => as_.mapping_origin_extent(origin).map(|(start, len)| start.as_u64() + len as u64)
+            .map_err(|_| NtStatus::InvalidParameter)?,
+        None => vma.end.as_u64(),
+    };
+    if end > region_end { return Err(NtStatus::InvalidParameter); }
+    // The reported previous protection is the one the first page carried.
     let old = vma.prot;
     if as_.mprotect(base, size, protection).is_err() { return Err(NtStatus::InvalidParameter); }
     Ok(old)
@@ -205,7 +264,7 @@ pub fn protect(as_: &AddressSpace, base: UserVirtAddr, size: usize, protection: 
 pub fn query(as_: &AddressSpace, address: UserVirtAddr) -> Result<NtMemoryInfo, NtStatus> {
     let base = UserVirtAddr::new(address.as_u64() & !(PAGE as u64 - 1)).ok_or(NtStatus::InvalidParameter)?;
     let vma = as_.find_vma(base).ok_or(NtStatus::NotMapped)?;
-    Ok(NtMemoryInfo { base, allocation_base: vma.mapping_origin.unwrap_or(vma.start), size: (vma.end.as_u64() - base.as_u64()) as usize, protection: vma.prot, may_protection: vma.may_prot, committed: !vma.flags.contains(VmaFlags::NT_RESERVED), mapped_view: vma.flags.contains(VmaFlags::NT_SECTION_VIEW) })
+    Ok(NtMemoryInfo { base, allocation_base: vma.mapping_origin.unwrap_or(vma.start), size: (vma.end.as_u64() - base.as_u64()) as usize, protection: vma.prot, may_protection: vma.may_prot, committed: !vma.flags.contains(VmaFlags::NT_RESERVED), mapped_view: vma.flags.contains(VmaFlags::NT_SECTION_VIEW), image_view: vma.flags.contains(VmaFlags::NT_IMAGE_VIEW) })
 }
 
 /// Describe the free region beginning at an unmapped address.
@@ -216,7 +275,7 @@ pub fn query_free(as_: &AddressSpace, address: UserVirtAddr) -> Result<NtMemoryI
         .filter_map(|vma| (vma.start.as_u64() > base.as_u64()).then_some(vma.start.as_u64()))
         .min().unwrap_or(hal::USER_VA_END);
     if end <= base.as_u64() { return Err(NtStatus::InvalidParameter); }
-    Ok(NtMemoryInfo { base, allocation_base: UserVirtAddr::new(0).unwrap(), size: (end - base.as_u64()) as usize, protection: VmaProt::empty(), may_protection: VmaProt::empty(), committed: false, mapped_view: false })
+    Ok(NtMemoryInfo { base, allocation_base: UserVirtAddr::new(0).unwrap(), size: (end - base.as_u64()) as usize, protection: VmaProt::empty(), may_protection: VmaProt::empty(), committed: false, mapped_view: false, image_view: false })
 }
 
 #[cfg(test)]
@@ -420,6 +479,101 @@ mod tests {
         assert_eq!(size, PAGE);
     }
 
+    /// The record a basic query copies out: every field at the offset the
+    /// caller reads it from, the padding word after the allocation protection
+    /// left zero, and the allocation protection carrying the region's widest
+    /// protection rather than whatever the last reprotect left behind.
+    #[test]
+    fn the_basic_record_places_every_field_where_a_64_bit_query_reads_it() {
+        let info = NtMemoryInfo {
+            base: UserVirtAddr::new(0x4000_1000).unwrap(), allocation_base: UserVirtAddr::new(0x4000_0000).unwrap(),
+            size: 0x3000, protection: VmaProt::READ, may_protection: VmaProt::READ | VmaProt::WRITE | VmaProt::EXEC,
+            committed: true, mapped_view: true, image_view: true,
+        };
+        let bytes = encode_basic_information(&info);
+        assert_eq!(bytes.len(), BASIC_MEMORY_INFORMATION_BYTES);
+        assert_eq!(u64::from_le_bytes(bytes[0..8].try_into().unwrap()), 0x4000_1000);
+        assert_eq!(u64::from_le_bytes(bytes[8..16].try_into().unwrap()), 0x4000_0000);
+        assert_eq!(u32::from_le_bytes(bytes[16..20].try_into().unwrap()), 0x40, "the allocation protection is the widest the region carries");
+        assert_eq!(u32::from_le_bytes(bytes[20..24].try_into().unwrap()), 0, "the word after it is padding");
+        assert_eq!(u64::from_le_bytes(bytes[24..32].try_into().unwrap()), 0x3000);
+        assert_eq!(u32::from_le_bytes(bytes[32..36].try_into().unwrap()), 0x1000);
+        assert_eq!(u32::from_le_bytes(bytes[36..40].try_into().unwrap()), 0x02);
+        assert_eq!(u32::from_le_bytes(bytes[40..44].try_into().unwrap()), 0x0100_0000, "a view of an image is an image region");
+    }
+
+    /// A mapped image, a mapped data section and a private allocation are
+    /// three different kinds of region, and native code that walks modules
+    /// selects on exactly that word.
+    #[test]
+    fn an_image_view_a_data_view_and_a_private_region_report_three_kinds() {
+        let base = NtMemoryInfo {
+            base: UserVirtAddr::new(0x4000_0000).unwrap(), allocation_base: UserVirtAddr::new(0x4000_0000).unwrap(),
+            size: PAGE, protection: VmaProt::READ, may_protection: VmaProt::READ,
+            committed: true, mapped_view: false, image_view: false,
+        };
+        let kind = |info: &NtMemoryInfo| u32::from_le_bytes(encode_basic_information(info)[40..44].try_into().unwrap());
+        assert_eq!(kind(&base), 0x0002_0000);
+        assert_eq!(kind(&NtMemoryInfo { mapped_view: true, ..base }), 0x0004_0000);
+        assert_eq!(kind(&NtMemoryInfo { mapped_view: true, image_view: true, ..base }), 0x0100_0000);
+    }
+
+    /// A reserved region reports no page protection, and a free one reports
+    /// neither an allocation base, an allocation protection, nor a kind.
+    #[test]
+    fn reserved_and_free_regions_report_no_page_protection() {
+        let reserved = NtMemoryInfo {
+            base: UserVirtAddr::new(0x4000_0000).unwrap(), allocation_base: UserVirtAddr::new(0x4000_0000).unwrap(),
+            size: PAGE, protection: VmaProt::empty(), may_protection: VmaProt::READ | VmaProt::WRITE,
+            committed: false, mapped_view: false, image_view: false,
+        };
+        let bytes = encode_basic_information(&reserved);
+        assert_eq!(u32::from_le_bytes(bytes[32..36].try_into().unwrap()), 0x2000);
+        assert_eq!(u32::from_le_bytes(bytes[36..40].try_into().unwrap()), 0, "a page that is not committed carries no protection");
+        assert_eq!(u32::from_le_bytes(bytes[16..20].try_into().unwrap()), 0x04);
+        let free = NtMemoryInfo { allocation_base: UserVirtAddr::new(0).unwrap(), ..reserved };
+        let bytes = encode_basic_information(&free);
+        assert_eq!(u32::from_le_bytes(bytes[32..36].try_into().unwrap()), 0x1_0000);
+        assert_eq!(u32::from_le_bytes(bytes[16..20].try_into().unwrap()), 0);
+        assert_eq!(u32::from_le_bytes(bytes[40..44].try_into().unwrap()), 0);
+    }
+
+    /// A query of a placed region reports the kind its flags carry, which is
+    /// what the encoder reads. A section view and a write-watch allocation
+    /// are distinct states: a marker shared between them makes every image
+    /// view answer as watched and every watched allocation as a view.
+    #[test]
+    fn a_section_view_and_a_write_watch_allocation_are_distinguishable() {
+        let as_ = AddressSpace::new(0x40_000).unwrap();
+        let watched = allocate_with_write_watch(&as_, None, PAGE, VmaProt::READ | VmaProt::WRITE, true, true).unwrap();
+        let info = query(&as_, watched.base).unwrap();
+        assert!(!info.mapped_view, "a private write-watch allocation is not a section view");
+        assert!(!info.image_view);
+        assert_eq!(u32::from_le_bytes(encode_basic_information(&info)[40..44].try_into().unwrap()), 0x0002_0000);
+    }
+
+    /// The loader reprotects a mapped image section by section while it
+    /// relocates. Those spans are separate VMAs because they carry separate
+    /// protections, so a range bounded by the VMA the base lands in refuses
+    /// exactly the calls the relocation makes; the bound is the region.
+    #[test]
+    fn a_protect_may_cross_protection_splits_inside_one_region_but_not_leave_it() {
+        let as_ = AddressSpace::new(0x40_000).unwrap();
+        let origin = UserVirtAddr::new(0x4000_0000).unwrap();
+        let view = allocate(&as_, Some(origin), PAGE * 4, VmaProt::READ | VmaProt::WRITE | VmaProt::EXEC, true).unwrap();
+        assert!(as_.set_mapping_origin(view.base));
+        let second = UserVirtAddr::new(origin.as_u64() + PAGE as u64).unwrap();
+        // Split the region into three VMAs, as installing per-section
+        // protections over an image view does.
+        protect(&as_, second, PAGE, VmaProt::READ | VmaProt::EXEC).unwrap();
+        assert!(as_.vma_count() >= 3, "the region is split into distinct protections");
+        // The relocation's reprotect covers spans on both sides of a split.
+        assert_eq!(protect(&as_, origin, PAGE * 3, VmaProt::READ | VmaProt::WRITE).unwrap(), VmaProt::READ | VmaProt::WRITE | VmaProt::EXEC);
+        assert_eq!(query(&as_, second).unwrap().protection, VmaProt::READ | VmaProt::WRITE);
+        // A range that leaves the region is still refused.
+        assert_eq!(protect(&as_, origin, PAGE * 5, VmaProt::READ), Err(NtStatus::InvalidParameter));
+    }
+
     #[test]
     fn query_keeps_section_view_origin_after_protection_split() {
         let as_ = AddressSpace::new(0x20_000).unwrap();
@@ -431,5 +585,6 @@ mod tests {
         let q = query(&as_, middle).unwrap();
         assert_eq!(q.allocation_base, origin);
         assert_eq!(q.protection, VmaProt::READ);
+        assert_eq!(q.may_protection, VmaProt::READ | VmaProt::WRITE, "a reprotect never narrows the region's allocation protection");
     }
 }

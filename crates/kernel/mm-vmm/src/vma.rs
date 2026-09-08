@@ -149,8 +149,15 @@ bitflags::bitflags! {
         /// path cannot release an unrelated Linux mapping at the same VA.
         const NT_SECTION_VIEW = 1 << 21;
         /// Windows MEM_WRITE_WATCH ownership is attached to this VMA; dirty
-        /// pages remain in the canonical per-mm VMM state.
-        const NT_WRITE_WATCH = 1 << 21;
+        /// pages remain in the canonical per-mm VMM state. Its own bit: a
+        /// marker shared with [`VmaFlags::NT_SECTION_VIEW`] makes every
+        /// section view answer as a watched allocation and every watched
+        /// allocation answer as a section view.
+        const NT_WRITE_WATCH = 1 << 22;
+        /// The section view this VMA belongs to is an image view, laid out
+        /// section by section from a PE. A query of such an address reports
+        /// an image region rather than a plain mapped one.
+        const NT_IMAGE_VIEW = 1 << 23;
     }
 }
 
