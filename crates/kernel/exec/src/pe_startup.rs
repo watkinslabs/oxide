@@ -50,14 +50,22 @@ impl PeStartupTransaction {
             || state.gs_base != env.teb { return Err(Error::Einval); }
         if stack_base != 0 {
             if stack_base >= stack_top { return Err(Error::Einval); }
-            let top = UserVirtAddr::new(stack_top.checked_sub(1).ok_or(Error::Einval)?).ok_or(Error::Einval)?;
-            let vma = as_.find_vma(top).ok_or(Error::Einval)?;
             let rsp = state.rsp.as_u64();
-            if vma.start.as_u64() != stack_base || vma.end.as_u64() != stack_top
-                || !vma.prot.contains(VmaProt::READ | VmaProt::WRITE)
-                || !matches!(vma.backing, VmaBacking::Anonymous)
-                || rsp < stack_base
+            if rsp < stack_base
                 || rsp.checked_add(super::process_env::X64_SHADOW_SPACE + super::process_env::X64_RETURN_SLOT).ok_or(Error::Einval)? > stack_top { return Err(Error::Einval); }
+            // The stack is writable over its whole extent and starts where the
+            // caller says it does. It is not required to be one mapping: the
+            // startup record occupies the top of it and is published with its
+            // content, which is a mapping of its own inside the same extent.
+            let mut at = stack_base;
+            while at < stack_top {
+                let address = UserVirtAddr::new(at).ok_or(Error::Einval)?;
+                let vma = as_.find_vma(address).ok_or(Error::Einval)?;
+                if vma.start.as_u64() > at || !vma.prot.contains(VmaProt::READ | VmaProt::WRITE) { return Err(Error::Einval); }
+                if at == stack_base && vma.start.as_u64() != stack_base { return Err(Error::Einval); }
+                at = vma.end.as_u64();
+            }
+            if at != stack_top { return Err(Error::Einval); }
         }
         let env_end = env.base.as_u64().checked_add(env.bytes as u64).ok_or(Error::Einval)?;
         if env.bytes == 0 || env.base.as_u64() >= env_end { return Err(Error::Einval); }

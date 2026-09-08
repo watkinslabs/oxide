@@ -103,9 +103,36 @@ pub fn load(blob: &[u8], runtime_blob: &[u8], as_: &AddressSpace,
     let rsp = UserVirtAddr::new(placed.stack_pointer).ok_or(pe::Error::Einval)?;
     let entry = PeEntryState { rip: init, rsp, rcx: context.as_u64(),
         gs_base: entry_state.gs_base, personality: ExecutionPersonality::Nt };
+    // The record is published the way every other process block is: content
+    // supplied at map time. Writing it into the address space being built
+    // would need that space's page tables to be the active ones, which they
+    // are not until the exec commits, and a child's never are.
+    publish_startup_context(as_, &placed, &context_image)?;
     let startup = crate::pe_startup::PeStartupTransaction::begin_with_transfer(as_, &image, &environment,
         stack_base, stack_top, &entry, init)?;
     Ok(RuntimeHandover { image, runtime, environment, entry, context, context_image, startup })
+}
+
+/// Map the pages the startup record occupies, carrying the record itself, over
+/// the stack range it was placed in. The rest of the stack stays anonymous, so
+/// the extent the runtime scrubs before it resumes is ordinary stack.
+/// # C: O(record pages)
+fn publish_startup_context(as_: &AddressSpace, placed: &startup_stack::StartupStack,
+    image: &[u8; nt_context::CONTEXT_BYTES]) -> Result<(), pe::Error>
+{
+    let page = hal::PAGE_SIZE_BYTES;
+    let first = placed.context & !(page - 1);
+    let last = placed.context.checked_add(nt_context::CONTEXT_BYTES as u64).ok_or(pe::Error::Einval)?;
+    let end = last.checked_add(page - 1).ok_or(pe::Error::Einval)? & !(page - 1);
+    let bytes = end.checked_sub(first).ok_or(pe::Error::Einval)? as usize;
+    let offset = placed.context.checked_sub(first).ok_or(pe::Error::Einval)? as usize;
+    let mut data = alloc::vec![0u8; bytes];
+    data.get_mut(offset..offset + nt_context::CONTEXT_BYTES).ok_or(pe::Error::Einval)?.copy_from_slice(image);
+    let at = UserVirtAddr::new(first).ok_or(pe::Error::Einval)?;
+    as_.mmap(Some(at), bytes, vmm::VmaProt::READ | vmm::VmaProt::WRITE, vmm::VmaFlags::PRIVATE,
+        vmm::VmaBacking::KernelBytes { data: alloc::sync::Arc::from(data.into_boxed_slice()), off: 0 }, true)
+        .map_err(|_| pe::Error::Einval)?;
+    Ok(())
 }
 
 /// Pair each runtime-owned data slot with the support-region address it must
@@ -133,21 +160,6 @@ pub fn runtime_init_entry(parsed: &pe::Image<'_>, base: u64) -> Result<UserVirtA
     UserVirtAddr::new(base.checked_add(rva as u64).ok_or(pe::Error::Einval)?).ok_or(pe::Error::Einval)
 }
 
-/// Materialise the startup context on the thread stack of the address space
-/// being built. The pages are populated first: the running task's fault
-/// handler resolves against its own address space, not this one.
-/// # C: O(CONTEXT_BYTES)
-#[cfg(target_os = "oxide-kernel")]
-pub fn install_startup_context(as_: &AddressSpace, handover: &RuntimeHandover) -> Result<(), pe::Error> {
-    let at = handover.context.as_u64();
-    let bytes = nt_context::CONTEXT_BYTES;
-    pmm::user_as::prefault_user_range(as_, at, bytes as u64).map_err(|_| pe::Error::Einval)?;
-    // SAFETY: install_startup_context's caller retains this AddressSpace, so
-    // root_pa names live page tables, and the record's range was just
-    // populated writable; write_foreign_user reports the bytes it stored.
-    let written = unsafe { pmm::user_as::write_foreign_user(as_.root_pa(), at, &handover.context_image) };
-    if written == bytes { Ok(()) } else { Err(pe::Error::Einval) }
-}
 
 fn base_name(path: &str) -> &str { path.rsplit(['\\', '/']).next().unwrap_or(path) }
 
