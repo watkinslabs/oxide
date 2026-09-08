@@ -15,6 +15,8 @@
 use alloc::{vec, vec::Vec};
 use pe::Error;
 
+use super::processor_features::{self, PROCESSOR_FEATURE_MAX};
+
 /// Fixed user-mode address of the shared page.
 pub const USER_SHARED_DATA_BASE: u64 = 0x7ffe_0000;
 /// The page is exactly one 4 KiB frame; the layout below is defined within it.
@@ -25,6 +27,8 @@ const NT_SYSTEM_ROOT_OFF: usize = 0x030;
 const NT_BUILD_NUMBER_OFF: usize = 0x260;
 const NT_MAJOR_VERSION_OFF: usize = 0x26c;
 const NT_MINOR_VERSION_OFF: usize = 0x270;
+/// One byte per feature slot; an image indexes this array directly.
+const PROCESSOR_FEATURES_OFF: usize = 0x274;
 /// Bit 0 selects the user-mode dispatcher over the syscall instruction.
 pub const SYSTEM_CALL_OFF: usize = 0x308;
 /// The value that keeps stock service stubs on the architectural entry.
@@ -51,6 +55,8 @@ pub fn page_bytes() -> Result<Vec<u8>, Error> {
     put_u32(&mut page, NT_MAJOR_VERSION_OFF, NT_MAJOR_VERSION);
     put_u32(&mut page, NT_MINOR_VERSION_OFF, NT_MINOR_VERSION);
     put_u32(&mut page, SYSTEM_CALL_OFF, SYSTEM_CALL_ARCHITECTURAL);
+    page[PROCESSOR_FEATURES_OFF..PROCESSOR_FEATURES_OFF + PROCESSOR_FEATURE_MAX]
+        .copy_from_slice(&processor_features::local());
     Ok(page)
 }
 
