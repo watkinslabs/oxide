@@ -156,8 +156,8 @@ pub fn dispatch(call: NtCall, stack: [u64; 5]) -> u64 {
     let thread = table.insert(table.new_thread(Arc::clone(&child)),
         c.thread_access | crate::nt_process_handles::SYNCHRONIZE);
     let Some(thread) = thread else { let _ = table.close(process); return NO_MEMORY; };
-    if uaccess::put_user_u32(c.process_handle.as_u64(), process.raw()).is_err()
-        || uaccess::put_user_u32(c.thread_handle.as_u64(), thread.raw()).is_err() {
+    if uaccess::put_user_u64(c.process_handle.as_u64(), u64::from(process.raw())).is_err()
+        || uaccess::put_user_u64(c.thread_handle.as_u64(), u64::from(thread.raw())).is_err() {
         let _ = table.close(thread); let _ = table.close(process); return INVALID_PARAMETER;
     }
     // PS_CREATE_INFO.SuccessState is the canonical handoff from the kernel

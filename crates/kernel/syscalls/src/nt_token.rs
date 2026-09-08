@@ -56,7 +56,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
             };
             let Some(token) = object.token() else { return Some(STATUS_INVALID_HANDLE); };
             let Some(new_handle) = table.insert(table.duplicate_token(token), access) else { return Some(STATUS_INVALID_PARAMETER); };
-            if uaccess::put_user_u32(handle.as_u64(), new_handle.raw()).is_err() {
+            if uaccess::put_user_u64(handle.as_u64(), u64::from(new_handle.raw())).is_err() {
                 let _ = table.close(new_handle);
                 return Some(STATUS_ACCESS_VIOLATION);
             }
@@ -135,7 +135,7 @@ fn filter_token(call: NtCall) -> u64 {
     let Some(new_handle) = table.insert(table.duplicate_token(alloc::sync::Arc::new(filtered)), TOKEN_ALL_ACCESS) else {
         return STATUS_INVALID_PARAMETER;
     };
-    if uaccess::put_user_u32(call.args.a5, new_handle.raw()).is_err() {
+    if uaccess::put_user_u64(call.args.a5, u64::from(new_handle.raw())).is_err() {
         let _ = table.close(new_handle);
         return STATUS_ACCESS_VIOLATION;
     }
@@ -331,6 +331,6 @@ fn insert_token(cur: &sched::Task, access: u32, output: syscall::UserPtr<u32>, t
     }
     token.replace_groups(groups);
     let Some(handle) = table.insert(object, access) else { return Some(STATUS_INVALID_PARAMETER); };
-    if uaccess::put_user_u32(output.as_u64(), handle.raw()).is_err() { let _ = table.close(handle); return Some(STATUS_INVALID_PARAMETER); }
+    if uaccess::put_user_u64(output.as_u64(), u64::from(handle.raw())).is_err() { let _ = table.close(handle); return Some(STATUS_INVALID_PARAMETER); }
     Some(STATUS_SUCCESS)
 }

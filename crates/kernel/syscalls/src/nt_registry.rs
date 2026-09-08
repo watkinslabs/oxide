@@ -189,7 +189,7 @@ fn open_current_user(call: NtCall) -> u64 {
     let Some(handle) = handles.insert(object, access) else {
         return STATUS_NO_MEMORY;
     };
-    if uaccess::put_user_u32(call.args.a1, handle.raw()).is_err() {
+    if uaccess::put_user_u64(call.args.a1, u64::from(handle.raw())).is_err() {
         let _ = handles.close(handle);
         return STATUS_INVALID_PARAMETER;
     }
@@ -207,7 +207,7 @@ fn open_key(call: NtCall) -> u64 {
     let Reply::Handle(remote) = reply else { return reply_status(reply); };
     let handles = current.thread_group.nt_handles();
     let Some(native) = handles.insert(sched::nt_object::NtObject::new(sched::nt_object::NtObjectType::Key, remote), access) else { return STATUS_NO_MEMORY; };
-    if uaccess::put_user_u32(call.args.a0, native.raw()).is_err() { let _ = handles.close(native); return STATUS_INVALID_PARAMETER; }
+    if uaccess::put_user_u64(call.args.a0, u64::from(native.raw())).is_err() { let _ = handles.close(native); return STATUS_INVALID_PARAMETER; }
     STATUS_SUCCESS
 }
 
@@ -221,7 +221,7 @@ fn create_key(call: NtCall) -> u64 {
     let Reply::Handle(remote) = reply else { return reply_status(reply); };
     let handles = current.thread_group.nt_handles();
     let Some(native) = handles.insert(sched::nt_object::NtObject::new(sched::nt_object::NtObjectType::Key, remote), access) else { return STATUS_NO_MEMORY; };
-    if uaccess::put_user_u32(call.args.a0, native.raw()).is_err() { let _ = handles.close(native); return STATUS_INVALID_PARAMETER; }
+    if uaccess::put_user_u64(call.args.a0, u64::from(native.raw())).is_err() { let _ = handles.close(native); return STATUS_INVALID_PARAMETER; }
     if let Some(disposition) = crate::nt_dispatch::stack_argument(6) { let _ = uaccess::put_user_u32(disposition, 1); }
     STATUS_SUCCESS
 }

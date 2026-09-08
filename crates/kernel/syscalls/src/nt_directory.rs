@@ -25,7 +25,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     let Some(handle) = table.open_directory(&path, granted_access) else {
         return Some(STATUS_OBJECT_NAME_NOT_FOUND);
     };
-    if uaccess::put_user_u32(call.args.a0, handle.raw()).is_err() {
+    if uaccess::put_user_u64(call.args.a0, u64::from(handle.raw())).is_err() {
         let _ = table.close(handle);
         return Some(STATUS_INVALID_PARAMETER);
     }

@@ -65,7 +65,7 @@ pub fn dispatch(call: syscall::nt::NtCall) -> u64 {
     let Some(native) = table.insert(object, access | SYNCHRONIZE) else { return STATUS_NO_MEMORY; };
     let flags = nt_thread_enum::handle_flags_from_attributes(attributes);
     if flags != 0 { let _ = table.set_flags(native, flags); }
-    if uaccess::put_user_u32(out, native.raw()).is_err() {
+    if uaccess::put_user_u64(out, u64::from(native.raw())).is_err() {
         let _ = table.close(native);
         return STATUS_INVALID_PARAMETER;
     }

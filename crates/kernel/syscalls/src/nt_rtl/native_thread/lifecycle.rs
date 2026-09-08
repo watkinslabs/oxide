@@ -54,7 +54,7 @@ pub(super) fn publish(parent: &Task) -> u64 {
     const THREAD_ALL_ACCESS: u32 = 0x001f_ffff;
     let table = parent.thread_group.nt_handles();
     match crate::nt_thread_lifecycle::publish(&child, &table, THREAD_ALL_ACCESS, request.suspended,
-        |handle| uaccess::put_user_u32(request.output, handle.raw()).map_err(|_| ()),
+        |handle| uaccess::put_user_u64(request.output, u64::from(handle.raw())).map_err(|_| ()),
         |child| { let _ = child.nt_native_thread.lock().advance(Phase::Ready, Phase::Published); },
         || crate::nt_thread_lifecycle::cancel_native_publication(&child)) {
         Ok(()) => abi::SUCCESS,
