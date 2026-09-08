@@ -569,17 +569,18 @@ fn open_existing(cur: &sched::Task, addr: u64, _create: bool) -> u64 {
 /// a failing one makes a bounded burst while a loader walks its search path,
 /// and the whole point is that the first of them names the path.
 static REPORTED_OPEN_FAILURES: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-/// Cap on reported failures, so a process that probes for absent names cannot
-/// turn the console into its search log.
-const MAX_REPORTED_OPEN_FAILURES: u32 = 64;
+/// Cap on reported failures. A loader walks a search path and most candidates
+/// are absent, so the burst is bounded rather than filtered: an absent name is
+/// exactly the result a missing-module failure is made of, and excluding it
+/// hid the one line that mattered.
+const MAX_REPORTED_OPEN_FAILURES: u32 = 512;
 
 /// Report one failing NT path open. Two evenings were spent inferring which
 /// path a loader could not open from the status it reported afterwards, which
 /// names neither the path nor the reason.
 /// # C: O(path length)
 fn report_open_failure(path: &str, status: u64) {
-    if crate::nt_file_policy::open_failure_is_reportable(status)
-        && REPORTED_OPEN_FAILURES.fetch_add(1, core::sync::atomic::Ordering::Relaxed) < MAX_REPORTED_OPEN_FAILURES {
+    if REPORTED_OPEN_FAILURES.fetch_add(1, core::sync::atomic::Ordering::Relaxed) < MAX_REPORTED_OPEN_FAILURES {
         klog::write_raw(b"[WINDOWS-NT-OPEN-FAIL] status=");
         klog::write_hex_u64(status);
         klog::write_raw(b" path=");
@@ -590,7 +591,12 @@ fn report_open_failure(path: &str, status: u64) {
 
 fn open_path(cur: &sched::Task, output: u64, desired: u32, attrs: u64, options: u32,
              sharing: u32, file_attributes: u32, disposition: CreateDisposition) -> u64 {
-    let Some(path) = object_path_with_root(attrs, &cur.thread_group.nt_handles()) else { return STATUS_INVALID_PARAMETER; };
+    // A name the kernel cannot decode is itself a failing open and must say so;
+    // reporting only decodable ones leaves the worst case silent.
+    let Some(path) = object_path_with_root(attrs, &cur.thread_group.nt_handles()) else {
+        report_open_failure("<undecodable-object-name>", STATUS_INVALID_PARAMETER);
+        return STATUS_INVALID_PARAMETER;
+    };
     let status = open_path_resolved(cur, output, desired, &path, options, sharing, file_attributes, disposition);
     if status != STATUS_SUCCESS { report_open_failure(&path, status); }
     status

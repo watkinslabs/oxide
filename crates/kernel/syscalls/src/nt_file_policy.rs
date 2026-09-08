@@ -16,7 +16,6 @@ pub(crate) enum CreateDisposition {
 const FILE_DELETE_ON_CLOSE: u32 = 0x0000_1000;
 const DELETE_ACCESS: u32 = 0x0001_0000;
 const STATUS_OBJECT_NAME_NOT_FOUND: u64 = 0xc000_0034;
-const STATUS_OBJECT_PATH_NOT_FOUND: u64 = 0xc000_003a;
 const STATUS_OBJECT_NAME_COLLISION: u64 = 0xc000_0035;
 const STATUS_ACCESS_DENIED: u64 = 0xc000_0022;
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
@@ -103,14 +102,6 @@ pub(crate) const fn directory_info_layout(class: u32) -> Option<DirectoryInfoLay
 /// Unix-backed fallback rather than exposing Linux change time as creation. # C: O(1)
 pub(crate) const fn creation_time(stat: &vfs::Kstat) -> vfs::Timespec64 {
     match stat.btime { Some(time) => time, None => stat.mtime }
-}
-
-/// Whether a failing open is worth naming on the console. A name that is
-/// simply absent is the ordinary result of a loader walking its search path
-/// and says nothing; every other failure is a fact about this kernel.
-/// # C: O(1)
-pub(crate) const fn open_failure_is_reportable(status: u64) -> bool {
-    status != 0 && status != STATUS_OBJECT_NAME_NOT_FOUND && status != STATUS_OBJECT_PATH_NOT_FOUND
 }
 
 /// Read/write mode one NT open resolves to.
@@ -300,18 +291,6 @@ mod tests {
         assert_eq!(map_generic_access(GENERIC_READ) & NT_WRITE_ACCESS, 0);
         assert_eq!(open_mode(FILE_GENERIC_READ, 0, false), NtOpenMode::ReadOnly);
         assert_eq!(open_mode(FILE_GENERIC_EXECUTE, 0, false), NtOpenMode::ReadOnly);
-    }
-
-    /// A loader walks a search path and most candidates simply do not exist;
-    /// naming those would bury the one failure that is a fact about the kernel.
-    #[test]
-    fn only_a_failure_that_is_not_a_missing_name_is_worth_reporting() {
-        assert!(!open_failure_is_reportable(0));
-        assert!(!open_failure_is_reportable(STATUS_OBJECT_NAME_NOT_FOUND));
-        assert!(!open_failure_is_reportable(STATUS_OBJECT_PATH_NOT_FOUND));
-        assert!(open_failure_is_reportable(STATUS_ACCESS_DENIED));
-        assert!(open_failure_is_reportable(STATUS_INVALID_PARAMETER));
-        assert!(open_failure_is_reportable(STATUS_OBJECT_NAME_COLLISION));
     }
 
     #[test]

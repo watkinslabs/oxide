@@ -12,7 +12,10 @@
 //! - `walk`: `Nameidata` state and component-walk engine.
 //! - `root`: global root provider plus absolute resolve/mount-identification helpers.
 //! - `lookup`: public lookup wrapper entry points.
+//! - `casefold`: stored spelling of one component for a case-insensitive walk
+//!   on a filesystem carrying no case-folding index of its own.
 
+mod casefold;
 mod child;
 mod create;
 mod group_list;
