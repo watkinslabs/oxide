@@ -145,3 +145,12 @@ fn a_right_this_type_does_not_answer_for_is_refused() {
     assert!(!access_admitted(0x0040));
     assert!(access_admitted(SECTION_VALID_ACCESS));
 }
+
+/// The loader opens a named section asking for whatever the type grants
+/// rather than naming rights; refusing that word refused the open outright.
+#[test]
+fn a_request_for_whatever_the_type_grants_reaches_the_object_as_every_right() {
+    const MAXIMUM_ALLOWED: u32 = 0x0200_0000;
+    assert_eq!(map_access(MAXIMUM_ALLOWED), SECTION_ALL_ACCESS);
+    assert!(access_admitted(MAXIMUM_ALLOWED));
+}
