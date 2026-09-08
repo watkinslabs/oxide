@@ -48,7 +48,12 @@ fn native_section_object(call: NtCall) -> Option<NtObjectCall> {
             let file = stack_argument(crate::nt_section_image::CREATE_SECTION_FILE_ARG)?;
             if call.service == nt::NtService::NtCreateSectionEx
                 && !create_section_ex_parameters_admitted(stack_argument(7)?, stack_argument(8)?) { return None; }
-            if file > u32::MAX as u64 || allocation_attributes > u32::MAX as u64 { return None; }
+            // A stub stores a ULONG into a frame word with a 32-bit store, so
+            // the slot's upper half keeps whatever the frame held before.
+            // The value is the low half; refusing the word refused every
+            // section a stock loader asks for.
+            let allocation_attributes = crate::nt_ulong::ulong(allocation_attributes) as u64;
+            if file > u32::MAX as u64 { return None; }
             let mut size = if call.args.a3 == 0 { 0 } else { uaccess::get_user_u64(call.args.a3).ok()? };
             // An image section's extent is the image's own; only a data
             // section over a file inherits the file's size when the caller
@@ -67,7 +72,8 @@ fn native_section_object(call: NtCall) -> Option<NtObjectCall> {
         nt::NtService::MapViewOfSection => {
             let size = stack_argument(6)?;
             let protect = stack_argument(9)?;
-            if call.args.a0 > u32::MAX as u64 || size == 0 || protect > u32::MAX as u64 { return None; }
+            let protect = crate::nt_ulong::ulong(protect) as u64;
+            if call.args.a0 > u32::MAX as u64 || size == 0 { return None; }
             let offset = if call.args.a5 == 0 { 0 } else { uaccess::get_user_u64(call.args.a5).ok()? };
             Some(NtObjectCall::MapViewOfSectionNative {
                 section: call.args.a0 as u32, process: call.args.a1,
@@ -79,10 +85,8 @@ fn native_section_object(call: NtCall) -> Option<NtObjectCall> {
             let parameters = stack_argument(7)?;
             let count = stack_argument(8)?;
             if !map_view_ex_parameters_admitted(parameters, count) { return None; }
-            let protect = stack_argument(6)?;
-            if call.args.a0 > u32::MAX as u64 || call.args.a5 > u32::MAX as u64 || protect > u32::MAX as u64 {
-                return None;
-            }
+            let protect = crate::nt_ulong::ulong(stack_argument(6)?) as u64;
+            if call.args.a0 > u32::MAX as u64 || call.args.a5 > u32::MAX as u64 { return None; }
             let offset = if call.args.a3 == 0 { 0 } else { uaccess::get_user_u64(call.args.a3).ok()? };
             Some(NtObjectCall::MapViewOfSectionNative {
                 section: call.args.a0 as u32, process: call.args.a1,
