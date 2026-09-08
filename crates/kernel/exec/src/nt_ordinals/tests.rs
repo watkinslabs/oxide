@@ -66,6 +66,47 @@ fn the_staged_module_numbering_routes_its_own_stubs_to_the_services_the_kernel_p
     syscall::nt::ordinals::clear();
 }
 
+/// A stub that decoded to the wrong number would route its caller to another
+/// service and look exactly like a service answering nonsense. The module
+/// numbers its services in one sequential pass, so the decoded set is the
+/// complete contiguous run from zero, and each number is carried only by one
+/// service name and its alternate entry point. A misdecode breaks both: it
+/// leaves a hole and lands two unrelated names on one number. Checking them is
+/// what says every service a refusal names is the service that was called.
+#[test]
+fn the_staged_numbering_is_the_complete_run_from_zero_with_one_service_per_number() {
+    let Some(blob) = staged() else { panic!("staged runtime module missing: {STAGED}") };
+    let image = pe::parse(&blob).expect("the staged runtime module must parse");
+    let decoded = pe::ntdll::services::decode_all(&image).expect("its service stubs must decode");
+    assert!(decoded.len() > 400, "decoded {} service stubs", decoded.len());
+
+    let mut numbers: Vec<u32> = decoded.iter().map(|service| service.ordinal).collect();
+    numbers.sort_unstable();
+    numbers.dedup();
+    assert_eq!(numbers.first().copied(), Some(0), "the numbering does not start at zero");
+    for (index, number) in numbers.iter().enumerate() {
+        assert_eq!(*number as usize, index, "a number is missing before {number}");
+    }
+
+    // The alternate entry point is the same service under a second name, so
+    // the names on one number differ at most by that prefix.
+    let mut owner: Vec<Option<&[u8]>> = alloc::vec![None; numbers.len()];
+    let mut checked = 0usize;
+    for service in &decoded {
+        let name = service.name.strip_prefix(b"Zw".as_slice())
+            .or_else(|| service.name.strip_prefix(b"Nt".as_slice())).unwrap_or(service.name);
+        let slot = &mut owner[service.ordinal as usize];
+        match slot {
+            None => *slot = Some(name),
+            Some(known) => assert_eq!(*known, name,
+                "number {} is carried by two unrelated names", service.ordinal),
+        }
+        checked += 1;
+    }
+    assert_eq!(checked, decoded.len());
+    assert!(owner.iter().all(Option::is_some), "a number in the run carries no name");
+}
+
 #[test]
 #[ignore]
 fn report_the_staged_numbering() {
