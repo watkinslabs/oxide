@@ -40,6 +40,11 @@ pub(crate) mod nt_registry_endpoint;
 pub(crate) mod nt_registry_reply;
 pub(crate) mod nt_locale;
 pub(crate) mod nt_registry_path;
+// The loader's known-module directory and the generic-rights translation its
+// two opens need. The call sites are the named-object opens (the directory
+// open and the section opens beneath it), which this crate keeps elsewhere.
+#[allow(dead_code)]
+pub(crate) mod nt_known_dlls;
 pub(crate) mod nt_desktop_names;
 // nt_process_create (its sole real caller) is x86-64-only (KI-0713: no
 // AArch64 NtCreateUserProcess yet); kept hosted-testable on every host arch.
