@@ -9,6 +9,10 @@ fn staged(name: &str) -> Option<Vec<u8>> {
     if path.is_file() { std::fs::read(path).ok() } else { None }
 }
 
+/// A selector pair chosen to match nothing any operating system publishes, so
+/// a record carrying it can only have got it from the caller.
+const TEST_SELECTORS: nt_context::UserSelectors = nt_context::UserSelectors { cs: 0x5b, ss: 0x53 };
+
 fn input<'a>() -> process_env::EnvironmentInput<'a> {
     process_env::EnvironmentInput {
         image_base: 0, image_size: 0, image_path: "C:\\windows\\system32\\notepad.exe",
@@ -38,7 +42,7 @@ fn the_handover_maps_two_images_and_enters_the_runtimes_initialization_thunk() {
     let stack_top = stack_base + stack_bytes as u64;
 
     syscall::nt::ordinals::clear();
-    let handover = load(&exe, &runtime_blob, &as_, &input(), stack_base, stack_top)
+    let handover = load(&exe, &runtime_blob, &as_, &input(), stack_base, stack_top, TEST_SELECTORS)
         .expect("the runtime handover must load");
 
     // Exactly two images: the executable and the runtime module. The graph the
@@ -90,7 +94,7 @@ fn the_handover_maps_two_images_and_enters_the_runtimes_initialization_thunk() {
 fn a_catalog_without_the_runtime_module_cannot_hand_over() {
     let Some(exe) = staged("notepad.exe") else { return };
     let as_ = vmm::AddressSpace::new(0x100_000).expect("address space must initialize");
-    assert!(load(&exe, b"not a PE image", &as_, &input(), 0, 0).is_err());
+    assert!(load(&exe, b"not a PE image", &as_, &input(), 0, 0, TEST_SELECTORS).is_err());
 }
 
 
@@ -122,7 +126,7 @@ fn the_handover_fills_the_runtime_modules_dispatcher_slots_in_the_mapped_image()
     let stack = as_.mmap(None, stack_bytes, VmaProt::READ | VmaProt::WRITE, VmaFlags::PRIVATE,
         VmaBacking::Anonymous, false).expect("thread stack must map");
     syscall::nt::ordinals::clear();
-    let handover = load(&exe, &runtime_blob, &as_, &input(), stack.as_u64(), stack.as_u64() + stack_bytes as u64)
+    let handover = load(&exe, &runtime_blob, &as_, &input(), stack.as_u64(), stack.as_u64() + stack_bytes as u64, TEST_SELECTORS)
         .expect("the runtime handover must load");
     let root = as_.root_pa();
     let support = crate::elf_modules::nt_support(root).expect("the handover must publish a support region");
@@ -164,7 +168,7 @@ fn the_runtime_finds_its_own_module_handle_by_querying_its_text() {
     let stack = as_.mmap(None, stack_bytes, VmaProt::READ | VmaProt::WRITE, VmaFlags::PRIVATE,
         VmaBacking::Anonymous, false).expect("thread stack must map");
     syscall::nt::ordinals::clear();
-    let handover = load(&exe, &runtime_blob, &as_, &input(), stack.as_u64(), stack.as_u64() + stack_bytes as u64)
+    let handover = load(&exe, &runtime_blob, &as_, &input(), stack.as_u64(), stack.as_u64() + stack_bytes as u64, TEST_SELECTORS)
         .expect("the runtime handover must load");
 
     // The module's own initialisation derives its module handle by querying
@@ -211,7 +215,7 @@ fn the_handover_publishes_both_images_in_the_pe_registry() {
         VmaBacking::Anonymous, false).expect("thread stack must map");
     syscall::nt::ordinals::clear();
     crate::pe_modules::clear(as_.root_pa());
-    let handover = load(&exe, &runtime_blob, &as_, &input(), stack.as_u64(), stack.as_u64() + stack_bytes as u64)
+    let handover = load(&exe, &runtime_blob, &as_, &input(), stack.as_u64(), stack.as_u64() + stack_bytes as u64, TEST_SELECTORS)
         .expect("the runtime handover must load");
 
     let bases = crate::pe_modules::with_modules(as_.root_pa(),
@@ -230,4 +234,27 @@ fn the_handover_publishes_both_images_in_the_pe_registry() {
     crate::pe_modules::clear(as_.root_pa());
     crate::elf_modules::clear(as_.root_pa());
     syscall::nt::ordinals::clear();
+}
+
+#[test]
+fn the_published_startup_record_carries_the_selectors_the_caller_named() {
+    // The record is a return frame, and the resume path checks its selectors
+    // against the pair this kernel's hardware frames run on. The loader is not
+    // entitled to name that pair: a hardcoded one made the first resume of
+    // every process fail, and the thread ran off the end of a call that never
+    // returns on success.
+    let _guard = crate::nt_ordinals::TABLE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (Some(exe), Some(runtime_blob)) = (staged("notepad.exe"), staged("ntdll.dll")) else { return };
+    let as_ = vmm::AddressSpace::new(0x100_200).expect("address space must initialize");
+    let stack_bytes = 0x20_000usize;
+    let stack = as_.mmap(None, stack_bytes, VmaProt::READ | VmaProt::WRITE, VmaFlags::PRIVATE,
+        VmaBacking::Anonymous, false).expect("thread stack must map");
+    syscall::nt::ordinals::clear();
+    let handover = load(&exe, &runtime_blob, &as_, &input(), stack.as_u64(), stack.as_u64() + stack_bytes as u64, TEST_SELECTORS)
+        .expect("the runtime handover must load");
+    let at16 = |off: usize| u16::from_le_bytes(handover.context_image[off..off + 2].try_into().unwrap());
+    assert_eq!(at16(nt_context::CTX_SEG_CS), TEST_SELECTORS.cs);
+    assert_eq!(at16(nt_context::CTX_SEG_SS), TEST_SELECTORS.ss);
+    assert_eq!(at16(nt_context::CTX_SEG_DS), TEST_SELECTORS.ss);
+    assert_eq!(at16(nt_context::CTX_SEG_ES), TEST_SELECTORS.ss);
 }

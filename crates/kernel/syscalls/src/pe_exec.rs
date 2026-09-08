@@ -301,7 +301,8 @@ pub fn prepare_pe_process(cur: &sched::Task, path: &[u8], blob: &[u8], command_l
     // module graph, does not bind a single import, and does not publish an
     // export page: all of that is the runtime's work in user mode.
     if let Some(runtime_blob) = catalog.and_then(|catalog| catalog.load(elf_load::pe_runtime_loader::RUNTIME_MODULE)) {
-        let handover = elf_load::pe_runtime_loader::load(blob, runtime_blob, &as_, &input, stack.as_u64(), stack_top)
+        let handover = elf_load::pe_runtime_loader::load(blob, runtime_blob, &as_, &input, stack.as_u64(), stack_top,
+            pe::nt_context::UserSelectors { cs: hal_x86_64::USER_CS_SELECTOR as u16, ss: hal_x86_64::USER_SS_SELECTOR as u16 })
             .map_err(|error| refused(b"runtime-handover", Some(error)))?;
         let process = handover.into_process();
         let startup = process.startup.facts();
