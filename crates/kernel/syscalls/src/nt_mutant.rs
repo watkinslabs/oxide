@@ -14,8 +14,7 @@ const STATUS_INFO_LENGTH_MISMATCH: u64 = 0xc000_0004;
 const STATUS_OBJECT_NAME_COLLISION: u64 = 0xc000_0035;
 const STATUS_OBJECT_TYPE_MISMATCH: u64 = 0xc000_0024;
 const STATUS_OBJECT_NAME_NOT_FOUND: u64 = 0xc000_0034;
-const MUTANT_ALL_ACCESS: u32 = 0x001f_0001;
-const MUTANT_MODIFY_STATE: u32 = 1;
+use crate::nt_access::{MUTANT, MUTANT_QUERY_STATE};
 
 /// Dispatch named/unnamed mutant creation and release; wait ownership remains in the
 /// canonical scheduler-backed object and is shared with wait-any/wait-all.
@@ -30,7 +29,8 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     let table = cur.thread_group.nt_handles();
     Some(match object {
         NtObjectCall::CreateMutant { handle, desired_access, attributes, initial_owner } => {
-            if initial_owner > 1 || desired_access & !MUTANT_ALL_ACCESS != 0 { return Some(STATUS_INVALID_PARAMETER); }
+            if initial_owner > 1 { return Some(STATUS_INVALID_PARAMETER); }
+            let Some(desired_access) = MUTANT.grant(desired_access) else { return Some(STATUS_INVALID_PARAMETER); };
             let owner = if initial_owner != 0 { Some(cur.tid as u64) } else { None };
             let object = table.new_mutant(owner);
             if attributes != 0 {
@@ -48,8 +48,10 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
             } else { STATUS_SUCCESS }
         }
         NtObjectCall::ReleaseMutant { handle, previous } => {
+            // A release names no right: ownership, not the handle's mask, is
+            // what a release is checked against.
             let native = sched::nt_object::NtHandle::from_raw(handle);
-            let Some(object) = table.get(native, MUTANT_MODIFY_STATE) else {
+            let Some(object) = table.get(native, 0) else {
                 return Some(if table.contains(native) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE });
             };
             if object.kind() != sched::nt_object::NtObjectType::Mutant { return Some(STATUS_INVALID_HANDLE); }
@@ -64,7 +66,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
             if class != 0 { return Some(STATUS_INVALID_INFO_CLASS); }
             if length != 8 { return Some(STATUS_INFO_LENGTH_MISMATCH); }
             let native = sched::nt_object::NtHandle::from_raw(handle);
-            let Some(object) = table.get(native, MUTANT_MODIFY_STATE) else {
+            let Some(object) = table.get(native, MUTANT_QUERY_STATE) else {
                 return Some(if table.contains(native) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE });
             };
             if object.kind() != sched::nt_object::NtObjectType::Mutant { return Some(STATUS_INVALID_HANDLE); }

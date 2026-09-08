@@ -22,39 +22,25 @@ pub const STATUS_OBJECT_TYPE_MISMATCH: u64 = 0xc000_0024;
 pub const STATUS_OBJECT_NAME_COLLISION: u64 = 0xc000_0035;
 pub const STATUS_OBJECT_NAME_NOT_FOUND: u64 = 0xc000_0034;
 
-/// Wait for a partner on a key.
-pub const KEYEDEVENT_WAIT: u32 = 0x0001;
-/// Release a partner waiting on a key.
-pub const KEYEDEVENT_WAKE: u32 = 0x0002;
-/// Standard rights every named object grants together.
-pub const STANDARD_RIGHTS_REQUIRED: u32 = 0x000f_0000;
-pub const STANDARD_RIGHTS_READ: u32 = 0x0002_0000;
-pub const STANDARD_RIGHTS_WRITE: u32 = 0x0002_0000;
-pub const STANDARD_RIGHTS_EXECUTE: u32 = 0x0002_0000;
-pub const KEYEDEVENT_ALL_ACCESS: u32 = STANDARD_RIGHTS_REQUIRED | KEYEDEVENT_WAIT | KEYEDEVENT_WAKE;
-const GENERIC_READ: u32 = 0x8000_0000;
-const GENERIC_WRITE: u32 = 0x4000_0000;
-const GENERIC_EXECUTE: u32 = 0x2000_0000;
-const GENERIC_ALL: u32 = 0x1000_0000;
+#[cfg(test)]
+pub use crate::nt_access::{KEYEDEVENT_ALL_ACCESS, KEYEDEVENT_WAIT, KEYEDEVENT_WAKE,
+    STANDARD_RIGHTS_EXECUTE, STANDARD_RIGHTS_READ, STANDARD_RIGHTS_REQUIRED, STANDARD_RIGHTS_WRITE, SYNCHRONIZE,
+    GENERIC_ALL, GENERIC_EXECUTE, GENERIC_READ, GENERIC_WRITE};
 
 /// Replace the generic bits of a requested access mask with the rights a
-/// keyed event grants for each of them. A keyed event grants no wait-object
-/// synchronisation right, so a handle to one is never waitable as an object
-/// even when every keyed-event right is granted.
+/// keyed event grants for each of them, refusing a request that names a right
+/// this type does not answer for. A keyed event grants no wait-object right
+/// through any generic right, so a handle to one is waitable as an object
+/// only when the caller named that right itself.
 /// # C: O(1)
-pub fn granted_access(desired: u32) -> u32 {
-    let mut access = desired;
-    if desired & GENERIC_READ != 0 { access |= STANDARD_RIGHTS_READ | KEYEDEVENT_WAIT; }
-    if desired & GENERIC_WRITE != 0 { access |= STANDARD_RIGHTS_WRITE | KEYEDEVENT_WAKE; }
-    if desired & GENERIC_EXECUTE != 0 { access |= STANDARD_RIGHTS_EXECUTE; }
-    if desired & GENERIC_ALL != 0 { access |= KEYEDEVENT_ALL_ACCESS; }
-    access & !(GENERIC_READ | GENERIC_WRITE | GENERIC_EXECUTE | GENERIC_ALL)
-}
+pub fn granted_access(desired: u32) -> u32 { crate::nt_access::KEYED_EVENT.map(desired) }
+
+/// The mask an admitted request records, or nothing when the request names a
+/// right a keyed event does not answer for. # C: O(1)
+pub fn admitted_access(desired: u32) -> Option<u32> { crate::nt_access::KEYED_EVENT.grant(desired) }
 
 /// The right one keyed-event operation needs. # C: O(1)
-pub const fn required_access(release: bool) -> u32 {
-    if release { KEYEDEVENT_WAKE } else { KEYEDEVENT_WAIT }
-}
+pub const fn required_access(release: bool) -> u32 { crate::nt_access::keyed_event_access(release) }
 
 /// A key is an address the caller formed, so its low bit is always clear. An
 /// odd key is rejected as the first argument, not as a generic parameter.
@@ -95,7 +81,7 @@ fn create(handle: u64, desired_access: u32, attributes: u64, flags: u64) -> u64 
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
     let table = cur.thread_group.nt_handles();
-    let access = granted_access(desired_access);
+    let Some(access) = admitted_access(desired_access) else { return STATUS_INVALID_PARAMETER; };
     if attributes != 0 {
         let Some(path) = crate::nt_directory::resolve_object_path(attributes, &table) else { return STATUS_INVALID_PARAMETER; };
         let (object, state) = sched::nt_object::create_keyed_event(&path);
@@ -121,7 +107,8 @@ fn open(handle: u64, desired_access: u32, attributes: u64) -> u64 {
     let Some(object) = sched::nt_object::lookup_object(&path, sched::nt_object::NtObjectType::KeyedEvent) else {
         return STATUS_OBJECT_NAME_NOT_FOUND;
     };
-    let Some(native) = table.insert(object, granted_access(desired_access)) else { return STATUS_NO_MEMORY; };
+    let Some(access) = admitted_access(desired_access) else { return STATUS_INVALID_PARAMETER; };
+    let Some(native) = table.insert(object, access) else { return STATUS_NO_MEMORY; };
     if uaccess::put_user_u32(handle, native.raw()).is_err() { let _ = table.close(native); return STATUS_INVALID_PARAMETER; }
     STATUS_SUCCESS
 }
