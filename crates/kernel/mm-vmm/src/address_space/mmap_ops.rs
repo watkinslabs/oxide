@@ -215,10 +215,16 @@ impl AddressSpace {
         // that boundary is not a worse placement, it is an unusable one
         // (`hugetlb_get_unmapped_area`). Read from the backing, which is the
         // only thing that knows.
+        // A caller may also require a coarser granule than the backing does;
+        // the mapping must satisfy both, so the placement granule is whichever
+        // is larger.
         let align = match &backing {
             VmaBacking::File { backing, .. } => backing.huge_page_size().max(1),
             _ => 1,
-        };
+        }.max(match placement {
+            MmapPlacement::AdvisoryAligned { align, .. } => align.max(1),
+            _ => 1,
+        });
         let aligned_for_backing = |h: UserVirtAddr| h.as_u64() & (align - 1) == 0;
 
         let (start_va, replace_end) = match placement {
@@ -235,7 +241,7 @@ impl AddressSpace {
                 if !hole_clear(&tree, h, end) { return Err(MmapError::Exists); }
                 (h, None)
             }
-            MmapPlacement::Advisory(hint) => {
+            MmapPlacement::Advisory(hint) | MmapPlacement::AdvisoryAligned { hint, .. } => {
                 let from_hint = match hint {
                     Some(h) if is_aligned(h) && aligned_for_backing(h) => {
                         end_of(h, len_u64).ok().and_then(|end| {

@@ -38,9 +38,8 @@ pub(crate) fn map_view(mm: &vmm::AddressSpace, image: &pe::ImageSection, request
     let len = image.size();
     let placement = match requested {
         Some(address) => vmm::MmapPlacement::FixedNoReplace(address),
-        None => match hal::UserVirtAddr::new(image.preferred_base) {
-            Some(preferred) => vmm::MmapPlacement::Advisory(Some(preferred)),
-            None => vmm::MmapPlacement::Advisory(None),
+        None => vmm::MmapPlacement::AdvisoryAligned {
+            hint: hal::UserVirtAddr::new(image.preferred_base), align: elf_load::nt_memory::ALLOCATION_GRANULARITY,
         },
     };
     let widest = elf_load::nt_image_section::span_protection(image.max_prot()) | vmm::VmaProt::WRITE;

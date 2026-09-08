@@ -1358,9 +1358,11 @@ pub fn dispatch(call: NtCall) -> u64 {
                 let requested_size = match uaccess::get_user_u64(size.as_u64()) { Ok(0) => section.size() as u64 - offset, Ok(raw) => raw, Err(_) => return STATUS_INVALID_PARAMETER };
                 let page = hal::PAGE_SIZE_BYTES as u64;
                 if requested_size == 0 || requested_size % page != 0 || requested_size > section.size() as u64 - offset { return STATUS_INVALID_PARAMETER; }
+                // A view base the kernel chooses sits on the allocation
+                // granularity, like every other region it places.
                 let placement = match requested {
                     Some(address) => vmm::MmapPlacement::FixedNoReplace(address),
-                    None => vmm::MmapPlacement::Advisory(None),
+                    None => vmm::MmapPlacement::AdvisoryAligned { hint: None, align: elf_load::nt_memory::ALLOCATION_GRANULARITY },
                 };
                 let backing = if let Some(file) = section.file() {
                     vmm::VmaBacking::File {
@@ -1662,7 +1664,8 @@ pub fn dispatch(call: NtCall) -> u64 {
                 Err(_) => return STATUS_INVALID_PARAMETER,
             };
             let requested_size = match uaccess::get_user_u64(size_ptr) { Ok(size) => size, Err(_) => return STATUS_INVALID_PARAMETER };
-            let (requested_base, size) = match elf_load::nt_memory::normalize_allocation_range(requested_base, requested_size) {
+            let reserving = allocation_flags & MEM_RESERVE != 0;
+            let (requested_base, size) = match elf_load::nt_memory::normalize_allocation_range(requested_base, requested_size, reserving) {
                 Ok(range) => range,
                 Err(_) => return STATUS_INVALID_PARAMETER,
             };

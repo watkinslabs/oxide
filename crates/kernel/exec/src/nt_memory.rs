@@ -2,9 +2,13 @@ use hal::UserVirtAddr;
 use vmm::{AddressSpace, MmapPlacement, VmaBacking, VmaFlags, VmaProt};
 
 const PAGE: usize = hal::PAGE_SIZE_BYTES as usize;
-/// Windows section offsets and view bases use the system allocation
-/// granularity, not the page size used by the Linux VMM.
-pub const SECTION_ALLOCATION_GRANULARITY: u64 = 0x1_0000;
+/// The system allocation granularity. Every native allocation and view the
+/// kernel places itself starts on it, and a reserving request rounds a
+/// supplied base down to it. It is coarser than the page size the Linux VMM
+/// places on, and that difference is load-bearing: native code recovers a
+/// region's base by rounding an interior address down to this granule, so a
+/// finer placement makes the recovered base name memory outside the region.
+pub const ALLOCATION_GRANULARITY: u64 = 0x1_0000;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum NtStatus { Success, InvalidParameter, NoMemory, ConflictingAddresses, NotMapped }
@@ -64,11 +68,17 @@ pub fn normalize_protection_range(base: u64, size: u64) -> Result<(UserVirtAddr,
 
 /// Normalize an NT allocation request to its page-covered range.
 /// # C: O(1)
-pub fn normalize_allocation_range(base: Option<u64>, size: u64) -> Result<(Option<UserVirtAddr>, usize), NtStatus> {
+pub fn normalize_allocation_range(base: Option<u64>, size: u64, reserving: bool)
+    -> Result<(Option<UserVirtAddr>, usize), NtStatus> {
     if size == 0 { return Err(NtStatus::InvalidParameter); }
     let page = PAGE as u64;
+    // A request that reserves address space rounds its base down to the
+    // allocation granularity; one that only commits inside an existing
+    // reservation rounds to a page. The end always rounds up to a page, so a
+    // base that moves down lengthens the range rather than shortening it.
+    let floor = if reserving { ALLOCATION_GRANULARITY } else { page };
     let start = match base {
-        Some(raw) => raw & !(page - 1),
+        Some(raw) => raw & !(floor - 1),
         None => 0,
     };
     let end = match base {
@@ -112,7 +122,7 @@ pub fn section_view_protection(maximum: VmaProt, requested: VmaProt) -> Result<V
 /// owner still receives a page-aligned offset after this boundary check.
 /// # C: O(1)
 pub fn section_offset_admitted(offset: u64) -> bool {
-    offset & (SECTION_ALLOCATION_GRANULARITY - 1) == 0
+    offset & (ALLOCATION_GRANULARITY - 1) == 0
 }
 
 /// Allocate private anonymous NT memory through the common VMM.
@@ -127,7 +137,8 @@ pub fn allocate_with_write_watch(as_: &AddressSpace, base: Option<UserVirtAddr>,
     if size == 0 || size % PAGE != 0 { return Err(NtStatus::InvalidParameter); }
     let placement = match base {
         Some(base) => MmapPlacement::FixedNoReplace(base),
-        None => MmapPlacement::Advisory(None),
+        // A base the kernel chooses is chosen on the allocation granularity.
+        None => MmapPlacement::AdvisoryAligned { hint: None, align: ALLOCATION_GRANULARITY },
     };
     let flags = (if committed { VmaFlags::PRIVATE } else { VmaFlags::PRIVATE | VmaFlags::NT_RESERVED })
         | if write_watch { VmaFlags::NT_WRITE_WATCH } else { VmaFlags::empty() };
@@ -276,9 +287,9 @@ mod tests {
     #[test]
     fn section_offsets_use_windows_allocation_granularity() {
         assert!(section_offset_admitted(0));
-        assert!(section_offset_admitted(SECTION_ALLOCATION_GRANULARITY));
+        assert!(section_offset_admitted(ALLOCATION_GRANULARITY));
         assert!(!section_offset_admitted(PAGE as u64));
-        assert!(!section_offset_admitted(SECTION_ALLOCATION_GRANULARITY - PAGE as u64));
+        assert!(!section_offset_admitted(ALLOCATION_GRANULARITY - PAGE as u64));
     }
 
     #[test]
@@ -294,13 +305,13 @@ mod tests {
 
     #[test]
     fn allocation_ranges_round_outward_and_preserve_null_hint() {
-        let (base, size) = normalize_allocation_range(Some(0x4000_0001), 1).unwrap();
+        let (base, size) = normalize_allocation_range(Some(0x4000_0001), 1, false).unwrap();
         assert_eq!(base.unwrap().as_u64(), 0x4000_0000);
         assert_eq!(size, PAGE);
-        let (base, size) = normalize_allocation_range(None, 1).unwrap();
+        let (base, size) = normalize_allocation_range(None, 1, false).unwrap();
         assert_eq!(base, None);
         assert_eq!(size, PAGE);
-        assert_eq!(normalize_allocation_range(Some(u64::MAX - 1), 2), Err(NtStatus::InvalidParameter));
+        assert_eq!(normalize_allocation_range(Some(u64::MAX - 1), 2, false), Err(NtStatus::InvalidParameter));
     }
 
     #[test]
@@ -372,6 +383,41 @@ mod tests {
         assert_eq!(committed.size, REGION);
         assert!(!committed.reserved);
         assert_eq!(query(&as_, reserved.base).unwrap().protection, protection);
+    }
+
+
+    /// Native code recovers a region's base by rounding an interior address
+    /// down to the allocation granularity, so every base the kernel chooses
+    /// must sit on that granule. A neighbour whose extent is not a whole
+    /// number of granules is what exposes a page-granular placement.
+    #[test]
+    fn a_base_the_kernel_chooses_starts_on_the_allocation_granularity() {
+        let as_ = AddressSpace::new(0x400_000).unwrap();
+        let protection = VmaProt::READ | VmaProt::WRITE;
+        let odd = allocate(&as_, None, 0x3000, protection, true).expect("a neighbour of three pages");
+        let region = allocate(&as_, None, 0x2_0000, protection, true).expect("a region placed after it");
+        assert_ne!(region.base, odd.base);
+        assert_eq!(region.base.as_u64() & (ALLOCATION_GRANULARITY - 1), 0,
+            "a chosen base off the granule makes the recovered base name memory outside the region");
+        let interior = UserVirtAddr::new(region.base.as_u64() + 0xd038).unwrap();
+        let recovered = interior.as_u64() & !(ALLOCATION_GRANULARITY - 1);
+        assert_eq!(recovered, region.base.as_u64());
+        assert!(as_.find_vma(UserVirtAddr::new(recovered).unwrap()).is_some(),
+            "the recovered base must be mapped, which is what the faulting read needed");
+    }
+
+    /// The same rule for a reservation the caller places itself: the base
+    /// rounds down to the granule and the range lengthens to cover it, while
+    /// a commit inside an existing reservation rounds to a page.
+    #[test]
+    fn a_reserving_base_rounds_down_to_the_granule_and_a_commit_to_a_page() {
+        let raw = 0x4000_0000 + ALLOCATION_GRANULARITY + 0x1234;
+        let (base, size) = normalize_allocation_range(Some(raw), 0x10, true).unwrap();
+        assert_eq!(base.unwrap().as_u64(), raw & !(ALLOCATION_GRANULARITY - 1));
+        assert_eq!(size as u64, (raw + 0x10 + PAGE as u64 - 1 & !(PAGE as u64 - 1)) - (raw & !(ALLOCATION_GRANULARITY - 1)));
+        let (base, size) = normalize_allocation_range(Some(raw), 0x10, false).unwrap();
+        assert_eq!(base.unwrap().as_u64(), raw & !(PAGE as u64 - 1));
+        assert_eq!(size, PAGE);
     }
 
     #[test]
