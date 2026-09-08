@@ -47,6 +47,7 @@ include!("nt_manifest.rs");
 mod nt_wine_unix;
 #[cfg(target_os = "oxide-kernel")]
 mod nt_wine_memory;
+mod nt_wine_unixlib_status;
 mod nt_wine_unwind;
 mod nt_continue_policy;
 #[cfg(any(test, target_arch = "x86_64"))]

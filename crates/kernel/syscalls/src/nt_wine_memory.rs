@@ -15,7 +15,7 @@ const STATUS_SUCCESS: u64 = 0;
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 const STATUS_INVALID_HANDLE: u64 = 0xc000_0008;
 const STATUS_INFO_LENGTH_MISMATCH: u64 = 0xc000_0004;
-const STATUS_DLL_NOT_FOUND: u64 = 0xc000_0135;
+const STATUS_DLL_NOT_FOUND: u64 = crate::nt_wine_unixlib_status::STATUS_DLL_NOT_FOUND;
 const STATUS_NOT_SUPPORTED: u64 = 0xc000_00bb;
 const TEB_PEB_OFFSET: u64 = 0x60;
 const PEB_LDR_OFFSET: u64 = 0x18;
@@ -123,13 +123,14 @@ fn load_named(name: &[u8], info: u64, info_size: u64, requested: u64, return_len
     klog::write_raw(b"[WINDOWS-NT-UNIXLIB] query=");
     klog::write_raw(&object_name);
     klog::write_raw(b"\n");
+    use crate::nt_wine_unixlib_status::UnixlibOutcome;
     let mapped = match elf_load::unixlib::load_named(&catalog, &object_name, &as_) {
         Ok(mapped) => mapped,
-        Err(elf_load::LoadError::Enomem) => { klog::write_raw(b"[WINDOWS-NT-UNIXLIB] load=enomem\n"); return 0xc000_0017; }
-        Err(elf_load::LoadError::Enoexec) => { klog::write_raw(b"[WINDOWS-NT-UNIXLIB] load=enoexec\n"); return STATUS_DLL_NOT_FOUND; }
-        Err(elf_load::LoadError::Einval) => { klog::write_raw(b"[WINDOWS-NT-UNIXLIB] load=einval\n"); return STATUS_INVALID_PARAMETER; }
+        Err(elf_load::LoadError::Enomem) => { klog::write_raw(b"[WINDOWS-NT-UNIXLIB] load=enomem\n"); return crate::nt_wine_unixlib_status::status(UnixlibOutcome::NoMemory); }
+        Err(elf_load::LoadError::Enoexec) => { klog::write_raw(b"[WINDOWS-NT-UNIXLIB] load=enoexec\n"); return crate::nt_wine_unixlib_status::status(UnixlibOutcome::NotLoadable); }
+        Err(elf_load::LoadError::Einval) => { klog::write_raw(b"[WINDOWS-NT-UNIXLIB] load=einval\n"); return crate::nt_wine_unixlib_status::status(UnixlibOutcome::NotLoadable); }
     };
-    let Some(table) = mapped.callable_table else { klog::write_raw(b"[WINDOWS-NT-UNIXLIB] load=no-table\n"); return STATUS_NOT_SUPPORTED; };
+    let Some(table) = mapped.callable_table else { klog::write_raw(b"[WINDOWS-NT-UNIXLIB] load=no-table\n"); return crate::nt_wine_unixlib_status::status(UnixlibOutcome::NoCallableTable); };
     // Wine's two query forms have different ownership semantics.  The
     // builtin-module form returns `unixlib_handle_t`, which is the callable
     // table identity consumed by `__wine_unix_call`; the by-name form returns

@@ -18,7 +18,8 @@ fn the_record_offsets_are_the_published_layout() {
 
 #[test]
 fn the_startup_context_names_the_entry_in_both_the_resume_point_and_the_first_argument() {
-    let context = startup_context(0x1400_1234, 0xdead_beef, 0x7fff_0000);
+    let selectors = UserSelectors { cs: 0x4b, ss: 0x43 };
+    let context = startup_context(0x1400_1234, 0xdead_beef, 0x7fff_0000, selectors);
     let at64 = |off: usize| u64::from_le_bytes(context[off..off + 8].try_into().unwrap());
     let at32 = |off: usize| u32::from_le_bytes(context[off..off + 4].try_into().unwrap());
     let at16 = |off: usize| u16::from_le_bytes(context[off..off + 2].try_into().unwrap());
@@ -31,9 +32,25 @@ fn the_startup_context_names_the_entry_in_both_the_resume_point_and_the_first_ar
     assert_eq!(at32(CTX_FLAGS), CONTEXT_FULL);
     assert_eq!(at32(CTX_MXCSR), MXCSR_INIT);
     assert_eq!(at32(CTX_FLT_SAVE as usize + FXSAVE_MXCSR), MXCSR_INIT);
-    assert_eq!((at16(CTX_SEG_CS), at16(CTX_SEG_SS)), (USER_CS, USER_SS));
+    assert_eq!((at16(CTX_SEG_CS), at16(CTX_SEG_SS)), (selectors.cs, selectors.ss));
+    assert_eq!((at16(CTX_SEG_DS), at16(CTX_SEG_ES)), (selectors.ss, selectors.ss));
     // A resumed context with the reserved flag clear is not a valid flags word.
     assert_eq!(at32(CTX_EFLAGS) as u64 & EFLAGS_RESERVED, EFLAGS_RESERVED);
     // Nothing else is claimed: the debug registers stay zero and unadvertised.
     assert_eq!(at64(CTX_RAX), 0);
+}
+
+#[test]
+fn the_startup_record_carries_the_callers_selectors_and_never_a_second_pair() {
+    // The resume path checks the record's selectors against the pair the
+    // hardware return frame runs on. A record built with any other pair is
+    // refused, and the refusal lands on the first resume of a new process:
+    // the thread-start path has no code after that call and runs off its own
+    // end. The record therefore reports what it was given, nothing else.
+    for (cs, ss) in [(0x4bu16, 0x43u16), (0x33, 0x2b), (0x23, 0x1b)] {
+        let context = startup_context(0x1000, 0, 0x2000, UserSelectors { cs, ss });
+        let at16 = |off: usize| u16::from_le_bytes(context[off..off + 2].try_into().unwrap());
+        assert_eq!(at16(CTX_SEG_CS), cs);
+        assert_eq!(at16(CTX_SEG_SS), ss);
+    }
 }

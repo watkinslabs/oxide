@@ -148,4 +148,25 @@ mod tests {
         bad[0x44..0x48].copy_from_slice(&0x3202u32.to_le_bytes());
         assert_eq!(decode(&bad).unwrap().validate_user_return(0x4b, 0x43), Err(Error::Invalid));
     }
+
+    #[test]
+    fn the_startup_record_resumes_on_the_selectors_this_kernels_return_frames_run_on() {
+        // A new process is resumed by its runtime through the same restore
+        // path as any other context, so the record the loader builds has to
+        // pass this validation. It once carried the selector pair a different
+        // operating system publishes; the first resume of every process was
+        // refused, the thread-start path has no code after that call, and the
+        // thread ran off its own end into a return through a zeroed stack
+        // slot — a jump to address zero with no fault before it.
+        let cs = hal_x86_64::USER_CS_SELECTOR;
+        let ss = hal_x86_64::USER_SS_SELECTOR;
+        let selectors = pe::nt_context::UserSelectors { cs: cs as u16, ss: ss as u16 };
+        let record = pe::nt_context::startup_context(0x1400_1000, 0, 0x7fff_0000, selectors);
+        let image = decode(&record).expect("the startup record is a decodable restore image");
+        assert_eq!(image.validate_user_return(cs, ss), Ok(()));
+        // The pair is load-bearing: any other one is refused.
+        let foreign = pe::nt_context::startup_context(0x1400_1000, 0, 0x7fff_0000,
+            pe::nt_context::UserSelectors { cs: 0x33, ss: 0x2b });
+        assert_eq!(decode(&foreign).unwrap().validate_user_return(cs, ss), Err(Error::Invalid));
+    }
 }

@@ -66,10 +66,14 @@ impl RuntimeHandover {
 }
 
 /// Map the executable and the runtime module, publish the process blocks, and
-/// return the entry state that enters the runtime's initialization thunk.
+/// return the entry state that enters the runtime's initialization thunk. The
+/// ring-3 selector pair comes from the caller because the resume path checks
+/// the startup record against the selectors this kernel's return frames run
+/// on; the loader has no business naming them itself.
 /// # C: O(image bytes + runtime bytes)
 pub fn load(blob: &[u8], runtime_blob: &[u8], as_: &AddressSpace,
-    input: &process_env::EnvironmentInput<'_>, stack_base: u64, stack_top: u64)
+    input: &process_env::EnvironmentInput<'_>, stack_base: u64, stack_top: u64,
+    selectors: nt_context::UserSelectors)
     -> Result<RuntimeHandover, pe::Error> {
     // The module's own service numbering, before anything is mapped.
     let runtime_parsed = pe::parse(runtime_blob)?;
@@ -106,7 +110,7 @@ pub fn load(blob: &[u8], runtime_blob: &[u8], as_: &AddressSpace,
     let entry_state = crate::pe_loader::initial_entry_state_with_environment(&image, stack_top, &environment)?;
     let placed = startup_stack::place(stack_base, stack_top).ok_or(pe::Error::Einval)?;
     let context = UserVirtAddr::new(placed.context).ok_or(pe::Error::Einval)?;
-    let context_image = nt_context::startup_context(image.entry.as_u64(), 0, entry_state.rsp.as_u64());
+    let context_image = nt_context::startup_context(image.entry.as_u64(), 0, entry_state.rsp.as_u64(), selectors);
     let rsp = UserVirtAddr::new(placed.stack_pointer).ok_or(pe::Error::Einval)?;
     let entry = PeEntryState { rip: init, rsp, rcx: context.as_u64(),
         gs_base: entry_state.gs_base, personality: ExecutionPersonality::Nt };

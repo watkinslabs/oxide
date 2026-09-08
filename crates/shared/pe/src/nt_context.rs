@@ -40,26 +40,31 @@ pub const FXSAVE_MXCSR: usize = 0x18;
 /// them out of an uninitialised record.
 pub const CONTEXT_FULL: u32 = 0x0010_0000 | 0x1 | 0x2 | 0x4 | 0x8;
 
-/// Flat 64-bit user code and data selectors, as the record carries them.
-pub const USER_CS: u16 = 0x33;
-pub const USER_SS: u16 = 0x2b;
+/// The ring-3 selector pair a resumed context runs on. The numbers are not
+/// this crate's to invent: a `CONTEXT` is a return frame, and the values the
+/// kernel's own trap and capture paths publish are the only ones its resume
+/// path accepts. A second hardcoded pair here made the very first resume of a
+/// new process fail its selector check.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct UserSelectors { pub cs: u16, pub ss: u16 }
 /// The reserved bit the flags register always carries set.
 pub const EFLAGS_RESERVED: u64 = 0x0000_0002;
 /// Reset `MXCSR`: every exception masked, round to nearest.
 pub const MXCSR_INIT: u32 = 0x1f80;
 
 /// The context the loader hands its initialization thunk: a thread that would
-/// start at `entry` with `argument` on the stack `stack_pointer` describes.
+/// start at `entry` with `argument` on the stack `stack_pointer` describes,
+/// running on the caller's ring-3 selectors.
 /// # C: O(CONTEXT_BYTES)
-pub fn startup_context(entry: u64, argument: u64, stack_pointer: u64) -> [u8; CONTEXT_BYTES] {
+pub fn startup_context(entry: u64, argument: u64, stack_pointer: u64, selectors: UserSelectors) -> [u8; CONTEXT_BYTES] {
     let mut context = [0u8; CONTEXT_BYTES];
     put32(&mut context, CTX_FLAGS, CONTEXT_FULL);
     put32(&mut context, CTX_MXCSR, MXCSR_INIT);
     put32(&mut context, CTX_FLT_SAVE + FXSAVE_MXCSR, MXCSR_INIT);
-    put16(&mut context, CTX_SEG_CS, USER_CS);
-    put16(&mut context, CTX_SEG_SS, USER_SS);
-    put16(&mut context, CTX_SEG_DS, USER_SS);
-    put16(&mut context, CTX_SEG_ES, USER_SS);
+    put16(&mut context, CTX_SEG_CS, selectors.cs);
+    put16(&mut context, CTX_SEG_SS, selectors.ss);
+    put16(&mut context, CTX_SEG_DS, selectors.ss);
+    put16(&mut context, CTX_SEG_ES, selectors.ss);
     put16(&mut context, CTX_SEG_FS, 0);
     put16(&mut context, CTX_SEG_GS, 0);
     put32(&mut context, CTX_EFLAGS, EFLAGS_RESERVED as u32);
