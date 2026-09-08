@@ -308,7 +308,7 @@ fn native_create_named_pipe(call: NtCall) -> u64 {
     if !pipe.reserve_instance() { return STATUS_INSTANCE_NOT_AVAILABLE; }
     let handle_object = table.new_named_pipe_endpoint(pipe, sched::nt_object::NtPipeSide::Server);
     let Some(handle) = table.insert(handle_object, call.args.a1 as u32 | SYNCHRONIZE_ACCESS) else { return STATUS_INVALID_PARAMETER; };
-    if uaccess::put_user_u32(call.args.a0, handle.raw()).is_err() {
+    if uaccess::put_user_u64(call.args.a0, u64::from(handle.raw())).is_err() {
         let _ = table.close(handle);
         return STATUS_INVALID_PARAMETER;
     }
@@ -752,7 +752,7 @@ fn open_path_resolved(cur: &sched::Task, output: u64, desired: u32, path: &str, 
     let Some(handle) = table.insert(object, desired | SYNCHRONIZE_ACCESS) else {
         return STATUS_INVALID_PARAMETER;
     };
-    if uaccess::put_user_u32(output, handle.raw()).is_err() {
+    if uaccess::put_user_u64(output, u64::from(handle.raw())).is_err() {
         let _ = table.close(handle);
         return STATUS_INVALID_PARAMETER;
     }
@@ -769,7 +769,7 @@ fn open_named_pipe(cur: &sched::Task, output: u64, desired: u32, sharing: u32,
     let table = cur.thread_group.nt_handles();
     let client = table.new_named_pipe_endpoint(pipe, sched::nt_object::NtPipeSide::Client);
     let Some(handle) = table.insert(client, desired | SYNCHRONIZE_ACCESS) else { return STATUS_INVALID_PARAMETER; };
-    if uaccess::put_user_u32(output, handle.raw()).is_err() { let _ = table.close(handle); return STATUS_INVALID_PARAMETER; }
+    if uaccess::put_user_u64(output, u64::from(handle.raw())).is_err() { let _ = table.close(handle); return STATUS_INVALID_PARAMETER; }
     STATUS_SUCCESS
 }
 

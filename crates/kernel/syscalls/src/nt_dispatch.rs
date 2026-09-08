@@ -771,7 +771,7 @@ fn dispatch_service(call: NtCall) -> u64 {
         let Some(object) = sched::nt_object::lookup_object(&path, sched::nt_object::NtObjectType::Event) else { return STATUS_OBJECT_NAME_NOT_FOUND; };
         let access = if call.args.a1 as u32 & GENERIC_ALL != 0 { call.args.a1 as u32 | EVENT_ALL_ACCESS } else { call.args.a1 as u32 };
         let Some(handle) = table.insert(object, access) else { return STATUS_NO_MEMORY; };
-        if uaccess::put_user_u32(call.args.a0, handle.raw()).is_err() { let _ = table.close(handle); return STATUS_INVALID_PARAMETER; }
+        if uaccess::put_user_u64(call.args.a0, u64::from(handle.raw())).is_err() { let _ = table.close(handle); return STATUS_INVALID_PARAMETER; }
         return STATUS_SUCCESS;
     }
     if call.service == syscall::nt::NtService::OpenKey {
@@ -795,7 +795,7 @@ fn dispatch_service(call: NtCall) -> u64 {
         let Some(path) = crate::nt_directory::resolve_object_path(call.args.a2, &table) else { return STATUS_INVALID_PARAMETER; };
         let Some(object) = sched::nt_object::lookup_object(&path, sched::nt_object::NtObjectType::Mutant) else { return STATUS_OBJECT_NAME_NOT_FOUND; };
         let Some(handle) = table.insert(object, call.args.a1 as u32) else { return STATUS_NO_MEMORY; };
-        if uaccess::put_user_u32(call.args.a0, handle.raw()).is_err() { let _ = table.close(handle); return STATUS_INVALID_PARAMETER; }
+        if uaccess::put_user_u64(call.args.a0, u64::from(handle.raw())).is_err() { let _ = table.close(handle); return STATUS_INVALID_PARAMETER; }
         return STATUS_SUCCESS;
     }
     if call.service == syscall::nt::NtService::NtOpenProcess {
@@ -816,7 +816,7 @@ fn dispatch_service(call: NtCall) -> u64 {
         let Some(object) = sched::nt_object::lookup_object(&path, sched::nt_object::NtObjectType::Section) else { return STATUS_OBJECT_NAME_NOT_FOUND; };
         let access = if call.args.a1 as u32 & GENERIC_ALL != 0 { call.args.a1 as u32 | SECTION_ALL_ACCESS } else { call.args.a1 as u32 };
         let Some(handle) = table.insert(object, access) else { return STATUS_NO_MEMORY; };
-        if uaccess::put_user_u32(call.args.a0, handle.raw()).is_err() { let _ = table.close(handle); return STATUS_INVALID_PARAMETER; }
+        if uaccess::put_user_u64(call.args.a0, u64::from(handle.raw())).is_err() { let _ = table.close(handle); return STATUS_INVALID_PARAMETER; }
         return STATUS_SUCCESS;
     }
     if call.service == syscall::nt::NtService::NtOpenSemaphore {
@@ -830,7 +830,7 @@ fn dispatch_service(call: NtCall) -> u64 {
         let Some(object) = sched::nt_object::lookup_object(&path, sched::nt_object::NtObjectType::Semaphore) else { return STATUS_OBJECT_NAME_NOT_FOUND; };
         let access = if call.args.a1 as u32 & GENERIC_ALL != 0 { call.args.a1 as u32 | SEMAPHORE_ALL_ACCESS } else { call.args.a1 as u32 };
         let Some(handle) = table.insert(object, access) else { return STATUS_NO_MEMORY; };
-        if uaccess::put_user_u32(call.args.a0, handle.raw()).is_err() { let _ = table.close(handle); return STATUS_INVALID_PARAMETER; }
+        if uaccess::put_user_u64(call.args.a0, u64::from(handle.raw())).is_err() { let _ = table.close(handle); return STATUS_INVALID_PARAMETER; }
         return STATUS_SUCCESS;
     }
     if call.service == syscall::nt::NtService::NtOpenTimer {
@@ -842,7 +842,7 @@ fn dispatch_service(call: NtCall) -> u64 {
         let Some(path) = crate::nt_directory::resolve_object_path(call.args.a2, &table) else { return STATUS_INVALID_PARAMETER; };
         let Some(object) = sched::nt_object::lookup_object(&path, sched::nt_object::NtObjectType::Timer) else { return STATUS_OBJECT_NAME_NOT_FOUND; };
         let Some(handle) = table.insert(object, call.args.a1 as u32) else { return STATUS_NO_MEMORY; };
-        if uaccess::put_user_u32(call.args.a0, handle.raw()).is_err() { let _ = table.close(handle); return STATUS_INVALID_PARAMETER; }
+        if uaccess::put_user_u64(call.args.a0, u64::from(handle.raw())).is_err() { let _ = table.close(handle); return STATUS_INVALID_PARAMETER; }
         return STATUS_SUCCESS;
     }
     if call.service == syscall::nt::NtService::NtCreateUserProcess {
@@ -875,7 +875,7 @@ fn dispatch_service(call: NtCall) -> u64 {
         if state == sched::nt_object::NamedObjectState::TypeMismatch { return STATUS_OBJECT_TYPE_MISMATCH; }
         if state == sched::nt_object::NamedObjectState::ParentMissing { return STATUS_OBJECT_NAME_NOT_FOUND; }
         let Some(handle) = table.insert(object, call.args.a1 as u32) else { return STATUS_NO_MEMORY; };
-        if uaccess::put_user_u32(call.args.a0, handle.raw()).is_err() { let _ = table.close(handle); return STATUS_INVALID_PARAMETER; }
+        if uaccess::put_user_u64(call.args.a0, u64::from(handle.raw())).is_err() { let _ = table.close(handle); return STATUS_INVALID_PARAMETER; }
         return if state == sched::nt_object::NamedObjectState::Existing { STATUS_OBJECT_NAME_COLLISION } else { STATUS_SUCCESS };
     }
     if call.service == syscall::nt::NtService::NtOpenSymbolicLinkObject {
@@ -887,7 +887,7 @@ fn dispatch_service(call: NtCall) -> u64 {
         let Some(path) = crate::nt_directory::resolve_object_path_no_follow(call.args.a2, &table) else { return STATUS_INVALID_PARAMETER; };
         let Some(object) = sched::nt_object::lookup_object(&path, sched::nt_object::NtObjectType::SymbolicLink) else { return STATUS_OBJECT_NAME_NOT_FOUND; };
         let Some(handle) = table.insert(object, call.args.a1 as u32) else { return STATUS_NO_MEMORY; };
-        if uaccess::put_user_u32(call.args.a0, handle.raw()).is_err() { let _ = table.close(handle); return STATUS_INVALID_PARAMETER; }
+        if uaccess::put_user_u64(call.args.a0, u64::from(handle.raw())).is_err() { let _ = table.close(handle); return STATUS_INVALID_PARAMETER; }
         return STATUS_SUCCESS;
     }
     if call.service == syscall::nt::NtService::NtQuerySymbolicLinkObject {
@@ -1120,7 +1120,7 @@ fn dispatch_service(call: NtCall) -> u64 {
                 if desired_access & !JOB_OBJECT_ALL_ACCESS != 0 { return STATUS_INVALID_PARAMETER; }
                 let object = table.new_job();
                 let Some(native) = table.insert(object, desired_access) else { return STATUS_NO_MEMORY; };
-                if uaccess::put_user_u32(handle.as_u64(), native.raw()).is_err() {
+                if uaccess::put_user_u64(handle.as_u64(), u64::from(native.raw())).is_err() {
                     let _ = table.close(native);
                     STATUS_INVALID_PARAMETER
                 } else { STATUS_SUCCESS }
@@ -1151,14 +1151,14 @@ fn dispatch_service(call: NtCall) -> u64 {
                     if state == sched::nt_object::NamedObjectState::TypeMismatch { return STATUS_OBJECT_TYPE_MISMATCH; }
                     if state == sched::nt_object::NamedObjectState::ParentMissing { return STATUS_OBJECT_NAME_NOT_FOUND; }
                     let Some(native) = table.insert(object, granted_access) else { return STATUS_NO_MEMORY; };
-                    if uaccess::put_user_u32(handle.as_u64(), native.raw()).is_err() { let _ = table.close(native); return STATUS_INVALID_PARAMETER; }
+                    if uaccess::put_user_u64(handle.as_u64(), u64::from(native.raw())).is_err() { let _ = table.close(native); return STATUS_INVALID_PARAMETER; }
                     return if state == sched::nt_object::NamedObjectState::Existing { STATUS_OBJECT_NAME_COLLISION } else { STATUS_SUCCESS };
                 }
                 // Native EVENT_TYPE 0 is NotificationEvent (manual reset),
                 // while 1 is SynchronizationEvent (auto reset).
                 let object = table.new_event(event_type == 0, initial_state != 0);
                 let Some(native) = table.insert(object, granted_access) else { return STATUS_NO_MEMORY; };
-                if uaccess::put_user_u32(handle.as_u64(), native.raw()).is_err() {
+                if uaccess::put_user_u64(handle.as_u64(), u64::from(native.raw())).is_err() {
                     let _ = table.close(native);
                     STATUS_INVALID_PARAMETER
                 } else { STATUS_SUCCESS }
@@ -1347,11 +1347,11 @@ fn dispatch_service(call: NtCall) -> u64 {
                     if state == sched::nt_object::NamedObjectState::TypeMismatch { return STATUS_OBJECT_TYPE_MISMATCH; }
                     if state == sched::nt_object::NamedObjectState::ParentMissing { return STATUS_OBJECT_NAME_NOT_FOUND; }
                     let Some(native) = table.insert(object, desired_access) else { return STATUS_NO_MEMORY; };
-                    if uaccess::put_user_u32(handle.as_u64(), native.raw()).is_err() { let _ = table.close(native); return STATUS_INVALID_PARAMETER; }
+                    if uaccess::put_user_u64(handle.as_u64(), u64::from(native.raw())).is_err() { let _ = table.close(native); return STATUS_INVALID_PARAMETER; }
                     return if state == sched::nt_object::NamedObjectState::Existing { 0xc000_0035 } else { STATUS_SUCCESS };
                 }
                 let Some(native) = table.insert(object, desired_access) else { return STATUS_NO_MEMORY; };
-                if uaccess::put_user_u32(handle.as_u64(), native.raw()).is_err() {
+                if uaccess::put_user_u64(handle.as_u64(), u64::from(native.raw())).is_err() {
                     let _ = table.close(native);
                     STATUS_INVALID_PARAMETER
                 } else { STATUS_SUCCESS }
@@ -1648,7 +1648,7 @@ fn dispatch_service(call: NtCall) -> u64 {
                 let result = crate::nt_thread_lifecycle::publish(
                     &child, &table, THREAD_ALL_ACCESS | SYNCHRONIZE_ACCESS,
                     flags & THREAD_CREATE_FLAGS_CREATE_SUSPENDED != 0,
-                    |native| uaccess::put_user_u32(handle.as_u64(), native.raw()).map_err(|_| ()),
+                    |native| uaccess::put_user_u64(handle.as_u64(), u64::from(native.raw())).map_err(|_| ()),
                     sched::live::publish_new_task,
                     || {
                         if let Some(teb) = hal::UserVirtAddr::new(teb) { let _ = elf_load::process_env::unmap_thread_teb(teb, &mm); }

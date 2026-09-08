@@ -23,7 +23,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
             let Some(granted_access) = IO_COMPLETION.grant(desired_access) else { return Some(STATUS_INVALID_PARAMETER); };
             let object = table.new_completion_port(concurrency);
             let Some(native) = table.insert(object, granted_access) else { return Some(STATUS_INVALID_PARAMETER); };
-            if uaccess::put_user_u32(handle.as_u64(), native.raw()).is_err() {
+            if uaccess::put_user_u64(handle.as_u64(), u64::from(native.raw())).is_err() {
                 let _ = table.close(native); return Some(STATUS_INVALID_PARAMETER);
             }
             Some(STATUS_SUCCESS)
