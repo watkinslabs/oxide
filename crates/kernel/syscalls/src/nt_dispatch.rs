@@ -1269,8 +1269,11 @@ pub fn dispatch(call: NtCall) -> u64 {
             }
             NtObjectCall::CreateSection { handle, desired_access, size, protect, attributes, allocation_attributes, file }
             | NtObjectCall::CreateSectionNative { handle, desired_access, size, protect, attributes, allocation_attributes, file } => {
-                if desired_access & !(SECTION_QUERY | SECTION_MAP_READ | SECTION_MAP_WRITE | SECTION_MAP_EXECUTE | SYNCHRONIZE_ACCESS) != 0
+                if !crate::nt_section_image::access_admitted(desired_access)
                     || !crate::nt_section_image::attributes_admitted(allocation_attributes) { return STATUS_INVALID_PARAMETER; }
+                // The handle carries the mapped rights, never the generic ones
+                // the caller wrote: every later check names a specific right.
+                let desired_access = crate::nt_section_image::map_access(desired_access);
                 if crate::nt_section_image::image_needs_file(allocation_attributes, file) { return crate::nt_section_image::STATUS_INVALID_FILE_FOR_SECTION; }
                 if size > SECTION_MAX_BYTES || (size == 0 && allocation_attributes & SEC_IMAGE == 0) { return STATUS_INVALID_PARAMETER; }
                 let page = hal::PAGE_SIZE_BYTES as u64;
