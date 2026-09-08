@@ -145,3 +145,27 @@ fn a_right_no_type_defines_is_refused() {
     // A mutant answers for no modify-state right of its own.
     assert!(!MUTANT.admitted(0x0002));
 }
+
+#[test]
+fn a_key_answers_for_every_right_a_runtime_opens_one_with() {
+    // Measured: the shipped runtime opens registry keys asking for all of
+    // them at once, and a narrower admission refused every such open.
+    const KEY_ALL: u32 = 0x000f_003f;
+    const KEY_READ: u32 = 0x0002_0019;
+    const KEY_WRITE: u32 = 0x0002_0006;
+    assert_eq!(KEY.grant(KEY_ALL), Some(KEY_ALL));
+    assert_eq!(KEY.grant(KEY_READ), Some(KEY_READ));
+    assert_eq!(KEY.grant(KEY_WRITE), Some(KEY_WRITE));
+    assert_eq!(KEY.grant(MAXIMUM_ALLOWED), Some(KEY_ALL_ACCESS));
+    assert_eq!(KEY.grant(GENERIC_READ), Some(KEY_READ));
+    assert_eq!(KEY.grant(GENERIC_WRITE), Some(KEY_WRITE));
+}
+
+#[test]
+fn a_key_admits_the_registry_view_a_request_selects() {
+    // These bits pick which registry view the request means; a loader asks
+    // for one alongside its rights, and refusing it fails a legal open.
+    assert!(KEY.grant(0x0002_0019 | 0x0100).is_some());
+    assert!(KEY.grant(0x0002_0019 | 0x0200).is_some());
+    assert_eq!(KEY.grant(0x0000_0800), None);
+}

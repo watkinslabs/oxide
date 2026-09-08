@@ -125,6 +125,12 @@ pub struct ThreadGroup {
     pub nt_windows_milestone: AtomicU8,
     /// Process-preferred Windows UI language multi-string and input mode.
     pub nt_process_ui_languages: Spinlock<(u32, Vec<u16>), TaskListClass>,
+    /// Windows system locale, user locale, and user interface language of this
+    /// process. Zero means the process has not replaced that value and reads
+    /// back the one beneath it.
+    pub nt_system_lcid: AtomicU32,
+    pub nt_user_lcid: AtomicU32,
+    pub nt_user_ui_language: AtomicU32,
     /// Linux `signal_struct::timer_create_restore_ids`
     /// (`prctl(PR_TIMER_CREATE_RESTORE_IDS)`). While set, `timer_create(2)`
     /// reads its `timer_t __user *` OUT parameter as an IN parameter — the id
@@ -309,6 +315,7 @@ impl ThreadGroup {
             nt_unhandled_filter: AtomicU64::new(0),
             nt_windows_milestone: AtomicU8::new(NT_WINDOWS_MILESTONE_INITIAL),
             nt_process_ui_languages: Spinlock::new((0x8, alloc::vec![b'e' as u16, b'n' as u16, b'-' as u16, b'U' as u16, b'S' as u16, 0, 0])),
+            nt_system_lcid: AtomicU32::new(0), nt_user_lcid: AtomicU32::new(0), nt_user_ui_language: AtomicU32::new(0),
             timer_create_restore_ids: AtomicBool::new(false),
             session_leader: AtomicBool::new(false),
             is_child_subreaper: AtomicBool::new(false),
