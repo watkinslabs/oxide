@@ -55,6 +55,13 @@ pub(crate) fn map_view(mm: &vmm::AddressSpace, image: &pe::ImageSection, request
         let _ = mm.munmap(mapped, len);
         return Err(decide::STATUS_INVALID_IMAGE_FORMAT);
     }
+    // The view is mapped PE text. Publish its extent in the address space's PE
+    // registry: the syscall router reads it to tell this module's service
+    // stubs from the native code sharing the address space, and the image-view
+    // queries answer from the same records.
+    elf_load::pe_modules::append(mm, elf_load::pe_modules::PeRuntimeModule {
+        base: mapped.as_u64(), size: len as u32,
+        exception_rva: 0, exception_size: 0, exception_functions: Vec::new() });
     Ok((mapped, len, decide::map_view_status(image.at_preferred_base(mapped.as_u64()))))
 }
 

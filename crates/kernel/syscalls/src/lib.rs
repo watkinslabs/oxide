@@ -33,6 +33,12 @@ mod nt_text_order;
 // Where one menu item's glyphs start and what record the run carries.
 mod nt_menu_text;
 pub mod nt_dispatch;
+// Which personality owns a raw syscall word. An NT process runs PE service
+// stubs and native ELF text in one address space and the two numberings
+// overlap, so the routing rule is the caller's ORIGIN, not the personality.
+// The dispatch slot is kernel-gated; the rule lives here so it is compiled
+// and tested (docs/53, CLAUDE.md phantom-test rule).
+pub mod nt_syscall_origin;
 // Allocation attributes and the statuses an image-attributed section answers.
 pub mod nt_section_image;
 mod nt_image_section;

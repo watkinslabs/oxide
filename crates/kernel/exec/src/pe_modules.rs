@@ -64,6 +64,28 @@ pub fn append(as_: &AddressSpace, module: PeRuntimeModule) {
     MODULES.lock().entry(as_.root_pa()).or_default().push(module);
 }
 
+/// Borrow the address space's PE image records in place.
+///
+/// The routing decision runs on every syscall of an NT process, so it reads
+/// the records under the registry lock rather than copying them out.
+/// # C: O(f) plus the lock
+pub fn with_modules<R>(root: u64, f: impl FnOnce(&[PeRuntimeModule]) -> R) -> R {
+    let modules = MODULES.lock();
+    match modules.get(&root) { Some(list) => f(list), None => f(&[]) }
+}
+
+/// Retire one image record when its view is unmapped. A stale extent would
+/// keep claiming an address range a later mapping owns.
+/// # C: O(N_modules)
+pub fn unregister(root: u64, base: u64) {
+    let mut modules = MODULES.lock();
+    if let Some(list) = modules.get_mut(&root) {
+        list.retain(|module| module.base != base);
+        if list.is_empty() { modules.remove(&root); }
+    }
+    if let Some(exports) = EXPORTS.lock().get_mut(&root) { exports.remove(&base); }
+}
+
 pub fn find(root: u64, pc: u64) -> Option<PeRuntimeModule> {
     MODULES.lock().get(&root).and_then(|modules| modules.iter().find(|module| pc >= module.base && pc - module.base < module.size as u64).cloned())
 }
@@ -107,6 +129,37 @@ mod tests {
         assert_eq!(find(as_.root_pa(), 0x1400_9000), None);
         clear(as_.root_pa());
         assert_eq!(find(as_.root_pa(), 0x1400_1000), None);
+    }
+
+    #[test]
+    fn borrowed_records_describe_the_registered_images() {
+        let as_ = AddressSpace::new(0xc_0000).unwrap();
+        assert_eq!(with_modules(as_.root_pa(), |modules| modules.len()), 0);
+        let modules = [
+            PeRuntimeModule { base: 0x1_4000_0000, size: 0x2000, exception_rva: 0, exception_size: 0, exception_functions: alloc::vec::Vec::new() },
+            PeRuntimeModule { base: 0x7_bc00_0000, size: 0x8000, exception_rva: 0, exception_size: 0, exception_functions: alloc::vec::Vec::new() },
+        ];
+        register(&as_, &modules);
+        assert_eq!(with_modules(as_.root_pa(), |m| m.iter().map(|m| (m.base, m.size)).collect::<alloc::vec::Vec<_>>()),
+            alloc::vec![(0x1_4000_0000, 0x2000), (0x7_bc00_0000, 0x8000)]);
+        clear(as_.root_pa());
+    }
+
+    #[test]
+    fn an_unregistered_image_stops_covering_its_range() {
+        let as_ = AddressSpace::new(0xd_0000).unwrap();
+        register(&as_, &[
+            PeRuntimeModule { base: 0x1_4000_0000, size: 0x2000, exception_rva: 0, exception_size: 0, exception_functions: alloc::vec::Vec::new() },
+            PeRuntimeModule { base: 0x7_bc00_0000, size: 0x8000, exception_rva: 0, exception_size: 0, exception_functions: alloc::vec::Vec::new() },
+        ]);
+        register_exports(&as_, 0x1_4000_0000, alloc::vec![0x100]);
+        unregister(as_.root_pa(), 0x1_4000_0000);
+        assert!(find(as_.root_pa(), 0x1_4000_0100).is_none());
+        assert!(find(as_.root_pa(), 0x7_bc00_0100).is_some());
+        assert_eq!(original_export(as_.root_pa(), 0x1_4000_0000, 0), None);
+        unregister(as_.root_pa(), 0x7_bc00_0000);
+        assert_eq!(with_modules(as_.root_pa(), |m| m.len()), 0);
+        clear(as_.root_pa());
     }
 
     #[test]
