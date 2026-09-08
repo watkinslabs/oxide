@@ -1,9 +1,14 @@
-//! Desktop-root resolution through canonical thread membership and GUI ownership.
-use alloc::sync::Arc;
-use ipc::win32_window::{WindowId, DcLeaseContext};
+//! The desktop window: one per desktop, shared by every process attached to it.
+//!
+//! The desktop window belongs to the desktop object, not to an application.
+//! Every process on a desktop resolves the same handle for it, including a
+//! process that has created no window of its own, and a second instance of an
+//! application resolves the same handle as the first. Its handle is drawn from
+//! the window server's own block of the system-wide handle space, so no
+//! application's window can ever carry that value.
+use core::sync::atomic::{AtomicU32, Ordering};
+use ipc::win32_window::handle_space;
 use sched::nt_object::NtObject;
-use sched::thread_group::ThreadGroup;
-use super::GUI;
 
 #[path = "desktop/bootstrap.rs"]
 mod bootstrap;
@@ -14,68 +19,37 @@ mod bind;
 #[allow(unused_imports)] // KI-0705: orphaned desktop-bind surface
 pub(crate) use bind::bind_for_current;
 
-pub(crate) struct DesktopWindow { pub group: Arc<ThreadGroup>, pub window: WindowId }
+/// Server handles already named. Desktop windows are the only windows drawn
+/// from the server's block, so one counter names them all.
+static SERVER_HANDLES: AtomicU32 = AtomicU32::new(0);
 
-/// Called for HWND zero; never substitutes the caller's process-local HWND namespace.
-/// # C: O(processes + windows); # Sleeps: no
-pub(crate) fn resolve_for_current() -> Option<DesktopWindow> {
+/// The desktop window of the calling thread's desktop, established on first
+/// use. The reference creates it on the first request and answers every later
+/// one — in this process or another — with the same handle.
+/// # C: O(1); # Sleeps: no
+pub(crate) fn resolve_for_current() -> Option<u32> {
     let current = sched::live::current().filter(|task| task.is_nt_personality())?;
-    let station = current.thread_group.nt_window_station.lock().clone()?;
-    let membership = current.nt_desktop.lock().clone();
-    let (group, hwnd) = membership.resolve_root(&station).ok()?;
-    let window = WindowId::from_raw(hwnd)?;
-    {
-        let entries = GUI.lock();
-        let entry = entries.iter().find(|entry| entry.group.ptr_eq(&Arc::downgrade(&group)))?;
-        entry.state.get(window)?;
-    }
-    Some(DesktopWindow { group, window })
-}
-
-/// Desktop HWND for NtUserGetDesktopWindow; zero before a root is published.
-/// # C: O(processes + windows); # Sleeps: no
-pub(crate) fn window_for_current() -> u64 {
-    resolve_for_current().map(|desktop| desktop.window.raw() as u64).unwrap_or(0)
-}
-
-/// Bootstrap publishes only after the real GUI root exists; no synthetic geometry or window record.
-/// # C: O(processes + windows); # Sleeps: no
-pub(crate) fn publish_root(desktop: &NtObject, group: &Arc<ThreadGroup>, hwnd: u32) -> bool {
-    let Some(window) = WindowId::from_raw(hwnd) else { return false; };
-    let Some(desktop) = desktop.desktop() else { return false; };
-    desktop.publish_root_checked(group, hwnd, || {
-        let entries = GUI.lock();
-        let Some(entry) = entries.iter().find(|entry| entry.group.ptr_eq(&Arc::downgrade(group))) else { return false; };
-        let Some(record) = entry.state.get(window) else { return false; };
-        record.parent.is_none() && entry.state.rect(window).is_some()
-    }).is_ok()
-}
-
-/// Offer a freshly created window as this desktop's root. The publisher itself
-/// rejects a window that is not a real top-level with geometry, and keeps an
-/// already-published root, so a child window or a second top-level cannot
-/// displace the one HWND-zero resolves to.
-/// # C: O(processes + windows); # Sleeps: no
-pub(crate) fn offer_root_for_current(hwnd: u64) -> bool {
-    let Ok(hwnd) = u32::try_from(hwnd) else { return false; };
-    let Some(current) = sched::live::current().filter(|task| task.is_nt_personality()) else { return false; };
-    let station = { let station = current.thread_group.nt_window_station.lock().clone(); station };
-    let Some(station) = station else { return false; };
+    let station = { let station = current.thread_group.nt_window_station.lock().clone(); station? };
     let membership = { let membership = current.nt_desktop.lock().clone(); membership };
-    let Ok(desktop) = membership.identity(&station) else { return false; };
-    let group = Arc::clone(&current.thread_group);
-    publish_root(&desktop, &group, hwnd)
+    if let Ok(hwnd) = membership.resolve_root(&station) { return Some(hwnd); }
+    let desktop = membership.identity(&station).ok()?;
+    establish_root(&desktop)
 }
 
-/// GDI must use the returned root process for its object/backing lookup and lease lifetime.
-/// # C: O(processes + windows² + regions²); # Sleeps: no
-#[allow(dead_code)] // KI-0673
-pub(crate) fn dc_context_for_current(flags: u32) -> Option<(Arc<ThreadGroup>, DcLeaseContext)> {
-    let target = resolve_for_current()?;
-    let context = {
-        let entries = GUI.lock();
-        let entry = entries.iter().find(|entry| entry.group.ptr_eq(&Arc::downgrade(&target.group)))?;
-        entry.state.dc_lease_context(target.window, flags).ok()?
-    };
-    Some((target.group, context))
+/// Name this desktop's window if it has none. A caller that loses the race is
+/// answered with the handle the winner established, so one desktop still has
+/// one desktop window. # C: O(1)
+fn establish_root(desktop: &NtObject) -> Option<u32> {
+    let payload = desktop.desktop()?;
+    if let Ok(root) = payload.root() { return Some(root.hwnd()); }
+    let hwnd = handle_space::desktop_handle(SERVER_HANDLES.fetch_add(1, Ordering::Relaxed));
+    if hwnd == 0 { return None; }
+    payload.publish_root(hwnd).ok()
 }
+
+/// Desktop HWND for NtUserGetDesktopWindow; zero only when the calling thread
+/// is attached to no desktop at all. # C: O(1); # Sleeps: no
+pub(crate) fn window_for_current() -> u64 {
+    resolve_for_current().map(u64::from).unwrap_or(0)
+}
+

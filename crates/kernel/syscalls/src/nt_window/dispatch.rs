@@ -89,7 +89,12 @@ pub(super) fn dispatch_mode(call: NtCall, raw: bool) -> Option<u64> {
                 }
                 NtWindowCall::Create { parent, wndproc } => {
                     if parent > u32::MAX as u64 { return Some(STATUS_INVALID_HANDLE); }
-                    let parent = if parent == 0 { None } else { match ipc::win32_window::WindowId::from_raw(parent as u32) { Some(parent) => Some(parent), None => return Some(STATUS_INVALID_HANDLE) } };
+                    // A top-level window names the desktop window as its
+                    // parent, and the reference replaces that parent with
+                    // none: the desktop belongs to no process, so a window
+                    // parented to it is a window with no parent here.
+                    let parent = if parent == 0 || ipc::win32_window::handle_space::is_server_handle(parent as u32) { None }
+                        else { match ipc::win32_window::WindowId::from_raw(parent as u32) { Some(parent) => Some(parent), None => return Some(STATUS_INVALID_HANDLE) } };
                     let result = match state.create(cur.tid as u64, parent, wndproc) { Ok(window) => window.raw() as u64, Err(_) => STATUS_INVALID_PARAMETER };
                     state.note_queue_access(cur.tid as u64, timekeeper::monotonic_ns());
                     (Some(result), None, None)

@@ -1,11 +1,23 @@
 //! Canonical HWND lifetime, geometry, painting and message work.
 use super::*;
 impl WindowManager {
-    pub fn new() -> Self { Self { next: 1, next_atom: 1, classes: Vec::new(), windows: Vec::new(), rects: Vec::new(), texts: Vec::new(), dirty: Vec::new(), painting: Vec::new(), queues: Vec::new(), timers: Vec::new(), focus: None, capture: None, cursor: (0, 0), buttons: 0, destroying: Vec::new(), keyboard: KeyboardState::default(), active: None, cursors: cursor_object::CursorIcons::new(), current_cursor: 0, cursor_count: 0, cursor_clip: None, cursor_change: 0, cursor_history: [cursor_pos::CursorPos { x: 0, y: 0, time: 0, info: 0 }; cursor_pos::CURSOR_HISTORY], cursor_latest: 0, menu_owner: None, move_size: None, hotkeys: hotkey::Hotkeys::new(), inputs: thread_input::ThreadInputs::new(), tracks: mouse_track::MouseTracks::new(), raw_input: rawinput::RawRegistrations::new(), layouts: Vec::new(), icons: window_icon::WindowIconTable::new(), attributes: Vec::new(), pointer_frame: 0 } }
+    /// A window owner drawing handles from the window server's own block.
+    /// Every window owner in one system must instead be given a block of its
+    /// own, or two of them number different windows identically. # C: O(1)
+    pub fn new() -> Self { Self::new_in_block(handle_space::SERVER_BLOCK) }
+
+    /// A window owner drawing handles from one block of the system-wide
+    /// handle space. A block beyond the space names nothing and is refused
+    /// by falling back to no capacity at all. # C: O(1)
+    pub fn new_in_block(block: u32) -> Self { Self { next: handle_space::block_first(block).unwrap_or(0), next_end: handle_space::block_end(block).unwrap_or(0), next_atom: 1, classes: Vec::new(), windows: Vec::new(), rects: Vec::new(), texts: Vec::new(), dirty: Vec::new(), painting: Vec::new(), queues: Vec::new(), timers: Vec::new(), focus: None, capture: None, cursor: (0, 0), buttons: 0, destroying: Vec::new(), keyboard: KeyboardState::default(), active: None, cursors: cursor_object::CursorIcons::new(), current_cursor: 0, cursor_count: 0, cursor_clip: None, cursor_change: 0, cursor_history: [cursor_pos::CursorPos { x: 0, y: 0, time: 0, info: 0 }; cursor_pos::CURSOR_HISTORY], cursor_latest: 0, menu_owner: None, move_size: None, hotkeys: hotkey::Hotkeys::new(), inputs: thread_input::ThreadInputs::new(), tracks: mouse_track::MouseTracks::new(), raw_input: rawinput::RawRegistrations::new(), layouts: Vec::new(), icons: window_icon::WindowIconTable::new(), attributes: Vec::new(), pointer_frame: 0 } }
     pub fn create(&mut self, owner_tid: u64, parent: Option<WindowId>, wndproc: u64) -> Result<WindowId, WindowError> {
         if parent.is_some_and(|parent| self.get(parent).is_none()) { return Err(WindowError::InvalidParent); }
+        // A handle owner that has spent its block of the system-wide handle
+        // space has no handle left to hand out: taking one from the next
+        // block would name another owner's window.
+        if self.next == 0 || self.next >= self.next_end { return Err(WindowError::NoMemory); }
         let id = WindowId(self.next);
-        self.next = self.next.checked_add(1).ok_or(WindowError::NoSuchWindow)?;
+        self.next += 1;
         self.windows.push((id, OwnedWindow::new(WindowRecord { owner_tid, parent, owner: None, wndproc, unicode: true, class_atom: None, visible: false, sys_menu: None, id_menu: 0, presentation_ready: false, style: 0, ex_style: 0, last_focus: None, client_rect: None, imc: None, fnid: 0, dlg_info: 0, mdi_client: false }, 0, 0).map_err(|_| WindowError::NoMemory)?));
         self.rects.push((id, WindowRect { left: 0, top: 0, right: 0, bottom: 0 }));
         self.texts.push((id, Vec::new()));

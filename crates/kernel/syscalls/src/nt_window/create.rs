@@ -240,11 +240,6 @@ pub(crate) fn complete_callback(completion: sched::nt_callback::Completion, call
             // Without it the application never learns its size, and a control
             // it lays out from that size stays at zero and draws nothing.
             notify_created_geometry_for_current(pending.hwnd);
-            // The first real top-level window of this desktop becomes the root
-            // HWND zero resolves to. The publisher rejects anything that is not
-            // one and keeps an existing root, so this offer is safe to make for
-            // every created window rather than guessing which one qualifies.
-            let _ = super::desktop::offer_root_for_current(pending.hwnd);
             crate::nt_milestone::window_create();
             pending.hwnd
         }
