@@ -129,9 +129,11 @@ windows-compat-test: windows-surface-gate
 # the synthetic runtime export table, and every import against the graph
 # resolver. The campaign was discovering one of these per acceptance boot; the
 # whole surface is statically knowable from the shipped PE set, so it is a
-# hosted ratchet instead. Skips when the Wine PE catalog is absent.
+# hosted ratchet instead. The gate declares itself through the environment, so
+# a missing catalog fails here instead of reporting a green that audited
+# nothing; a plain workspace test run does not set it and skips.
 windows-surface-gate:
-	$(WARNING_RUN) $(CARGO) test -p syscalls --test windows_call_surface --quiet
+	OXIDE_WINDOWS_SURFACE_GATE=1 $(WARNING_RUN) $(CARGO) test -p syscalls --test windows_call_surface --quiet
 
 # Rewrite the ratchet baseline after closing gaps, as `lint-ratchet-update` does.
 windows-surface-gate-update:
