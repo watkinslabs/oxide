@@ -41,6 +41,17 @@ impl MeasureOutput {
         if previous != self.width || fit != self.fit { return None; }
         Some(if request.fit == 0 { request.count as usize } else { fit as usize })
     }
+
+    /// Whether one extent answer collapses every rectangle a caller sizes from
+    /// it. A run of at least one unit whose reported width or height is zero
+    /// measures to an empty box: a label rectangle computed from it has no
+    /// area, and the drawing step that consumes such a rectangle draws nothing
+    /// and issues no text run at all, which on screen is a control that keeps
+    /// its frame and loses its caption. A run of no units legitimately
+    /// measures to nothing and is not degenerate. # C: O(1)
+    pub fn degenerate_extent(&self, request: &MeasureRequest) -> bool {
+        request.kind == MEASURE_EXTENT && request.count != 0 && (self.width == 0 || self.height == 0)
+    }
 }
 
 impl MeasureRequest {
@@ -64,3 +75,7 @@ impl MeasureRequest {
         self.valid().then_some(core::mem::size_of::<Self>() + self.count as usize * 2)
     }
 }
+
+#[cfg(test)]
+#[path = "measure_tests.rs"]
+mod tests;

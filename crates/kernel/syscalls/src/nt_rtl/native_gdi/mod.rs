@@ -2,6 +2,7 @@
 mod service;
 mod context;
 mod measure;
+mod measure_trace;
 mod query;
 mod nonclient;
 mod menu_cells;

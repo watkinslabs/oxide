@@ -51,9 +51,10 @@ pub(super) fn route(ordinal: u64, args: &[u64]) -> Option<u64> {
 /// Copy one window's text into the caller's buffer, answering the units
 /// written. The answer never counts the terminator. # C: O(N_windows + N_text)
 fn internal_text(hwnd: u64, buffer: u64, count: i32) -> u64 {
-    if count <= 0 || buffer == 0 { return 0; }
+    if count <= 0 || buffer == 0 { trace_text(hwnd, count, -1); return 0; }
     let mut text = Vec::new();
-    if owner::internal_window_text_for_current(hwnd, &mut text).is_none() { return 0; }
+    if owner::internal_window_text_for_current(hwnd, &mut text).is_none() { trace_text(hwnd, count, -2); return 0; }
+    trace_text(hwnd, count, text.len() as i64);
     let units = text.len().min(count as usize - 1);
     for index in 0..units {
         let Some(address) = buffer.checked_add(index as u64 * 2) else { return 0; };
@@ -62,6 +63,23 @@ fn internal_text(hwnd: u64, buffer: u64, count: i32) -> u64 {
     let Some(terminator) = buffer.checked_add(units as u64 * 2) else { return 0; };
     if !crate::nt_wine_window::user_write::put_user_u16(terminator, 0) { return 0; }
     units as u64
+}
+
+/// Report what one window answered for its own text. A control paints its
+/// caption from this answer alone, so an empty answer and a refused lookup
+/// are the difference between a blank button and a bug elsewhere; the two are
+/// indistinguishable from the drawn result. Bounded: a paint asks once per
+/// control and the first paints name the boundary just as well.
+/// # C: O(1)
+fn trace_text(hwnd: u64, count: i32, units: i64) {
+    use core::sync::atomic::{AtomicU32, Ordering};
+    const BUDGET: u32 = 48;
+    static SPENT: AtomicU32 = AtomicU32::new(0);
+    if SPENT.fetch_add(1, Ordering::Relaxed) >= BUDGET { return; }
+    klog::write_raw(b"[WINDOWS-WINTEXT] hwnd="); klog::write_hex_u64(hwnd);
+    klog::write_raw(b" room="); klog::write_hex_u64(count as i64 as u64);
+    klog::write_raw(b" units="); klog::write_hex_u64(units as u64);
+    klog::write_raw(b"\n");
 }
 
 /// Fill one handle list. The list is terminated by the bottom-of-z-order
