@@ -306,7 +306,7 @@ fn unix_fd_to_handle(args: u64) -> u64 {
         let _ = cur.thread_group.nt_handles().close(handle);
         return STATUS_INVALID_HANDLE;
     }
-    if uaccess::put_user_u32(output, handle.raw()).is_err() {
+    if uaccess::put_user_u64(output, u64::from(handle.raw())).is_err() {
         let _ = cur.thread_group.nt_handles().close(handle);
         STATUS_INVALID_PARAMETER
     } else { STATUS_SUCCESS }
@@ -423,7 +423,7 @@ fn server_create_mapping(args: u64, request_size: u32, table: &sched::nt_object:
     if state == sched::nt_object::NamedObjectState::ParentMissing { return server_reply(args, STATUS_OBJECT_NAME_NOT_FOUND); }
     let Some(handle) = table.insert(object, access) else { return server_reply(args, STATUS_NO_MEMORY); };
     let Some(reply_address) = wine_arg(args, SERVER_REPLY_HANDLE) else { let _ = table.close(handle); return server_reply(args, STATUS_INVALID_PARAMETER); };
-    if uaccess::put_user_u32(reply_address, handle.raw()).is_err() { let _ = table.close(handle); return server_reply(args, STATUS_INVALID_PARAMETER); }
+    if uaccess::put_user_u64(reply_address, u64::from(handle.raw())).is_err() { let _ = table.close(handle); return server_reply(args, STATUS_INVALID_PARAMETER); }
     server_reply(args, if state == sched::nt_object::NamedObjectState::Existing { STATUS_OBJECT_NAME_COLLISION } else { STATUS_SUCCESS })
 }
 
@@ -596,7 +596,7 @@ fn server_open_mapping(args: u64, request_size: u32, table: &sched::nt_object::N
     };
     let Some(handle) = table.insert(object, access) else { return server_reply(args, STATUS_NO_MEMORY); };
     let Some(reply_address) = wine_arg(args, SERVER_REPLY_HANDLE) else { let _ = table.close(handle); return server_reply(args, STATUS_INVALID_PARAMETER); };
-    if uaccess::put_user_u32(reply_address, handle.raw()).is_err() { let _ = table.close(handle); return server_reply(args, STATUS_INVALID_PARAMETER); }
+    if uaccess::put_user_u64(reply_address, u64::from(handle.raw())).is_err() { let _ = table.close(handle); return server_reply(args, STATUS_INVALID_PARAMETER); }
     server_reply(args, STATUS_SUCCESS)
 }
 
@@ -681,7 +681,7 @@ fn server_call(args: u64) -> u64 {
                 if state == sched::nt_object::NamedObjectState::ParentMissing { return server_reply(args, STATUS_OBJECT_NAME_NOT_FOUND); }
                 let Some(handle) = table.insert(object, access) else { return server_reply(args, STATUS_INVALID_PARAMETER); };
                 let Some(reply_address) = wine_arg(args, SERVER_REPLY_HANDLE) else { let _ = table.close(handle); return server_reply(args, STATUS_INVALID_PARAMETER); };
-                if uaccess::put_user_u32(reply_address, handle.raw()).is_err() { let _ = table.close(handle); STATUS_INVALID_PARAMETER } else if state == sched::nt_object::NamedObjectState::Existing { STATUS_OBJECT_NAME_COLLISION } else { STATUS_SUCCESS }
+                if uaccess::put_user_u64(reply_address, u64::from(handle.raw())).is_err() { let _ = table.close(handle); STATUS_INVALID_PARAMETER } else if state == sched::nt_object::NamedObjectState::Existing { STATUS_OBJECT_NAME_COLLISION } else { STATUS_SUCCESS }
             }
         }
         ServerRequest::EventOp => {
@@ -719,7 +719,7 @@ fn server_call(args: u64) -> u64 {
                 if state == sched::nt_object::NamedObjectState::ParentMissing { return server_reply(args, STATUS_OBJECT_NAME_NOT_FOUND); }
                 let Some(handle) = table.insert(object, access) else { return server_reply(args, STATUS_NO_MEMORY); };
                 let Some(reply_address) = wine_arg(args, SERVER_REPLY_VALUE) else { let _ = table.close(handle); return server_reply(args, STATUS_INVALID_PARAMETER); };
-                if uaccess::put_user_u32(reply_address, handle.raw()).is_err() { let _ = table.close(handle); STATUS_INVALID_PARAMETER } else if state == sched::nt_object::NamedObjectState::Existing { STATUS_OBJECT_NAME_COLLISION } else { STATUS_SUCCESS }
+                if uaccess::put_user_u64(reply_address, u64::from(handle.raw())).is_err() { let _ = table.close(handle); STATUS_INVALID_PARAMETER } else if state == sched::nt_object::NamedObjectState::Existing { STATUS_OBJECT_NAME_COLLISION } else { STATUS_SUCCESS }
             }
         }
         ServerRequest::ReleaseMutex => {
@@ -755,7 +755,7 @@ fn server_call(args: u64) -> u64 {
                 if state == sched::nt_object::NamedObjectState::ParentMissing { return server_reply(args, STATUS_OBJECT_NAME_NOT_FOUND); }
                 let Some(handle) = table.insert(object, access) else { return server_reply(args, STATUS_NO_MEMORY); };
                 let Some(reply_address) = wine_arg(args, SERVER_REPLY_VALUE) else { let _ = table.close(handle); return server_reply(args, STATUS_INVALID_PARAMETER); };
-                if uaccess::put_user_u32(reply_address, handle.raw()).is_err() { let _ = table.close(handle); STATUS_INVALID_PARAMETER } else if state == sched::nt_object::NamedObjectState::Existing { STATUS_OBJECT_NAME_COLLISION } else { STATUS_SUCCESS }
+                if uaccess::put_user_u64(reply_address, u64::from(handle.raw())).is_err() { let _ = table.close(handle); STATUS_INVALID_PARAMETER } else if state == sched::nt_object::NamedObjectState::Existing { STATUS_OBJECT_NAME_COLLISION } else { STATUS_SUCCESS }
             }
         }
         ServerRequest::ReleaseSemaphore => {

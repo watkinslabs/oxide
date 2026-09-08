@@ -88,12 +88,12 @@ fn create(handle: u64, desired_access: u32, attributes: u64, flags: u64) -> u64 
         if state == sched::nt_object::NamedObjectState::TypeMismatch { return STATUS_OBJECT_TYPE_MISMATCH; }
         if state == sched::nt_object::NamedObjectState::ParentMissing { return STATUS_OBJECT_NAME_NOT_FOUND; }
         let Some(native) = table.insert(object, access) else { return STATUS_NO_MEMORY; };
-        if uaccess::put_user_u32(handle, native.raw()).is_err() { let _ = table.close(native); return STATUS_INVALID_PARAMETER; }
+        if uaccess::put_user_u64(handle, u64::from(native.raw())).is_err() { let _ = table.close(native); return STATUS_INVALID_PARAMETER; }
         return if state == sched::nt_object::NamedObjectState::Existing { STATUS_OBJECT_NAME_COLLISION } else { STATUS_SUCCESS };
     }
     let object = table.new_keyed_event();
     let Some(native) = table.insert(object, access) else { return STATUS_NO_MEMORY; };
-    if uaccess::put_user_u32(handle, native.raw()).is_err() { let _ = table.close(native); return STATUS_INVALID_PARAMETER; }
+    if uaccess::put_user_u64(handle, u64::from(native.raw())).is_err() { let _ = table.close(native); return STATUS_INVALID_PARAMETER; }
     STATUS_SUCCESS
 }
 
@@ -109,7 +109,7 @@ fn open(handle: u64, desired_access: u32, attributes: u64) -> u64 {
     };
     let Some(access) = admitted_access(desired_access) else { return STATUS_INVALID_PARAMETER; };
     let Some(native) = table.insert(object, access) else { return STATUS_NO_MEMORY; };
-    if uaccess::put_user_u32(handle, native.raw()).is_err() { let _ = table.close(native); return STATUS_INVALID_PARAMETER; }
+    if uaccess::put_user_u64(handle, u64::from(native.raw())).is_err() { let _ = table.close(native); return STATUS_INVALID_PARAMETER; }
     STATUS_SUCCESS
 }
 

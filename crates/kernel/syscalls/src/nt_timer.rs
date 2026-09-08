@@ -37,11 +37,11 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
                 if state == sched::nt_object::NamedObjectState::TypeMismatch { return Some(STATUS_OBJECT_TYPE_MISMATCH); }
                 if state == sched::nt_object::NamedObjectState::ParentMissing { return Some(STATUS_OBJECT_NAME_NOT_FOUND); }
                 let Some(native) = table.insert(object, granted_access) else { return Some(STATUS_NO_MEMORY); };
-                if uaccess::put_user_u32(handle.as_u64(), native.raw()).is_err() { let _ = table.close(native); return Some(STATUS_INVALID_PARAMETER); }
+                if uaccess::put_user_u64(handle.as_u64(), u64::from(native.raw())).is_err() { let _ = table.close(native); return Some(STATUS_INVALID_PARAMETER); }
                 return Some(if state == sched::nt_object::NamedObjectState::Existing { STATUS_OBJECT_NAME_COLLISION } else { STATUS_SUCCESS });
             }
             let Some(native) = table.insert(object, granted_access) else { return Some(STATUS_NO_MEMORY); };
-            if uaccess::put_user_u32(handle.as_u64(), native.raw()).is_err() {
+            if uaccess::put_user_u64(handle.as_u64(), u64::from(native.raw())).is_err() {
                 let _ = table.close(native); STATUS_INVALID_PARAMETER
             } else { STATUS_SUCCESS }
         }
