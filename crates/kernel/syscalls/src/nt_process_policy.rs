@@ -91,6 +91,19 @@ mod tests {
     }
 
     #[test]
+    fn every_admitted_thread_stack_carries_the_runtime_thread_start_extent() {
+        use elf_load::pe_runtime_loader::startup_stack;
+        const TOP: u64 = 0x7fff_0000_0000;
+        assert!(NT_THREAD_MIN_STACK >= startup_stack::MIN_START_STACK_BYTES,
+            "the floor must admit the extent the runtime writes before it resumes");
+        for requested in [0, 1, 0x1000, NT_THREAD_MIN_STACK, NT_THREAD_MAX_STACK] {
+            let size = thread_stack_size(requested).expect("the request must be admitted");
+            let placed = startup_stack::place(TOP - size, TOP).expect("the stack must carry a startup context");
+            assert!(placed.scrub_floor >= TOP - size);
+        }
+    }
+
+    #[test]
     fn thread_stack_rejects_values_that_round_past_native_limit() {
         assert_eq!(thread_stack_size(NT_THREAD_MAX_STACK), Some(NT_THREAD_MAX_STACK));
         assert_eq!(thread_stack_size(NT_THREAD_MAX_STACK + 1), None);

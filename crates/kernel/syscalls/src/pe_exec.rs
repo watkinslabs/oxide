@@ -286,6 +286,9 @@ fn build_pe_address_space(cur: &sched::Task, stack_bytes: usize, replace_current
 #[cfg(target_arch = "x86_64")]
 pub fn prepare_pe_process(cur: &sched::Task, path: &[u8], blob: &[u8], command_line: Option<&str>, environment: &[(&str, &str)], params: Option<&elf_load::process_env::NtProcessParameters<'_>>, _exec_vp: Option<&vfs::VfsPath>, catalog: Option<&pe::catalog::ModuleCatalog>, process_id: u32, thread_id: u32, replace_current: bool, bootstrap: Option<&[u8]>) -> Result<PreparedPeProcess, i64> {
     const STACK_BYTES: usize = 8 * 1024 * 1024;
+    // The runtime's thread-start path scrubs a fixed extent below the startup
+    // context before it resumes; the initial stack has to carry it.
+    const _: () = assert!(STACK_BYTES as u64 >= elf_load::pe_runtime_loader::startup_stack::MIN_START_STACK_BYTES);
     let enoexec = || -(syscall::errno::Errno::Enoexec.as_i32() as i64);
     let path = core::str::from_utf8(path).map_err(|_| refused(b"image-path-not-utf8", None))?;
     let (as_, stack, stack_top) = build_pe_address_space(cur, STACK_BYTES, replace_current)?;
@@ -300,6 +303,8 @@ pub fn prepare_pe_process(cur: &sched::Task, path: &[u8], blob: &[u8], command_l
     if let Some(runtime_blob) = catalog.and_then(|catalog| catalog.load(elf_load::pe_runtime_loader::RUNTIME_MODULE)) {
         let handover = elf_load::pe_runtime_loader::load(blob, runtime_blob, &as_, &input, stack.as_u64(), stack_top)
             .map_err(|error| refused(b"runtime-handover", Some(error)))?;
+        elf_load::pe_runtime_loader::install_startup_context(&as_, &handover)
+            .map_err(|error| refused(b"startup-context", Some(error)))?;
         let process = handover.into_process();
         let startup = process.startup.facts();
         let (initial_entry, initial_stack, initial_argument) =
