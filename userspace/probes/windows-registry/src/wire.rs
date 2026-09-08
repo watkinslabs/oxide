@@ -1,18 +1,28 @@
 //! Bounded registry framing over native streams.
 use super::*;
 /// Serve framed registry requests over one native Linux stream. The caller
-/// owns listener lifetime and chooses the per-user store.
+/// owns listener lifetime and chooses the per-user store. The session's
+/// unflushed mutations reach the database when the peer disconnects, which is
+/// the last point a single-connection owner can still commit them.
 pub fn serve_connection<S: Read + Write>(stream: &mut S, store: &mut RegistryStore) -> io::Result<()> {
-    serve_requests(stream, |request| execute_request(store, request))
+    let served = serve_requests(stream, |request| execute_request(store, request));
+    let committed = commit(store);
+    served?; committed
 }
 
-/// Commit one request before its response can leave the canonical store owner.
+/// Apply one request to the canonical store owner. A value set marks the
+/// session dirty and does not itself reach the database: the hive commits on
+/// an explicit flush request, at disconnect, or on the lazy-flush interval.
+/// A set that committed on its own would make the flush request meaningless
+/// and cost one whole-database write per set.
 pub(crate) fn execute_request(store: &mut RegistryStore, request: Result<Request, Error>) -> io::Result<Response> {
-    let response = request.map_or_else(Response::Failure, |request| store.execute(request));
-    if store.is_dirty() {
-        store.flush().map_err(|error| io::Error::other(format!("registry commit failed: {error:?}")))?;
-    }
-    Ok(response)
+    Ok(request.map_or_else(Response::Failure, |request| store.execute(request)))
+}
+
+/// Force the session's unflushed mutations to the database, naming the store
+/// in the error so a durability failure is not mistaken for a framing one.
+pub(crate) fn commit(store: &mut RegistryStore) -> io::Result<()> {
+    store.flush().map_err(|error| io::Error::other(format!("registry commit failed: {error:?}")))
 }
 
 /// Socket I/O surrounds the transaction callback; no store borrow spans peer waits.

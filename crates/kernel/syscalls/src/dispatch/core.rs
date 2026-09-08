@@ -439,15 +439,16 @@ use diagnostic_trace::trace_swapon_process;
 use diagnostic_trace::trace_random_seed_syscall;
 #[cfg(feature = "debug-boot")]
 use diagnostic_trace::trace_einval;
-/// Name the service a raw ordinal routed to, bounded, so a boot log carries
-/// the mapping the shipped module actually asked for rather than only the
-/// service that answered. A misrouted ordinal and a refusing service look
-/// identical without it.
+/// Name the service a raw ordinal routed to, so a boot log carries the mapping
+/// the shipped module actually asked for rather than only the service that
+/// answered. A misrouted ordinal and a refusing service look identical without
+/// it. One line per distinct ordinal/service pair: the record is a mapping,
+/// and repeating it per call put a synchronous console write in every NT
+/// syscall of a load sequence (`crate::nt_ordinal_report`).
 #[cfg(target_os = "oxide-kernel")]
 fn report_ordinal(id: u32, service: syscall::nt::NtService) {
-    const MAX_REPORTED_ORDINALS: u32 = 4096;
-    static REPORTED: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-    if REPORTED.fetch_add(1, core::sync::atomic::Ordering::Relaxed) >= MAX_REPORTED_ORDINALS { return; }
+    static REPORTED: crate::nt_ordinal_report::OrdinalReports = crate::nt_ordinal_report::OrdinalReports::new();
+    if !REPORTED.claim(id, service as u32) { return; }
     klog::write_raw(b"[WINDOWS-NT-ORD] ord=");
     klog::write_hex_u64(id as u64);
     klog::write_raw(b" service=");

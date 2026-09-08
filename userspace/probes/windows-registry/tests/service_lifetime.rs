@@ -175,3 +175,33 @@ fn declining_daemon_leaves_a_usable_shared_service_for_a_later_application() {
     send_frame(&mut second, &value_request(registry_wire::QUERY, same, "written-before-second-launch"));
     expect_dword(&mut second, 7);
 }
+
+/// Each whole-database commit creates a temporary file and renames it over the
+/// database, so the database inode counts commits from outside the daemon.
+fn database_identity(database: &Path) -> u64 {
+    fs::symlink_metadata(database).expect("the owner's database must remain linked").ino()
+}
+
+#[test]
+fn a_run_of_sets_does_not_commit_the_database_once_per_set() {
+    const SETS: u32 = 47;
+    let mut fixture = Fixture::new();
+    let socket = fixture.directory.join("registry.sock"); let database = fixture.directory.join("registry.db");
+    fixture.spawn();
+    wait_until("daemon socket", || { assert!(fixture.children[0].try_wait().unwrap().is_none()); socket.exists() });
+    let mut client = UnixStream::connect(&socket).unwrap();
+    let key = request_handle(&mut client, registry_wire::CREATE, "Software\\StartupBurst");
+    let opened = database_identity(&database);
+    for index in 0..SETS { set_dword(&mut client, key, &format!("Value{index}"), index); }
+    assert_eq!(database_identity(&database), opened, "a set committed the whole database on its own");
+    // The values are live in the owner regardless of what has reached storage.
+    send_frame(&mut client, &value_request(registry_wire::QUERY, key, "Value46"));
+    expect_dword(&mut client, SETS - 1);
+    // Disconnect is the session's last chance to commit, and must take it.
+    drop(client);
+    wait_until("disconnect commit", || database_identity(&database) != opened);
+    let mut later = UnixStream::connect(&socket).unwrap();
+    let same = request_handle(&mut later, registry_wire::OPEN, "Software\\StartupBurst");
+    send_frame(&mut later, &value_request(registry_wire::QUERY, same, "Value46"));
+    expect_dword(&mut later, SETS - 1);
+}
