@@ -7,13 +7,14 @@ use syscall::nt::NtMemoryCall;
 
 /// Accept the zero-entry extended-parameter form used by the current-process
 /// mapping path. Nonzero entries need an extended-parameter owner and remain
-/// outside this bounded contract.
+/// outside this bounded contract. The count is a `ULONG` in a frame word, so
+/// only its low half is the count the caller passed. # C: O(1)
 pub fn map_view_ex_parameters_admitted(parameters: u64, count: u64) -> bool {
-    let _ = parameters;
-    count == 0
+    crate::nt_memory_args::extended_parameters_admitted(parameters, count)
 }
 
-/// NtCreateSectionEx forwards section creation without consuming its parameter array. # C: O(1)
+/// NtCreateSectionEx forwards section creation without consuming its parameter
+/// array, so neither the array nor its count reaches a decision. # C: O(1)
 pub fn create_section_ex_parameters_admitted(_parameters: u64, _count: u64) -> bool { true }
 
 /// Decode one NT personality entry without making it visible to Linux routes.
@@ -46,8 +47,9 @@ fn native_section_object(call: NtCall) -> Option<NtObjectCall> {
         nt::NtService::CreateSection | nt::NtService::NtCreateSectionEx => {
             let allocation_attributes = stack_argument(crate::nt_section_image::CREATE_SECTION_ALLOCATION_ATTRIBUTES_ARG)?;
             let file = stack_argument(crate::nt_section_image::CREATE_SECTION_FILE_ARG)?;
-            if call.service == nt::NtService::NtCreateSectionEx
-                && !create_section_ex_parameters_admitted(stack_argument(7)?, stack_argument(8)?) { return None; }
+            // The extended form's eighth and ninth arguments name an array
+            // this service never consumes; reading them could only refuse a
+            // call whose frame is exactly seven arguments long.
             // A stub stores a ULONG into a frame word with a 32-bit store, so
             // the slot's upper half keeps whatever the frame held before.
             // The value is the low half; refusing the word refused every
@@ -70,8 +72,12 @@ fn native_section_object(call: NtCall) -> Option<NtObjectCall> {
             })
         }
         nt::NtService::MapViewOfSection => {
-            let size = stack_argument(6)?;
-            let protect = stack_argument(9)?;
+            // Ten declared arguments: the fifth is a commit size and the
+            // eighth an inheritance disposition, neither of which reaches a
+            // decision here; the sixth, seventh and tenth are read below and
+            // the ninth is checked by the caller of this decode.
+            let size = stack_argument(crate::nt_memory_args::MAP_VIEW_SIZE_ARG)?;
+            let protect = stack_argument(crate::nt_memory_args::MAP_VIEW_PROTECT_ARG)?;
             let protect = crate::nt_ulong::ulong(protect) as u64;
             if call.args.a0 > u32::MAX as u64 || size == 0 { return None; }
             let offset = if call.args.a5 == 0 { 0 } else { uaccess::get_user_u64(call.args.a5).ok()? };
@@ -82,11 +88,15 @@ fn native_section_object(call: NtCall) -> Option<NtObjectCall> {
             })
         }
         nt::NtService::NtMapViewOfSectionEx => {
-            let parameters = stack_argument(7)?;
-            let count = stack_argument(8)?;
+            let parameters = stack_argument(crate::nt_memory_args::MAP_VIEW_EX_PARAMETERS_ARG)?;
+            let count = stack_argument(crate::nt_memory_args::MAP_VIEW_EX_COUNT_ARG)?;
             if !map_view_ex_parameters_admitted(parameters, count) { return None; }
-            let protect = crate::nt_ulong::ulong(stack_argument(6)?) as u64;
-            if call.args.a0 > u32::MAX as u64 || call.args.a5 > u32::MAX as u64 { return None; }
+            let protect = crate::nt_ulong::ulong(stack_argument(crate::nt_memory_args::MAP_VIEW_EX_PROTECT_ARG)?) as u64;
+            // The sixth argument is the allocation type, a ULONG in a frame
+            // word: its upper half is the frame's, not the caller's, so the
+            // whole word is never the value and refusing it refuses every
+            // mapping. Its one refusal is answered before this decode.
+            if call.args.a0 > u32::MAX as u64 { return None; }
             let offset = if call.args.a3 == 0 { 0 } else { uaccess::get_user_u64(call.args.a3).ok()? };
             Some(NtObjectCall::MapViewOfSectionNative {
                 section: call.args.a0 as u32, process: call.args.a1,
@@ -619,14 +629,28 @@ fn dispatch_service(call: NtCall) -> u64 {
     }
     if call.service == syscall::nt::NtService::NtSetInformationVirtualMemory {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
-        if !cur.is_nt_personality() || call.args.a0 != CURRENT_PROCESS { return STATUS_INVALID_PARAMETER; }
-        // VmPrefetchInformation is class zero. The range array and extended
-        // information are user buffers; validate their presence before the
-        // VMM acquires a real prefetch/write-watch owner.
-        if call.args.a1 != 0 || call.args.a2 == 0 || call.args.a3 == 0 || call.args.a4 == 0 {
-            return STATUS_INVALID_PARAMETER;
+        if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+        // Six declared arguments: process, class, range count, range array,
+        // information buffer, information length. The last is a ULONG in a
+        // frame word; the count beside it is pointer-sized.
+        let length = stack_argument(crate::nt_memory_args::SET_INFORMATION_MEMORY_LENGTH_ARG).unwrap_or(0);
+        if let Some(status) = crate::nt_memory_args::set_information_refusal(call.args.a1, call.args.a2, call.args.a4, length) {
+            return status;
         }
-        return STATUS_NOT_IMPLEMENTED;
+        if call.args.a3 == 0 { return STATUS_ACCESS_VIOLATION; }
+        // A prefetch names memory to make resident. Every range is validated
+        // before any of them is acted on, and a hint that this kernel's
+        // fault path satisfies on demand leaves the ranges as they were.
+        let mut index = 0u64;
+        while index < call.args.a2 {
+            let Some(address) = crate::nt_memory_args::range_entry_bytes_address(call.args.a3, index) else {
+                return STATUS_ACCESS_VIOLATION;
+            };
+            let Ok(bytes) = uaccess::get_user_u64(address) else { return STATUS_ACCESS_VIOLATION; };
+            if let Some(status) = crate::nt_memory_args::range_entry_refusal(bytes) { return status; }
+            index += 1;
+        }
+        return STATUS_SUCCESS;
     }
     if call.service == syscall::nt::NtService::NtSetSystemInformation {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
@@ -1097,6 +1121,15 @@ fn dispatch_service(call: NtCall) -> u64 {
             if crate::nt_native_thread::request_termination(&target, call.args.a0 as u32) { return STATUS_SUCCESS; }
         }
         return crate::s060_exit::sys_exit(&SyscallArgs { a0: call.args.a0, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 }) as u64;
+    }
+    if matches!(call.service, nt::NtService::MapViewOfSection | nt::NtService::NtMapViewOfSectionEx) {
+        // The allocation type is the ninth argument of the ten-argument form
+        // and the sixth of the extended one. A frame word the caller never
+        // wrote is not an argument, so an unreadable word reads as zero.
+        let extended = call.service == nt::NtService::NtMapViewOfSectionEx;
+        let raw = if extended { call.args.a5 }
+            else { stack_argument(crate::nt_memory_args::MAP_VIEW_ALLOCATION_TYPE_ARG).unwrap_or(0) };
+        if let Some(status) = crate::nt_memory_args::map_view_allocation_type_refusal(raw, extended) { return status; }
     }
     let object_call = if matches!(call.service, nt::NtService::CreateSection | nt::NtService::NtCreateSectionEx | nt::NtService::MapViewOfSection | nt::NtService::NtMapViewOfSectionEx) {
         native_section_object(call)
@@ -1678,8 +1711,12 @@ fn dispatch_service(call: NtCall) -> u64 {
         };
     }
     if call.service == nt::NtService::NtAllocateVirtualMemoryEx {
-        let Some(parameter_count) = stack_argument(6) else { return STATUS_INVALID_PARAMETER; };
-        if call.args.a5 != 0 || parameter_count == 0 { return STATUS_INVALID_PARAMETER; }
+        // Seven declared arguments: the array is the sixth and its count the
+        // seventh. The count is a ULONG in a frame word, so the word's upper
+        // half is the frame's; a caller passing no extended parameters at all
+        // passes a zero count beside a pointer that names nothing.
+        let count = stack_argument(crate::nt_memory_args::ALLOCATE_EX_COUNT_ARG).unwrap_or(0);
+        if !crate::nt_memory_args::extended_parameters_admitted(call.args.a5, count) { return STATUS_INVALID_PARAMETER; }
     }
     let call = match nt::decode_memory(call) {
         Ok(call) => call,
@@ -1847,6 +1884,16 @@ mod tests {
         assert!(map_view_ex_parameters_admitted(0, 0));
         assert!(map_view_ex_parameters_admitted(0x1000, 0));
         assert!(!map_view_ex_parameters_admitted(0, 1));
+    }
+    #[test]
+    fn the_extended_parameter_count_is_the_low_half_of_its_frame_word() {
+        // The ninth argument is a ULONG stored into a frame word with a
+        // 32-bit store; a caller passing no extended parameters leaves the
+        // word's upper half holding whatever the frame held before it.
+        assert!(map_view_ex_parameters_admitted(0, 0x7fff_1234_0000_0000),
+            "a zero count under a stale upper half is still no extended parameters");
+        assert!(!map_view_ex_parameters_admitted(0x2000, 0x7fff_1234_0000_0001),
+            "one real entry is still refused");
     }
     #[test]
     fn create_section_ex_ignores_parameter_pointer_and_count() {
