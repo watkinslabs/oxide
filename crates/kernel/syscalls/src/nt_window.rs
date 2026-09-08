@@ -13,12 +13,24 @@ use syscall::nt::{self, NtCall, NtWindowCall, NtWindowMessage};
 pub(crate) mod owner;
 #[path = "nt_window/class_background.rs"]
 mod class_background;
-pub(crate) use class_background::{register_class_desc_for_current, class_background_for_current, class_description_by_atom_for_current, dpi_context_for_current, set_dpi_context_for_current};
+pub(crate) use class_background::{register_class_desc_for_current, class_background_for_current, class_description_by_atom_for_current, dpi_context_for_current, set_dpi_context_for_current, set_thunk_lock_for_current, thread_dpi_context_for_current, set_thread_dpi_context_for_current};
 #[path = "nt_window/client_procs.rs"]
 mod client_procs;
-pub(crate) use client_procs::{publish_client_procs_for_current, claim_builtin_registration_for_current, claim_init_builtin_classes_callback_for_current};
+pub(crate) use client_procs::{publish_client_procs_for_current, claim_builtin_registration_for_current, claim_init_builtin_classes_callback_for_current, alloc_winproc_for_current, dialog_proc_for_current};
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) use client_procs::publish_builtin_winprocs_for_current;
 #[path = "nt_window/user_input.rs"]
 pub(crate) mod user_input;
+#[cfg(target_os = "oxide-kernel")]
+#[path = "nt_window/ime_rect.rs"]
+mod ime_rect;
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) use ime_rect::set_ime_composition_rect_for_current;
+#[cfg(target_os = "oxide-kernel")]
+#[path = "nt_window/thread_notify.rs"]
+mod thread_notify;
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) use thread_notify::{mark_exiting_thread_for_current, thread_detach_for_current, send_display_change};
 
 #[cfg(target_os = "oxide-kernel")]
 #[path = "nt_window/access.rs"]
@@ -96,7 +108,7 @@ pub(crate) use query::hwnd_snapshot_for_current;
 mod accel;
 pub(crate) use accel::{accel_create_for_current, accel_copy_for_current, accel_destroy_for_current, accel_target_for_current};
 pub(crate) use keyboard::{get_key_state_current, get_async_key_state_current,
-    get_keyboard_state_current, set_keyboard_state_current};
+    get_keyboard_state_current, set_keyboard_state_current, async_keyboard_state_current};
 pub(crate) use bridge::handle_event as compositor_event;
 pub(crate) use create_lifecycle::{CreateReturnConvention, CreateStructArgs};
 // nt_rtl::begin_wndproc_create_callback (x86-64 real impl) is the sole
@@ -176,11 +188,47 @@ struct GuiEntry { group: Weak<sched::thread_group::ThreadGroup>, state: ipc::win
     hardware: Option<hardware::PendingHardware>,
     /// The click this process last handed over, which the next one is paired
     /// with to recognise a double click.
-    last_click: Option<ipc::win32_window::hardware::ClickRecord> }
+    last_click: Option<ipc::win32_window::hardware::ClickRecord>,
+    /// The 16-bit thunk-lock callback the client registered, and the
+    /// per-thread DPI awareness contexts overriding the process one.
+    thunk_lock: u64, thread_dpi: Vec<(u64, u32)> }
 static GUI: Spinlock<Vec<GuiEntry>, GuiLockClass> = Spinlock::new(Vec::new());
 #[cfg(target_os = "oxide-kernel")]
 static USER_ATOMS: Spinlock<ipc::win32_window::UserAtomTable, GuiLockClass> = Spinlock::new(ipc::win32_window::UserAtomTable::new());
 static USER_SETTINGS: Spinlock<ipc::win32_window::UserSettings, GuiLockClass> = Spinlock::new(ipc::win32_window::UserSettings::new());
+/// Tick count of the most recent keyboard or pointer input on the desktop.
+/// One desktop-wide value, which is what the idle timer measures.
+static LAST_INPUT_MS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// Stamp the arrival of user input. # C: O(1)
+pub(crate) fn note_user_input() {
+    LAST_INPUT_MS.store(timekeeper::monotonic_ns().saturating_div(1_000_000) as u32, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// Tick count at which the desktop last saw keyboard or pointer input.
+/// # C: O(1)
+pub(crate) fn last_input_time() -> u32 { LAST_INPUT_MS.load(core::sync::atomic::Ordering::Relaxed) }
+
+/// Session keyboard auto-repeat setting; the answer reports the previous
+/// value, as the reference's server request does. # C: O(1)
+pub(crate) fn set_keyboard_auto_repeat(enable: bool) -> bool { USER_SETTINGS.lock().set_keyboard_auto_repeat(enable) }
+
+/// Whether held keys repeat for this session. # C: O(1)
+pub(crate) fn keyboard_auto_repeat() -> bool { USER_SETTINGS.lock().keyboard_auto_repeat() }
+
+/// Publish the session desktop pattern into the caller's buffer, answering the
+/// character count written. A session with no pattern writes nothing and
+/// answers zero. # C: O(DESK_PATTERN_CHARS) plus bounded usercopy
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) fn desk_pattern_to_user(destination: u64, chars: usize) -> u64 {
+    let pattern = { let settings = USER_SETTINGS.lock(); let pattern = settings.desk_pattern(); pattern[..pattern.len().min(chars)].to_vec() };
+    if pattern.is_empty() { return 0; }
+    let mut bytes = Vec::with_capacity(pattern.len() * 2);
+    for unit in &pattern { bytes.extend_from_slice(&unit.to_le_bytes()); }
+    if uaccess::copy_to_user(destination, &bytes).is_err() { return 0; }
+    pattern.len() as u64
+}
+
 #[cfg(target_os = "oxide-kernel")]
 static CLIPBOARD: Spinlock<ipc::win32_window::ClipboardManager, GuiLockClass> = Spinlock::new(ipc::win32_window::ClipboardManager::new());
 

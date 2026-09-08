@@ -48,6 +48,9 @@ struct Object {
     filled: bool,
     delay: u32,
     param: u64,
+    /// Client callback the owner invokes when the object is freed. It travels
+    /// with the parameter and is replaced with it, never separately.
+    free_callback: u64,
     module: Vec<u16>,
     /// Resource name for a string resource; `res_id` carries an integer one.
     resname: Vec<u16>,
@@ -89,7 +92,7 @@ impl CursorIcons {
         let handle = self.next;
         self.next = self.next.checked_add(1).ok_or(WindowError::NoMemory)?;
         self.objects.push(Object { handle, is_icon, is_shared: false, is_ani: false, filled: false,
-            delay: 0, param: 0, module: Vec::new(), resname: Vec::new(), res_id: None, rsrc: 0,
+            delay: 0, param: 0, free_callback: 0, module: Vec::new(), resname: Vec::new(), res_id: None, rsrc: 0,
             frame: CursorFrame::default(), frames: Vec::new(), num_frames: 0, oem: None });
         Ok(handle)
     }
@@ -236,6 +239,19 @@ impl CursorIcons {
         let Some(index) = self.index(handle) else { return 0; };
         core::mem::replace(&mut self.objects[index].param, param)
     }
+
+    /// Install the free-icon callback and its parameter together, answering
+    /// the previous parameter. The pair is one record: a caller that replaces
+    /// the parameter replaces the callback that frees it.
+    /// # C: O(N_objects)
+    pub fn set_free_params(&mut self, handle: u64, callback: u64, param: u64) -> u64 {
+        let Some(index) = self.index(handle) else { return 0; };
+        self.objects[index].free_callback = callback;
+        core::mem::replace(&mut self.objects[index].param, param)
+    }
+
+    /// The callback registered to free one object. # C: O(N_objects)
+    pub fn free_callback(&self, handle: u64) -> u64 { self.index(handle).map_or(0, |index| self.objects[index].free_callback) }
 
     /// Handle a previous shared load of the same OEM resource id produced.
     /// # C: O(N_objects)

@@ -4,8 +4,6 @@ pub(crate) const WM_SHOWWINDOW: u32 = 0x0018;
 pub(crate) const SW_HIDE: u64 = 0;
 pub(crate) const SW_FORCEMINIMIZE: u64 = 11;
 
-pub(crate) const CALL_ONE_PARAM_GET_SYSTEM_METRICS: u64 = 9;
-
 /// Return the WM_SHOWWINDOW wParam for one real visibility transition. # C: O(1)
 pub(crate) fn visibility_transition_message(previous: bool, visible: bool) -> Option<u64> {
     (previous != visible).then_some(visible as u64)

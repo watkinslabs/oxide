@@ -110,6 +110,14 @@ impl WindowManager {
         *state &= !RECENT; result as i16
     }
     /// # C: O(queues + 256)
+    /// Whether one virtual key is physically down on the desktop. # C: O(1)
+    pub fn key_is_down(&self, key: u8) -> bool { self.keyboard.bytes[key as usize] & 0x80 != 0 }
+
+    /// The desktop-wide asynchronous key state, the physical state every
+    /// thread shares rather than the per-thread message-synchronized copy.
+    /// # C: O(KEY_COUNT)
+    pub fn async_keyboard_state(&self) -> [u8; KEY_COUNT] { self.keyboard.bytes }
+
     pub fn keyboard_state(&self, tid: u64) -> [u8; KEY_COUNT] {
         self.queues.iter().find(|(owner, _)| *owner == tid).map_or([0; KEY_COUNT], |(_, queue)| queue.keyboard.snapshot())
     }

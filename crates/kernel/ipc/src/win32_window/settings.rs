@@ -7,14 +7,21 @@ pub const DEFAULT_DOUBLE_CLICK_MS: u32 = 500;
 pub const DEFAULT_MOUSE_HOVER_MS: u32 = 400;
 /// The warning beep is enabled for a session that has not turned it off.
 pub const DEFAULT_BEEP: bool = true;
+/// Keyboard auto-repeat is on for a session that has not turned it off.
+pub const DEFAULT_KEYBOARD_AUTO_REPEAT: bool = true;
+/// Widest desktop pattern the query buffer admits, in characters.
+pub const DESK_PATTERN_CHARS: usize = 256;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct UserSettings { caret_blink_ms: u32, double_click_ms: u32, mouse_hover_ms: u32, beep: bool }
+pub struct UserSettings { caret_blink_ms: u32, double_click_ms: u32, mouse_hover_ms: u32, beep: bool,
+    /// Whether held keys repeat, and the desktop pattern, both session-wide.
+    keyboard_auto_repeat: bool, desk_pattern: [u16; DESK_PATTERN_CHARS], desk_pattern_len: usize }
 
 impl UserSettings {
     pub const fn new() -> Self {
         Self { caret_blink_ms: DEFAULT_CARET_BLINK_MS, double_click_ms: DEFAULT_DOUBLE_CLICK_MS,
-            mouse_hover_ms: DEFAULT_MOUSE_HOVER_MS, beep: DEFAULT_BEEP }
+            mouse_hover_ms: DEFAULT_MOUSE_HOVER_MS, beep: DEFAULT_BEEP,
+            keyboard_auto_repeat: DEFAULT_KEYBOARD_AUTO_REPEAT, desk_pattern: [0; DESK_PATTERN_CHARS], desk_pattern_len: 0 }
     }
     /// # C: O(1)
     pub const fn double_click_ms(&self) -> u32 { self.double_click_ms }
@@ -29,6 +36,19 @@ impl UserSettings {
     /// Store the warning-beep setting and report the previous value. # C: O(1)
     pub fn set_beep_enabled(&mut self, value: bool) -> bool { let previous = self.beep; self.beep = value; previous }
     pub const fn caret_blink_ms(&self) -> u32 { self.caret_blink_ms }
+    /// # C: O(1)
+    pub const fn keyboard_auto_repeat(&self) -> bool { self.keyboard_auto_repeat }
+    /// Store the auto-repeat setting and report the previous value. # C: O(1)
+    pub fn set_keyboard_auto_repeat(&mut self, value: bool) -> bool { core::mem::replace(&mut self.keyboard_auto_repeat, value) }
+    /// The desktop pattern, which is empty until one is installed. # C: O(1)
+    pub fn desk_pattern(&self) -> &[u16] { &self.desk_pattern[..self.desk_pattern_len] }
+    /// Store the desktop pattern, truncated to the query buffer's width.
+    /// # C: O(DESK_PATTERN_CHARS)
+    pub fn set_desk_pattern(&mut self, pattern: &[u16]) {
+        self.desk_pattern_len = pattern.len().min(DESK_PATTERN_CHARS);
+        self.desk_pattern = [0; DESK_PATTERN_CHARS];
+        self.desk_pattern[..self.desk_pattern_len].copy_from_slice(&pattern[..self.desk_pattern_len]);
+    }
 
     /// Store the Win32 UINT value and return the previous value.
     ///

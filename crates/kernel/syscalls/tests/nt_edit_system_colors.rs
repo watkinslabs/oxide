@@ -15,7 +15,7 @@ fn edit_selection_and_frame_color_queries_do_not_allocate_or_mutate_dc() {
         (14,colors::HIGHLIGHT_TEXT,0x00ffffff)] {
         let role = SystemColor::from_index(index).expect("mandatory EDIT/frame color missing");
         assert_eq!(role.color(),xrgb);
-        assert_eq!(raw::route::<()>(0x133d,&[index as u64 | (7u64<<32),6], |_|panic!("color query allocated brush")),Some(colorref));
+        assert_eq!(raw::route::<()>(0x133d,&[index as u64 | (7u64<<32),6], |role|role.color(), |_|panic!("color query allocated brush"), |_|panic!("color query allocated pen")),Some(colorref));
     }
     assert_eq!(owner.live_handles(),handles);
     assert_eq!(owner.text_state(dc).unwrap().attributes,attributes);
@@ -30,7 +30,7 @@ fn selected_text_background_and_monochrome_frame_use_protected_distinct_brushes(
     for (column,index,xrgb) in [(0,6,colors::WINDOW_FRAME),(1,13,colors::HIGHLIGHT),(2,14,colors::HIGHLIGHT_TEXT),
         (3,8,0),(4,5,0xffffff),(5,20,0xffffff)] {
         let previous = owner.selected_object(dc,ipc::win32_gdi::TYPE_BRUSH);
-        let brush = raw::route(0x133d,&[index,7], |role|owner.system_brush(role)).unwrap() as u32;
+        let brush = raw::route(0x133d,&[index,7], |role|role.color(), |role|owner.system_brush(role), |_|panic!("brush query allocated pen")).unwrap() as u32;
         assert_eq!(owner.selected_object(dc,ipc::win32_gdi::TYPE_BRUSH),previous);
         assert_ne!(brush,0,"missing canonical system role {index}");
         assert!(owner.contains_object(brush));
@@ -41,7 +41,7 @@ fn selected_text_background_and_monochrome_frame_use_protected_distinct_brushes(
         assert_eq!(owner.pixels(dc).unwrap()[column as usize],xrgb);
         owner.delete_object(brush).unwrap();
         assert!(owner.contains_object(brush));
-        assert_eq!(raw::route(0x133d,&[index,7], |role|owner.system_brush(role)),Some(brush as u64));
+        assert_eq!(raw::route(0x133d,&[index,7], |role|role.color(), |role|owner.system_brush(role), |_|panic!("brush query allocated pen")),Some(brush as u64));
     }
     // A fresh DC carries the stock white brush; the colour queries never replace it.
     assert_eq!(selected,owner.stock_object(0).map(|stock|stock.handle));
@@ -54,7 +54,7 @@ fn normal_status_edges_have_all_required_canonical_roles() {
     for index in [15,16,20,21,22] {
         let role = SystemColor::from_index(index).expect("normal edge palette missing");
         let mut owner = GdiManager::new();
-        let handle = raw::route(0x133d,&[index as u64,7], |role|owner.system_brush(role)).unwrap() as u32;
+        let handle = raw::route(0x133d,&[index as u64,7], |role|role.color(), |role|owner.system_brush(role), |_|panic!("brush query allocated pen")).unwrap() as u32;
         assert!(owner.is_system_brush(handle));
         let dc = owner.create_dc(1,1).unwrap(); owner.select_brush(dc,handle).unwrap();
         owner.pat_blt(dc,0,0,1,1,0x00f00021).unwrap();

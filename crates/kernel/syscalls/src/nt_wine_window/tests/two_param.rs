@@ -57,3 +57,30 @@ fn adjusting_grows_the_frame_by_the_nonclient_metrics() {
     assert_eq!(adjust_window_rect(R, edge, metric), Rect { left: 8, top: 8, right: 112, bottom: 62 });
     assert_eq!(AdjustParams::decode(&[1, 0, 0, 0, 2, 0, 0, 0, 1, 0, 0, 0, 96, 0, 0, 0]), Some(AdjustParams { style: 1, ex_style: 2, menu: true, dpi: 96 }));
 }
+
+#[test]
+fn every_code_the_multiplexer_defines_has_its_own_number_and_no_gaps() {
+    let codes = [GET_DIALOG_PROC, GET_MENU_INFO, GET_MONITOR_INFO, GET_SYSTEM_METRICS_FOR_DPI,
+        MONITOR_FROM_RECT, SET_ICON_PARAM, SET_IME_COMPOSITION_RECT, ADJUST_WINDOW_RECT,
+        GET_VIRTUAL_SCREEN_RECT, ALLOC_WINPROC];
+    for (wire, code) in codes.iter().enumerate() { assert_eq!(*code as usize, wire); }
+    assert_eq!(codes.len(), 10);
+}
+
+#[test]
+fn an_unknown_code_answers_zero_never_a_status() {
+    // The result word is used as a window procedure, a monitor handle or a
+    // rectangle-success flag, so the refusal answer is zero.
+    assert_eq!(UNHANDLED, 0);
+    assert_ne!(UNHANDLED, 0xc000_0002);
+}
+
+#[test]
+fn the_free_icon_record_is_the_callback_then_the_parameter() {
+    assert_eq!(FREE_ICON_PARAMS_BYTES, 16);
+    let mut record = [0u8; FREE_ICON_PARAMS_BYTES];
+    record[0..8].copy_from_slice(&0x1122_3344_5566_7788u64.to_le_bytes());
+    record[8..16].copy_from_slice(&0x99aa_bbcc_ddee_ff00u64.to_le_bytes());
+    assert_eq!(u64::from_le_bytes(record[0..8].try_into().unwrap()), 0x1122_3344_5566_7788);
+    assert_eq!(u64::from_le_bytes(record[8..16].try_into().unwrap()), 0x99aa_bbcc_ddee_ff00);
+}

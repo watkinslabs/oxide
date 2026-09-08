@@ -139,6 +139,17 @@ impl GdiManager {
         self.collect_deleted_fonts(); self.collect_deleted_brushes(); self.collect_deleted_pens(); Ok(projection)
     }
 
+    /// Re-enable a device context whose lease was released, answering whether
+    /// it was disabled. A context with no lease was never disabled, and a
+    /// handle no context owns answers that it was not disabled either, which
+    /// is the reference's answer for an unknown handle.
+    /// # C: O(N_DCs)
+    pub fn enable_dc(&mut self, dc: u32) -> bool {
+        let Some(index) = self.dcs.iter().position(|(id, _)| *id == dc) else { return false; };
+        let Some(lease) = self.dcs[index].1.lease.as_mut() else { return false; };
+        !core::mem::replace(&mut lease.active, true)
+    }
+
     /// Resolve logical coordinates to the canonical backing without copying pixels.
     /// # C: O(DCs + clip rectangles)
     pub fn dc_pixel_target(&self, dc: u32, x: i32, y: i32) -> Result<Option<(u32, usize)>, GdiError> {

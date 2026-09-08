@@ -94,6 +94,7 @@ impl GdiManager {
     }
     /// Keep selected deleted pens alive until all referencing DCs release them. # C: O(pens * DCs)
     pub fn delete_pen(&mut self,handle:u32)->Result<(),GdiError> {
+        if self.is_system_pen(handle) {return Ok(());}
         if let Some(description)=self.stock_description(handle) {
             return if matches!(description,StockDescription::Pen(_)){Ok(())}else{Err(GdiError::NoSuchObject)};
         }

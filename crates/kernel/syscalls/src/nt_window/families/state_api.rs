@@ -176,6 +176,16 @@ pub(crate) fn set_taskman_window(hwnd: u64) -> u64 {
     hwnd
 }
 
+/// The shell window the desktop names, absent until one is installed.
+/// # C: O(1)
+pub(crate) fn shell_window() -> u64 { u64::from(SHELL_WINDOWS.lock().shell) }
+
+/// The program-manager window the desktop names. # C: O(1)
+pub(crate) fn progman_window() -> u64 { u64::from(SHELL_WINDOWS.lock().progman) }
+
+/// The task-manager window the desktop names. # C: O(1)
+pub(crate) fn taskman_window() -> u64 { u64::from(SHELL_WINDOWS.lock().taskman) }
+
 /// Open one deferred-position batch. # C: O(N_processes)
 pub(crate) fn begin_defer_for_current(count: i32) -> Result<u32, DeferError> {
     access::with_defer_mut(|batches| batches.begin(count)).unwrap_or(Err(DeferError::InvalidParameter))
