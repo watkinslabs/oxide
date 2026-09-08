@@ -2,6 +2,11 @@
 
 use super::*;
 
+/// The mapping a keyed event publishes, read straight off the type's access
+/// map: the shim has no accessor of its own for it, so a wrapper here would
+/// be a second name for one fact.
+fn granted_access(desired: u32) -> u32 { crate::nt_access::KEYED_EVENT.map(desired) }
+
 #[test]
 fn read_access_grants_the_wait_right_and_not_the_wake_right() {
     let access = granted_access(GENERIC_READ);

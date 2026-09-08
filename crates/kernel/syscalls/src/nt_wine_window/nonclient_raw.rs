@@ -15,8 +15,6 @@ pub(crate) const FONT_BYTES: u32 = ipc::win32_gdi::LOGFONTW_BYTES as u32;
 pub(crate) const ICON_METRICS_BYTES: u32 = 16 + FONT_BYTES;
 /// Bytes the minimized-metrics record occupies: its size word and four values.
 pub(crate) const MINIMIZED_METRICS_BYTES: u32 = 20;
-/// Bytes the mouse record occupies: three values and no size word.
-pub(crate) const MOUSE_BYTES: u32 = 12;
 /// Units a wallpaper path may carry, as the reference bounds one.
 pub(crate) const MAX_PATH_UNITS: usize = 260;
 

@@ -151,15 +151,10 @@ const STATUS_SUSPEND_COUNT_EXCEEDED: u64 = 0xc000_004a;
 const STATUS_NOT_SAME_OBJECT: u64 = 0xc000_01ac;
 pub(crate) const STATUS_INFO_LENGTH_MISMATCH: u64 = 0xc000_0004;
 pub(crate) const STATUS_INVALID_INFO_CLASS: u64 = 0xc000_0003;
-const EVENT_ALL_ACCESS: u32 = 0x001f_0003;
-const GENERIC_ALL: u32 = 0x1000_0000;
 const GENERIC_READ: u32 = 0x8000_0000;
-const GENERIC_WRITE: u32 = 0x4000_0000;
-const GENERIC_EXECUTE: u32 = 0x2000_0000;
 const STATUS_SHARING_VIOLATION: u64 = 0xc000_0043;
 const FILE_MAPPING_ACCESS: u32 = 0x2000_0000;
 const FILE_MAPPING_WRITE: u32 = 0x4000_0000;
-const EVENT_ALLOWED_ACCESS: u32 = EVENT_ALL_ACCESS | GENERIC_READ | GENERIC_WRITE | GENERIC_EXECUTE | GENERIC_ALL;
 #[cfg(target_os = "oxide-kernel")]
 const EVENT_MODIFY_STATE: u32 = 0x0002;
 #[cfg(target_os = "oxide-kernel")]
@@ -789,11 +784,10 @@ fn dispatch_service(call: NtCall) -> u64 {
     if call.service == syscall::nt::NtService::NtOpenEvent {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
         if !cur.is_nt_personality() || call.args.a0 == 0 || call.args.a2 == 0 { return STATUS_INVALID_PARAMETER; }
-        if call.args.a1 as u32 & !EVENT_ALLOWED_ACCESS != 0 { return STATUS_INVALID_PARAMETER; }
+        let Some(access) = crate::nt_access::EVENT.grant(call.args.a1 as u32) else { return STATUS_INVALID_PARAMETER; };
         let table = cur.thread_group.nt_handles();
         let Some(path) = crate::nt_directory::resolve_object_path(call.args.a2, &table) else { return STATUS_INVALID_PARAMETER; };
         let Some(object) = sched::nt_object::lookup_object(&path, sched::nt_object::NtObjectType::Event) else { return STATUS_OBJECT_NAME_NOT_FOUND; };
-        let access = if call.args.a1 as u32 & GENERIC_ALL != 0 { call.args.a1 as u32 | EVENT_ALL_ACCESS } else { call.args.a1 as u32 };
         let Some(handle) = table.insert(object, access) else { return STATUS_NO_MEMORY; };
         if uaccess::put_user_u64(call.args.a0, u64::from(handle.raw())).is_err() { let _ = table.close(handle); return STATUS_INVALID_PARAMETER; }
         return STATUS_SUCCESS;
@@ -847,13 +841,10 @@ fn dispatch_service(call: NtCall) -> u64 {
     if call.service == syscall::nt::NtService::NtOpenSemaphore {
         let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
         if !cur.is_nt_personality() || call.args.a0 == 0 || call.args.a2 == 0 { return STATUS_INVALID_PARAMETER; }
-        const SEMAPHORE_ALL_ACCESS: u32 = 0x001f_0003;
-        const SEMAPHORE_ALLOWED_ACCESS: u32 = SEMAPHORE_ALL_ACCESS | 0xf000_0000;
-        if call.args.a1 as u32 & !SEMAPHORE_ALLOWED_ACCESS != 0 { return STATUS_INVALID_PARAMETER; }
+        let Some(access) = crate::nt_access::SEMAPHORE.grant(call.args.a1 as u32) else { return STATUS_INVALID_PARAMETER; };
         let table = cur.thread_group.nt_handles();
         let Some(path) = crate::nt_directory::resolve_object_path(call.args.a2, &table) else { return STATUS_INVALID_PARAMETER; };
         let Some(object) = sched::nt_object::lookup_object(&path, sched::nt_object::NtObjectType::Semaphore) else { return STATUS_OBJECT_NAME_NOT_FOUND; };
-        let access = if call.args.a1 as u32 & GENERIC_ALL != 0 { call.args.a1 as u32 | SEMAPHORE_ALL_ACCESS } else { call.args.a1 as u32 };
         let Some(handle) = table.insert(object, access) else { return STATUS_NO_MEMORY; };
         if uaccess::put_user_u64(call.args.a0, u64::from(handle.raw())).is_err() { let _ = table.close(handle); return STATUS_INVALID_PARAMETER; }
         return STATUS_SUCCESS;
@@ -1177,8 +1168,8 @@ fn dispatch_service(call: NtCall) -> u64 {
                 return crate::s060_exit::sys_exit_group(&SyscallArgs { a0: status, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 }) as u64;
             }
             NtObjectCall::CreateEvent { handle, desired_access, attributes, event_type, initial_state } => {
-                if desired_access & !EVENT_ALLOWED_ACCESS != 0 || event_type > 1 || initial_state > 1 { return STATUS_INVALID_PARAMETER; }
-                let granted_access = if desired_access & GENERIC_ALL != 0 { desired_access | EVENT_ALL_ACCESS } else { desired_access };
+                if event_type > 1 || initial_state > 1 { return STATUS_INVALID_PARAMETER; }
+                let Some(granted_access) = crate::nt_access::EVENT.grant(desired_access) else { return STATUS_INVALID_PARAMETER; };
                 if attributes != 0 {
                     let Some(path) = crate::nt_directory::resolve_object_path(attributes, &table) else { return STATUS_INVALID_PARAMETER; };
                     let (object, state) = sched::nt_object::create_event(&path, event_type == 0, initial_state != 0);
