@@ -39,6 +39,10 @@ pub mod nt_dispatch;
 // The dispatch slot is kernel-gated; the rule lives here so it is compiled
 // and tested (docs/53, CLAUDE.md phantom-test rule).
 pub mod nt_syscall_origin;
+// Which ordinal/service pairs the boot log already names. The trace is a
+// mapping table, so a repeated ordinal owes it no further line; the decision
+// is hosted-testable, the console write is not.
+pub mod nt_ordinal_report;
 // Allocation attributes and the statuses an image-attributed section answers.
 pub mod nt_section_image;
 mod nt_image_section;

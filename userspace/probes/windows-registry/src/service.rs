@@ -1,7 +1,7 @@
 //! Bounded persistent clients sharing one canonical registry transaction owner.
 use std::{io, num::NonZeroUsize, os::unix::net::{UnixListener, UnixStream},
     sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}}, thread};
-use crate::{RegistryStore, wire};
+use crate::{RegistryStore, limits::LAZY_FLUSH_INTERVAL, wire};
 
 #[derive(Clone, Copy, Debug)]
 pub struct ServerLimits { pub max_clients: NonZeroUsize }
@@ -21,6 +21,7 @@ impl Drop for Permit { fn drop(&mut self) { self.active.fetch_sub(1, Ordering::A
 pub fn serve_listener(listener: UnixListener, store: RegistryStore, limits: ServerLimits) -> io::Result<()> {
     let store = Arc::new(Mutex::new(store));
     let active = Arc::new(AtomicUsize::new(0));
+    spawn_lazy_writer(Arc::clone(&store))?;
     loop {
         let (stream, _) = match listener.accept() {
             Ok(connection) => connection,
@@ -44,10 +45,36 @@ pub fn serve_listener(listener: UnixListener, store: RegistryStore, limits: Serv
 }
 
 fn serve_client(mut stream: UnixStream, owner: &Mutex<RegistryStore>) -> io::Result<()> {
-    wire::serve_requests(&mut stream, |request| {
-        let mut store = owner.lock().map_err(|_| io::Error::other("registry owner poisoned"))?;
+    let served = wire::serve_requests(&mut stream, |request| {
+        let mut store = locked(owner)?;
         wire::execute_request(&mut store, request)
-    })
+    });
+    // A departed client cannot ask for a flush, so its last mutations commit
+    // here rather than waiting out the lazy interval.
+    let committed = locked(owner).and_then(|mut store| wire::commit(&mut store));
+    served?; committed
+}
+
+/// Write back mutations no client asked to flush, so an owner that is killed
+/// loses at most one interval of sets rather than everything since its start.
+fn spawn_lazy_writer(store: Arc<Mutex<RegistryStore>>) -> io::Result<()> {
+    let worker = thread::Builder::new().name("registry-lazy-writer".into()).spawn(move || loop {
+        thread::sleep(LAZY_FLUSH_INTERVAL);
+        match locked(&store).and_then(|mut store| wire::commit(&mut store)) {
+            Ok(()) => {}
+            // A poisoned owner has no consistent state left to write back.
+            Err(error) if error.kind() == io::ErrorKind::Other && store.is_poisoned() => {
+                eprintln!("registry lazy write stopped: {error}"); return;
+            }
+            Err(error) => eprintln!("registry lazy write failed: {error}"),
+        }
+    })?;
+    drop(worker);
+    Ok(())
+}
+
+fn locked(owner: &Mutex<RegistryStore>) -> io::Result<std::sync::MutexGuard<'_, RegistryStore>> {
+    owner.lock().map_err(|_| io::Error::other("registry owner poisoned"))
 }
 
 #[cfg(test)]
