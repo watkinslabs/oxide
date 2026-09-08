@@ -1695,4 +1695,5 @@ pub fn decode_terminate(call: NtCall) -> Result<(u64, u32), Errno> {
     Ok((call.args.a0, call.args.a1 as u32))
 }
 #[path = "nt/ordinals.rs"] pub mod ordinals;
+#[path = "nt/windows_abi.rs"] pub mod windows_abi;
 #[cfg(test)] #[path = "nt/tests.rs"] mod tests;

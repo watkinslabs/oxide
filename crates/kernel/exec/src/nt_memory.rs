@@ -353,6 +353,27 @@ mod tests {
             size: PAGE, protection: VmaProt::empty(), reserved: true }), NtStatus::Success);
     }
 
+
+    /// The runtime's process heap is created with one reservation followed by
+    /// a commit of the whole reservation at the address the reservation
+    /// returned. Both calls carry the same size and the same page protection,
+    /// and the commit supplies the base the reserve handed back.
+    #[test]
+    fn a_reservation_can_be_committed_whole_at_the_address_it_returned() {
+        const REGION: usize = 0x1_0000;
+        let as_ = AddressSpace::new(0x40_000).unwrap();
+        let protection = super::windows_protection(0x04).unwrap();
+        let reserved = allocate_with_write_watch(&as_, None, REGION, protection, false, false)
+            .expect("a growable heap reserves its region before committing any of it");
+        assert!(reserved.reserved);
+        let committed = allocate_or_commit(&as_, Some(reserved.base), REGION, protection)
+            .expect("the whole reservation commits at the base the reservation returned");
+        assert_eq!(committed.base, reserved.base, "a commit never relocates its reservation");
+        assert_eq!(committed.size, REGION);
+        assert!(!committed.reserved);
+        assert_eq!(query(&as_, reserved.base).unwrap().protection, protection);
+    }
+
     #[test]
     fn query_keeps_section_view_origin_after_protection_split() {
         let as_ = AddressSpace::new(0x20_000).unwrap();
