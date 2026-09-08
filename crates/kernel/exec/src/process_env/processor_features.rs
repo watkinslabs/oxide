@@ -127,28 +127,26 @@ pub fn aarch64_features() -> [u8; PROCESSOR_FEATURE_MAX] {
 /// Read this processor's identification words. # C: O(1)
 pub fn local() -> [u8; PROCESSOR_FEATURE_MAX] {
     use core::arch::x86_64::__cpuid_count;
-    // SAFETY: `__cpuid_count` executes CPUID, which is unprivileged, has no
-    // memory operands and no side effects beyond the returned registers; every
-    // leaf below is guarded by the maximum-leaf value CPUID itself reports.
-    let (basic, extended) = unsafe { (__cpuid_count(0, 0), __cpuid_count(0x8000_0000, 0)) };
+    // Every leaf below is guarded by the maximum-leaf value CPUID itself reports.
+    let (basic, extended) = (__cpuid_count(0, 0), __cpuid_count(0x8000_0000, 0));
     let mut id = X86Identification { max_leaf: basic.eax, max_extended_leaf: extended.eax, ..Default::default() };
     if id.max_leaf >= 1 {
-        // SAFETY: CPUID leaf 1 is reported available by the maximum-leaf value
+        // CPUID leaf 1 is reported available by the maximum-leaf value
         // read above; the instruction is unprivileged and writes no memory.
-        let leaf1 = unsafe { __cpuid_count(1, 0) };
+        let leaf1 = __cpuid_count(1, 0);
         id.leaf1_ecx = leaf1.ecx; id.leaf1_edx = leaf1.edx;
         id.denormals_are_zero = denormals_are_zero();
     }
     if id.max_leaf >= 7 {
-        // SAFETY: CPUID leaf 7 subleaf 0 is reported available by the
+        // CPUID leaf 7 subleaf 0 is reported available by the
         // maximum-leaf value read above; the instruction writes no memory.
-        let leaf7 = unsafe { __cpuid_count(7, 0) };
+        let leaf7 = __cpuid_count(7, 0);
         id.leaf7_ebx = leaf7.ebx; id.leaf7_ecx = leaf7.ecx;
     }
     if id.max_extended_leaf >= 0x8000_0001 {
-        // SAFETY: extended leaf 1 is reported available by the maximum
+        // extended leaf 1 is reported available by the maximum
         // extended-leaf value read above; the instruction writes no memory.
-        let leaf = unsafe { __cpuid_count(0x8000_0001, 0) };
+        let leaf = __cpuid_count(0x8000_0001, 0);
         id.extended1_ecx = leaf.ecx; id.extended1_edx = leaf.edx;
     }
     x86_features(&id)
