@@ -11,11 +11,22 @@
 set -uo pipefail
 
 # One pattern per line, extended regular expressions, matched case-insensitively.
-patterns='^[[:space:]]*co-authored-by:.*(claude|copilot|codex|chatgpt|gpt-|cursor|devin|anthropic|openai|noreply@anthropic|noreply@openai)
+patterns='^[[:space:]]*co-authored-by:
+^[[:space:]]*co-developed-with
+^[[:space:]]*assisted-by:
 ^[[:space:]]*claude-session:
-generated with \[?(claude|copilot|codex)
-🤖
-co-authored-by:.*\[bot\]'
+generated (with|by) \[?(claude|copilot|codex|chatgpt|an? ai)
+written by .*(ai|assistant|bot)
+noreply@(anthropic|openai)
+(anthropic|openai)\.com
+claude\.ai
+claude (code|opus|sonnet|haiku)
+github copilot
+copilot(\[bot\])?
+codex
+chatgpt
+gpt-[0-9]
+🤖'
 
 fail=0
 report() { printf '%s\n' "$1" >&2; fail=1; }
