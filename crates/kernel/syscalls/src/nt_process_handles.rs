@@ -6,6 +6,7 @@ use syscall::nt::{NtCall, NtObjectCall};
 use crate::nt_process_vm_counters;
 use crate::nt_process_image_policy;
 use crate::nt_process_command_line;
+use crate::nt_process_info_policy;
 
 const STATUS_SUCCESS: u64 = 0;
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
@@ -176,6 +177,20 @@ fn query_process(process: u64, class: u32, info: syscall::UserPtr<u8>, length: u
     if class == nt_process_vm_counters::CLASS {
         return query_process_vm_counters(target, info, length, return_length);
     }
+    if let Some(decision) = nt_process_info_policy::answer(class, length as usize, info.as_u64(),
+        process == CURRENT_PROCESS, &process_facts(target)) {
+        return Some(match decision {
+            Err(status) => status,
+            Ok(answer) => match answer {
+                nt_process_info_policy::Answer::Pointer(value) =>
+                    if uaccess::put_user_u64(info.as_u64(), value).is_err() { STATUS_INVALID_PARAMETER }
+                    else { return write_process_return_length(return_length, answer.bytes()); },
+                nt_process_info_policy::Answer::Word(value) =>
+                    if uaccess::put_user_u32(info.as_u64(), value).is_err() { STATUS_INVALID_PARAMETER }
+                    else { return write_process_return_length(return_length, answer.bytes()); },
+            },
+        });
+    }
     let required = match class {
         PROCESS_BASIC_INFORMATION_CLASS => PROCESS_BASIC_INFORMATION_BYTES,
         PROCESS_AFFINITY_MASK_CLASS | PROCESS_WOW64_INFORMATION_CLASS => PROCESS_POINTER_BYTES,
@@ -215,6 +230,31 @@ fn query_process(process: u64, class: u32, info: syscall::UserPtr<u8>, length: u
     out[40..48].copy_from_slice(&(target.parent_tid.load(core::sync::atomic::Ordering::Acquire) as u64).to_ne_bytes());
     if uaccess::copy_to_user(info.as_u64(), &out).is_err() { return Some(STATUS_INVALID_PARAMETER); }
     write_process_return_length(return_length, required)
+}
+
+/// The kernel-wide secret one process's pointer-obfuscation cookie is derived
+/// from. Drawn once, so a cookie is stable for a process's whole life and is
+/// not predictable from the block address alone. # C: O(1)
+fn cookie_seed() -> u64 {
+    use core::sync::atomic::{AtomicU64, Ordering};
+    static SEED: AtomicU64 = AtomicU64::new(0);
+    let seen = SEED.load(Ordering::Acquire);
+    if seen != 0 { return seen; }
+    let mut bytes = [0u8; 8];
+    crng::fill(&mut bytes);
+    let drawn = u64::from_ne_bytes(bytes) | 1;
+    match SEED.compare_exchange(0, drawn, Ordering::AcqRel, Ordering::Acquire) {
+        Ok(_) => drawn, Err(existing) => existing,
+    }
+}
+
+fn process_facts(target: &sched::Task) -> nt_process_info_policy::Facts {
+    nt_process_info_policy::Facts {
+        debug_port: nt_process_info_policy::NO_DEBUG_PORT,
+        hard_error_mode: nt_process_info_policy::INITIAL_HARD_ERROR_MODE,
+        session_id: 0,
+        cookie: nt_process_info_policy::cookie(cookie_seed(), target.nt_peb()),
+    }
 }
 
 fn query_process_image_information(target: &sched::Task, info: syscall::UserPtr<u8>, length: u32,

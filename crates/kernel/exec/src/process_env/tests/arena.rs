@@ -179,3 +179,91 @@ fn full_catalog_or_invalid_batch_never_calls_commit() {
         target.copy_from_slice(&bytes[offset..offset + target.len()]); Ok(())
     }, |_, _| panic!("failed batch must not commit")), Err(Error::Einval));
 }
+
+// Measured against the prepared native headers: NT_TIB.FiberData at 0x20,
+// TEB.StaticUnicodeString at 0x1258 addressing TEB.StaticUnicodeBuffer[261]
+// at 0x1268, RTL_USER_PROCESS_PARAMETERS.Desktop at 0xc0 and .ShellInfo at
+// 0xd0.
+const TIB_FIBER_DATA: usize = 0x20;
+const STATIC_STRING: usize = 0x1258;
+const STATIC_BUFFER: usize = 0x1268;
+const STATIC_BUFFER_BYTES: u16 = 261 * 2;
+const DESKTOP: usize = 0xc0;
+const SHELL_INFO: usize = 0xd0;
+const DLL_PATH: usize = 0x50;
+const RUNTIME_INFO: usize = 0xe0;
+
+fn assert_thread_scratch(bytes: &[u8], offset: usize, address: u64) {
+    assert_eq!(get64(bytes, offset + TIB_FIBER_DATA), 0x1e00);
+    assert_eq!(u16::from_le_bytes(bytes[offset + STATIC_STRING..offset + STATIC_STRING + 2].try_into().unwrap()), 0);
+    assert_eq!(u16::from_le_bytes(bytes[offset + STATIC_STRING + 2..offset + STATIC_STRING + 4].try_into().unwrap()), STATIC_BUFFER_BYTES);
+    assert_eq!(get64(bytes, offset + STATIC_STRING + 8), address + STATIC_BUFFER as u64);
+    // The descriptor must not reach past the thread arena's own bytes.
+    assert!(STATIC_BUFFER + STATIC_BUFFER_BYTES as usize <= TEB_BYTES);
+    assert!(bytes[offset + STATIC_BUFFER..offset + STATIC_BUFFER + STATIC_BUFFER_BYTES as usize].iter().all(|b| *b == 0));
+}
+
+#[test]
+fn every_thread_arena_publishes_its_fiber_marker_and_scratch_string() {
+    let (as_, env, bytes) = fixture(1, &[]);
+    assert_thread_scratch(&bytes, TEB_OFF, env.teb.as_u64());
+    let teb = build_thread_teb(7, 9, env.peb.as_u64(), &as_).unwrap();
+    assert_thread_scratch(&data(&as_, teb), 0, teb.as_u64());
+}
+
+#[test]
+fn scratch_string_capacity_admits_a_full_native_path_conversion() {
+    let (_, env, bytes) = fixture(1, &[]);
+    let capacity = u16::from_le_bytes(bytes[TEB_OFF + STATIC_STRING + 2..TEB_OFF + STATIC_STRING + 4].try_into().unwrap());
+    let buffer = get64(&bytes, TEB_OFF + STATIC_STRING + 8);
+    assert_eq!(buffer, env.teb.as_u64() + STATIC_BUFFER as u64);
+    // A zero capacity is what an unpublished descriptor looks like; every
+    // ANSI-to-Unicode conversion through it would overflow instead of running.
+    assert!(capacity as usize >= 260 * WCHAR_BYTES);
+}
+
+#[test]
+fn empty_parameter_strings_address_a_readable_terminator() {
+    let (_, env, bytes) = fixture(1, &[]);
+    for offset in [DESKTOP, SHELL_INFO] {
+        let at = PARAM_OFF + offset;
+        assert_eq!(u16::from_le_bytes(bytes[at..at + 2].try_into().unwrap()), 0);
+        assert_eq!(u16::from_le_bytes(bytes[at + 2..at + 4].try_into().unwrap()), WCHAR_BYTES as u16);
+        let buffer = get64(&bytes, at + 8);
+        assert_eq!(buffer, env.process_parameters.as_u64() + PARAM_EMPTY_STRING_OFF as u64);
+        let inside = (buffer - env.base.as_u64()) as usize;
+        assert_eq!(&bytes[inside..inside + WCHAR_BYTES], &[0, 0]);
+        assert!(inside + WCHAR_BYTES <= PARAM_OFF + PARAM_BYTES.max(PARAM_SIZE as usize));
+    }
+}
+
+#[test]
+fn absent_parameter_strings_stay_absent_rather_than_empty() {
+    let (_, _, bytes) = fixture(1, &[]);
+    for offset in [DLL_PATH, RUNTIME_INFO] {
+        let at = PARAM_OFF + offset;
+        assert_eq!(&bytes[at..at + 16], &[0u8; 16]);
+    }
+}
+
+#[test]
+fn a_caller_supplied_current_directory_is_published_with_its_separator() {
+    let as_ = AddressSpace::new(0x80000).unwrap();
+    let params = NtProcessParameters { current_directory: "C:\\users\\me", current_directory_handle: 0,
+        console_handle: 0, standard_handles: [0; 3] };
+    let env = build_with_modules_and_params(&EnvironmentInput { image_base: 0x140000000, image_size: 0x1000,
+        image_path: "a.exe", command_line: "a.exe", environment: &[], process_id: 7, thread_id: 8 },
+        &[module(0)], &params, &as_).unwrap();
+    let bytes = data(&as_, env.base);
+    let (_, words) = descriptor(&bytes, env.base.as_u64(), PARAM_OFF + PARAM_CURRENT_DIRECTORY_OFF);
+    let length = u16::from_le_bytes(bytes[PARAM_OFF + PARAM_CURRENT_DIRECTORY_OFF..PARAM_OFF + PARAM_CURRENT_DIRECTORY_OFF + 2].try_into().unwrap()) as usize;
+    let published: Vec<u16> = words[..length / WCHAR_BYTES].to_vec();
+    assert_eq!(published, "C:\\users\\me\\".encode_utf16().collect::<Vec<_>>());
+}
+
+#[test]
+fn current_directory_normalization_is_idempotent() {
+    assert_eq!(normalized_current_directory("C:\\windows"), "C:\\windows\\");
+    assert_eq!(normalized_current_directory("C:\\windows\\"), "C:\\windows\\");
+    assert_eq!(normalized_current_directory("C:\\"), "C:\\");
+}

@@ -74,6 +74,7 @@ mod nt_duplicate;
 mod nt_process_handles;
 mod nt_process_vm_counters;
 mod nt_process_image_policy;
+mod nt_process_info_policy;
 mod nt_process_command_line;
 mod nt_handle_close_policy;
 mod nt_window_policy;
