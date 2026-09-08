@@ -239,9 +239,6 @@ const STATUS_WAIT_0: u64 = 0x0000_0100;
 const WAIT_MULTIPLE_LIMIT: u32 = 64;
 const SECTION_MAX_BYTES: u64 = 1 << 30;
 const SECTION_QUERY: u32 = 0x0001;
-const SECTION_MAP_READ: u32 = 0x0004;
-const SECTION_MAP_WRITE: u32 = 0x0002;
-const SECTION_MAP_EXECUTE: u32 = 0x0008;
 const FILE_READ_DATA: u32 = 0x0001;
 const FILE_GENERIC_READ: u32 = 0x0012_0089;
 const THREAD_ALL_ACCESS: u32 = 0x001f_03ff;
@@ -1363,11 +1360,12 @@ fn dispatch_service(call: NtCall) -> u64 {
                 // SAFETY: the running NT task owns its current address-space
                 // slot for this syscall; the clone keeps the VMM state alive.
                 let Some(mm) = (unsafe { cur.mm_ref() }).map(|mm| mm.clone()) else { return STATUS_INVALID_PARAMETER; };
+                let required_access = match crate::nt_section_image::map_view_access(protect) {
+                    Ok(access) => access,
+                    Err(status) => return status,
+                };
                 let Ok(protection) = elf_load::nt_memory::windows_protection(protect) else { return STATUS_INVALID_PARAMETER; };
                 let native = sched::nt_object::NtHandle::from_raw(section);
-                let required_access = if protection.contains(vmm::VmaProt::WRITE) { SECTION_MAP_WRITE }
-                    else if protection.contains(vmm::VmaProt::EXEC) { SECTION_MAP_EXECUTE }
-                    else { SECTION_MAP_READ };
                 let Some(object) = table.get(native, required_access) else { return if table.contains(native) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE }; };
                 if object.kind() != sched::nt_object::NtObjectType::Section { return STATUS_INVALID_HANDLE; }
                 let Some(section) = object.section() else { return STATUS_INVALID_HANDLE; };
@@ -1396,9 +1394,11 @@ fn dispatch_service(call: NtCall) -> u64 {
                         else { address.as_u64() & !zero_bits == 0 };
                     if !valid { return STATUS_INVALID_PARAMETER; }
                 }
-                let requested_size = match uaccess::get_user_u64(size.as_u64()) { Ok(0) => section.size() as u64 - offset, Ok(raw) => raw, Err(_) => return STATUS_INVALID_PARAMETER };
-                let page = hal::PAGE_SIZE_BYTES as u64;
-                if requested_size == 0 || requested_size % page != 0 || requested_size > section.size() as u64 - offset { return STATUS_INVALID_PARAMETER; }
+                let requested_size = match uaccess::get_user_u64(size.as_u64()) { Ok(raw) => raw, Err(_) => return STATUS_INVALID_PARAMETER };
+                let requested_size = match crate::nt_section_image::data_view_size(requested_size, section.size() as u64, offset) {
+                    Ok(size) => size,
+                    Err(status) => return status,
+                };
                 // A view base the kernel chooses sits on the allocation
                 // granularity, like every other region it places.
                 let placement = match requested {
@@ -1451,6 +1451,13 @@ fn dispatch_service(call: NtCall) -> u64 {
                 if elf_load::nt_unmap::unmap_range(&mm, start, len).is_ok() { STATUS_SUCCESS } else { STATUS_MEMORY_NOT_ALLOCATED }
             }
             NtObjectCall::QuerySection { section, class, info, length, return_length } => {
+                // The class and the buffer length are answered before the
+                // buffer pointer and before the handle, so a probe of the
+                // classes this type answers for cannot depend on either.
+                let bytes = match crate::nt_section_image::query_class_bytes(class, length) {
+                    Ok(bytes) => bytes,
+                    Err(status) => return status,
+                };
                 if info.as_u64() == 0 { return STATUS_ACCESS_VIOLATION; }
                 let native = sched::nt_object::NtHandle::from_raw(section);
                 let Some(object) = table.get(native, SECTION_QUERY) else {
@@ -1459,10 +1466,9 @@ fn dispatch_service(call: NtCall) -> u64 {
                 if object.kind() != sched::nt_object::NtObjectType::Section { return STATUS_INVALID_HANDLE; }
                 let Some(section) = object.section() else { return STATUS_INVALID_HANDLE; };
                 let image = section.image();
-                let bytes = match crate::nt_section_image::query_record_bytes(class, length, image.is_some()) {
-                    Ok(bytes) => bytes,
-                    Err(status) => return status,
-                };
+                if class == crate::nt_section_image::SECTION_IMAGE_INFORMATION && image.is_none() {
+                    return crate::nt_section_image::STATUS_SECTION_NOT_IMAGE;
+                }
                 if class == crate::nt_section_image::SECTION_IMAGE_INFORMATION {
                     // A query answers for the section, not for one process's
                     // view of it, so the transfer address names the image's own
