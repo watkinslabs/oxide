@@ -1,6 +1,5 @@
 //! NT file-create disposition decisions shared by the kernel adapter tests.
 
-use syscall::errno::Errno;
 use vfs::Timespec64;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -15,10 +14,6 @@ pub(crate) enum CreateDisposition {
 
 const FILE_DELETE_ON_CLOSE: u32 = 0x0000_1000;
 const DELETE_ACCESS: u32 = 0x0001_0000;
-const STATUS_OBJECT_NAME_NOT_FOUND: u64 = 0xc000_0034;
-const STATUS_OBJECT_NAME_COLLISION: u64 = 0xc000_0035;
-const STATUS_ACCESS_DENIED: u64 = 0xc000_0022;
-const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 pub(crate) const FILE_DISPOSITION_INFORMATION_SIZE: u32 = 1;
 const NT_FILETIME_EPOCH_SECONDS: i64 = 11_644_473_600;
 
@@ -204,15 +199,7 @@ pub(crate) const fn file_basic_unsupported_fields(
     (creation != 0 && creation != -1) || (change != 0 && change != -1)
 }
 
-/// Preserve the Linux VFS errno distinction at the NT file boundary. # C: O(1)
-pub(crate) fn status_from_errno(rv: i64) -> u64 {
-    match rv.unsigned_abs() as i32 {
-        value if value == Errno::Enoent.as_i32() => STATUS_OBJECT_NAME_NOT_FOUND,
-        value if value == Errno::Eexist.as_i32() => STATUS_OBJECT_NAME_COLLISION,
-        value if value == Errno::Eacces.as_i32() => STATUS_ACCESS_DENIED,
-        _ => STATUS_INVALID_PARAMETER,
-    }
-}
+pub(crate) use crate::nt_file_status::status_from_errno;
 
 #[cfg(test)]
 mod tests {
@@ -318,14 +305,6 @@ mod tests {
         // simply turns out to be one.
         assert_eq!(open_mode(FILE_WRITE_DATA, FILE_DIRECTORY_FILE, false), NtOpenMode::ReadOnly);
         assert_eq!(open_mode(GENERIC_WRITE, 0, true), NtOpenMode::ReadOnly);
-    }
-
-    #[test]
-    fn errno_mapping_preserves_file_failure_classes() {
-        assert_eq!(status_from_errno(-(Errno::Enoent.as_i32() as i64)), STATUS_OBJECT_NAME_NOT_FOUND);
-        assert_eq!(status_from_errno(-(Errno::Eexist.as_i32() as i64)), STATUS_OBJECT_NAME_COLLISION);
-        assert_eq!(status_from_errno(-(Errno::Eacces.as_i32() as i64)), STATUS_ACCESS_DENIED);
-        assert_eq!(status_from_errno(-(Errno::Eio.as_i32() as i64)), STATUS_INVALID_PARAMETER);
     }
 
     #[test]
