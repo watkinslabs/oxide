@@ -64,6 +64,11 @@ const FSCTL_PIPE_DISCONNECT: u32 = 0x0011_0004;
 const FSCTL_PIPE_LISTEN: u32 = 0x0011_0008;
 const FSCTL_PIPE_PEEK: u32 = 0x0011_000c;
 const FSCTL_PIPE_TRANSCEIVE: u32 = 0x0011_0014;
+const FSCTL_GET_OBJECT_ID: u32 = 0x0009_009c;
+/// `FILE_OBJECTID_BUFFER`: four sixteen-byte identifiers. Only the first is
+/// derived from anything; a loader compares whole buffers to decide whether
+/// two names it opened are the same file.
+const FILE_OBJECTID_BUFFER_SIZE: usize = 64;
 const STATUS_PENDING: u64 = 0x0000_0103;
 const EVENT_MODIFY_STATE: u32 = 0x0002;
 const STATUS_PIPE_CONNECTED: u64 = 0xc000_00b2;
@@ -175,8 +180,13 @@ fn native_fs_control(call: NtCall) -> u64 {
     let handle = sched::nt_object::NtHandle::from_raw(call.args.a0 as u32);
     let table = cur.thread_group.nt_handles();
     let Some(object) = table.get(handle, 0) else { return STATUS_INVALID_HANDLE; };
+    let code = crate::nt_file_args::ulong(call.args.a5);
+    let input_length = crate::nt_file_args::ulong(input_length) as u64;
+    let output_length = crate::nt_file_args::ulong(output_length) as u64;
+    if code == FSCTL_GET_OBJECT_ID {
+        return file_object_id(&object, call.args.a4, output, output_length);
+    }
     let Some(endpoint) = object.pipe_endpoint() else { return STATUS_INVALID_HANDLE; };
-    let code = call.args.a5 as u32;
     if code == FSCTL_PIPE_PEEK {
         if input != 0 || input_length != 0 || output == 0 || output_length < 16 || output_length as usize > MAX_NT_IO { return STATUS_INVALID_PARAMETER; }
         let peek = endpoint.peek(output_length as usize - 16);
@@ -213,7 +223,7 @@ fn native_fs_control(call: NtCall) -> u64 {
     if input != 0 || input_length != 0 || output != 0 || output_length != 0 {
         return STATUS_INVALID_PARAMETER;
     }
-    if call.args.a5 as u32 == FSCTL_PIPE_LISTEN {
+    if code == FSCTL_PIPE_LISTEN {
         let status = match endpoint.listen() {
             sched::nt_object::NtPipeListen::Pending => STATUS_PENDING,
             sched::nt_object::NtPipeListen::Connected => STATUS_PIPE_CONNECTED,
@@ -225,6 +235,28 @@ fn native_fs_control(call: NtCall) -> u64 {
     if !endpoint.disconnect() { return STATUS_PIPE_DISCONNECTED; }
     if uaccess::put_user_u64(call.args.a4, STATUS_SUCCESS).is_err()
         || put_io_status_information(call.args.a4, 0).is_err() {
+        return STATUS_ACCESS_VIOLATION;
+    }
+    STATUS_SUCCESS
+}
+
+/// Answer the object-identity control a loader issues on every module it
+/// opens, from the file's own volume and inode identity. Two names that reach
+/// the same file answer the same buffer, which is how a loader recognises a
+/// module it has already mapped under a different name.
+/// # C: O(1)
+fn file_object_id(object: &alloc::sync::Arc<sched::nt_object::NtObject>, io_status: u64,
+                  output: u64, output_length: u64) -> u64 {
+    let Some(file) = object.file() else { return STATUS_INVALID_HANDLE; };
+    if (output_length as usize) < FILE_OBJECTID_BUFFER_SIZE { return STATUS_BUFFER_TOO_SMALL; }
+    if output == 0 { return STATUS_INVALID_PARAMETER; }
+    let stat = vfs::generic_fillattr(file.inode(), &vfs::IDENTITY);
+    let mut out = [0u8; FILE_OBJECTID_BUFFER_SIZE];
+    out[0..8].copy_from_slice(&stat.fsid.to_le_bytes());
+    out[8..16].copy_from_slice(&stat.ino.to_le_bytes());
+    if uaccess::copy_to_user(output, &out).is_err() { return STATUS_ACCESS_VIOLATION; }
+    if uaccess::put_user_u64(io_status, STATUS_SUCCESS).is_err()
+        || put_io_status_information(io_status, FILE_OBJECTID_BUFFER_SIZE as u64).is_err() {
         return STATUS_ACCESS_VIOLATION;
     }
     STATUS_SUCCESS
@@ -296,24 +328,25 @@ fn native_create(call: NtCall) -> u64 {
     let Some(share) = crate::nt_dispatch::stack_argument(6) else { return STATUS_INVALID_PARAMETER; };
     let Some(disposition) = crate::nt_dispatch::stack_argument(7) else { return STATUS_INVALID_PARAMETER; };
     let Some(options) = crate::nt_dispatch::stack_argument(8) else { return STATUS_INVALID_PARAMETER; };
-    if disposition > u32::MAX as u64 || share > u32::MAX as u64 || options > u32::MAX as u64
-        || call.args.a5 > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
-    let Some(disposition) = CreateDisposition::decode(disposition as u32) else { return STATUS_INVALID_PARAMETER; };
-    if call.args.a0 == 0 || call.args.a2 == 0 || call.args.a1 > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
-    let status = open_path(cur, call.args.a0, call.args.a1 as u32,
-        call.args.a2, options as u32, share as u32, call.args.a5 as u32, disposition);
-    if call.args.a3 != 0 { let _ = uaccess::put_user_u64(call.args.a3, status); let _ = uaccess::put_user_u64(call.args.a3 + 8, 0); }
+    let args = [call.args.a0, call.args.a1, call.args.a2, call.args.a3, call.args.a4, call.args.a5];
+    let Some(request) = crate::nt_file_args::native_create(args, share, disposition, options) else {
+        return STATUS_INVALID_PARAMETER;
+    };
+    let Some(disposition) = CreateDisposition::decode(request.disposition) else { return STATUS_INVALID_PARAMETER; };
+    let status = open_path(cur, request.handle_out, request.desired, request.attributes,
+        request.options, request.share, request.file_attributes, disposition);
+    if request.io_status != 0 { let _ = uaccess::put_user_u64(request.io_status, status); let _ = uaccess::put_user_u64(request.io_status + 8, 0); }
     status
 }
 
 fn native_open(call: NtCall) -> u64 {
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
-    let options = call.args.a5;
-    if call.args.a0 == 0 || call.args.a2 == 0 || call.args.a1 > u32::MAX as u64 || call.args.a4 > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
-    let status = open_path(cur, call.args.a0, call.args.a1 as u32,
-        call.args.a2, options as u32, call.args.a4 as u32, 0, CreateDisposition::Open);
-    if call.args.a3 != 0 { let _ = uaccess::put_user_u64(call.args.a3, status); let _ = uaccess::put_user_u64(call.args.a3 + 8, 0); }
+    let args = [call.args.a0, call.args.a1, call.args.a2, call.args.a3, call.args.a4, call.args.a5];
+    let Some(request) = crate::nt_file_args::native_open(args) else { return STATUS_INVALID_PARAMETER; };
+    let status = open_path(cur, request.handle_out, request.desired, request.attributes,
+        request.options, request.share, 0, CreateDisposition::Open);
+    if request.io_status != 0 { let _ = uaccess::put_user_u64(request.io_status, status); let _ = uaccess::put_user_u64(request.io_status + 8, 0); }
     status
 }
 
@@ -322,8 +355,8 @@ fn native_io(call: NtCall, write: bool) -> u64 {
     if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
     let Some(length) = crate::nt_dispatch::stack_argument(6) else { return STATUS_INVALID_PARAMETER; };
     let Some(offset) = crate::nt_dispatch::stack_argument(7) else { return STATUS_INVALID_PARAMETER; };
-    if call.args.a0 > u32::MAX as u64 || call.args.a4 == 0 || call.args.a5 == 0
-        || length > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
+    if call.args.a0 > u32::MAX as u64 || call.args.a4 == 0 || call.args.a5 == 0 { return STATUS_INVALID_PARAMETER; }
+    let length = crate::nt_file_args::ulong(length) as u64;
     let offset = if offset == 0 { 0 } else { read_u64(offset).unwrap_or(u64::MAX) };
     if offset == u64::MAX { return STATUS_INVALID_PARAMETER; }
     native_io_values(cur, call.args.a0 as u32, call.args.a1, call.args.a4, call.args.a5,
@@ -422,22 +455,25 @@ fn native_io_values(cur: &sched::Task, handle: u32, event: u64, io_status: u64, 
 
 fn native_query_information(call: NtCall) -> u64 {
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
-    if !cur.is_nt_personality() || call.args.a0 > u32::MAX as u64 || call.args.a1 == 0 || call.args.a2 == 0 || call.args.a3 > u32::MAX as u64 || call.args.a4 > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
-    query_information_values(cur, call.args.a0 as u32, call.args.a1, call.args.a2, call.args.a3 as u32, call.args.a4 as u32)
+    if !cur.is_nt_personality() || call.args.a0 > u32::MAX as u64 || call.args.a1 == 0 || call.args.a2 == 0 { return STATUS_INVALID_PARAMETER; }
+    query_information_values(cur, call.args.a0 as u32, call.args.a1, call.args.a2,
+        crate::nt_file_args::ulong(call.args.a3), crate::nt_file_args::ulong(call.args.a4))
 }
 
 fn native_set_information(call: NtCall) -> u64 {
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
-    if !cur.is_nt_personality() || call.args.a0 > u32::MAX as u64 || call.args.a1 == 0 || call.args.a2 == 0 || call.args.a3 > u32::MAX as u64 || call.args.a4 > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
-    set_information_values(cur, call.args.a0 as u32, call.args.a1, call.args.a2, call.args.a3 as u32, call.args.a4 as u32)
+    if !cur.is_nt_personality() || call.args.a0 > u32::MAX as u64 || call.args.a1 == 0 || call.args.a2 == 0 { return STATUS_INVALID_PARAMETER; }
+    set_information_values(cur, call.args.a0 as u32, call.args.a1, call.args.a2,
+        crate::nt_file_args::ulong(call.args.a3), crate::nt_file_args::ulong(call.args.a4))
 }
 
 fn native_query_directory(call: NtCall) -> u64 {
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     let Some(length) = crate::nt_dispatch::stack_argument(6) else { return STATUS_INVALID_PARAMETER; };
     let Some(class) = crate::nt_dispatch::stack_argument(7) else { return STATUS_INVALID_PARAMETER; };
-    if !cur.is_nt_personality() || call.args.a0 > u32::MAX as u64 || call.args.a4 == 0 || call.args.a5 == 0 || length > u32::MAX as u64 || class > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
-    query_directory_values(cur, call.args.a0 as u32, call.args.a4, call.args.a5, length as u32, class as u32)
+    if !cur.is_nt_personality() || call.args.a0 > u32::MAX as u64 || call.args.a4 == 0 || call.args.a5 == 0 { return STATUS_INVALID_PARAMETER; }
+    query_directory_values(cur, call.args.a0 as u32, call.args.a4, call.args.a5,
+        crate::nt_file_args::ulong(length), crate::nt_file_args::ulong(class))
 }
 
 fn query_attributes(cur: &sched::Task, attributes: u64, information: u64) -> u64 {
@@ -446,7 +482,7 @@ fn query_attributes(cur: &sched::Task, attributes: u64, information: u64) -> u64
     let Some(path) = object_path_with_root(attributes, &table) else { return STATUS_INVALID_PARAMETER; };
     let lookup = crate::pathresolve::resolve_at_path(crate::pathresolve::AT_FDCWD, &path,
         crate::nt_path::windows_lookup_flags());
-    let Ok(vp) = lookup else { return STATUS_OBJECT_NAME_NOT_FOUND; };
+    let vp = match lookup { Ok(vp) => vp, Err(rv) => return lookup_failure_status(&path, rv) };
     let file_type = vp.inode.file_type();
     if file_type != vfs::FileType::Regular && file_type != vfs::FileType::Directory { return STATUS_INVALID_INFO_CLASS; }
     let stat = vfs::generic_fillattr(vp.inode.as_ref(), &vfs::IDENTITY);
@@ -466,7 +502,7 @@ fn query_full_attributes(cur: &sched::Task, attributes: u64, information: u64) -
     let Some(path) = object_path_with_root(attributes, &table) else { return STATUS_INVALID_PARAMETER; };
     let lookup = crate::pathresolve::resolve_at_path(crate::pathresolve::AT_FDCWD, &path,
         crate::nt_path::windows_lookup_flags());
-    let Ok(vp) = lookup else { return STATUS_OBJECT_NAME_NOT_FOUND; };
+    let vp = match lookup { Ok(vp) => vp, Err(rv) => return lookup_failure_status(&path, rv) };
     let file_type = vp.inode.file_type();
     if file_type != vfs::FileType::Regular && file_type != vfs::FileType::Directory { return STATUS_INVALID_INFO_CLASS; }
     let stat = vfs::generic_fillattr(vp.inode.as_ref(), &vfs::IDENTITY);
@@ -567,22 +603,31 @@ fn open_existing(cur: &sched::Task, addr: u64, _create: bool) -> u64 {
         request.share_access, 0, CreateDisposition::Open)
 }
 
-/// Failing NT opens the boot log has already named. A healthy run makes none;
-/// a failing one makes a bounded burst while a loader walks its search path,
-/// and the whole point is that the first of them names the path.
+/// Failing NT opens the boot log has already named, and the process they were
+/// charged to. A healthy run makes none; a failing one makes a bounded burst
+/// while a loader walks its search path, and the whole point is that the first
+/// of them names the path.
 static REPORTED_OPEN_FAILURES: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-/// Cap on reported failures. A loader walks a search path and most candidates
-/// are absent, so the burst is bounded rather than filtered: an absent name is
-/// exactly the result a missing-module failure is made of, and excluding it
-/// hid the one line that mattered.
+static REPORTED_OPEN_FAILURES_OWNER: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+/// Cap on reported failures per process. A loader walks a search path and most
+/// candidates are absent, so the burst is bounded rather than filtered: an
+/// absent name is exactly the result a missing-module failure is made of, and
+/// excluding it hid the one line that mattered.
 const MAX_REPORTED_OPEN_FAILURES: u32 = 512;
 
-/// Report one failing NT path open. Two evenings were spent inferring which
-/// path a loader could not open from the status it reported afterwards, which
-/// names neither the path nor the reason.
+/// Report one failing NT path open, against the failing process's own budget.
+/// Two evenings were spent inferring which path a loader could not open from
+/// the status it reported afterwards, which names neither the path nor the
+/// reason; a second was spent on a trace that a machine-wide cap had already
+/// silenced before the process being chased ever ran.
 /// # C: O(path length)
-fn report_open_failure(path: &str, status: u64) {
-    if REPORTED_OPEN_FAILURES.fetch_add(1, core::sync::atomic::Ordering::Relaxed) < MAX_REPORTED_OPEN_FAILURES {
+fn report_open_failure(owner: u64, path: &str, status: u64) {
+    use core::sync::atomic::Ordering::Relaxed;
+    let budget = crate::nt_file_trace::charge(REPORTED_OPEN_FAILURES_OWNER.load(Relaxed),
+        REPORTED_OPEN_FAILURES.load(Relaxed), owner, MAX_REPORTED_OPEN_FAILURES);
+    REPORTED_OPEN_FAILURES_OWNER.store(budget.owner, Relaxed);
+    REPORTED_OPEN_FAILURES.store(budget.used, Relaxed);
+    if budget.report {
         klog::write_raw(b"[WINDOWS-NT-OPEN-FAIL] status=");
         klog::write_hex_u64(status);
         klog::write_raw(b" path=");
@@ -591,16 +636,36 @@ fn report_open_failure(path: &str, status: u64) {
     }
 }
 
+/// Whether the walk that failed got as far as the last component. A lookup
+/// reports one errno for "the name is not there" and for "the directory that
+/// would hold it is not there"; only the second is a missing path.
+/// # C: O(path length)
+fn parent_resolves(path: &str) -> bool {
+    let mut flags = crate::nt_path::windows_lookup_flags();
+    flags.parent = true;
+    crate::pathresolve::resolve_parent_at_flags(crate::pathresolve::AT_FDCWD, path, flags).is_ok()
+}
+
+/// The status for a failed lookup, distinguishing the missing name from the
+/// missing path a search must keep walking past. # C: O(path length)
+fn lookup_failure_status(path: &str, rv: i64) -> u64 {
+    if rv.unsigned_abs() as i32 == Errno::Enoent.as_i32() {
+        return crate::nt_file_status::missing_status(parent_resolves(path));
+    }
+    crate::nt_file_policy::status_from_errno(rv)
+}
+
 fn open_path(cur: &sched::Task, output: u64, desired: u32, attrs: u64, options: u32,
              sharing: u32, file_attributes: u32, disposition: CreateDisposition) -> u64 {
     // A name the kernel cannot decode is itself a failing open and must say so;
     // reporting only decodable ones leaves the worst case silent.
+    let owner = cur.thread_group.leader_pid().tid as u64;
     let Some(path) = object_path_with_root(attrs, &cur.thread_group.nt_handles()) else {
-        report_open_failure("<undecodable-object-name>", STATUS_INVALID_PARAMETER);
+        report_open_failure(owner, "<undecodable-object-name>", STATUS_INVALID_PARAMETER);
         return STATUS_INVALID_PARAMETER;
     };
     let status = open_path_resolved(cur, output, desired, &path, options, sharing, file_attributes, disposition);
-    if status != STATUS_SUCCESS { report_open_failure(&path, status); }
+    if status != STATUS_SUCCESS { report_open_failure(owner, &path, status); }
     status
 }
 
@@ -636,7 +701,7 @@ fn open_path_resolved(cur: &sched::Task, output: u64, desired: u32, path: &str, 
             let mut parent_flags = crate::nt_path::windows_lookup_flags();
             parent_flags.parent = true;
             let Ok(parent) = crate::pathresolve::resolve_parent_at_flags(crate::pathresolve::AT_FDCWD, path, parent_flags) else {
-                return STATUS_OBJECT_NAME_NOT_FOUND;
+                return crate::nt_file_status::STATUS_OBJECT_PATH_NOT_FOUND;
             };
             let Some(name) = parent.last_component.clone() else { return STATUS_INVALID_PARAMETER; };
             let ctx = vfs::CreateCtx { idmap: &vfs::IDENTITY, cred: &crate::pathresolve::current_cred(), umask: cur.umask() as u16 };
@@ -647,12 +712,16 @@ fn open_path_resolved(cur: &sched::Task, output: u64, desired: u32, path: &str, 
                 Err(error) => return crate::nt_file_policy::status_from_errno(-(error as i64)),
             }
         }
-        Err(rv) => return crate::nt_file_policy::status_from_errno(rv),
+        Err(rv) => return lookup_failure_status(path, rv),
     };
     // A name that turns out to be a directory is opened read-only even when
     // write access was asked for; the reference reaches the same result by
     // retrying the failed writable open.
-    if inode.file_type() == vfs::FileType::Directory {
+    let is_directory = inode.file_type() == vfs::FileType::Directory;
+    // The directory options are answered from what the name turned out to be,
+    // never from its spelling.
+    if let Some(status) = crate::nt_file_status::directory_option_status(options, is_directory) { return status; }
+    if is_directory {
         let directory = flags & vfs::OpenFlags::O_DIRECTORY;
         if crate::nt_file_policy::open_mode(desired, options, true) == crate::nt_file_policy::NtOpenMode::ReadOnly {
             flags = vfs::OpenFlags::O_RDONLY | directory;

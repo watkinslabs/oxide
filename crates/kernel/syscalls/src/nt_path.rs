@@ -193,6 +193,24 @@ mod tests {
         assert!(flags.case_insensitive);
     }
 
+    /// The names a runtime's own startup hands the kernel: its working
+    /// directory, with and without the trailing separator its path builder
+    /// leaves on, and the module candidates its loader walks. All of them
+    /// reach the staged system directory, and the drive letter's spelling is
+    /// not part of the name.
+    #[test]
+    fn runtime_startup_names_reach_the_staged_system_directory() {
+        assert_eq!(normalize_path(r"\??\C:\windows"), Some(String::from("/windows/c/windows")));
+        assert_eq!(normalize_path(r"\??\C:\windows\"), Some(String::from("/windows/c/windows")));
+        assert_eq!(normalize_path(r"\??\C:\windows\system32\kernel32.dll"),
+            Some(String::from("/windows/c/windows/system32/kernel32.dll")));
+        assert_eq!(normalize_path(r"\??\c:\WINDOWS\SYSTEM32\ntdll.dll"),
+            Some(String::from("/windows/c/WINDOWS/SYSTEM32/ntdll.dll")));
+        assert_eq!(normalize_path(r"C:\windows\system32"),
+            Some(String::from("/windows/c/windows/system32")));
+        assert_eq!(render_windows_path("/windows/c/windows"), Some(String::from(r"C:\windows")));
+    }
+
     #[test]
     fn maps_absolute_drive_paths_to_windows_root() {
         assert_eq!(normalize_path(r"C:\Games\Example\data.pak"),
