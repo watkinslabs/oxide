@@ -133,6 +133,25 @@ pub static DIRECTORY: ObjectAccess = ObjectAccess {
     all: DIRECTORY_ALL_ACCESS,
 };
 
+pub const KEY_QUERY_VALUE: u32 = 0x0001;
+pub const KEY_SET_VALUE: u32 = 0x0002;
+pub const KEY_CREATE_SUB_KEY: u32 = 0x0004;
+pub const KEY_ENUMERATE_SUB_KEYS: u32 = 0x0008;
+pub const KEY_NOTIFY: u32 = 0x0010;
+pub const KEY_CREATE_LINK: u32 = 0x0020;
+/// Selects which view of the registry a request means rather than granting a
+/// right, so a request carrying it is admitted and it reaches the handle.
+pub const KEY_WOW64_RES: u32 = 0x0300;
+pub const KEY_ALL_ACCESS: u32 = STANDARD_RIGHTS_REQUIRED
+    | KEY_QUERY_VALUE | KEY_SET_VALUE | KEY_CREATE_SUB_KEY | KEY_ENUMERATE_SUB_KEYS | KEY_NOTIFY | KEY_CREATE_LINK;
+pub static KEY: ObjectAccess = ObjectAccess {
+    valid: KEY_ALL_ACCESS | SYNCHRONIZE | KEY_WOW64_RES,
+    read: STANDARD_RIGHTS_READ | KEY_NOTIFY | KEY_ENUMERATE_SUB_KEYS | KEY_QUERY_VALUE,
+    write: STANDARD_RIGHTS_WRITE | KEY_CREATE_SUB_KEY | KEY_SET_VALUE,
+    exec: STANDARD_RIGHTS_EXECUTE | KEY_CREATE_LINK | KEY_NOTIFY | KEY_ENUMERATE_SUB_KEYS | KEY_QUERY_VALUE,
+    all: KEY_ALL_ACCESS,
+};
+
 /// The right one keyed-event operation needs. # C: O(1)
 pub const fn keyed_event_access(release: bool) -> u32 {
     if release { KEYEDEVENT_WAKE } else { KEYEDEVENT_WAIT }
