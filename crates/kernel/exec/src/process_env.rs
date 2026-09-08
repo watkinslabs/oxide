@@ -1,10 +1,11 @@
 //! Module manifest: builder publishes process/thread arenas; layout owns offsets;
-//! processor_features maps architectural identification onto the published
-//! feature vector;
+//! processor_features owns the published feature-vector numbering and maps
+//! architectural identification onto it for every architecture, not just the
+//! host one, so both mappings stay testable from either;
 //! user_shared_data owns the fixed read-only NT shared page;
 //! publish updates catalog-owned regions; runtime provides bounded environment views.
 mod layout;
-mod processor_features;
+pub mod processor_features;
 mod user_shared_data;
 mod builder;
 mod publish;
