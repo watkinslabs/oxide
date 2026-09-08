@@ -7,7 +7,7 @@
 use crate::geometry::Rect;
 use crate::protocol::{Frame, TransportError, MAX_PIXELS};
 
-pub(crate) struct Retained { pub width: u32, pub height: u32, pixels: Vec<u32>, held: Option<Rect> }
+pub(crate) struct Retained { pub width: u32, pub height: u32, pixels: Vec<u32>, held: crate::coverage::Coverage }
 
 impl Retained {
     /// A window's whole extent. The storage exists at once; the pixels do
@@ -21,21 +21,19 @@ impl Retained {
         let mut pixels = Vec::new();
         pixels.try_reserve_exact(count).map_err(|_| TransportError::InvalidFrame)?;
         pixels.resize(count, 0xff00_0000);
-        Ok(Self { width, height, pixels, held: None })
+        Ok(Self { width, height, pixels, held: crate::coverage::Coverage::default() })
     }
 
     /// Whether the surface holds every pixel of `rect` - whether a frame has
     /// covered all of it. A surface asked for pixels it was never given
     /// answers with storage, not with the window: restoring that over an
     /// exposure paints the window's own content away. # C: O(1)
-    pub(crate) fn holds(&self, rect: Rect) -> bool {
-        self.held.is_some_and(|h| rect.left >= h.left && rect.top >= h.top && rect.right <= h.right && rect.bottom <= h.bottom)
-    }
+    pub(crate) fn holds(&self, rect: Rect) -> bool { self.held.holds(rect) }
 
-    /// The rectangle the surface holds pixels for, for a test that reads the
+    /// The areas the surface holds pixels for, for a test that reads the
     /// display back and compares only what the surface claims.
     #[cfg(test)]
-    pub(crate) fn held_for_test(&self) -> Option<Rect> { self.held }
+    pub(crate) fn held_for_test(&self) -> Vec<Rect> { self.held.areas_for_test() }
 
     /// Write one frame's sub-rectangle into the surface at the origin the
     /// frame names, leaving every other pixel as the last frame left it, and
@@ -51,8 +49,7 @@ impl Retained {
             let end = start.checked_add(row).ok_or(TransportError::InvalidFrame)?;
             self.pixels.get_mut(start..end).ok_or(TransportError::InvalidFrame)?.copy_from_slice(source);
         }
-        let d = frame.damage;
-        self.held = Some(match self.held { Some(h) => Rect { left: h.left.min(d.left), top: h.top.min(d.top), right: h.right.max(d.right), bottom: h.bottom.max(d.bottom) }, None => d });
+        self.held.cover(frame.damage);
         Ok(())
     }
 

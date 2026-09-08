@@ -15,6 +15,7 @@ mod protocol;
 mod readiness;
 mod x11;
 mod caret;
+mod coverage;
 mod retained;
 mod extent;
 

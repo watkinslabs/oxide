@@ -78,9 +78,9 @@ impl Fixture {
         ack(&mut self.peer, &mut self.backend, &mut self.transport, self.sequence);
     }
     /// What the display holds for the window, what the backend retains for
-    /// it, and the rectangle the surface claims to hold. The retained pixels
+    /// it, and the areas the surface claims to hold. The retained pixels
     /// are what a re-expose puts on the display, but only inside the claim.
-    fn displayed_and_retained(&mut self, width: u32, height: u32) -> (Vec<u32>, Vec<u32>, Option<Rect>) {
+    fn displayed_and_retained(&mut self, width: u32, height: u32) -> (Vec<u32>, Vec<u32>, Vec<Rect>) {
         self.backend.flush();
         let displayed = unsafe { server_image(self.conn, self.xid, width, height) };
         let (retained, held) = self.backend.retained_for_test(0xb1).unwrap();
@@ -100,7 +100,7 @@ fn a_sub_rectangle_reaches_its_own_offset_and_leaves_the_rest_of_the_window_alon
     let part = Rect { left: 8, top: 6, right: 16, bottom: 12 };
     f.present(W, H, part, SECOND);
     let (displayed, retained, held) = f.displayed_and_retained(W, H);
-    assert_eq!(held, Some(Rect { left: 0, top: 0, right: W as i32, bottom: H as i32 }));
+    assert_eq!(held, vec![Rect { left: 0, top: 0, right: W as i32, bottom: H as i32 }]);
     for y in 0..H as i32 { for x in 0..W as i32 {
         let inside = x >= part.left && x < part.right && y >= part.top && y < part.bottom;
         let want = if inside { SECOND } else { FIRST } | 0xff00_0000;
@@ -127,7 +127,7 @@ fn a_partial_frame_into_a_fresh_surface_leaves_the_display_and_the_surface_agree
     // The surface claims the sub-rectangle it was given and nothing else: the
     // rest of the window has never been presented and its pixels are the
     // window's, not this backend's storage colour.
-    assert_eq!(held, Some(part), "a fresh surface claimed pixels no frame ever gave it");
+    assert_eq!(held, vec![part], "a fresh surface claimed pixels no frame ever gave it");
     for y in part.top..part.bottom { for x in part.left..part.right {
         let index = (y as u32 * W + x as u32) as usize;
         assert_eq!(displayed[index] | 0xff00_0000, SECOND | 0xff00_0000);
@@ -156,7 +156,7 @@ fn a_partial_frame_after_a_server_resize_leaves_the_display_and_the_surface_agre
     let part = Rect { left: 2, top: 2, right: 20, bottom: 10 };
     f.present(WIDE, H, part, SECOND);
     let (displayed, retained, held) = f.displayed_and_retained(WIDE, H);
-    assert_eq!(held, Some(part), "the surface allocated for the new extent claimed the old surface's coverage");
+    assert_eq!(held, vec![part], "the surface allocated for the new extent claimed the old surface's coverage");
     for y in 0..H as i32 { for x in 0..WIDE as i32 {
         let index = (y as u32 * WIDE + x as u32) as usize;
         let inside = x >= part.left && x < part.right && y >= part.top && y < part.bottom;

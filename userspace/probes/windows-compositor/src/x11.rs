@@ -41,7 +41,7 @@ impl Backend {
     #[cfg(test)]
     pub(crate) fn map_input_for_test(&mut self, input: InputEvent) -> Option<BridgeEvent> { self.map_input(input) }
     #[cfg(test)]
-    pub(crate) fn retained_for_test(&self, hwnd: u32) -> Option<(Vec<u32>, Option<Rect>)> { self.windows.get(&hwnd)?.surface.as_ref().map(|s| (s.pixels_for_test(), s.held_for_test())) }
+    pub(crate) fn retained_for_test(&self, hwnd: u32) -> Option<(Vec<u32>, Vec<Rect>)> { self.windows.get(&hwnd)?.surface.as_ref().map(|s| (s.pixels_for_test(), s.held_for_test())) }
     #[cfg(test)]
     pub(crate) fn pending_event_for_test(&mut self) -> Option<BridgeEvent> { self.pending.pop_front() }
     /// The X connection's socket, so a caller can block on it instead of
