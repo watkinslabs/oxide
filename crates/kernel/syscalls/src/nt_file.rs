@@ -532,6 +532,8 @@ fn cancel_synchronous(cur: &sched::Task, handle: u64, _io: Option<u64>, io_statu
     STATUS_NOT_FOUND
 }
 
+fn read_u16(addr: u64) -> Result<u16, u64> { uaccess::get_user_u16(addr).map_err(|_| STATUS_INVALID_PARAMETER) }
+fn read_u16_at(addr: u64, offset: u64) -> Result<u16, u64> { read_u16(addr.checked_add(offset).ok_or(STATUS_INVALID_PARAMETER)?) }
 fn read_u32(addr: u64) -> Result<u32, u64> { uaccess::get_user_u32(addr).map_err(|_| STATUS_INVALID_PARAMETER) }
 fn read_u64(addr: u64) -> Result<u64, u64> { uaccess::get_user_u64(addr).map_err(|_| STATUS_INVALID_PARAMETER) }
 fn read_u32_at(addr: u64, offset: u64) -> Result<u32, u64> { read_u32(addr.checked_add(offset).ok_or(STATUS_INVALID_PARAMETER)?) }
@@ -1160,14 +1162,16 @@ fn filetime(time: vfs::Timespec64) -> i64 {
 }
 
 fn object_path(attrs: u64) -> Option<String> {
-    if read_u32(attrs).ok()? < 48 || read_u64_at(attrs, 8).ok()? != 0 { return None; }
+    use crate::nt_object_name as record;
+    if !record::attributes_declare_a_name(read_u32_at(attrs, record::ATTRIBUTES_LENGTH).ok()?)
+        || read_u64_at(attrs, record::ATTRIBUTES_ROOT_DIRECTORY).ok()? != 0 { return None; }
     let (_, path) = object_name(attrs)?;
     crate::nt_path::normalize_absolute_path(&path)
 }
 
 fn object_path_with_root(attrs: u64, table: &sched::nt_object::NtHandleTable) -> Option<String> {
-    if read_u32(attrs).ok()? < 48 { return None; }
-    let root = read_u64_at(attrs, 8).ok()?;
+    if !crate::nt_object_name::attributes_declare_a_name(read_u32_at(attrs, crate::nt_object_name::ATTRIBUTES_LENGTH).ok()?) { return None; }
+    let root = read_u64_at(attrs, crate::nt_object_name::ATTRIBUTES_ROOT_DIRECTORY).ok()?;
     let (_, raw) = object_name(attrs)?;
     let path = crate::nt_path::normalize_path(&raw)?;
     if path.starts_with('/') { return Some(path); }
@@ -1181,15 +1185,18 @@ fn object_path_with_root(attrs: u64, table: &sched::nt_object::NtHandleTable) ->
 }
 
 fn object_name(attrs: u64) -> Option<(u64, String)> {
-    let name = read_u64_at(attrs, 16).ok()?;
+    use crate::nt_object_name as record;
+    let name = read_u64_at(attrs, record::ATTRIBUTES_OBJECT_NAME).ok()?;
     if name == 0 { return None; }
-    let len = read_u32(name).ok()? as usize;
-    if len == 0 || len > 32766 || len & 1 != 0 { return None; }
-    let buffer = read_u64_at(name, 8).ok()?;
+    // The count is 16 bits wide and the buffer capacity sits beside it, so a
+    // wider read reports a length no name can have and refuses every name a
+    // native caller produces.
+    let len = record::name_bytes(read_u16_at(name, record::NAME_LENGTH).ok()?)?;
+    let buffer = read_u64_at(name, record::NAME_BUFFER).ok()?;
     let mut bytes = vec![0u8; len];
     uaccess::copy_from_user(&mut bytes, buffer).ok()?;
     let path = utf16_string(&bytes)?;
-    Some((read_u64_at(attrs, 8).ok()?, path))
+    Some((read_u64_at(attrs, record::ATTRIBUTES_ROOT_DIRECTORY).ok()?, path))
 }
 
 fn utf16_string(bytes: &[u8]) -> Option<String> {
