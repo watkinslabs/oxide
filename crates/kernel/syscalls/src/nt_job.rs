@@ -42,12 +42,16 @@ fn job(call: NtCall, access: u32) -> Result<alloc::sync::Arc<sched::nt_object::N
 }
 
 fn set_information(call: NtCall) -> u64 {
-    let required = match call.args.a1 as u32 { BASIC_LIMIT => BASIC_LIMIT_BYTES, EXTENDED_LIMIT => EXTENDED_LIMIT_BYTES, _ => return STATUS_INVALID_PARAMETER };
-    if call.args.a2 == 0 || call.args.a3 as usize != required { return STATUS_INVALID_PARAMETER; }
+    // The information class and the buffer length are ULONGs: their slots'
+    // upper halves are not part of the values a caller passed.
+    let class = crate::nt_token_args::ulong(call.args.a1);
+    let length = crate::nt_ulong::ulong(call.args.a3);
+    let required = match class { BASIC_LIMIT => BASIC_LIMIT_BYTES, EXTENDED_LIMIT => EXTENDED_LIMIT_BYTES, _ => return STATUS_INVALID_PARAMETER };
+    if call.args.a2 == 0 || length != required { return STATUS_INVALID_PARAMETER; }
     let mut bytes = [0u8; EXTENDED_LIMIT_BYTES];
     if uaccess::copy_from_user(&mut bytes[..required], call.args.a2).is_err() { return STATUS_INVALID_PARAMETER; }
     let flags = u32::from_le_bytes(bytes[16..20].try_into().unwrap());
-    let valid = if call.args.a1 as u32 == BASIC_LIMIT { BASIC_VALID_FLAGS } else { EXTENDED_VALID_FLAGS };
+    let valid = if class == BASIC_LIMIT { BASIC_VALID_FLAGS } else { EXTENDED_VALID_FLAGS };
     if flags & !valid != 0 { return STATUS_INVALID_PARAMETER; }
     let limits = sched::nt_object::NtJobLimits {
         flags,
@@ -61,13 +65,13 @@ fn set_information(call: NtCall) -> u64 {
 }
 
 fn query_information(call: NtCall) -> u64 {
-    let (required, accounting) = match call.args.a1 as u32 {
+    let (required, accounting) = match crate::nt_token_args::ulong(call.args.a1) {
         BASIC_LIMIT => (BASIC_LIMIT_BYTES, false),
         EXTENDED_LIMIT => (EXTENDED_LIMIT_BYTES, false),
         BASIC_ACCOUNTING => (40, true),
         _ => return STATUS_INVALID_PARAMETER,
     };
-    if call.args.a2 == 0 || (call.args.a3 as usize) < required { return STATUS_INFO_LENGTH_MISMATCH; }
+    if call.args.a2 == 0 || crate::nt_ulong::ulong(call.args.a3) < required { return STATUS_INFO_LENGTH_MISMATCH; }
     let job = match job(call, JOB_QUERY) { Ok(job) => job, Err(status) => return status };
     let limits = job.limits();
     let mut bytes = [0u8; EXTENDED_LIMIT_BYTES];
