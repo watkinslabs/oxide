@@ -38,33 +38,35 @@ static HOOK_INSTALLED: AtomicBool = AtomicBool::new(false);
 
 pub fn dispatch(call: NtCall) -> u64 {
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
-    if !cur.is_nt_personality() || call.args.a0 > u32::MAX as u64 || call.args.a1 > u32::MAX as u64 {
-        return STATUS_INVALID_PARAMETER;
-    }
+    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
     let Some(buffer_size) = crate::nt_dispatch::stack_argument(6) else { return STATUS_INVALID_PARAMETER; };
     let Some(filter) = crate::nt_dispatch::stack_argument(7) else { return STATUS_INVALID_PARAMETER; };
     let Some(subtree) = crate::nt_dispatch::stack_argument(8) else { return STATUS_INVALID_PARAMETER; };
-    if call.args.a2 != 0 || call.args.a3 != 0 || call.args.a4 == 0 || call.args.a5 == 0
-        || buffer_size == 0 || buffer_size > u32::MAX as u64 || filter > u32::MAX as u64
-        || subtree != 0 { return STATUS_INVALID_PARAMETER; }
-    let filter = filter as u32;
+    let args = [call.args.a0, call.args.a1, call.args.a2, call.args.a3, call.args.a4, call.args.a5];
+    let Some(request) = crate::nt_file_sig::directory_watch(args, [buffer_size, filter, subtree]) else {
+        return STATUS_INVALID_PARAMETER;
+    };
+    if request.apc != 0 || request.apc_context != 0 || request.length == 0 || request.subtree {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let filter = request.filter;
     if !crate::nt_directory_notify_policy::valid_filter(filter) { return STATUS_INVALID_PARAMETER; }
     let table = cur.thread_group.nt_handles();
-    let file_handle = sched::nt_object::NtHandle::from_raw(call.args.a0 as u32);
+    let file_handle = sched::nt_object::NtHandle::from_raw(request.directory);
     let Some(file_object) = table.get(file_handle, FILE_LIST_DIRECTORY) else {
         return if table.contains(file_handle) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE };
     };
     if file_object.kind() != sched::nt_object::NtObjectType::File { return STATUS_INVALID_HANDLE; }
     let Some(directory) = file_object.file() else { return STATUS_INVALID_HANDLE; };
-    let event_handle = sched::nt_object::NtHandle::from_raw(call.args.a1 as u32);
+    let event_handle = sched::nt_object::NtHandle::from_raw(request.event);
     let Some(event_object) = table.get(event_handle, SYNCHRONIZE_ACCESS) else {
         return if table.contains(event_handle) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE };
     };
     let Some(event) = event_object.event() else { return STATUS_INVALID_HANDLE; };
     if !HOOK_INSTALLED.swap(true, Ordering::AcqRel) { vfs::set_dirent_observer_hook(observe); }
     let mut watches = WATCHES.lock();
-    watches.push(Watch { handle: call.args.a0 as u32, owner_tid: cur.tid, directory, event, io_status: call.args.a4, buffer: call.args.a5,
-        length: buffer_size as u32, filter });
+    watches.push(Watch { handle: request.directory, owner_tid: cur.tid, directory, event,
+        io_status: request.io_status, buffer: request.buffer, length: request.length, filter });
     STATUS_PENDING
 }
 

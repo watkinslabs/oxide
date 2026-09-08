@@ -34,25 +34,25 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
 
 fn query(call: NtCall) -> u64 {
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
-    if !cur.is_nt_personality() || call.args.a0 > u32::MAX as u64 || call.args.a1 == 0 {
-        return STATUS_INVALID_PARAMETER;
-    }
-    let Some(restart) = crate::nt_dispatch::stack_argument(4) else { return STATUS_INVALID_PARAMETER; };
-    let Some(context) = crate::nt_dispatch::stack_argument(5) else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
     let Some(return_length) = crate::nt_dispatch::stack_argument(6) else { return STATUS_INVALID_PARAMETER; };
-    if context == 0 || call.args.a2 > usize::MAX as u64 { return STATUS_INVALID_PARAMETER; }
+    let args = [call.args.a0, call.args.a1, call.args.a2, call.args.a3, call.args.a4, call.args.a5];
+    let Some(request) = crate::nt_file_sig::directory_object_query(args, [return_length]) else {
+        return STATUS_INVALID_PARAMETER;
+    };
+    let (restart, context) = (request.restart, request.context);
     let table = cur.thread_group.nt_handles();
-    let handle = sched::nt_object::NtHandle::from_raw(call.args.a0 as u32);
+    let handle = sched::nt_object::NtHandle::from_raw(request.directory);
     let Some(object) = table.get(handle, DIRECTORY_QUERY) else { return STATUS_INVALID_HANDLE; };
     if object.kind() != sched::nt_object::NtObjectType::Directory { return STATUS_INVALID_HANDLE; }
     let Ok(start) = uaccess::get_user_u32(context) else { return STATUS_INVALID_PARAMETER; };
     let entries = sched::nt_object::directory_entries(&object);
-    let index = if restart != 0 { 0 } else { start as usize };
+    let index = if restart { 0 } else { start as usize };
     if index >= entries.len() {
         if return_length != 0 && uaccess::put_user_u32(return_length, 32).is_err() { return STATUS_INVALID_PARAMETER; }
         return STATUS_NO_MORE_ENTRIES;
     }
-    let capacity = call.args.a2 as usize;
+    let capacity = request.size as usize;
     let mut output = alloc::vec::Vec::new();
     let mut count = 0usize;
     for (name, type_name) in entries.iter().skip(index) {
@@ -68,17 +68,17 @@ fn query(call: NtCall) -> u64 {
         let base = output.len();
         output.resize(base + record, 0);
         put_unicode(&mut output, base, name_bytes as u16,
-            call.args.a1 + (base + layout.name_offset) as u64);
+            request.buffer + (base + layout.name_offset) as u64);
         put_unicode(&mut output, base + 16, type_bytes as u16,
-            call.args.a1 + (base + layout.type_offset) as u64);
+            request.buffer + (base + layout.type_offset) as u64);
         let mut offset = base + layout.name_offset;
         for unit in name.encode_utf16() { output[offset..offset + 2].copy_from_slice(&unit.to_ne_bytes()); offset += 2; }
         offset += 2;
         for unit in type_name.encode_utf16() { output[offset..offset + 2].copy_from_slice(&unit.to_ne_bytes()); offset += 2; }
         count += 1;
-        if call.args.a3 != 0 { break; }
+        if request.single_entry { break; }
     }
-    if uaccess::copy_to_user(call.args.a1, &output).is_err() { return STATUS_INVALID_PARAMETER; }
+    if uaccess::copy_to_user(request.buffer, &output).is_err() { return STATUS_INVALID_PARAMETER; }
     if uaccess::put_user_u32(context, (index + count) as u32).is_err() { return STATUS_INVALID_PARAMETER; }
     if return_length != 0 && uaccess::put_user_u32(return_length, output.len() as u32).is_err() { return STATUS_INVALID_PARAMETER; }
     if index + count < entries.len() { STATUS_MORE_ENTRIES } else { 0 }
