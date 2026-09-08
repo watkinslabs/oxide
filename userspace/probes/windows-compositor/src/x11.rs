@@ -377,8 +377,6 @@ impl Backend {
     }
     fn map_input(&mut self, input: InputEvent) -> Option<BridgeEvent> {
         if let InputEvent::Key { hwnd, press, virtual_key: _, scan_code: keycode, modifiers: _state } = input {
-            let alt_name = CString::new("Alt").map_err(|_| ()).ok()?;
-            let alt = unsafe { ffi::xkb_state_mod_name_is_active(self.state, alt_name.as_ptr(), 1 << 3) } == 1;
             unsafe { ffi::xkb_state_update_key(self.state, keycode as u32, if press { 1 } else { 0 }); }
             let keysym = unsafe { ffi::xkb_state_key_get_one_sym(self.state, keycode as u32) };
             let scan = evdev_x11_scan(keycode as u32)?;
@@ -388,7 +386,7 @@ impl Backend {
             let base_keysym = if base_count > 0 && !base_syms.is_null() { unsafe { *base_syms } } else { keysym };
             let virtual_key = keysym_to_vk(base_keysym).or_else(|| keysym_to_vk(keysym))?;
             let was_down = self.down_keys.get(&keycode).copied().unwrap_or(false);
-            let modifiers = key_flags(scan, press, was_down, alt);
+            let modifiers = key_flags(scan, press, was_down);
             if press { self.down_keys.insert(keycode, true); } else { self.down_keys.remove(&keycode); }
             if press {
                 let mut text = [0u8; 32]; let n = unsafe { ffi::xkb_state_key_get_utf8(self.state, keycode as u32, text.as_mut_ptr() as *mut libc::c_char, text.len()) };

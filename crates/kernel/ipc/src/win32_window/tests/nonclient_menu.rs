@@ -52,7 +52,7 @@ fn a_pressed_and_released_alt_opens_the_bar_with_no_character() {
     let mut latch = KeyMenuLatch::default();
     assert_eq!(latch.key(WM_SYSKEYDOWN, VK_MENU, 0, false, true), None);
     assert_eq!(latch.key(WM_SYSKEYUP, VK_MENU, 0, false, true),
-        Some(KeyMenuAction::SysCommand { command: SC_KEYMENU, character: KEYMENU_NO_CHARACTER }));
+        Some(KeyMenuAction::SysCommand { command: SC_KEYMENU, character: KEYMENU_NO_CHARACTER, target: KeyMenuTarget::Root }));
     assert_eq!(latch.key(WM_SYSKEYUP, VK_MENU, 0, false, true), None);
 }
 
@@ -69,7 +69,7 @@ fn a_pressed_and_released_f10_opens_the_bar_and_shift_f10_asks_for_the_context_m
     let mut latch = KeyMenuLatch::default();
     assert_eq!(latch.key(WM_KEYDOWN, VK_F10, 0, false, false), None);
     assert_eq!(latch.key(WM_KEYUP, VK_F10, 0, false, false),
-        Some(KeyMenuAction::SysCommand { command: SC_KEYMENU, character: KEYMENU_NO_CHARACTER }));
+        Some(KeyMenuAction::SysCommand { command: SC_KEYMENU, character: KEYMENU_NO_CHARACTER, target: KeyMenuTarget::Root }));
     assert_eq!(latch.key(WM_KEYDOWN, VK_F10, 0, true, false), Some(KeyMenuAction::ContextMenu));
 }
 
@@ -77,17 +77,41 @@ fn a_pressed_and_released_f10_opens_the_bar_and_shift_f10_asks_for_the_context_m
 fn shift_escape_opens_the_window_menu_and_alt_space_names_it_by_character() {
     let mut latch = KeyMenuLatch::default();
     assert_eq!(latch.key(WM_KEYDOWN, VK_ESCAPE, 0, true, false),
-        Some(KeyMenuAction::SysCommand { command: SC_KEYMENU, character: KEYMENU_SPACE }));
+        Some(KeyMenuAction::SysCommand { command: SC_KEYMENU, character: KEYMENU_SPACE, target: KeyMenuTarget::Window }));
     assert_eq!(latch.key(WM_SYSCHAR, 0, KEYMENU_SPACE, false, true),
-        Some(KeyMenuAction::SysCommand { command: SC_KEYMENU, character: KEYMENU_SPACE }));
+        Some(KeyMenuAction::SysCommand { command: SC_KEYMENU, character: KEYMENU_SPACE, target: KeyMenuTarget::Window }));
 }
 
 #[test]
 fn an_alt_character_names_the_bar_item_while_tab_and_escape_name_none() {
     let mut latch = KeyMenuLatch::default();
     assert_eq!(latch.key(WM_SYSCHAR, 0, b'f' as u32, false, true),
-        Some(KeyMenuAction::SysCommand { command: SC_KEYMENU, character: b'f' as u32 }));
+        Some(KeyMenuAction::SysCommand { command: SC_KEYMENU, character: b'f' as u32, target: KeyMenuTarget::Window }));
     assert_eq!(latch.key(WM_SYSCHAR, 0, b'\t' as u32, false, true), None);
     assert_eq!(latch.key(WM_SYSCHAR, 0, VK_ESCAPE, false, true), None);
     assert_eq!(latch.key(WM_SYSCHAR, 0, b'f' as u32, false, false), Some(KeyMenuAction::Beep));
+}
+
+/// Alt+F4 is the system key that closes a window; the routing of the command
+/// past a class that refuses to close is the caller's.
+#[test]
+fn alt_f4_is_a_close_and_the_other_alt_keys_are_not() {
+    let mut latch = KeyMenuLatch::default();
+    assert_eq!(latch.key(WM_SYSKEYDOWN, VK_F4, 0, false, true), Some(KeyMenuAction::Close));
+    assert_eq!(latch.key(WM_SYSKEYDOWN, VK_F4, 0, false, false), None);
+    assert_eq!(latch.key(WM_SYSKEYDOWN, b'F' as u32, 0, false, true), None);
+    // The close does not leave a bare-Alt opening armed behind it.
+    assert_eq!(latch.key(WM_SYSKEYUP, VK_MENU, 0, false, true), None);
+}
+
+/// A bare Alt is answered by the root of the window tree it was typed into,
+/// which is what lets a focused child open its top-level window's menu bar.
+#[test]
+fn a_bare_alt_opens_the_root_window_and_a_character_stays_on_the_window() {
+    let mut latch = KeyMenuLatch::default();
+    assert_eq!(latch.key(WM_SYSKEYDOWN, VK_MENU, 0, false, true), None);
+    assert_eq!(latch.key(WM_SYSKEYUP, VK_MENU, 0, false, true),
+        Some(KeyMenuAction::SysCommand { command: SC_KEYMENU, character: KEYMENU_NO_CHARACTER, target: KeyMenuTarget::Root }));
+    assert_eq!(latch.key(WM_SYSCHAR, 0, b'f' as u32, false, true),
+        Some(KeyMenuAction::SysCommand { command: SC_KEYMENU, character: b'f' as u32, target: KeyMenuTarget::Window }));
 }

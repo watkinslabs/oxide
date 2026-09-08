@@ -1,21 +1,27 @@
 use super::*;
+use super::super::key_message::WM_CHAR;
 use alloc::vec;
 
-fn state() -> (WindowManager, WindowId) {
+pub(crate) fn state() -> (WindowManager, WindowId) {
     let mut state = WindowManager::new();
     let id = state.create(17, None, 42).unwrap();
     state.set_rect(id, WindowRect { left: 20, top: 30, right: 220, bottom: 130 }).unwrap();
     state.set_visible(id, true).unwrap();
     (state, id)
 }
-fn event(opcode: Opcode, id: WindowId, payload: Vec<u8>) -> Record {
+pub(crate) fn event(opcode: Opcode, id: WindowId, payload: Vec<u8>) -> Record {
     Record::new(opcode, 1, id.raw() as u64, payload).unwrap()
 }
-fn words(values: &[u32]) -> Vec<u8> { values.iter().flat_map(|word| word.to_le_bytes()).collect() }
-fn deliver(state: &mut WindowManager, event: &Record) -> bool {
-    apply_event(state, event, |_, _, _, _, _, _, _| panic!("unexpected pointer"))
+pub(crate) fn words(values: &[u32]) -> Vec<u8> { values.iter().flat_map(|word| word.to_le_bytes()).collect() }
+pub(crate) fn deliver(state: &mut WindowManager, event: &Record) -> bool {
+    apply_event(state, &mut SysKeyLatch::default(), event, |_, _, _, _, _, _, _| panic!("unexpected pointer"))
 }
-fn next(state: &mut WindowManager) -> Option<WinMessage> {
+/// Deliver against a latch the caller keeps, so a run of key transitions is
+/// decided against the state the ones before it left.
+pub(crate) fn deliver_keys(state: &mut WindowManager, keys: &mut SysKeyLatch, event: &Record) -> bool {
+    apply_event(state, keys, event, |_, _, _, _, _, _, _| panic!("unexpected pointer"))
+}
+pub(crate) fn next(state: &mut WindowManager) -> Option<WinMessage> {
     state.peek_for_thread(17, gui::MessageFilter { hwnd: None, first: 0, last: 0 }, true)
 }
 
@@ -89,23 +95,10 @@ fn configure_mutates_canonical_geometry_and_posts_move_size_paint() {
 }
 
 #[test]
-fn key_scan_extended_repeat_release_and_alt_bits_are_preserved() {
-    let (mut state, id) = state();
-    assert!(deliver(&mut state, &event(Opcode::Key, id, words(&[0x41, 0x1e, 1, KEY_EXTENDED | KEY_PREVIOUS]))));
-    let key = next(&mut state).unwrap();
-    assert_eq!(key.message, gui::WM_KEYDOWN);
-    assert_eq!(key.wparam, 0x41);
-    assert_eq!(key.lparam as u32, 1 | (0x1e << 16) | KEY_EXTENDED | KEY_PREVIOUS);
-    assert!(deliver(&mut state, &event(Opcode::Key, id, words(&[0x41, 0x1e, 0, KEY_ALT]))));
-    let key = next(&mut state).unwrap();
-    assert_eq!(key.message, WM_SYSKEYUP);
-    assert_eq!(key.lparam as u32, 1 | (0x1e << 16) | KEY_ALT | KEY_PREVIOUS | KEY_RELEASE);
-}
-
-#[test]
 fn raw_x11_key_fields_and_unknown_modifiers_are_rejected() {
     let (mut state, id) = state();
-    for fields in [[0, 38, 1, 0], [0x100, 38, 1, 0], [0x41, 0x100, 1, 0], [0x41, 0x1e, 1, 8]] {
+    // The Alt context bit is this side's own: a source may not state it.
+    for fields in [[0, 38, 1, 0], [0x100, 38, 1, 0], [0x41, 0x100, 1, 0], [0x41, 0x1e, 1, 8], [0x41, 0x1e, 1, KEY_ALT]] {
         assert!(!deliver(&mut state, &event(Opcode::Key, id, words(&fields))));
     }
     assert_eq!(next(&mut state), None);
@@ -154,7 +147,7 @@ fn pointer_forwards_absolute_signed_client_coordinates_and_win32_buttons_once() 
     let (mut state, id) = state();
     let record = event(Opcode::Pointer, id, words(&[-4i32 as u32, 12, gui::MK_LBUTTON as u32, -120i32 as u32, 120]));
     let mut calls = 0;
-    assert!(apply_event(&mut state, &record, |owner, target, x, y, buttons, wheel, hwheel| {
+    assert!(apply_event(&mut state, &mut SysKeyLatch::default(), &record, |owner, target, x, y, buttons, wheel, hwheel| {
         calls += 1;
         assert!(owner.get(target).is_some());
         assert_eq!((target, x, y, buttons, wheel, hwheel), (id, -4, 12, 1, -120, 120)); true
@@ -202,7 +195,7 @@ fn bridge_pointer_reaches_canonical_capture_queue() {
     state.set_rect(capture, WindowRect { left: 100, top: 200, right: 300, bottom: 400 }).unwrap();
     state.set_capture(17, capture).unwrap();
     let record = event(Opcode::Pointer, id, words(&[1, 2, gui::MK_LBUTTON as u32, 120, -120i32 as u32]));
-    assert!(apply_event(&mut state, &record, |state, id, x, y, buttons, wheel, hwheel| {
+    assert!(apply_event(&mut state, &mut SysKeyLatch::default(), &record, |state, id, x, y, buttons, wheel, hwheel| {
         state.post_compositor_pointer(id, x, y, buttons, wheel, hwheel).is_ok()
     }));
     let motion = next(&mut state).unwrap();
@@ -437,7 +430,7 @@ fn a_desktop_click_becomes_a_button_down_and_up_on_the_window_queue() {
     let (mut state, id) = state();
     let deliver_pointer = |state: &mut WindowManager, buttons: u32| {
         let record = event(Opcode::Pointer, id, words(&[9, 11, buttons, 0, 0]));
-        apply_event(state, &record, |state, id, x, y, buttons, wheel, hwheel| state.post_compositor_pointer(id, x, y, buttons, wheel, hwheel).is_ok())
+        apply_event(state, &mut SysKeyLatch::default(), &record, |state, id, x, y, buttons, wheel, hwheel| state.post_compositor_pointer(id, x, y, buttons, wheel, hwheel).is_ok())
     };
     assert!(deliver_pointer(&mut state, gui::MK_LBUTTON as u32));
     assert!(deliver_pointer(&mut state, 0));

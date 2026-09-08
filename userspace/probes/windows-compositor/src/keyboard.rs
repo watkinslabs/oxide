@@ -84,16 +84,18 @@ impl ModifierMasks {
     }
 }
 
-/// Wire modifier word: only bits 24/29/30. Caller supplies Alt context and
-/// previous physical state, not the pre-event X11 state mask.
-pub fn key_flags(scan: Scan, pressed: bool, was_down: bool, alt_context: bool) -> u32 {
+/// Wire modifier word: only bits 24 and 30. Caller supplies previous physical
+/// state, not the pre-event X11 state mask. The Alt context bit is not on the
+/// wire: this side reports a transition, and the message that transition
+/// becomes is decided against key state read both before and after it, which
+/// no single sample taken here could describe.
+pub fn key_flags(scan: Scan, pressed: bool, was_down: bool) -> u32 {
     (if scan.extended { KEY_EXTENDED } else { 0 }) |
-    (if alt_context { KEY_ALT } else { 0 }) |
     (if was_down || !pressed { KEY_PREVIOUS } else { 0 })
 }
 
-pub fn key_lparam(scan: Scan, pressed: bool, was_down: bool, alt_context: bool) -> u32 {
-    1 | ((scan.code as u32) << 16) | key_flags(scan, pressed, was_down, alt_context) |
+pub fn key_lparam(scan: Scan, pressed: bool, was_down: bool) -> u32 {
+    1 | ((scan.code as u32) << 16) | key_flags(scan, pressed, was_down) |
         if pressed { 0 } else { KEY_RELEASE }
 }
 
@@ -241,13 +243,26 @@ mod tests {
     }
 
     #[test]
-    fn lparam_initial_repeat_release_and_alt_flags() {
+    fn lparam_initial_repeat_and_release_flags() {
         let scan = evdev_x11_scan(113).unwrap();
-        assert_eq!(key_lparam(scan, true, false, false), 0x014b0001);
-        assert_eq!(key_lparam(scan, true, true, true), 0x614b0001);
-        assert_eq!(key_lparam(scan, false, false, true), 0xe14b0001);
-        assert_eq!(key_flags(scan, false, false, true), 0x61000000);
-        assert_eq!(key_lparam(evdev_x11_scan(38).unwrap(), true, false, false), 0x001e0001);
+        assert_eq!(key_lparam(scan, true, false), 0x014b0001);
+        assert_eq!(key_lparam(scan, true, true), 0x414b0001);
+        assert_eq!(key_lparam(scan, false, false), 0xc14b0001);
+        assert_eq!(key_flags(scan, false, false), 0x41000000);
+        assert_eq!(key_lparam(evdev_x11_scan(38).unwrap(), true, false), 0x001e0001);
+    }
+
+    /// The context bit belongs to the side that owns the key state; nothing
+    /// this side reports can set it.
+    #[test]
+    fn the_wire_word_never_carries_the_alt_context_bit() {
+        for keycode in 0..=255u32 {
+            let Some(scan) = evdev_x11_scan(keycode) else { continue; };
+            for pressed in [false, true] { for previous in [false, true] {
+                assert_eq!(key_flags(scan, pressed, previous) & KEY_ALT, 0);
+                assert_eq!(key_lparam(scan, pressed, previous) & KEY_ALT, 0);
+            }}
+        }
     }
 
     #[test]
@@ -261,18 +276,18 @@ mod tests {
     #[test]
     fn flags_truth_table_has_no_x11_masks_or_release_bit_on_wire() {
         for extended in [false, true] { for pressed in [false, true] {
-            for previous in [false, true] { for alt in [false, true] {
+            for previous in [false, true] {
                 let scan = Scan { code: 0x38, extended };
-                let flags = key_flags(scan, pressed, previous, alt);
+                let flags = key_flags(scan, pressed, previous);
                 assert_eq!((flags >> 24) & 1, extended as u32);
-                assert_eq!((flags >> 29) & 1, alt as u32);
+                assert_eq!((flags >> 29) & 1, 0);
                 assert_eq!((flags >> 30) & 1, (previous || !pressed) as u32);
-                assert_eq!(flags & !0x61000000, 0);
-                let lparam = key_lparam(scan, pressed, previous, alt);
+                assert_eq!(flags & !0x41000000, 0);
+                let lparam = key_lparam(scan, pressed, previous);
                 assert_eq!(lparam & 0xffff, 1);
                 assert_eq!((lparam >> 16) & 0xff, 0x38);
                 assert_eq!((lparam >> 31) & 1, (!pressed) as u32);
-            }}
+            }
         }}
     }
 
@@ -286,7 +301,7 @@ mod tests {
         for keycode in 0..=255 {
             if let Some(scan) = evdev_x11_scan(keycode) {
                 assert_ne!(scan.code, 0);
-                assert_eq!(key_flags(scan, true, false, false) & !0x01000000, 0);
+                assert_eq!(key_flags(scan, true, false) & !0x01000000, 0);
             }
         }
         assert_eq!(evdev_x11_scan(8), None);

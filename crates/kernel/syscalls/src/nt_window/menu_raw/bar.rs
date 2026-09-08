@@ -207,8 +207,16 @@ pub(crate) fn default_proc_for_current(hwnd: u64, message: u32, wparam: u64, lpa
             let vk = if message == nc::WM_SYSCHAR { 0 } else { wparam as u32 };
             let action = with_entry(|entry| entry.key_menu.key(message, vk, character, shift, alt)).flatten()?;
             match action {
-                nc::KeyMenuAction::SysCommand { command, character } => {
-                    let _ = crate::nt_window::send::send_for_current(hwnd, nc::WM_SYSCOMMAND, command as u64, character as u64);
+                nc::KeyMenuAction::SysCommand { command, character, target } => {
+                    let window = match target { nc::KeyMenuTarget::Window => hwnd,
+                        nc::KeyMenuTarget::Root => root_of(hwnd) };
+                    let _ = crate::nt_window::send::send_for_current(window, nc::WM_SYSCOMMAND, command as u64, character as u64);
+                }
+                nc::KeyMenuAction::Close => {
+                    let window = root_of(hwnd);
+                    if !class_refuses_close(window) {
+                        crate::nt_window::user_input::post_message_for_current(window, nc::WM_SYSCOMMAND, nc::SC_CLOSE as u64, 0);
+                    }
                 }
                 nc::KeyMenuAction::ContextMenu => {
                     const WM_CONTEXTMENU: u32 = 0x007b;
@@ -220,6 +228,22 @@ pub(crate) fn default_proc_for_current(hwnd: u64, message: u32, wparam: u64, lpa
         }
         _ => None,
     }
+}
+
+/// The window at the root of the tree one hwnd sits in, which a bare Alt and
+/// Alt+F4 are answered by. # C: O(N_windows)
+fn root_of(hwnd: u64) -> u64 {
+    let root = crate::nt_window::families::ancestor_for_current(hwnd, ipc::win32_window::GA_ROOT);
+    if root == 0 { hwnd } else { root }
+}
+
+/// A class that carries no close box refuses the system close command.
+/// # C: O(N_windows)
+fn class_refuses_close(hwnd: u64) -> bool {
+    const CLASS_LONG_WIDTH: usize = 8;
+    let Some(window) = WindowId::from_raw(hwnd as u32) else { return false; };
+    with_entry(|entry| entry.state.class_long(window, ipc::win32_window::GCL_STYLE, CLASS_LONG_WIDTH)
+        .is_ok_and(|style| style as u32 & ipc::win32_window::styles::CS_NOCLOSE != 0)).unwrap_or(false)
 }
 
 /// The warning a key that names no menu makes. # C: O(1)

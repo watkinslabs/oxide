@@ -15,6 +15,7 @@ pub const WM_SYSKEYDOWN: u32 = 0x0104;
 pub const WM_SYSKEYUP: u32 = 0x0105;
 pub const WM_SYSCHAR: u32 = 0x0106;
 
+pub const SC_CLOSE: u32 = 0xf060;
 pub const SC_MOUSEMENU: u32 = 0xf090;
 pub const SC_KEYMENU: u32 = 0xf100;
 /// `WM_SYSCOMMAND` reserves the low four bits of wParam for the hit test that
@@ -26,6 +27,7 @@ pub const VK_ESCAPE: u32 = 0x1b;
 pub const VK_MENU: u32 = 0x12;
 pub const VK_LMENU: u32 = 0xa4;
 pub const VK_RMENU: u32 = 0xa5;
+pub const VK_F4: u32 = 0x73;
 pub const VK_F10: u32 = 0x79;
 /// `SC_KEYMENU` carries the character that names a bar item; a bare Alt or F10
 /// press names none, and the space that opens the window menu is its own.
@@ -93,9 +95,22 @@ pub const fn menu_sys_command(wparam: u32, lparam: u32) -> Option<MenuCommand> {
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub struct KeyMenuLatch { menu_key: bool, f10_key: bool }
 
+/// Which window a system command goes to. A bare Alt or F10 is answered by the
+/// window at the root of the tree it was typed into, so a focused child hands
+/// the menu bar its own opening; every other command stays on the window whose
+/// procedure saw the key.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum KeyMenuTarget { Window, Root }
+
 /// What one key message asks for after the latch has seen it.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum KeyMenuAction { SysCommand { command: u32, character: u32 }, ContextMenu, Beep }
+pub enum KeyMenuAction {
+    SysCommand { command: u32, character: u32, target: KeyMenuTarget },
+    /// Alt+F4 closes the root window, unless its class refuses to be closed.
+    Close,
+    ContextMenu,
+    Beep,
+}
 
 impl KeyMenuLatch {
     /// Feed one key message through the latch. # C: O(1)
@@ -106,11 +121,11 @@ impl KeyMenuLatch {
                 if alt_down {
                     self.menu_key = is_menu_key && !self.menu_key;
                     self.f10_key = false;
-                    return None;
+                    return (vk == VK_F4).then_some(KeyMenuAction::Close);
                 }
                 if vk == VK_F10 { self.f10_key = true; return shift_down.then_some(KeyMenuAction::ContextMenu); }
                 if vk == VK_ESCAPE && shift_down {
-                    return Some(KeyMenuAction::SysCommand { command: SC_KEYMENU, character: KEYMENU_SPACE });
+                    return Some(KeyMenuAction::SysCommand { command: SC_KEYMENU, character: KEYMENU_SPACE, target: KeyMenuTarget::Window });
                 }
                 None
             }
@@ -118,13 +133,13 @@ impl KeyMenuLatch {
                 let opens = (is_menu_key && self.menu_key) || (vk == VK_F10 && self.f10_key);
                 self.menu_key = false;
                 self.f10_key = false;
-                opens.then_some(KeyMenuAction::SysCommand { command: SC_KEYMENU, character: KEYMENU_NO_CHARACTER })
+                opens.then_some(KeyMenuAction::SysCommand { command: SC_KEYMENU, character: KEYMENU_NO_CHARACTER, target: KeyMenuTarget::Root })
             }
             WM_SYSCHAR => {
                 self.menu_key = false;
                 if !alt_down || character == 0 { return (character != VK_ESCAPE).then_some(KeyMenuAction::Beep); }
                 if character == b'\t' as u32 || character == VK_ESCAPE { return None; }
-                Some(KeyMenuAction::SysCommand { command: SC_KEYMENU, character })
+                Some(KeyMenuAction::SysCommand { command: SC_KEYMENU, character, target: KeyMenuTarget::Window })
             }
             _ => None,
         }
