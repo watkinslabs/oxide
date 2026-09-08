@@ -25,6 +25,7 @@ mod nt_draw_raw;
 #[path = "nt_wine_window/print_raw.rs"]
 mod nt_print_raw;
 pub(crate) mod nt_file_policy;
+pub(crate) mod nt_object_name;
 mod nt_file_async_policy;
 mod nt_file_scatter_policy;
 mod nt_file_gather_policy;
