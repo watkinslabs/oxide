@@ -21,6 +21,25 @@ pub struct DcLeaseContext {
     pub visible: PaintRegion,
 }
 
+impl DcLeaseContext {
+    /// The desktop window's lease. It belongs to the desktop, not to any
+    /// process, so it is built from the desktop's own rectangle rather than
+    /// from a window record in some process's window manager: refusing it
+    /// outside the process that happened to own the root left every other
+    /// process — a second instance of the same application included — with a
+    /// null desktop device context. It has no parent and no children this
+    /// process can see, so it clips against neither.
+    /// # C: O(1)
+    pub fn desktop(hwnd: u32, rect: WindowRect) -> Result<Self, WindowError> {
+        let flags = dc_lease_flags(0, WS_VISIBLE, 0, 0, true);
+        let width = extent(rect, true)?;
+        let height = extent(rect, false)?;
+        Ok(Self { hwnd, backing_hwnd: hwnd, backing_width: width, backing_height: height,
+            origin: (0, 0), screen_origin: (rect.left, rect.top), logical_width: width, logical_height: height,
+            flags, owner: LeaseOwner::Cached, visible: PaintRegion::from_rect(rect)? })
+    }
+}
+
 impl WindowManager {
     /// Build the complete GetDCEx snapshot from canonical HWND state. # C: O(windows² + regions²)
     pub fn dc_lease_context(&self, hwnd: WindowId, requested_flags: u32) -> Result<DcLeaseContext, WindowError> {

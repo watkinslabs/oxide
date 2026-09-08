@@ -1,12 +1,22 @@
 //! Process GUI entry construction; every adapter uses the same initial state.
 use super::*;
+use core::sync::atomic::{AtomicU32, Ordering};
+use ipc::win32_window::handle_space;
+
+/// Blocks of the system-wide handle space already handed to a window owner.
+/// The window server's own block is never handed out: it holds the desktop
+/// windows, which belong to no process.
+static BLOCKS_TAKEN: AtomicU32 = AtomicU32::new(0);
+
+/// Take the next block of the system-wide handle space. # C: O(1)
+fn take_block() -> u32 { handle_space::owner_block(BLOCKS_TAKEN.fetch_add(1, Ordering::Relaxed)) }
 
 /// The queue wait list IS the process NT-object fanout list, so a thread
 /// parked in `MsgWaitForMultipleObjectsEx` is woken by a queue post and by an
 /// object another thread signals, from one wait.
 #[inline(never)]
 pub(super) fn new_entry(group: &Arc<sched::thread_group::ThreadGroup>) -> GuiEntry {
-    GuiEntry { group: Arc::downgrade(group), state: ipc::win32_window::WindowManager::new(),
+    GuiEntry { group: Arc::downgrade(group), state: ipc::win32_window::WindowManager::new_in_block(take_block()),
         menus: ipc::win32_menu::MenuManager::new(), accelerators: ipc::win32_accel::AcceleratorTables::new(), dpi_context: 0, wait: group.nt_handles().waiter_list(),
         foreground: false, next_create: 1, pending_creates: Vec::new(), pending_positions: Vec::new(), remote_positions: Vec::new(), retrievals: Vec::new(), sent: send::Queue::new(), redraw: redraw::Queue::new(), scroll_pending: scroll::pending::Queue::default(), paint_callbacks: paint_callbacks::Queue::new(), client_procs_w: 0, builtins_registered: false, init_callback_issued: false, contexts: ipc::win32_imc::InputContexts::new(), defer: ipc::win32_window::DeferBatches::new(), startup_info_flags: 0, process_layout: 0, menu_tracking: None, menu_track: None, idle: false, key_menu: ipc::win32_window::nonclient_menu::KeyMenuLatch::default(), sys_key: super::key_message::SysKeyLatch::default(), hardware: None, last_click: None }
 
@@ -74,3 +84,4 @@ pub(super) fn with_state_waking<T>(f: impl FnOnce(&mut ipc::win32_window::Window
     wait.wake_all();
     Some(value)
 }
+

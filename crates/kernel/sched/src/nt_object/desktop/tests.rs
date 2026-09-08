@@ -1,7 +1,5 @@
 use super::*;
-use crate::pid::PidIdentity;
 
-fn process() -> Arc<ThreadGroup> { Arc::new(ThreadGroup::new(Arc::new(PidIdentity::new(71)))) }
 fn station(id: u64) -> Arc<NtObject> { NtObject::new(NtObjectType::WindowStation, id) }
 
 #[test]
@@ -23,17 +21,18 @@ fn desktop_membership_uses_station_identity_before_busy_and_retains_default() {
 }
 
 #[test]
-fn desktop_root_is_single_real_owner_reference_not_numeric_alias() {
+fn one_desktop_has_one_desktop_window_that_every_attached_process_shares() {
     let object=NtObject::new_desktop(2,station(1)).unwrap();let desktop=object.desktop().unwrap();
-    let owner=process();let other=process();
-    assert_eq!(desktop.publish_root(&owner,0),Err(DesktopError::InvalidWindow));
-    desktop.publish_root(&owner,1).unwrap();desktop.publish_root(&owner,1).unwrap();
-    assert_eq!(desktop.publish_root(&other,1),Err(DesktopError::RootOccupied));
-    assert!(!desktop.clear_root(&other,1));assert!(!desktop.clear_root(&owner,2));
-    let root=desktop.root().unwrap();let (resolved,hwnd)=root.resolve().unwrap();
-    assert!(Arc::ptr_eq(&resolved,&owner));assert_eq!(hwnd,1);drop(resolved);
-    assert!(desktop.clear_root(&owner,1));assert!(desktop.root().is_err());
-    drop(owner);assert!(root.resolve().is_none());
+    assert_eq!(desktop.publish_root(0),Err(DesktopError::InvalidWindow));
+    assert_eq!(desktop.publish_root(7).unwrap(),7);
+    // The second process to attach is answered with the established window
+    // rather than refused: the previous contract recorded the first
+    // process's own top-level window as the desktop and rejected every
+    // later one, so the second process resolved a handle it did not own.
+    assert_eq!(desktop.publish_root(9).unwrap(),7);
+    assert_eq!(desktop.root().unwrap().hwnd(),7);
+    assert!(!desktop.clear_root(9));
+    assert!(desktop.clear_root(7));assert!(desktop.root().is_err());
 }
 
 #[test]
@@ -48,29 +47,30 @@ fn desktop_handles_share_payload_and_wrong_object_types_are_rejected() {
 }
 
 #[test]
-fn desktop_zero_resolution_requires_membership_and_preserves_root_process() {
-    let station=station(1);let owner=process();
+fn desktop_zero_resolution_requires_membership_and_answers_the_desktops_own_window() {
+    let station=station(1);
     let desktop=NtObject::new_desktop(2,station.clone()).unwrap();
     let mut thread=ThreadDesktop::default();
     assert!(matches!(thread.resolve_root(&station),Err(DesktopError::NotAttached)));
     thread.select(&station,desktop.clone(),false).unwrap();
     assert!(matches!(thread.resolve_root(&station),Err(DesktopError::MissingRoot)));
-    desktop.desktop().unwrap().publish_root(&owner,1).unwrap();
-    let (resolved,hwnd)=thread.resolve_root(&station).unwrap();
-    assert!(Arc::ptr_eq(&resolved,&owner));assert_eq!(hwnd,1);drop(resolved);
+    desktop.desktop().unwrap().publish_root(11).unwrap();
+    assert_eq!(thread.resolve_root(&station).unwrap(),11);
     assert!(matches!(thread.resolve_root(&super::tests::station(1)),Err(DesktopError::WrongStation)));
-    drop(owner);assert!(matches!(thread.resolve_root(&station),Err(DesktopError::MissingRoot)));
 }
 
+/// Two processes attached to one desktop see one desktop window, and neither
+/// sees a handle belonging to the other.
 #[test]
-fn checked_root_publication_drops_root_lock_before_gui_validation_and_rolls_back_race() {
-    let object=NtObject::new_desktop(2,station(1)).unwrap();let desktop=object.desktop().unwrap();let owner=process();
-    let mut calls=0;
-    assert_eq!(desktop.publish_root_checked(&owner,1,|| {
-        calls+=1;let _snapshot=desktop.root();calls==1
-    }),Err(DesktopError::InvalidWindow));
-    assert_eq!(calls,2);assert!(desktop.root().is_err());
-    desktop.publish_root_checked(&owner,1,||true).unwrap();assert!(desktop.root().is_ok());
+fn a_second_process_resolves_the_same_desktop_window_as_the_first() {
+    let station=station(1);
+    let desktop=NtObject::new_desktop(2,station.clone()).unwrap();
+    let mut first=ThreadDesktop::default();let mut second=ThreadDesktop::default();
+    first.select(&station,desktop.clone(),false).unwrap();
+    second.select(&station,desktop.clone(),false).unwrap();
+    desktop.desktop().unwrap().publish_root(21).unwrap();
+    assert_eq!(first.resolve_root(&station).unwrap(),second.resolve_root(&station).unwrap());
+    assert_eq!(second.resolve_root(&station).unwrap(),21);
 }
 
 #[test]

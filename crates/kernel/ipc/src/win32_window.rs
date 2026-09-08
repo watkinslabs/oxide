@@ -425,7 +425,7 @@ pub struct WindowPresentRecord { pub window: WindowId, pub bounds: WindowRect, p
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum WindowError { NoSuchWindow, NoMemory, InvalidParent, InvalidParameter, ClassInUse, WrongThread, NoFocus, QueueFull, PaintActive, PaintNotActive, NotVisible }
 
-pub struct WindowManager { next: u32, next_atom: u16, classes: Vec<WindowClass>, windows: Vec<(WindowId, OwnedWindow)>, rects: Vec<(WindowId, WindowRect)>, texts: Vec<(WindowId, Vec<u16>)>, dirty: Vec<(WindowId, PaintDamage)>, painting: Vec<(WindowId, PaintSession)>, queues: Vec<(u64, MessageQueue)>, timers: Vec<WindowTimer>, focus: Option<WindowId>, capture: Option<WindowId>, cursor: (i32, i32), buttons: u16, destroying: Vec<WindowId>, keyboard: KeyboardState, active: Option<WindowId>,
+pub struct WindowManager { next: u32, next_end: u32, next_atom: u16, classes: Vec<WindowClass>, windows: Vec<(WindowId, OwnedWindow)>, rects: Vec<(WindowId, WindowRect)>, texts: Vec<(WindowId, Vec<u16>)>, dirty: Vec<(WindowId, PaintDamage)>, painting: Vec<(WindowId, PaintSession)>, queues: Vec<(u64, MessageQueue)>, timers: Vec<WindowTimer>, focus: Option<WindowId>, capture: Option<WindowId>, cursor: (i32, i32), buttons: u16, destroying: Vec<WindowId>, keyboard: KeyboardState, active: Option<WindowId>,
     /// Cursor and icon objects, the displayed cursor and its show-count.
     cursors: cursor_object::CursorIcons, current_cursor: u64, cursor_count: i32,
     /// Cursor clip rectangle, its last-change tick, and the position history.
@@ -464,6 +464,8 @@ pub use class_find::{CS_GLOBALCLASS, MAX_CLASS_EXTRA, instance_matches, registra
 #[path = "win32_window/class_types.rs"]
 mod class_types;
 pub use class_types::{ClassDescription, ClassRegistration, WindowClass};
+#[path = "win32_window/handle_space.rs"]
+pub mod handle_space;
 #[path = "win32_window/state.rs"]
 mod state;
 #[path = "win32_window/timer.rs"]

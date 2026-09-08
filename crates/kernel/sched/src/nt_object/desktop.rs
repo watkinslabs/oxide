@@ -1,8 +1,7 @@
 //! Canonical desktop payload and thread membership; no auxiliary namespace.
-use alloc::sync::{Arc, Weak};
+use alloc::sync::Arc;
 use core::num::NonZeroU32;
 use sync::{Spinlock, TaskList as TaskListClass};
-use crate::thread_group::ThreadGroup;
 use super::{NtObject, NtObjectType};
 
 #[path = "desktop/bootstrap.rs"]
@@ -12,17 +11,16 @@ pub use bootstrap::{bootstrap_desktop, DesktopBootstrap, DesktopBootstrapError};
 mod identity;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DesktopError { WrongType, WrongStation, Busy, InvalidWindow, RootOccupied, MissingRoot, NotAttached }
+pub enum DesktopError { WrongType, WrongStation, Busy, InvalidWindow, MissingRoot, NotAttached }
 
-/// A reference to the existing window owner, never a second HWND record.
-#[derive(Clone)]
-pub struct DesktopRoot { process: Weak<ThreadGroup>, hwnd: NonZeroU32 }
+/// The desktop's own window. It belongs to the desktop, not to any process
+/// that draws on it: every process attached to this desktop resolves the same
+/// handle, including one that has created no window of its own.
+#[derive(Clone, Copy)]
+pub struct DesktopRoot { hwnd: NonZeroU32 }
 impl DesktopRoot {
-    /// Upgrade canonical process identity; numeric PID/HWND reuse cannot substitute. # C: O(1)
-    pub fn resolve(&self) -> Option<(Arc<ThreadGroup>, u32)> { Some((self.process.upgrade()?, self.hwnd.get())) }
-    fn matches(&self, process: &Arc<ThreadGroup>, hwnd: u32) -> bool {
-        self.hwnd.get() == hwnd && self.process.ptr_eq(&Arc::downgrade(process))
-    }
+    /// The handle every attached process sees for this desktop. # C: O(1)
+    pub fn hwnd(&self) -> u32 { self.hwnd.get() }
 }
 
 pub struct NtDesktop {
@@ -37,29 +35,22 @@ impl NtDesktop {
     }
     /// Retain the canonical station, not its process-local handle or numeric ID. # C: O(1)
     pub fn station(&self) -> Arc<NtObject> { Arc::clone(&self.station) }
-    /// Publish after the GUI owner creates a real root; no allocation under this lock. # C: O(1)
-    pub fn publish_root(&self, process: &Arc<ThreadGroup>, hwnd: u32) -> Result<(), DesktopError> {
+    /// Establish this desktop's own window, or report the one it already has.
+    /// The first caller names the handle and every later caller — a second
+    /// process attaching to the same desktop — is answered with it, so one
+    /// desktop has one desktop window rather than one per process.
+    /// # C: O(1)
+    pub fn publish_root(&self, hwnd: u32) -> Result<u32, DesktopError> {
         let hwnd = NonZeroU32::new(hwnd).ok_or(DesktopError::InvalidWindow)?;
         let mut root = self.root.lock();
-        if let Some(old) = root.as_ref() {
-            return if old.matches(process, hwnd.get()) { Ok(()) } else { Err(DesktopError::RootOccupied) };
-        }
-        *root = Some(DesktopRoot { process: Arc::downgrade(process), hwnd }); Ok(())
+        match root.as_ref() { Some(old) => Ok(old.hwnd.get()), None => { *root = Some(DesktopRoot { hwnd }); Ok(hwnd.get()) } }
     }
-    /// Validate without the root lock; a raced destruction cannot leave a published stale root.
-    /// Root destruction uses clear_root after canonical GUI removal. # C: O(2 * validate)
-    pub fn publish_root_checked(&self, process: &Arc<ThreadGroup>, hwnd: u32, mut validate: impl FnMut() -> bool) -> Result<(), DesktopError> {
-        if !validate() { return Err(DesktopError::InvalidWindow); }
-        self.publish_root(process, hwnd)?;
-        if !validate() { self.clear_root(process, hwnd); return Err(DesktopError::InvalidWindow); }
-        Ok(())
-    }
-    /// Snapshot a root reference; GUI still validates HWND lifetime when resolving. # C: O(1)
-    pub fn root(&self) -> Result<DesktopRoot, DesktopError> { self.root.lock().clone().ok_or(DesktopError::MissingRoot) }
-    /// Teardown cannot clear another process's equal numeric HWND. # C: O(1)
-    pub fn clear_root(&self, process: &Arc<ThreadGroup>, hwnd: u32) -> bool {
+    /// This desktop's window, once it has one. # C: O(1)
+    pub fn root(&self) -> Result<DesktopRoot, DesktopError> { let root = *self.root.lock(); root.ok_or(DesktopError::MissingRoot) }
+    /// Retire this desktop's window at desktop teardown. # C: O(1)
+    pub fn clear_root(&self, hwnd: u32) -> bool {
         let mut root = self.root.lock();
-        if !root.as_ref().is_some_and(|r| r.matches(process, hwnd)) { return false; }
+        if !root.as_ref().is_some_and(|r| r.hwnd.get() == hwnd) { return false; }
         *root = None; true
     }
 }
@@ -82,11 +73,13 @@ pub struct ThreadDesktop { object: Option<Arc<NtObject>> }
 impl ThreadDesktop {
     /// Retain membership for child initialization or HWND-zero resolution. # C: O(1)
     pub fn object(&self) -> Option<Arc<NtObject>> { self.object.clone() }
-    /// HWND-zero resolution retains the real root's process, not the caller's handle namespace. # C: O(1)
-    pub fn resolve_root(&self, station: &Arc<NtObject>) -> Result<(Arc<ThreadGroup>, u32), DesktopError> {
+    /// The desktop window of the desktop this thread is attached to. The same
+    /// handle in every attached process; no process's handle namespace is
+    /// substituted for it. # C: O(1)
+    pub fn resolve_root(&self, station: &Arc<NtObject>) -> Result<u32, DesktopError> {
         let payload = self.object.as_ref().ok_or(DesktopError::NotAttached)?.desktop().ok_or(DesktopError::WrongType)?;
         if !Arc::ptr_eq(&payload.station, station) { return Err(DesktopError::WrongStation); }
-        payload.root()?.resolve().ok_or(DesktopError::MissingRoot)
+        Ok(payload.root()?.hwnd())
     }
     /// Validate station identity before busy state; no mutation on rejection. # C: O(1)
     pub fn select(&mut self, station: &Arc<NtObject>, desktop: Arc<NtObject>, has_users: bool) -> Result<(), DesktopError> {

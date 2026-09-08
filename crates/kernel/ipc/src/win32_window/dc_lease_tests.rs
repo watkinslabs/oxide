@@ -63,3 +63,45 @@ fn window_lease_clips_visible_children_and_later_siblings_exactly() {
     assert!(!client_context.visible.rects().iter().any(|r| r.left < 30 && r.right > 30 && r.top < 30 && r.bottom > 30));
     assert!(!client_context.visible.rects().iter().any(|r| r.left >= 50));
 }
+
+/// A desktop device context is available to every process on the desktop.
+/// Before this, the desktop was one process's own window and every other
+/// process — a second instance of the same application included — got a null
+/// device context from `GetDC(NULL)`.
+#[test]
+fn a_desktop_lease_needs_no_window_record_and_covers_the_whole_desktop() {
+    let rect = WindowRect { left: 0, top: 0, right: 1280, bottom: 1024 };
+    let lease = DcLeaseContext::desktop(4, rect).unwrap();
+    assert_eq!(lease.hwnd, 4);
+    assert_eq!(lease.backing_hwnd, 4);
+    assert_eq!((lease.logical_width, lease.logical_height), (1280, 1024));
+    assert_eq!(lease.origin, (0, 0));
+    assert_eq!(lease.screen_origin, (0, 0));
+    assert_eq!(lease.visible.bounds(), Some(rect));
+    assert_eq!(lease.owner, LeaseOwner::Cached);
+}
+
+#[test]
+fn a_desktop_lease_on_an_offset_desktop_keeps_its_screen_origin() {
+    let rect = WindowRect { left: -1920, top: 40, right: 0, bottom: 1120 };
+    let lease = DcLeaseContext::desktop(9, rect).unwrap();
+    assert_eq!(lease.screen_origin, (-1920, 40));
+    assert_eq!((lease.logical_width, lease.logical_height), (1920, 1080));
+}
+
+/// The desktop has no parent, so its lease never clips against one.
+#[test]
+fn a_desktop_lease_clips_siblings_and_never_its_parent() {
+    let lease = DcLeaseContext::desktop(4, WindowRect { left: 0, top: 0, right: 8, bottom: 8 }).unwrap();
+    assert_eq!(lease.flags & crate::win32_gdi::DCX_PARENTCLIP, 0);
+    assert_ne!(lease.flags & crate::win32_gdi::DCX_CLIPSIBLINGS, 0);
+}
+
+/// A desktop with no extent leases nothing visible; drawing through it
+/// reaches no pixel rather than reaching a stale rectangle.
+#[test]
+fn an_empty_desktop_rectangle_leases_nothing_visible() {
+    let lease = DcLeaseContext::desktop(4, WindowRect { left: 5, top: 0, right: 5, bottom: 8 }).unwrap();
+    assert_eq!(lease.logical_width, 0);
+    assert_eq!(lease.visible.bounds(), None);
+}

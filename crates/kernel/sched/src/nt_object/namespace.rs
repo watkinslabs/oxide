@@ -487,6 +487,47 @@ mod tests {
         assert!(lookup_object(path, NtObjectType::Event).is_none());
     }
 
+    /// A second process opening a named object must not lose it when the
+    /// first process closes its own handle. Handle lifetime is the object's,
+    /// not one handle table's: the two tables here are two processes.
+    #[test]
+    fn one_process_closing_its_handle_does_not_unlink_an_object_another_still_holds() {
+        let path = "\\BaseNamedObjects\\b3613_two_process_event";
+        let (object, state) = create_event(path, false, false);
+        assert_eq!(state, NamedObjectState::Created);
+        make_temporary(&object);
+        let first_process = super::super::NtHandleTable::new();
+        let second_process = super::super::NtHandleTable::new();
+        let first = first_process.insert(object.clone(), 0x0001_0000).unwrap();
+        // The second process opens the same name and gets the same identity.
+        let (reopened, state) = create_event(path, false, false);
+        assert_eq!(state, NamedObjectState::Existing);
+        assert!(Arc::ptr_eq(&reopened, &object));
+        let second = second_process.insert(reopened, 0x0001_0000).unwrap();
+        assert!(first_process.close(first));
+        assert!(lookup_object(path, NtObjectType::Event).is_some(), "the second process still holds it");
+        assert!(second_process.close(second));
+        assert!(lookup_object(path, NtObjectType::Event).is_none());
+    }
+
+    /// A process exiting takes its whole handle table with it, and that must
+    /// not unlink what another process still holds either.
+    #[test]
+    fn a_process_exiting_does_not_unlink_an_object_another_process_still_holds() {
+        let path = "\\BaseNamedObjects\\b3613_exiting_process_event";
+        let (object, _) = create_event(path, false, false);
+        make_temporary(&object);
+        let survivor = super::super::NtHandleTable::new();
+        let survivor_handle = survivor.insert(object.clone(), 0x0001_0000).unwrap();
+        {
+            let exiting = super::super::NtHandleTable::new();
+            exiting.insert(object.clone(), 0x0001_0000).unwrap();
+        }
+        assert!(lookup_object(path, NtObjectType::Event).is_some());
+        assert!(survivor.close(survivor_handle));
+        assert!(lookup_object(path, NtObjectType::Event).is_none());
+    }
+
     #[test]
     fn permanent_named_object_survives_final_handle_until_made_temporary() {
         let path = "\\BaseNamedObjects\\f1477_permanent";

@@ -39,7 +39,7 @@ pub(crate) fn bind_for_current(station_handle: u64, desktop_handle: u64) -> u64 
     let old_default = current.thread_group.nt_default_desktop.lock().object();
     if old_default.as_ref().is_some_and(|old| !Arc::ptr_eq(old, &desktop)) { return DEVICE_BUSY; }
     if old_desktop.is_none() {
-        let entries = super::GUI.lock();
+        let entries = crate::nt_window::GUI.lock();
         if entries.iter().any(|entry| entry.group.ptr_eq(&Arc::downgrade(&current.thread_group)) && entry.state.len() != 0) {
             return DEVICE_BUSY;
         }
