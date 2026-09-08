@@ -9,6 +9,7 @@ const STATUS_SUCCESS: u64 = 0;
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 const STATUS_OBJECT_NAME_NOT_FOUND: u64 = 0xc000_0034;
 const STATUS_NO_MEMORY: u64 = 0xc000_0017;
+const STATUS_ACCESS_VIOLATION: u64 = 0xc000_0005;
 const NLS_SORTKEYS: u32 = 9;
 const NLS_CASEMAP: u32 = 10;
 const NLS_CODEPAGE: u32 = 11;
@@ -76,12 +77,15 @@ fn locale_dispatch(call: NtCall) -> Option<u64> {
     })
 }
 
+/// An answer the caller's pointer cannot take is an access violation: the
+/// service writes it unconditionally, so the pointer is the only thing that
+/// can fail here.
 fn write_u32(address: u64, value: u32) -> u64 {
-    if uaccess::put_user_u32(address, value).is_ok() { STATUS_SUCCESS } else { STATUS_INVALID_PARAMETER }
+    if uaccess::put_user_u32(address, value).is_ok() { STATUS_SUCCESS } else { STATUS_ACCESS_VIOLATION }
 }
 
 fn write_u16(address: u64, value: u16) -> u64 {
-    if uaccess::copy_to_user(address, &value.to_le_bytes()).is_ok() { STATUS_SUCCESS } else { STATUS_INVALID_PARAMETER }
+    if uaccess::copy_to_user(address, &value.to_le_bytes()).is_ok() { STATUS_SUCCESS } else { STATUS_ACCESS_VIOLATION }
 }
 
 /// Build the x86_64 CPTABLEINFO view from a mapped Wine NLS code-page file.

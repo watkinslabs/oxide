@@ -60,6 +60,8 @@ pub(crate) mod nt_ulong;
 // arity checkable, so the module keeps them whether or not code names them.
 #[allow(dead_code)]
 pub(crate) mod nt_memory_args;
+pub(crate) mod nt_obj_sig;
+pub(crate) mod nt_atom_name;
 pub(crate) mod nt_directory_notify_policy;
 mod nt_path;
 mod nt_path_type;

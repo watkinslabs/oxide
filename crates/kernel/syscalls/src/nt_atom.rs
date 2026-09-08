@@ -12,13 +12,13 @@ const STATUS_OBJECT_NAME_NOT_FOUND: u64 = 0xc000_0034;
 const STATUS_BUFFER_TOO_SMALL: u64 = 0xc000_0023;
 const STATUS_INVALID_INFO_CLASS: u64 = 0xc000_0003;
 const STATUS_NO_MEMORY: u64 = 0xc000_0017;
-const FIRST_STRING_ATOM: u16 = 0xc000;
+use crate::nt_atom_name::FIRST_STRING_ATOM;
 const MAX_ATOMS: usize = 0x4000;
 const ATOM_TABLE_TOKEN: u64 = 1;
 
 pub fn dispatch(call: NtCall) -> Option<u64> {
     match call.service {
-        NtService::AddAtom => Some(add(call.args.a0, call.args.a1 as usize, call.args.a2)),
+        NtService::AddAtom => Some(add(call.args.a0, crate::nt_obj_sig::ulong(call.args.a1) as usize, call.args.a2)),
         NtService::RtlCreateAtomTable => Some(create_table(call.args.a0 as u32, call.args.a1)),
         NtService::RtlDestroyAtomTable => Some(destroy_table(call.args.a0)),
         NtService::RtlDeleteAtomFromAtomTable => Some(rtl_delete(call.args.a0, call.args.a1 as u16)),
@@ -26,9 +26,11 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         NtService::RtlLookupAtomInAtomTable => Some(rtl_lookup(call.args.a0, call.args.a1, call.args.a2)),
         NtService::RtlQueryAtomInAtomTable => Some(rtl_query(call.args.a0, call.args.a1 as u16, call.args.a2, call.args.a3, call.args.a4, call.args.a5)),
         NtService::DeleteAtom => Some(delete(call.args.a0 as u16)),
-        NtService::FindAtom => Some(find(call.args.a0, call.args.a1 as usize, call.args.a2)),
-        NtService::QueryInformationAtom => Some(query(call.args.a0 as u16, call.args.a1 as u32,
-            call.args.a2, call.args.a3 as usize, call.args.a4)),
+        NtService::FindAtom => Some(find(call.args.a0, crate::nt_obj_sig::ulong(call.args.a1) as usize, call.args.a2)),
+        NtService::QueryInformationAtom => {
+            let request = crate::nt_obj_sig::query_information_atom([call.args.a0, call.args.a1, call.args.a2, call.args.a3, call.args.a4]);
+            Some(query(request.atom, request.class, request.buffer, request.size as usize, request.return_size))
+        }
         _ => None,
     }
 }
@@ -85,7 +87,7 @@ fn rtl_add(table: u64, name: u64, output: u64) -> u64 {
     }
     if value.is_empty() { return STATUS_INVALID_PARAMETER; }
     let mut atoms = cur.thread_group.nt_atoms.lock();
-    if let Some(index) = atoms.iter().position(|entry| atom_name_eq(entry, &value)) {
+    if let Some(index) = atoms.iter().position(|entry| crate::nt_atom_name::same_name(entry, &value)) {
         let atom = match FIRST_STRING_ATOM.checked_add(index as u16) { Some(value) => value, None => return STATUS_NO_MEMORY };
         return if uaccess::copy_to_user(output, &atom.to_le_bytes()).is_ok() { STATUS_SUCCESS } else { STATUS_INVALID_PARAMETER };
     }
@@ -97,14 +99,6 @@ fn rtl_add(table: u64, name: u64, output: u64) -> u64 {
     if uaccess::copy_to_user(output, &atom.to_le_bytes()).is_err() { return STATUS_INVALID_PARAMETER; }
     if index == atoms.len() { atoms.push(value); } else { atoms[index] = value; }
     STATUS_SUCCESS
-}
-
-fn atom_name_eq(left: &[u8], right: &[u8]) -> bool {
-    left.len() == right.len() && left.chunks_exact(2).zip(right.chunks_exact(2)).all(|(a, b)| {
-        let left = u16::from_le_bytes([a[0], a[1]]);
-        let right = u16::from_le_bytes([b[0], b[1]]);
-        left == right || left <= 0x7f && right <= 0x7f && fold_ascii(left) == fold_ascii(right)
-    })
 }
 
 fn rtl_lookup(table: u64, name: u64, output: u64) -> u64 {
@@ -125,7 +119,7 @@ fn rtl_lookup(table: u64, name: u64, output: u64) -> u64 {
     }
     if value.is_empty() { return STATUS_INVALID_PARAMETER; }
     let atoms = cur.thread_group.nt_atoms.lock();
-    let Some(index) = atoms.iter().position(|entry| atom_name_eq(entry, &value)) else { return STATUS_OBJECT_NAME_NOT_FOUND; };
+    let Some(index) = atoms.iter().position(|entry| crate::nt_atom_name::same_name(entry, &value)) else { return STATUS_OBJECT_NAME_NOT_FOUND; };
     let Some(atom) = FIRST_STRING_ATOM.checked_add(index as u16) else { return STATUS_OBJECT_NAME_NOT_FOUND; };
     if uaccess::copy_to_user(output, &atom.to_le_bytes()).is_err() { return STATUS_INVALID_PARAMETER; }
     STATUS_SUCCESS
@@ -156,17 +150,15 @@ fn rtl_query(table: u64, atom: u16, reference: u64, pin: u64, name: u64, length:
     STATUS_SUCCESS
 }
 
-fn fold_ascii(value: u16) -> u16 { if value >= b'A' as u16 && value <= b'Z' as u16 { value + (b'a' - b'A') as u16 } else { value } }
 
 fn add(name: u64, length: usize, output: u64) -> u64 {
-    if name == 0 || output == 0 || length == 0 || length > 510 || length & 1 != 0 { return STATUS_INVALID_PARAMETER; }
+    if output == 0 { return STATUS_INVALID_PARAMETER; }
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
-    let mut value = Vec::with_capacity(length);
-    value.resize(length, 0);
-    if uaccess::copy_from_user(&mut value, name).is_err() { return STATUS_INVALID_PARAMETER; }
+    let value = match atom_name(name, length) { Ok(NameArgument::Table(value)) => value,
+        Ok(NameArgument::Integer(atom)) => return write_atom(output, atom), Err(status) => return status };
     let mut atoms = cur.thread_group.nt_atoms.lock();
-    let index = if let Some(index) = atoms.iter().position(|entry| *entry == value) {
+    let index = if let Some(index) = atoms.iter().position(|entry| crate::nt_atom_name::same_name(entry, &value)) {
         index
     } else {
         if let Some(index) = atoms.iter().position(Vec::is_empty) {
@@ -196,15 +188,41 @@ fn delete(atom: u16) -> u64 {
 }
 
 fn find(name: u64, length: usize, output: u64) -> u64 {
-    if name == 0 || output == 0 || length == 0 || length > 510 || length & 1 != 0 { return STATUS_INVALID_PARAMETER; }
+    if output == 0 { return STATUS_INVALID_PARAMETER; }
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
-    let mut value = Vec::with_capacity(length);
-    value.resize(length, 0);
-    if uaccess::copy_from_user(&mut value, name).is_err() { return STATUS_INVALID_PARAMETER; }
+    let value = match atom_name(name, length) { Ok(NameArgument::Table(value)) => value,
+        Ok(NameArgument::Integer(atom)) => return write_atom(output, atom), Err(status) => return status };
     let atoms = cur.thread_group.nt_atoms.lock();
-    let Some(index) = atoms.iter().position(|entry| *entry == value) else { return STATUS_OBJECT_NAME_NOT_FOUND; };
+    let Some(index) = atoms.iter().position(|entry| crate::nt_atom_name::same_name(entry, &value)) else { return STATUS_OBJECT_NAME_NOT_FOUND; };
     let Some(atom) = FIRST_STRING_ATOM.checked_add(index as u16) else { return STATUS_OBJECT_NAME_NOT_FOUND; };
+    write_atom(output, atom)
+}
+
+/// What one name argument of the three string-named atom services resolves
+/// to: an integer atom named by its own value or by a spelled-out number, or
+/// the name bytes to match against the table.
+enum NameArgument { Integer(u16), Table(Vec<u8>) }
+
+/// Resolve the name argument, reading it only once its value says it is an
+/// address. # C: O(n) plus one usercopy
+fn atom_name(name: u64, length: usize) -> Result<NameArgument, u64> {
+    match crate::nt_atom_name::classify_pointer(name, length)? {
+        crate::nt_atom_name::Name::Integer(atom) => return Ok(NameArgument::Integer(atom)),
+        crate::nt_atom_name::Name::Table => {}
+    }
+    let mut value = Vec::new();
+    if value.try_reserve_exact(length).is_err() { return Err(STATUS_NO_MEMORY); }
+    value.resize(length, 0);
+    if uaccess::copy_from_user(&mut value, name).is_err() { return Err(STATUS_INVALID_PARAMETER); }
+    let units: Vec<u16> = value.chunks_exact(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]])).collect();
+    match crate::nt_atom_name::classify_text(&units)? {
+        crate::nt_atom_name::Name::Integer(atom) => Ok(NameArgument::Integer(atom)),
+        crate::nt_atom_name::Name::Table => Ok(NameArgument::Table(value)),
+    }
+}
+
+fn write_atom(output: u64, atom: u16) -> u64 {
     if uaccess::copy_to_user(output, &atom.to_le_bytes()).is_err() { return STATUS_INVALID_PARAMETER; }
     STATUS_SUCCESS
 }

@@ -15,15 +15,19 @@ pub const fn flush_handle(raw: u64) -> Result<u32, u64> {
 /// Whether the ABI shape can be owned by the current asynchronous NT bridge.
 /// APC delivery and output records remain separate contracts; accepting them
 /// here without an owner would turn a pending request into a false success.
+///
+/// The filter and the buffer length are `ULONG`s the caller stored into frame
+/// words, so only their low half is the value; the notification mode is a
+/// one-byte `BOOLEAN`. Judging the whole word refused every real request.
+/// A subtree request is answered either way and is not judged here.
 pub const fn supported_request(
     apc: u64,
     apc_context: u64,
     io_status: u64,
     buffer: u64,
-    length: u64,
-    asynchronous: u64,
-    subtree: u64,
-    filter: u64,
+    length: u32,
+    asynchronous: bool,
+    filter: u32,
 ) -> bool {
     apc == 0
         && apc_context == 0
@@ -31,9 +35,8 @@ pub const fn supported_request(
         && io_status.checked_add(8).is_some()
         && buffer == 0
         && length == 0
-        && asynchronous != 0
-        && subtree <= 1
-        && filter == REG_NOTIFY_CHANGE_LAST_SET
+        && asynchronous
+        && filter == REG_NOTIFY_CHANGE_LAST_SET as u32
 }
 
 #[cfg(test)]
@@ -52,8 +55,10 @@ mod tests {
         assert_eq!(flush_handle(u32::MAX as u64), Ok(u32::MAX));
     }
 
+    const LAST_SET: u32 = REG_NOTIFY_CHANGE_LAST_SET as u32;
+
     fn valid() -> bool {
-        supported_request(0, 0, 0x1000, 0, 0, 1, 0, REG_NOTIFY_CHANGE_LAST_SET)
+        supported_request(0, 0, 0x1000, 0, 0, true, LAST_SET)
     }
 
     #[test]
@@ -63,20 +68,29 @@ mod tests {
 
     #[test]
     fn rejects_apc_delivery() {
-        assert!(!supported_request(1, 0, 0x1000, 0, 0, 1, 0, REG_NOTIFY_CHANGE_LAST_SET));
+        assert!(!supported_request(1, 0, 0x1000, 0, 0, true, LAST_SET));
     }
 
     #[test]
-    fn accepts_subtree_and_rejects_invalid_filters() {
-        assert!(supported_request(0, 0, 0x1000, 0, 0, 1, 1, REG_NOTIFY_CHANGE_LAST_SET));
-        assert!(!supported_request(0, 0, 0x1000, 0, 0, 1, 0, REG_NOTIFY_CHANGE_LAST_SET | 0x0000_0001));
-        assert!(!supported_request(0, 0, 0x1000, 0, 0, 1, 2, REG_NOTIFY_CHANGE_LAST_SET));
-        assert!(!supported_request(0, 0, 0x1000, 0, 0, 1, 0, 2));
+    fn rejects_invalid_filters() {
+        assert!(!supported_request(0, 0, 0x1000, 0, 0, true, LAST_SET | 0x0000_0001));
+        assert!(!supported_request(0, 0, 0x1000, 0, 0, true, 2));
     }
 
     #[test]
     fn rejects_io_status_block_pointer_wraparound() {
-        assert!(!supported_request(0, 0, u64::MAX - 7, 0, 0, 1, 0, REG_NOTIFY_CHANGE_LAST_SET));
+        assert!(!supported_request(0, 0, u64::MAX - 7, 0, 0, true, LAST_SET));
+    }
+
+    /// The caller's filter and length reach the kernel in frame words whose
+    /// upper half is not part of the value, and the mode in one byte. Judging
+    /// the whole word refused every request a caller actually makes.
+    #[test]
+    fn admits_the_request_a_caller_stores_into_stale_frame_words() {
+        let filter = crate::nt_obj_sig::ulong(0x7fff_dead_0000_0004);
+        let length = crate::nt_obj_sig::ulong(0x1234_5678_0000_0000);
+        let asynchronous = crate::nt_obj_sig::boolean(0xdead_beef_0000_0001);
+        assert!(supported_request(0, 0, 0x1000, 0, length, asynchronous, filter));
     }
 
     #[test]

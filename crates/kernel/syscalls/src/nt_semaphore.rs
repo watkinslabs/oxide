@@ -25,9 +25,13 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
     let table = cur.thread_group.nt_handles();
     Some(match object {
-        NtObjectCall::CreateSemaphore { handle, desired_access, attributes, initial, maximum } => {
-            if initial < 0 || maximum <= 0 || initial > maximum
-                || maximum > u32::MAX as i64 { return Some(STATUS_INVALID_PARAMETER); }
+        NtObjectCall::CreateSemaphore { handle, desired_access, attributes, .. } => {
+            // The two counts are signed 32-bit values and the maximum is a
+            // frame word, so the upper half of each is not part of the value;
+            // reading whole words refused every semaphore a caller created.
+            let counts = crate::nt_obj_sig::create_semaphore([call.args.a0, call.args.a1, call.args.a2, call.args.a3, call.args.a4]);
+            let (initial, maximum) = (counts.initial as i64, counts.maximum as i64);
+            if initial < 0 || maximum <= 0 || initial > maximum { return Some(STATUS_INVALID_PARAMETER); }
             let Some(granted_access) = SEMAPHORE.grant(desired_access) else { return Some(STATUS_INVALID_PARAMETER); };
             if attributes != 0 {
                 let Some(path) = crate::nt_directory::resolve_object_path(attributes, &table) else { return Some(STATUS_INVALID_PARAMETER); };
