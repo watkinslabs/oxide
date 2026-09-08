@@ -27,11 +27,14 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     let table = cur.thread_group.nt_handles();
     let handle = sched::nt_object::NtHandle::from_raw(call.args.a0 as u32);
     let Some(object) = table.get(handle, 0) else { return Some(STATUS_INVALID_HANDLE); };
-    match call.args.a1 as u32 {
+    // The information class and the buffer length are `ULONG`s; the length
+    // arrives in a register and the return-length pointer in a frame word.
+    let length = crate::nt_obj_sig::ulong(call.args.a3) as usize;
+    match crate::nt_obj_sig::ulong(call.args.a1) {
         OBJECT_BASIC_INFORMATION => {
             let Some((access, handle_count)) = table.access_and_handle_count(handle) else { return Some(STATUS_INVALID_HANDLE); };
             if return_length != 0 && uaccess::put_user_u32(return_length, OBJECT_BASIC_INFORMATION_BYTES as u32).is_err() { return Some(STATUS_INVALID_PARAMETER); }
-            if (call.args.a3 as usize) < OBJECT_BASIC_INFORMATION_BYTES { return Some(STATUS_INFO_LENGTH_MISMATCH); }
+            if length < OBJECT_BASIC_INFORMATION_BYTES { return Some(STATUS_INFO_LENGTH_MISMATCH); }
             if call.args.a2 == 0 { return Some(STATUS_INVALID_PARAMETER); }
             let mut output = [0u8; OBJECT_BASIC_INFORMATION_BYTES];
             output[4..8].copy_from_slice(&access.to_le_bytes());
@@ -39,8 +42,8 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
             if uaccess::copy_to_user(call.args.a2, &output).is_err() { return Some(STATUS_INVALID_PARAMETER); }
             Some(STATUS_SUCCESS)
         }
-        OBJECT_NAME_INFORMATION => query_name(&object, call.args.a2, call.args.a3 as usize, return_length),
-        OBJECT_TYPE_INFORMATION => query_type(object.kind(), call.args.a2, call.args.a3 as usize, return_length),
+        OBJECT_NAME_INFORMATION => query_name(&object, call.args.a2, length, return_length),
+        OBJECT_TYPE_INFORMATION => query_type(object.kind(), call.args.a2, length, return_length),
         _ => Some(STATUS_INVALID_INFO_CLASS),
     }
 }

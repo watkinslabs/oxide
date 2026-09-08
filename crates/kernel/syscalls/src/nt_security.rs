@@ -448,7 +448,7 @@ fn access_check(call: NtCall) -> u64 {
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
     let table = cur.thread_group.nt_handles();
-    let token_handle = sched::nt_object::NtHandle::from_raw(call.args.a1 as u32);
+    let token_handle = sched::nt_object::NtHandle::from_raw(crate::nt_obj_sig::handle(call.args.a1));
     let Some(token_object) = table.get(token_handle, TOKEN_QUERY) else { return if table.contains(token_handle) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE }; };
     let Some(token) = token_object.token() else { return STATUS_INVALID_HANDLE; };
     let control = u16::from_le_bytes([descriptor[2], descriptor[3]]);

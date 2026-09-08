@@ -2,7 +2,7 @@
 
 use super::*;
 
-const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
+const STATUS_ACCESS_VIOLATION: u64 = 0xc000_0005;
 
 #[test]
 fn a_fresh_process_reports_one_locale_everywhere() {
@@ -33,8 +33,10 @@ fn any_non_zero_selector_names_the_user_locale() {
 
 #[test]
 fn an_answer_needs_somewhere_to_go() {
-    assert_eq!(admit_locale_query(0, 0), Err(STATUS_INVALID_PARAMETER));
-    assert_eq!(admit_language_query(0), Err(STATUS_INVALID_PARAMETER));
+    // The service writes its answer through the pointer without checking it,
+    // so a caller that passes none is told its memory could not be written.
+    assert_eq!(admit_locale_query(0, 0), Err(STATUS_ACCESS_VIOLATION));
+    assert_eq!(admit_language_query(0), Err(STATUS_ACCESS_VIOLATION));
     assert_eq!(admit_language_query(0x1000), Ok(()));
 }
 

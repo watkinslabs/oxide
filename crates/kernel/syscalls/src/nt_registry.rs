@@ -74,29 +74,32 @@ fn notify_change_key(call: NtCall) -> u64 {
     let Some(buffer) = crate::nt_dispatch::stack_argument(7) else { return STATUS_INVALID_PARAMETER; };
     let Some(length) = crate::nt_dispatch::stack_argument(8) else { return STATUS_INVALID_PARAMETER; };
     let Some(asynchronous) = crate::nt_dispatch::stack_argument(9) else { return STATUS_INVALID_PARAMETER; };
-    if call.args.a2 != 0 || call.args.a3 != 0 || call.args.a4 == 0 || asynchronous == 0 {
+    let request = crate::nt_obj_sig::notify_change_key([call.args.a0, call.args.a1, call.args.a2,
+        call.args.a3, call.args.a4, call.args.a5, subtree, buffer, length, asynchronous]);
+    if request.apc != 0 || request.apc_context != 0 || request.io == 0 || !request.asynchronous {
         return STATUS_INVALID_PARAMETER;
     }
     // The current registry owner exposes value mutation notifications only.
     // Rejecting the other filters is important: a pending request must never
     // claim completion for a mutation it cannot observe.
     if !crate::nt_registry_policy::supported_request(
-        call.args.a2, call.args.a3, call.args.a4, buffer, length,
-        asynchronous, subtree, call.args.a5,
+        request.apc, request.apc_context, request.io, request.buffer, request.length,
+        request.asynchronous, request.filter,
     ) {
         return STATUS_NOT_IMPLEMENTED;
     }
-    let key = call.args.a0 as u32;
+    let key = request.key;
     let table = current.thread_group.nt_handles();
     let Some(key_object) = table.get(sched::nt_object::NtHandle::from_raw(key), KEY_NOTIFY) else { return STATUS_ACCESS_DENIED; };
     if key_object.kind() != sched::nt_object::NtObjectType::Key { return STATUS_INVALID_PARAMETER; }
-    let Some(event_object) = table.get(sched::nt_object::NtHandle::from_raw(call.args.a1 as u32), SYNCHRONIZE_ACCESS) else {
-        return if table.contains(sched::nt_object::NtHandle::from_raw(call.args.a1 as u32)) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_PARAMETER };
+    let event_handle = sched::nt_object::NtHandle::from_raw(request.event);
+    let Some(event_object) = table.get(event_handle, SYNCHRONIZE_ACCESS) else {
+        return if table.contains(event_handle) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_PARAMETER };
     };
     let Some(event) = event_object.event() else { return STATUS_INVALID_PARAMETER; };
-    let Some(Reply::Subscription(subscription)) = transact(&frame_subscribe(key_object.id(), call.args.a5, subtree != 0)) else { return STATUS_UNSUCCESSFUL; };
+    let Some(Reply::Subscription(subscription)) = transact(&frame_subscribe(key_object.id(), request.filter as u64, request.subtree)) else { return STATUS_UNSUCCESSFUL; };
     let mut watches = REGISTRY_WATCHES.lock();
-    watches.push(RegistryWatch { key: key_object.id(), subscription, owner_tid: current.tid, event, io_status: call.args.a4 });
+    watches.push(RegistryWatch { key: key_object.id(), subscription, owner_tid: current.tid, event, io_status: request.io });
     STATUS_PENDING
 }
 
@@ -512,7 +515,10 @@ fn delete_key_native(call: NtCall) -> u64 {
 
 fn set_value_parts(key: u32, name_ptr: u64, title: u64, kind: u64, data: u64, size: u64) -> u64 {
     let Some(current) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
-    if !current.is_nt_personality() || name_ptr == 0 || title != 0 || size > MAX_REGISTRY_VALUE as u64 || size != 0 && data == 0 { return STATUS_INVALID_PARAMETER; }
+    // The title index is a caller-supplied ordinal this registry does not
+    // store; it is ignored rather than refused, as the service defines.
+    let _ = title;
+    if !current.is_nt_personality() || name_ptr == 0 || size > MAX_REGISTRY_VALUE as u64 || size != 0 && data == 0 { return STATUS_INVALID_PARAMETER; }
     let Some(units) = read_unicode_units(name_ptr) else { return STATUS_INVALID_PARAMETER; };
     // A name this service cannot store is a caller error, not a missing value.
     if units.len() * 2 > crate::nt_registry_reply::MAX_VALUE_NAME_BYTES { return STATUS_INVALID_PARAMETER; }

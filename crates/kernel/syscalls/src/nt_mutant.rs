@@ -28,10 +28,11 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
     let table = cur.thread_group.nt_handles();
     Some(match object {
-        NtObjectCall::CreateMutant { handle, desired_access, attributes, initial_owner } => {
-            if initial_owner > 1 { return Some(STATUS_INVALID_PARAMETER); }
+        NtObjectCall::CreateMutant { handle, desired_access, attributes, .. } => {
+            // Initial ownership is a one-byte BOOLEAN: any nonzero value is
+            // true, and no value of it is a caller error.
             let Some(desired_access) = MUTANT.grant(desired_access) else { return Some(STATUS_INVALID_PARAMETER); };
-            let owner = if initial_owner != 0 { Some(cur.tid as u64) } else { None };
+            let owner = if crate::nt_obj_sig::boolean(call.args.a3) { Some(cur.tid as u64) } else { None };
             let object = table.new_mutant(owner);
             if attributes != 0 {
                 let Some(path) = crate::nt_directory::resolve_object_path(attributes, &table) else { return Some(STATUS_INVALID_PARAMETER); };

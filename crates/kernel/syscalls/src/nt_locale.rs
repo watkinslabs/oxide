@@ -9,7 +9,9 @@
 /// # C: O(1)
 pub fn language_of(lcid: u32) -> u16 { lcid as u16 }
 
-const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
+/// An output the service cannot write is an access violation, which is what
+/// a caller that passed no output sees on the same call.
+const STATUS_ACCESS_VIOLATION: u64 = 0xc000_0005;
 
 /// Which of a process's two locales one call names.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -43,7 +45,7 @@ impl Locales {
 /// Admit a query for one of the two locales: the answer needs somewhere to go.
 /// # C: O(1)
 pub fn admit_locale_query(user: u64, out: u64) -> Result<Which, u64> {
-    if out == 0 { return Err(STATUS_INVALID_PARAMETER); }
+    if out == 0 { return Err(STATUS_ACCESS_VIOLATION); }
     Ok(which_of(user))
 }
 
@@ -54,7 +56,7 @@ pub fn admit_locale_set(user: u64, lcid: u64) -> (Which, u32) { (which_of(user),
 /// Admit a query for a language identifier.
 /// # C: O(1)
 pub fn admit_language_query(out: u64) -> Result<(), u64> {
-    if out == 0 { return Err(STATUS_INVALID_PARAMETER); }
+    if out == 0 { return Err(STATUS_ACCESS_VIOLATION); }
     Ok(())
 }
 
@@ -66,7 +68,7 @@ pub fn language_argument(language: u64) -> u16 { language as u16 }
 /// Which locale a selector names. The selector is one byte wide and any value
 /// but zero names the user's own locale, so no value of it is a caller error.
 fn which_of(user: u64) -> Which {
-    if user as u8 == 0 { Which::System } else { Which::User }
+    if crate::nt_obj_sig::boolean(user) { Which::User } else { Which::System }
 }
 
 #[cfg(test)]
