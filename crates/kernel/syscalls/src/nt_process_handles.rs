@@ -44,7 +44,13 @@ const THREAD_BASIC_INFORMATION_BYTES: usize = 48;
 /// Open a task identity into the caller's process-local NT handle table.
 /// Only identities in the current NT process are admitted until the native
 /// process namespace gains a cross-process owner. # C: O(log N)
+#[path = "nt_process_handles/next_thread.rs"]
+mod next_thread;
+
 pub fn dispatch(call: NtCall) -> Option<u64> {
+    if call.service == syscall::nt::NtService::NtGetNextThread {
+        return Some(next_thread::dispatch(call));
+    }
     if call.service == syscall::nt::NtService::TerminateProcess {
         let (process, status) = match syscall::nt::decode_terminate(call) {
             Ok(values) => values,

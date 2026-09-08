@@ -130,6 +130,8 @@ mod nt_object_query;
 mod nt_sync;
 mod nt_alert;
 mod nt_keyed_event;
+mod nt_nls_policy;
+mod nt_thread_enum;
 mod nt_mapped_files;
 mod nt_processor;
 #[cfg(target_os = "oxide-kernel")]
