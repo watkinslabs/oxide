@@ -23,7 +23,7 @@ fn shifted(rect: MenuRect, origin: (i32, i32)) -> MenuRect {
 }
 
 /// Paint one rectangle of the plan. # C: O(pixels)
-fn fill(dc: u64, rect: MenuRect, color: SystemColor) {
+pub(crate) fn fill(dc: u64, rect: MenuRect, color: SystemColor) {
     let Ok(brush) = crate::nt_gdi::system_color_brush_for_current(color) else { return; };
     let Ok(previous) = crate::nt_gdi::select_brush_for_current(dc, u64::from(brush)) else { return; };
     let _ = crate::nt_gdi::pat_blt_for_current(dc, rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top, PATCOPY);

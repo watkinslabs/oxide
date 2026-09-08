@@ -21,13 +21,21 @@ pub(super) fn dispatch_mode(call: NtCall, raw: bool) -> Option<u64> {
         // The menu bar owns its band of the nonclient area: its size, its
         // pixels, and the two entries into menu tracking.
         if message == WM_NCPAINT {
+            // The frame the window draws for itself goes on before the bar:
+            // the bar's band is inside it, and a bar drawn first is drawn
+            // over by the frame that surrounds it.
+            let _ = nonclient_frame::nc_paint_for_current(hwnd);
             // A launched run rewrote this thread's frame: the font backend
             // reads its payload out of the syscall return, so the redirect
             // status is what this nonclient message answers.
             if let Some(status) = menu_raw::bar::nc_paint_for_current(hwnd) { return Some(status); }
         }
         if message == WM_NCCALCSIZE {
+            // The frame's own band comes off first and the menu bar's band
+            // off what is left, which is the order the two are drawn in.
+            let framed = nonclient_frame::nc_calc_size_for_current(hwnd, lparam as u64).is_some();
             if let Some(result) = menu_raw::bar::nc_calc_size_for_current(hwnd, lparam as u64) { return Some(result); }
+            if framed { return Some(0); }
         }
         if message == ipc::win32_window::WM_NCHITTEST {
             if let Some(hit) = menu_raw::bar::hit_test_for_current(hwnd, lparam) { return Some(hit as i64 as u64); }

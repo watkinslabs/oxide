@@ -454,6 +454,9 @@ pub mod nonclient_menu;
 #[path = "win32_window/nonclient_create.rs"]
 pub mod nonclient_create;
 
+#[path = "win32_window/nonclient_frame.rs"]
+pub mod nonclient_frame;
+
 #[path = "win32_window/class_info_abi.rs"]
 pub mod class_info_abi;
 
