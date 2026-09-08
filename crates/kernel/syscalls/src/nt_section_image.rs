@@ -170,6 +170,8 @@ const GENERIC_READ: u32 = 0x8000_0000;
 const GENERIC_WRITE: u32 = 0x4000_0000;
 const GENERIC_EXECUTE: u32 = 0x2000_0000;
 const GENERIC_ALL: u32 = 0x1000_0000;
+/// A caller asking for whatever the type grants, rather than naming rights.
+const MAXIMUM_ALLOWED: u32 = 0x0200_0000;
 
 /// Expand the generic rights in a requested mask into the specific rights this
 /// object type maps them to. A generic bit never survives the expansion.
@@ -180,7 +182,8 @@ pub const fn map_access(desired: u32) -> u32 {
     if desired & GENERIC_WRITE != 0 { access |= STANDARD_RIGHTS_WRITE | SECTION_MAP_WRITE; }
     if desired & GENERIC_EXECUTE != 0 { access |= STANDARD_RIGHTS_EXECUTE | SECTION_MAP_EXECUTE; }
     if desired & GENERIC_ALL != 0 { access |= SECTION_ALL_ACCESS; }
-    access & !(GENERIC_READ | GENERIC_WRITE | GENERIC_EXECUTE | GENERIC_ALL)
+    if desired & MAXIMUM_ALLOWED != 0 { access |= SECTION_ALL_ACCESS; }
+    access & !(GENERIC_READ | GENERIC_WRITE | GENERIC_EXECUTE | GENERIC_ALL | MAXIMUM_ALLOWED)
 }
 
 /// Whether the mapped request asks only for rights this type answers for.
