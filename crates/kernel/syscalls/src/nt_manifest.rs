@@ -25,6 +25,7 @@ mod nt_draw_raw;
 #[path = "nt_wine_window/print_raw.rs"]
 mod nt_print_raw;
 pub(crate) mod nt_file_policy;
+pub(crate) mod nt_token_pseudo;
 pub(crate) mod nt_file_status;
 pub(crate) mod nt_file_args;
 pub(crate) mod nt_file_trace;
