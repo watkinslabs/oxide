@@ -7,6 +7,7 @@ use syscall::registry_wire;
 const STATUS_SUCCESS: u64 = 0;
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 const STATUS_INVALID_HANDLE: u64 = 0xc000_0008;
+const STATUS_OBJECT_TYPE_MISMATCH: u64 = 0xc000_0024;
 const STATUS_NO_MEMORY: u64 = 0xc000_0017;
 const STATUS_OBJECT_NAME_NOT_FOUND: u64 = 0xc000_0034;
 const STATUS_UNSUCCESSFUL: u64 = 0xc000_0001;
@@ -68,7 +69,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
 
 fn notify_change_key(call: NtCall) -> u64 {
     let Some(current) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
-    if !current.is_nt_personality() || call.args.a0 > u32::MAX as u64 || call.args.a1 > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
+    if !current.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
     let Some(subtree) = crate::nt_dispatch::stack_argument(6) else { return STATUS_INVALID_PARAMETER; };
     let Some(buffer) = crate::nt_dispatch::stack_argument(7) else { return STATUS_INVALID_PARAMETER; };
     let Some(length) = crate::nt_dispatch::stack_argument(8) else { return STATUS_INVALID_PARAMETER; };
@@ -181,12 +182,11 @@ pub fn close_remote(key: u64) {
 
 fn open_current_user(call: NtCall) -> u64 {
     let Some(current) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
-    if !current.is_nt_personality() || call.args.a1 == 0 || call.args.a0 > u32::MAX as u64 {
-        return STATUS_INVALID_PARAMETER;
-    }
+    if !current.is_nt_personality() || call.args.a1 == 0 { return STATUS_INVALID_PARAMETER; }
+    let Some(access) = crate::nt_access::KEY.grant(crate::nt_ulong::ulong(call.args.a0) as u32) else { return STATUS_ACCESS_DENIED; };
     let handles = current.thread_group.nt_handles();
     let object = sched::nt_object::NtObject::new(sched::nt_object::NtObjectType::Key, 0x8000_0001);
-    let Some(handle) = handles.insert(object, call.args.a0 as u32) else {
+    let Some(handle) = handles.insert(object, access) else {
         return STATUS_NO_MEMORY;
     };
     if uaccess::put_user_u32(call.args.a1, handle.raw()).is_err() {
@@ -198,27 +198,29 @@ fn open_current_user(call: NtCall) -> u64 {
 
 fn open_key(call: NtCall) -> u64 {
     let Some(current) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
-    if !current.is_nt_personality() || call.args.a0 == 0 || call.args.a2 == 0 || call.args.a1 > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
-    if call.service == NtService::NtOpenKeyEx && call.args.a3 != 0 { return STATUS_INVALID_PARAMETER; }
+    if !current.is_nt_personality() || call.args.a0 == 0 || call.args.a2 == 0 { return STATUS_INVALID_PARAMETER; }
+    if call.service == NtService::NtOpenKeyEx && crate::nt_ulong::ulong(call.args.a3) != 0 { return STATUS_INVALID_PARAMETER; }
+    let Some(access) = crate::nt_access::KEY.grant(crate::nt_ulong::ulong(call.args.a1) as u32) else { return STATUS_ACCESS_DENIED; };
     let (root, relative, name) = match key_name(call.args.a2, &current) { Ok(parts) => parts, Err(status) => return status };
     let request = if let Some(handle) = relative { frame_relative(registry_wire::OPEN_RELATIVE, handle, &name) } else { frame_root(registry_wire::OPEN, root, &name) };
     let Some(reply) = transact(&request) else { return STATUS_UNSUCCESSFUL; };
     let Reply::Handle(remote) = reply else { return reply_status(reply); };
     let handles = current.thread_group.nt_handles();
-    let Some(native) = handles.insert(sched::nt_object::NtObject::new(sched::nt_object::NtObjectType::Key, remote), call.args.a1 as u32) else { return STATUS_NO_MEMORY; };
+    let Some(native) = handles.insert(sched::nt_object::NtObject::new(sched::nt_object::NtObjectType::Key, remote), access) else { return STATUS_NO_MEMORY; };
     if uaccess::put_user_u32(call.args.a0, native.raw()).is_err() { let _ = handles.close(native); return STATUS_INVALID_PARAMETER; }
     STATUS_SUCCESS
 }
 
 fn create_key(call: NtCall) -> u64 {
     let Some(current) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
-    if !current.is_nt_personality() || call.args.a0 == 0 || call.args.a2 == 0 || call.args.a1 > u32::MAX as u64 || call.args.a5 != 0 { return STATUS_INVALID_PARAMETER; }
+    if !current.is_nt_personality() || call.args.a0 == 0 || call.args.a2 == 0 || crate::nt_ulong::ulong(call.args.a5) != 0 { return STATUS_INVALID_PARAMETER; }
+    let Some(access) = crate::nt_access::KEY.grant(crate::nt_ulong::ulong(call.args.a1) as u32) else { return STATUS_ACCESS_DENIED; };
     let (root, relative, name) = match key_name(call.args.a2, &current) { Ok(parts) => parts, Err(status) => return status };
     let request = if let Some(handle) = relative { frame_relative(registry_wire::CREATE_RELATIVE, handle, &name) } else { frame_root(registry_wire::CREATE, root, &name) };
     let Some(reply) = transact(&request) else { return STATUS_UNSUCCESSFUL; };
     let Reply::Handle(remote) = reply else { return reply_status(reply); };
     let handles = current.thread_group.nt_handles();
-    let Some(native) = handles.insert(sched::nt_object::NtObject::new(sched::nt_object::NtObjectType::Key, remote), call.args.a1 as u32) else { return STATUS_NO_MEMORY; };
+    let Some(native) = handles.insert(sched::nt_object::NtObject::new(sched::nt_object::NtObjectType::Key, remote), access) else { return STATUS_NO_MEMORY; };
     if uaccess::put_user_u32(call.args.a0, native.raw()).is_err() { let _ = handles.close(native); return STATUS_INVALID_PARAMETER; }
     if let Some(disposition) = crate::nt_dispatch::stack_argument(6) { let _ = uaccess::put_user_u32(disposition, 1); }
     STATUS_SUCCESS
@@ -356,9 +358,7 @@ fn flush_key_native(call: NtCall) -> u64 {
 
 fn save_key_native(call: NtCall) -> u64 {
     let Some(current) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
-    if !current.is_nt_personality() || call.args.a0 > u32::MAX as u64 || call.args.a1 > u32::MAX as u64 {
-        return STATUS_INVALID_PARAMETER;
-    }
+    if !current.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
     let Some(key) = remote_key(&current, call.args.a0 as u32, KEY_QUERY_VALUE) else {
         return STATUS_INVALID_HANDLE;
     };
@@ -390,10 +390,11 @@ fn load_key_native(call: NtCall) -> u64 {
 
 fn query_key_native(call: NtCall) -> u64 {
     let Some(current) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
-    let key = call.args.a0 as u32; let class = call.args.a1; let info = call.args.a2; let length = call.args.a3; let result = call.args.a4;
-    if !current.is_nt_personality() || info == 0 || length > u32::MAX as u64 || result > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
+    let key = call.args.a0 as u32; let class = crate::nt_ulong::ulong(call.args.a1) as u64; let info = call.args.a2;
+    let length = crate::nt_ulong::ulong(call.args.a3) as u64; let result = call.args.a4;
+    if !current.is_nt_personality() || info == 0 { return STATUS_INVALID_PARAMETER; }
     let Some(class) = crate::nt_registry_reply::KeyClass::from_raw(class) else { return STATUS_INVALID_PARAMETER; };
-    let Some(remote) = remote_key(&current, key, 0) else { return STATUS_INVALID_PARAMETER; };
+    let remote = match remote_key_checked(&current, key, 0) { Ok(key) => key, Err(status) => return status };
     let Some(Reply::KeyInfo { name, subkeys, max_subkey, values, max_value_name, max_value_data }) = transact(&frame_key(registry_wire::QUERY_KEY, remote)) else { return STATUS_UNSUCCESSFUL; };
     let units: Vec<u16> = name.encode_utf16().collect();
     let facts = crate::nt_registry_reply::KeyFacts { subkeys, max_subkey, values, max_value_name, max_value_data };
@@ -403,11 +404,12 @@ fn query_key_native(call: NtCall) -> u64 {
 
 fn enumerate_value_native(call: NtCall) -> u64 {
     let Some(current) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
-    let key = call.args.a0 as u32; let index = call.args.a1; let class = call.args.a2;
-    let info = call.args.a3; let length = call.args.a4; let result = call.args.a5;
-    if !current.is_nt_personality() || info == 0 || index > u32::MAX as u64 || length > u32::MAX as u64 || result > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
+    let key = call.args.a0 as u32; let index = crate::nt_ulong::ulong(call.args.a1) as u64;
+    let class = crate::nt_ulong::ulong(call.args.a2) as u64;
+    let info = call.args.a3; let length = crate::nt_ulong::ulong(call.args.a4) as u64; let result = call.args.a5;
+    if !current.is_nt_personality() || info == 0 { return STATUS_INVALID_PARAMETER; }
     let Some(class) = crate::nt_registry_reply::ValueClass::from_raw(class) else { return STATUS_INVALID_PARAMETER; };
-    let Some(remote) = remote_key(&current, key, KEY_QUERY_VALUE) else { return STATUS_INVALID_PARAMETER; };
+    let remote = match remote_key_checked(&current, key, KEY_QUERY_VALUE) { Ok(key) => key, Err(status) => return status };
     let mut frame = Vec::new(); frame.push(registry_wire::ENUM_VALUES); frame.extend_from_slice(&remote.to_le_bytes());
     let Some(Reply::Values(values)) = transact(&frame) else { return STATUS_UNSUCCESSFUL; };
     let Some((name, kind, data)) = values.get(index as usize) else { return STATUS_NO_MORE_ENTRIES; };
@@ -418,11 +420,15 @@ fn enumerate_value_native(call: NtCall) -> u64 {
 
 fn enumerate_key_native(call: NtCall) -> u64 {
     let Some(current) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
-    let key = call.args.a0 as u32; let index = call.args.a1; let class = call.args.a2; let info = call.args.a3; let length = call.args.a4; let result = call.args.a5;
-    if !current.is_nt_personality() || info == 0 || index > u32::MAX as u64 || length > u32::MAX as u64 || result > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
+    let key = call.args.a0 as u32; let index = crate::nt_ulong::ulong(call.args.a1) as u64;
+    let class = crate::nt_ulong::ulong(call.args.a2) as u64; let info = call.args.a3;
+    let length = crate::nt_ulong::ulong(call.args.a4) as u64; let result = call.args.a5;
+    if !current.is_nt_personality() || info == 0 { return STATUS_INVALID_PARAMETER; }
+    // The service that queries a key by handle reaches the same enumeration
+    // with this index; as an enumeration index it is past every subkey.
     if index == u32::MAX as u64 { return STATUS_NO_MORE_ENTRIES; }
     let Some(class) = crate::nt_registry_reply::KeyClass::from_raw(class) else { return STATUS_INVALID_PARAMETER; };
-    let Some(remote) = remote_key(&current, key, KEY_ENUMERATE_SUB_KEYS) else { return STATUS_INVALID_PARAMETER; };
+    let remote = match remote_key_checked(&current, key, KEY_ENUMERATE_SUB_KEYS) { Ok(key) => key, Err(status) => return status };
     let mut frame = Vec::new(); frame.push(registry_wire::ENUM_KEYS); frame.extend_from_slice(&remote.to_le_bytes());
     let Some(Reply::Keys(keys)) = transact(&frame) else { return STATUS_UNSUCCESSFUL; };
     let Some(child_name) = keys.get(index as usize) else { return STATUS_NO_MORE_ENTRIES; };
@@ -452,36 +458,34 @@ fn child_facts(parent: u64, name: &str) -> Result<crate::nt_registry_reply::KeyF
 }
 
 
-fn query_value(call: NtCall) -> u64 {
-    query_value_parts(call.args.a0 as u32, call.args.a1, call.args.a2, call.args.a3, call.args.a4, call.args.a5)
-}
+fn query_value(call: NtCall) -> u64 { query_value_native(call) }
 
 fn query_value_native(call: NtCall) -> u64 {
-    query_value_parts(call.args.a0 as u32, call.args.a1, call.args.a2, call.args.a3, call.args.a4, call.args.a5)
+    query_value_parts(call.args.a0 as u32, call.args.a1, crate::nt_ulong::ulong(call.args.a2) as u64,
+        call.args.a3, crate::nt_ulong::ulong(call.args.a4) as u64, call.args.a5)
 }
 
 fn query_value_parts(key: u32, name_ptr: u64, class: u64, info: u64, length: u64, result: u64) -> u64 {
     let Some(current) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
-    if !current.is_nt_personality() || name_ptr == 0 || info == 0 || length > u32::MAX as u64 || result > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
+    if !current.is_nt_personality() || name_ptr == 0 || info == 0 { return STATUS_INVALID_PARAMETER; }
     let Some(units) = read_unicode_units(name_ptr) else { return STATUS_INVALID_PARAMETER; };
     // The name length is judged before the information class, so an
     // over-long name is reported as an absent value whatever was asked for.
     if units.len() * 2 > crate::nt_registry_reply::MAX_VALUE_NAME_BYTES { return STATUS_OBJECT_NAME_NOT_FOUND; }
     let Some(class) = crate::nt_registry_reply::ValueClass::from_raw(class) else { return STATUS_INVALID_PARAMETER; };
     let Ok(name) = String::from_utf16(&units) else { return STATUS_INVALID_PARAMETER; };
-    let Some(remote) = remote_key(&current, key, KEY_QUERY_VALUE) else { return STATUS_INVALID_PARAMETER; };
+    let remote = match remote_key_checked(&current, key, KEY_QUERY_VALUE) { Ok(key) => key, Err(status) => return status };
     let Some(reply) = transact(&frame_query(remote, &name)) else { return STATUS_UNSUCCESSFUL; };
     let Reply::Value { kind, data } = reply else { return reply_status(reply); };
     let record = crate::nt_registry_reply::value_query_record(class, &units, kind, &data);
     write_reply(&record, info, length, result, crate::nt_registry_reply::Ladder::HeaderIsMandatory)
 }
 
-fn set_value(call: NtCall) -> u64 {
-    set_value_parts(call.args.a0 as u32, call.args.a1, call.args.a2, call.args.a3, call.args.a4, call.args.a5)
-}
+fn set_value(call: NtCall) -> u64 { set_value_native(call) }
 
 fn set_value_native(call: NtCall) -> u64 {
-    set_value_parts(call.args.a0 as u32, call.args.a1, call.args.a2, call.args.a3, call.args.a4, call.args.a5)
+    set_value_parts(call.args.a0 as u32, call.args.a1, crate::nt_ulong::ulong(call.args.a2) as u64,
+        crate::nt_ulong::ulong(call.args.a3) as u64, call.args.a4, crate::nt_ulong::ulong(call.args.a5) as u64)
 }
 
 fn delete_value_native(call: NtCall) -> u64 {
@@ -490,7 +494,7 @@ fn delete_value_native(call: NtCall) -> u64 {
     let Some(units) = read_unicode_units(call.args.a1) else { return STATUS_INVALID_PARAMETER; };
     // An over-long name cannot name a value that exists.
     if units.len() * 2 > crate::nt_registry_reply::MAX_VALUE_NAME_BYTES { return STATUS_OBJECT_NAME_NOT_FOUND; }
-    let Some(remote) = remote_key(&current, call.args.a0 as u32, KEY_SET_VALUE) else { return STATUS_INVALID_PARAMETER; };
+    let remote = match remote_key_checked(&current, call.args.a0 as u32, KEY_SET_VALUE) { Ok(key) => key, Err(status) => return status };
     let Ok(name) = String::from_utf16(&units) else { return STATUS_INVALID_PARAMETER; };
     match transact(&frame_delete_value(remote, &name)) {
         Some(Reply::Success) => { notify_registry_key(remote, crate::nt_registry_policy::REG_NOTIFY_CHANGE_LAST_SET); STATUS_SUCCESS }
@@ -502,17 +506,17 @@ fn delete_value_native(call: NtCall) -> u64 {
 fn delete_key_native(call: NtCall) -> u64 {
     let Some(current) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !current.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
-    let Some(remote) = remote_key(&current, call.args.a0 as u32, DELETE_ACCESS) else { return STATUS_INVALID_PARAMETER; };
+    let remote = match remote_key_checked(&current, call.args.a0 as u32, DELETE_ACCESS) { Ok(key) => key, Err(status) => return status };
     match transact(&frame_delete_key(remote)) { Some(Reply::Success) => STATUS_SUCCESS, Some(reply) => reply_status(reply), None => STATUS_UNSUCCESSFUL }
 }
 
 fn set_value_parts(key: u32, name_ptr: u64, title: u64, kind: u64, data: u64, size: u64) -> u64 {
     let Some(current) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
-    if !current.is_nt_personality() || name_ptr == 0 || title != 0 || kind > u32::MAX as u64 || size > MAX_REGISTRY_VALUE as u64 || size != 0 && data == 0 { return STATUS_INVALID_PARAMETER; }
+    if !current.is_nt_personality() || name_ptr == 0 || title != 0 || size > MAX_REGISTRY_VALUE as u64 || size != 0 && data == 0 { return STATUS_INVALID_PARAMETER; }
     let Some(units) = read_unicode_units(name_ptr) else { return STATUS_INVALID_PARAMETER; };
     // A name this service cannot store is a caller error, not a missing value.
     if units.len() * 2 > crate::nt_registry_reply::MAX_VALUE_NAME_BYTES { return STATUS_INVALID_PARAMETER; }
-    let Some(remote) = remote_key(&current, key, KEY_SET_VALUE) else { return STATUS_INVALID_PARAMETER; };
+    let remote = match remote_key_checked(&current, key, KEY_SET_VALUE) { Ok(key) => key, Err(status) => return status };
     let Ok(name) = String::from_utf16(&units) else { return STATUS_INVALID_PARAMETER; };
     let mut bytes = Vec::new(); if bytes.try_reserve_exact(size as usize).is_err() { return STATUS_NO_MEMORY; } bytes.resize(size as usize, 0);
     if size != 0 && uaccess::copy_from_user(&mut bytes, data).is_err() { return STATUS_ACCESS_VIOLATION; }
@@ -529,9 +533,20 @@ fn reply_status(reply: Reply) -> u64 {
     }
 }
 
+/// Resolve one key handle, distinguishing the three ways it can fail: no such
+/// handle, a handle to something that is not a key, and a key the caller did
+/// not open for the right this request needs.
+fn remote_key_checked(current: &sched::Task, raw: u32, access: u32) -> Result<u64, u64> {
+    let table = current.thread_group.nt_handles();
+    let handle = sched::nt_object::NtHandle::from_raw(raw);
+    let Some(object) = table.get(handle, 0) else { return Err(STATUS_INVALID_HANDLE); };
+    if object.kind() != sched::nt_object::NtObjectType::Key { return Err(STATUS_OBJECT_TYPE_MISMATCH); }
+    if table.get(handle, access).is_none() { return Err(STATUS_ACCESS_DENIED); }
+    Ok(object.id())
+}
+
 fn remote_key(current: &sched::Task, raw: u32, access: u32) -> Option<u64> {
-    let object = current.thread_group.nt_handles().get(sched::nt_object::NtHandle::from_raw(raw), access)?;
-    (object.kind() == sched::nt_object::NtObjectType::Key).then_some(object.id())
+    remote_key_checked(current, raw, access).ok()
 }
 
 fn key_name(attributes: u64, current: &sched::Task) -> Result<(u8, Option<u64>, String), u64> {
