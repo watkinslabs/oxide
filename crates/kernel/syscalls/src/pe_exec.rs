@@ -303,8 +303,6 @@ pub fn prepare_pe_process(cur: &sched::Task, path: &[u8], blob: &[u8], command_l
     if let Some(runtime_blob) = catalog.and_then(|catalog| catalog.load(elf_load::pe_runtime_loader::RUNTIME_MODULE)) {
         let handover = elf_load::pe_runtime_loader::load(blob, runtime_blob, &as_, &input, stack.as_u64(), stack_top)
             .map_err(|error| refused(b"runtime-handover", Some(error)))?;
-        elf_load::pe_runtime_loader::install_startup_context(&as_, &handover)
-            .map_err(|error| refused(b"startup-context", Some(error)))?;
         let process = handover.into_process();
         let startup = process.startup.facts();
         let (initial_entry, initial_stack, initial_argument) =
