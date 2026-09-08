@@ -46,8 +46,12 @@ LOCATE_SECONDS = 15
 # Bound on the guest painting the typed token into its edit control.
 TOKEN_SECONDS = 30
 TOKEN = os.environ.get("OXIDE_NOTEPAD_TOKEN", f"oxide-{RUN}").lower()
+# The runtime module's own loader drives the launch, so the milestones are the
+# ones a running window produces. The Unix-call entry is deliberately absent:
+# this kernel is win32k itself, the guest loads no Unix half, and requiring a
+# marker the design no longer emits failed every run that actually worked.
 MILESTONES = [
-    "[WINDOWS-PE-START] entry=", "[WINDOWS-NT-UNIX] entry",
+    "[WINDOWS-PE-START] entry=",
     "[WINDOWS-USER32] create-window", "[WINDOWS-WINDOW-SHOW] hwnd=",
     "[WINDOWS-USER32] get-message", "[WINDOWS-GDI] begin-paint",
     "[WINDOWS-GDI] present", "[WINDOWS-DESKTOP] frame-ack",
