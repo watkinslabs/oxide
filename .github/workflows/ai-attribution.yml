@@ -1,0 +1,39 @@
+name: ai-attribution
+
+# The half of the attribution check that cannot be skipped. The commit-msg
+# hook reads the same pattern list, but --no-verify and a redirected
+# core.hooksPath both bypass it — that is exactly how attribution trailers
+# reached main once already. This runs on the pull request itself, and on
+# `edited` so a title or body rewritten after opening is re-checked.
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  refuse-ai-attribution:
+    name: refuse AI attribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Every commit the pull request adds must be readable, not just the tip.
+          fetch-depth: 0
+      - name: commit messages
+        run: |
+          tools/check-ai-attribution.sh --range \
+            "${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+      - name: pull request title
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: tools/check-ai-attribution.sh --text "$TITLE" "pull request title"
+      - name: pull request body
+        env:
+          BODY: ${{ github.event.pull_request.body }}
+        run: tools/check-ai-attribution.sh --text "$BODY" "pull request body"
