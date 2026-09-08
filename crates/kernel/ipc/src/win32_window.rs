@@ -93,6 +93,10 @@ mod clipboard;
 pub use clipboard::{ClipboardError, ClipboardManager, ClipboardNotify, ClipFormat,
     CF_BITMAP, CF_DIB, CF_DIBV5, CF_ENHMETAFILE, CF_LOCALE, CF_MAX, CF_METAFILEPICT,
     CF_OEMTEXT, CF_PALETTE, CF_TEXT, CF_UNICODETEXT};
+#[path = "win32_window/winproc.rs"]
+pub mod winproc;
+pub use winproc::{MAX_WINPROCS, NB_BUILTIN_PROCS, WINPROC_PROC16, WinProcSlot, WinProcs, make_winproc};
+
 #[path = "win32_window/cursor.rs"]
 mod cursor;
 #[path = "win32_window/window_icon.rs"]
@@ -438,7 +442,9 @@ pub struct WindowManager { next: u32, next_end: u32, next_atom: u16, classes: Ve
     /// Per-window attributes only a few calls touch; absent means defaults.
     attributes: Vec<(WindowId, attributes::WindowAttributes)>,
     /// Frame identity stamped on the next pointer record; monotonic per owner.
-    pointer_frame: u32 }
+    pointer_frame: u32,
+    /// Window-procedure handles this process has issued.
+    winprocs: winproc::WinProcs }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 struct WindowTimer { owner_tid: u64, hwnd: Option<WindowId>, message: u32, id: u64, period_ns: u64, due_ns: u64, proc: u64 }

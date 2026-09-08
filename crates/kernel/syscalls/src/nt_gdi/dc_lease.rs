@@ -88,6 +88,15 @@ pub(crate) fn release_dc_lease_for_current(dc: u32) -> bool {
     true
 }
 
+/// Re-enable a device context whose lease was released, answering whether it
+/// had been disabled. # C: O(N_processes + N_dcs)
+pub(crate) fn enable_dc_for_current(dc: u32) -> bool {
+    let Some(cur) = sched::live::current().filter(|task| task.is_nt_personality()) else { return false; };
+    let mut entries = GDI.lock();
+    let Some(entry) = entries.iter_mut().find(|entry| entry.group.ptr_eq(&Arc::downgrade(&cur.thread_group))) else { return false; };
+    entry.state.enable_dc(dc)
+}
+
 /// Window one device context's live lease draws into.
 /// # C: O(N_processes + N_dcs)
 pub(crate) fn lease_window_for_current(dc: u32) -> Option<u32> {

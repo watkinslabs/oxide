@@ -24,7 +24,7 @@ fn notepad_captured_dimensions_exactly_reproduce_ntstatus_as_metric() {
 
 #[test]
 fn primary_metrics_fix_notepad_dimensions_before_default_placement() {
-    assert_eq!(nt_window_policy::CALL_ONE_PARAM_GET_SYSTEM_METRICS, 9);
+    assert_eq!(nt_wine_window::one_param::Code::GetSystemMetrics as u32, 9);
     let mut args = input();
     let metric = |index| desktop_metric(index, Some((800, 600))) as i32;
     assert_eq!((metric(0), metric(1)), (800, 600));

@@ -11,10 +11,14 @@ pub(crate) enum Outcome {Complete(u64),Pending}
 pub(super) struct Message {pub hwnd:u64,pub message:u32,pub wparam:u64,pub lparam:u64}
 #[derive(Clone)]
 pub(super) struct Work {pub token:u64,pub sender:u64,pub target:u64,pub message:Message,pub reply:Arc<Reply>,pub resume:Option<Resume>,cancelled:bool}
-pub(crate) struct Queue {next:u64,work:Vec<Work>}
+pub(crate) struct Queue {next:u64,work:Vec<Work>,
+    /// Threads that announced they are exiting. A send to one is refused from
+    /// the announcement until teardown, so a thread already past its last
+    /// message pump is never handed work it cannot run.
+    exiting:Vec<u64>}
 impl Queue {
     /// # C: O(1)
-    pub(crate) fn new()->Self{Self{next:1,work:Vec::new()}}
+    pub(crate) fn new()->Self{Self{next:1,work:Vec::new(),exiting:Vec::new()}}
     /// GUI-locked readiness; takes no additional lock. # C: O(sends)
     pub(crate) fn has_for_tid(&self,tid:u64)->bool{self.work.iter().any(|w|w.target==tid&&w.resume.is_none())}
     /// A retiring sender cannot free resources used by a surviving recipient callback.
@@ -26,7 +30,15 @@ impl Queue {
     pub(super) fn admit(&mut self,sender:u64,target:u64,message:Message)->Option<(u64,Arc<Reply>)>{
         self.admit_resumable(sender,target,message,None)
     }
+    /// Announce that one thread is exiting; sends to it stop being admitted.
+    /// # C: O(N_exiting)
+    pub(crate) fn mark_exiting(&mut self,tid:u64){
+        if self.exiting.contains(&tid){return;}
+        if self.exiting.try_reserve(1).is_err(){return;}
+        self.exiting.push(tid);
+    }
     pub(super) fn admit_resumable(&mut self,sender:u64,target:u64,message:Message,continuation:Option<Continuation>)->Option<(u64,Arc<Reply>)>{
+        if self.exiting.contains(&target){return None;}
         let next=self.next.checked_add(1)?;
         if self.work.len()>=LIMIT||self.work.try_reserve(1).is_err(){return None;}
         let reply=Arc::new(Reply::with_continuation(continuation));let token=self.next;self.next=next;
@@ -52,6 +64,7 @@ impl Queue {
         let w=self.work.remove(i);if let Some(result)=result.filter(|_|!w.cancelled){w.reply.complete(result);}else{w.reply.cancel();}Some((w.resume?,w.reply))
     }
     pub(super) fn cancel_thread(&mut self,tid:u64){
+        self.exiting.retain(|exiting|*exiting!=tid);
         self.work.retain_mut(|w|{
             if w.target==tid{w.reply.cancel();return false;}
             if w.sender==tid{if w.resume.is_some(){w.cancelled=true;return true;}w.reply.cancel();return false;}true

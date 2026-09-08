@@ -88,6 +88,10 @@ impl WindowManager {
     pub fn icon_param(&self, handle: u64) -> u64 { self.cursors.param(handle) }
     /// # C: O(N_cursor_objects)
     pub fn set_icon_param(&mut self, handle: u64, param: u64) -> u64 { self.cursors.set_param(handle, param) }
+    /// # C: O(N_cursor_objects)
+    pub fn set_icon_free_params(&mut self, handle: u64, callback: u64, param: u64) -> u64 { self.cursors.set_free_params(handle, callback, param) }
+    /// # C: O(N_cursor_objects)
+    pub fn icon_free_callback(&self, handle: u64) -> u64 { self.cursors.free_callback(handle) }
     /// Destroy one cursor object. The answer reports that the destroyed cursor
     /// was not the displayed one, and a shared object is never freed.
     /// # C: O(N_cursor_objects)

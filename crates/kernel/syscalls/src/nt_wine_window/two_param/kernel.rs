@@ -14,7 +14,7 @@ fn unhandled(code: u32) -> u64 {
     klog::write_raw(b"[WINDOWS-RAW-UNHANDLED] ordinal=133e code=");
     klog::write_hex_u64(u64::from(code));
     klog::write_raw(b"\n");
-    0
+    UNHANDLED
 }
 
 /// # C: O(monitors) plus bounded usercopy
@@ -49,7 +49,27 @@ pub(crate) fn route(ordinal: u64, args: &[u64]) -> Option<u64> {
         // it will attach one to an item, so an unanswered query costs every
         // menu its dropdowns.
         GET_MENU_INFO => crate::nt_window::menu_raw::get_menu_info(arg1, arg2),
-        GET_DIALOG_PROC | SET_ICON_PARAM | SET_IME_COMPOSITION_RECT | ALLOC_WINPROC => unhandled(code),
+        // A dialog procedure the client stored as a handle: the caller uses
+        // the answer as the procedure to call, so a word that is not one of
+        // this process's handles is answered unchanged rather than as null.
+        GET_DIALOG_PROC => crate::nt_window::dialog_proc_for_current(arg1, arg2 != 0),
+        // The allocation answers the procedure itself when it takes no slot,
+        // for the same reason: the caller stores whatever comes back.
+        ALLOC_WINPROC => crate::nt_window::alloc_winproc_for_current(arg1, arg2 != 0),
+        SET_ICON_PARAM => {
+            let Some(bytes) = read::<FREE_ICON_PARAMS_BYTES>(arg2) else { return Some(0); };
+            let callback = u64::from_le_bytes(bytes[0..8].try_into().unwrap());
+            let param = u64::from_le_bytes(bytes[8..16].try_into().unwrap());
+            crate::nt_window::user_input::set_icon_free_params_for_current(arg1, callback, param)
+        },
+        // The composition rectangle is stated in the window's client space and
+        // reaches the display driver in raw desktop space; a word that names no
+        // window is refused before any mapping.
+        SET_IME_COMPOSITION_RECT => {
+            let Some(bytes) = read::<RECT_BYTES>(arg2) else { return Some(0); };
+            let Some(rect) = Rect::decode(&bytes) else { return Some(0); };
+            u64::from(crate::nt_window::set_ime_composition_rect_for_current(arg1, rect.left, rect.top, rect.right, rect.bottom))
+        },
         other => unhandled(other),
     })
 }

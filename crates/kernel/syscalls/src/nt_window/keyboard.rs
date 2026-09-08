@@ -32,6 +32,19 @@ pub(crate) fn get_keyboard_state_current(destination: u64) -> u64 {
     uaccess::copy_to_user(destination, &bytes).is_ok() as u64
 }
 
+/// Copies the desktop-wide physical key state, which every thread shares.
+/// # C: O(processes + 256)
+pub(crate) fn async_keyboard_state_current(destination: u64) -> u64 {
+    let Some(cur) = sched::live::current() else { return 0; };
+    if !cur.is_nt_personality() { return 0; }
+    let bytes = {
+        let entries = super::GUI.lock();
+        entries.iter().find(|entry| entry.group.ptr_eq(&Arc::downgrade(&cur.thread_group)))
+            .map_or([0; KEYBOARD_BYTES], |entry| entry.state.async_keyboard_state())
+    };
+    uaccess::copy_to_user(destination, &bytes).is_ok() as u64
+}
+
 /// Validates user memory before mutation; thread override does not change physical state.
 /// # C: O(processes + queues + 256)
 pub(crate) fn set_keyboard_state_current(source: u64) -> u64 {
