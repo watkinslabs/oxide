@@ -5,6 +5,12 @@ use syscall::nt_compositor::{self as wire, Opcode, Record};
 pub enum TransportError { Invalid, Full, Disconnected, Unknown, NoMemory, Busy, Timeout }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Completion { Pending, Presented, Failed(u32) }
+/// What one acknowledgement settled. A refusal is the desktop saying it did
+/// not carry out the record it was handed, and for a drawing submission
+/// nobody waits on that verdict: unless it is observed here it is observed
+/// nowhere, and the window simply keeps its last pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Settled { Presented, Carried, Refused { opcode: Opcode, status: u32 } }
 pub(super) struct Prepared { bytes: Vec<u8>, hwnd: u64, opcode: Opcode }
 struct Entry { sequence: u64, hwnd: u64, opcode: Opcode, charge: usize, bytes: Option<Vec<u8>>, result: Completion, sent: bool, ack: Option<u32>, awaited: bool }
 pub struct Queue { entries: VecDeque<Entry>, bytes: usize, next: u64, dead: bool }
@@ -55,11 +61,10 @@ impl Queue {
         let sequence = entry.sequence;
         entry.bytes.take().map(|bytes| (sequence, bytes))
     }
+    /// Answers what the acknowledgement settled: pixels the desktop confirms
+    /// it was handed, a control request it carried out, or a refusal.
     /// # C: O(records)
-    /// Answers whether the acknowledgement settled a presented frame, which
-    /// is the desktop confirming pixels it was handed rather than a control
-    /// request it carried out. # C: O(records)
-    pub fn acknowledge(&mut self, sequence: u64, hwnd: u64, status: u32) -> Result<bool, TransportError> {
+    pub fn acknowledge(&mut self, sequence: u64, hwnd: u64, status: u32) -> Result<Settled, TransportError> {
         if self.dead { return Err(TransportError::Disconnected); }
         let entry = self.entries.iter_mut().find(|e| e.sequence == sequence && e.hwnd == hwnd).ok_or(TransportError::Unknown)?;
         // A record still holding its bytes was never handed to the socket, so
@@ -67,11 +72,15 @@ impl Queue {
         // protocol violation. Both end the connection at the reader.
         if entry.ack.is_some() || entry.bytes.is_some() { return Err(TransportError::Unknown); }
         entry.ack = Some(status);
-        let frame = entry.opcode == Opcode::Frame && status == 0;
-        if !entry.sent { return Ok(false); }
+        let settled = match (status, entry.opcode) {
+            (0, Opcode::Frame) => Settled::Presented,
+            (0, _) => Settled::Carried,
+            (status, opcode) => Settled::Refused { opcode, status },
+        };
+        if !entry.sent { return Ok(settled); }
         let sequence = entry.sequence;
         self.settle(sequence, status);
-        Ok(frame)
+        Ok(settled)
     }
 
     /// Publish one record's terminal result and release the transaction. A

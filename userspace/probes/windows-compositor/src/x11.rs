@@ -204,6 +204,20 @@ impl Backend {
                 let window = self.windows.get_mut(&hwnd)?;
                 if window.suppress_backing_configure && rect.right - rect.left <= 1 && rect.bottom - rect.top <= 1 { window.suppress_backing_configure = false; return None; }
                 let xid = window.xid;
+                // The server has just stated the window's real extent. The
+                // canonical owner sizes its next frame from the same
+                // notification, so a stale extent here refuses that frame and
+                // every one after it: the window keeps its last pixels for the
+                // rest of its life. A surface captured for the old extent
+                // describes nothing on this window and is dropped rather than
+                // read at the new one's coordinates.
+                let reported = (u32::try_from(rect.right - rect.left).unwrap_or(0), u32::try_from(rect.bottom - rect.top).unwrap_or(0));
+                if let Some(extent) = crate::extent::notified((window.width, window.height), reported) {
+                    (window.width, window.height) = extent;
+                    window.rect = Rect { left: window.rect.left, top: window.rect.top,
+                        right: window.rect.left + extent.0 as i32, bottom: window.rect.top + extent.1 as i32 };
+                    if !window.surface.as_ref().is_none_or(|s| crate::extent::surface_survives((s.width, s.height), extent)) { window.surface = None; }
+                }
                 // A child's ConfigureNotify states its position inside its
                 // parent's X window, which is the parent's window rectangle;
                 // the canonical owner takes the parent's client origin back
