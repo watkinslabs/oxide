@@ -95,8 +95,8 @@ fn begin_failure_hook(task: &sched::Task, dllhook: u64, syshook: u64, info: &[u8
         FailureTarget::None => return NO_ADDRESS,
     };
     if !uaccess::access_ok(entry, 1) { return NO_ADDRESS; }
-    let ntdll = crate::nt_loader_proc::module_base_by_name(task, b"ntdll.dll").unwrap_or(0);
-    let Some(continuation) = elf_load::pe_loader::resolve_nt_runtime_wndproc_continuation(ntdll) else { return NO_ADDRESS; };
+    let Some(continuation) = crate::nt_loader_proc::support_root(task)
+        .and_then(elf_load::pe_loader::nt_support::wndproc_continuation) else { return NO_ADDRESS; };
     if matches!(target, FailureTarget::DllHook { .. }) && uaccess::copy_to_user(reserved.info, info).is_err() { return NO_ADDRESS; }
     for slot in 0..4u64 { if uaccess::put_user_u64(reserved.rsp + 8 + slot * 8, 0).is_err() { return NO_ADDRESS; } }
     if uaccess::put_user_u64(reserved.rsp, continuation).is_err() { return NO_ADDRESS; }

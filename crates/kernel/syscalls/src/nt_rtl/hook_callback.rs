@@ -21,8 +21,8 @@ mod frame {
 fn begin(registers: [u64; 4], stack: &[u64], hook_proc: u64) -> u64 {
     if hook_proc == 0 || !uaccess::access_ok(hook_proc, 1) { return STATUS_INVALID_PARAMETER; }
     let Some(task) = sched::live::current().filter(|task| task.is_nt_personality()) else { return STATUS_INVALID_PARAMETER; };
-    let ntdll = crate::nt_loader_proc::module_base_by_name(task, b"ntdll.dll").unwrap_or(0);
-    let Some(continuation) = elf_load::pe_loader::resolve_nt_runtime_wndproc_continuation(ntdll) else { return STATUS_INVALID_PARAMETER; };
+    let Some(continuation) = crate::nt_loader_proc::support_root(task)
+        .and_then(elf_load::pe_loader::nt_support::wndproc_continuation) else { return STATUS_INVALID_PARAMETER; };
     let regs = hal_x86_64::current_pt_regs();
     if regs.is_null() { return STATUS_INVALID_PARAMETER; }
     let pt = unsafe { &mut *regs };

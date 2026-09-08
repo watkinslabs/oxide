@@ -25,6 +25,19 @@ const NT_FILETIME_EPOCH_SECONDS: i64 = 11_644_473_600;
 const FILE_READ_DATA: u32 = 0x0001;
 const FILE_WRITE_DATA: u32 = 0x0002;
 const FILE_APPEND_DATA: u32 = 0x0004;
+const FILE_READ_EA: u32 = 0x0008;
+const FILE_WRITE_EA: u32 = 0x0010;
+const FILE_READ_ATTRIBUTES: u32 = 0x0080;
+const FILE_WRITE_ATTRIBUTES: u32 = 0x0100;
+const FILE_GENERIC_READ: u32 = 0x0012_0089;
+const FILE_GENERIC_WRITE: u32 = 0x0012_0116;
+const FILE_GENERIC_EXECUTE: u32 = 0x0012_00a0;
+const FILE_ALL_ACCESS: u32 = 0x001f_01ff;
+const GENERIC_READ: u32 = 0x8000_0000;
+const GENERIC_WRITE: u32 = 0x4000_0000;
+const GENERIC_EXECUTE: u32 = 0x2000_0000;
+const GENERIC_ALL: u32 = 0x1000_0000;
+const FILE_DIRECTORY_FILE: u32 = 0x0001;
 #[cfg(test)]
 const UNSUPPORTED_FILE_ACCESS: u32 = 0x0008;
 const FILE_ATTRIBUTE_READONLY: u32 = vfs::FILE_ATTRIBUTE_READONLY;
@@ -91,11 +104,47 @@ pub(crate) const fn creation_time(stat: &vfs::Kstat) -> vfs::Timespec64 {
     match stat.btime { Some(time) => time, None => stat.mtime }
 }
 
-/// Admit the NT open access classes that can produce a file object. A zero
-/// access mask is a metadata-only open; data access remains unavailable on
-/// the handle inserted by the caller. # C: O(1)
-pub(crate) const fn access_mask_admits_open(desired: u32) -> bool {
-    desired == 0 || desired & (FILE_READ_DATA | FILE_WRITE_DATA | FILE_APPEND_DATA | DELETE_ACCESS) != 0
+/// Read/write mode one NT open resolves to.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub(crate) enum NtOpenMode { ReadOnly, ReadWrite, WriteOnly, Append }
+
+/// Specific access bits that make an NT open a writing one. Attribute and
+/// extended-attribute writes count: a handle opened only for them still needs
+/// a writable descriptor. Composite masks are never tested directly — every
+/// one of them carries SYNCHRONIZE, which is not an access to the file.
+const NT_WRITE_ACCESS: u32 = FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_ATTRIBUTES | FILE_WRITE_EA;
+/// Specific access bits that make an NT open a reading one.
+const NT_READ_ACCESS: u32 = FILE_READ_DATA | FILE_READ_ATTRIBUTES | FILE_READ_EA;
+
+/// Replace the four generic rights with the file-specific rights they stand
+/// for, which is what a file object's generic mapping does before any access
+/// bit is examined.
+/// # C: O(1)
+pub(crate) const fn map_generic_access(desired: u32) -> u32 {
+    let mut specific = desired & !(GENERIC_READ | GENERIC_WRITE | GENERIC_EXECUTE | GENERIC_ALL);
+    if desired & GENERIC_READ != 0 { specific |= FILE_GENERIC_READ; }
+    if desired & GENERIC_WRITE != 0 { specific |= FILE_GENERIC_WRITE; }
+    if desired & GENERIC_EXECUTE != 0 { specific |= FILE_GENERIC_EXECUTE; }
+    if desired & GENERIC_ALL != 0 { specific |= FILE_ALL_ACCESS; }
+    specific
+}
+
+/// The mode one NT open resolves to.
+///
+/// An access mask never decides whether an open is permitted, only what the
+/// descriptor must allow: a mask carrying no data access at all — a traverse
+/// of a directory, an execute of a file, a metadata query — opens read-only.
+/// Write access is dropped for a directory open, which cannot be writable,
+/// and for a directory reached without the directory option, where a writable
+/// open would fail on a name that is perfectly readable.
+/// # C: O(1)
+pub(crate) const fn open_mode(desired: u32, options: u32, is_directory: bool) -> NtOpenMode {
+    let access = map_generic_access(desired);
+    let wants_write = access & NT_WRITE_ACCESS != 0
+        && options & FILE_DIRECTORY_FILE == 0 && !is_directory;
+    if !wants_write { return NtOpenMode::ReadOnly; }
+    if access & FILE_APPEND_DATA != 0 && access & FILE_WRITE_DATA == 0 { return NtOpenMode::Append; }
+    if access & NT_READ_ACCESS != 0 { NtOpenMode::ReadWrite } else { NtOpenMode::WriteOnly }
 }
 
 impl CreateDisposition {
@@ -223,11 +272,52 @@ mod tests {
         assert!(file_basic_unsupported_fields(0, 1));
     }
 
+    /// The runtime opens its working directory for traverse alone and opens a
+    /// module for execute alone. Neither carries a data-access bit, and both
+    /// are ordinary read-only opens; refusing them fails process startup.
     #[test]
-    fn metadata_only_zero_access_open_is_admitted_without_data_rights() {
-        assert!(access_mask_admits_open(0));
-        assert!(access_mask_admits_open(DELETE_ACCESS));
-        assert!(!access_mask_admits_open(UNSUPPORTED_FILE_ACCESS));
+    fn an_access_mask_without_data_bits_opens_read_only_rather_than_being_refused() {
+        const FILE_TRAVERSE: u32 = 0x0020;
+        const FILE_EXECUTE: u32 = 0x0020;
+        const SYNCHRONIZE: u32 = 0x0010_0000;
+        assert_eq!(open_mode(SYNCHRONIZE | FILE_TRAVERSE, FILE_DIRECTORY_FILE, true), NtOpenMode::ReadOnly);
+        assert_eq!(open_mode(SYNCHRONIZE | FILE_EXECUTE, 0, false), NtOpenMode::ReadOnly);
+        assert_eq!(open_mode(0, 0, false), NtOpenMode::ReadOnly);
+        assert_eq!(open_mode(DELETE_ACCESS, 0, false), NtOpenMode::ReadOnly);
+        assert_eq!(open_mode(UNSUPPORTED_FILE_ACCESS, 0, false), NtOpenMode::ReadOnly);
+        assert_eq!(open_mode(GENERIC_READ | SYNCHRONIZE, 0, false), NtOpenMode::ReadOnly);
+        // A composite mask must not make an open writable through SYNCHRONIZE
+        // or READ_CONTROL, which every one of them carries.
+        assert_eq!(map_generic_access(GENERIC_READ) & NT_WRITE_ACCESS, 0);
+        assert_eq!(open_mode(FILE_GENERIC_READ, 0, false), NtOpenMode::ReadOnly);
+        assert_eq!(open_mode(FILE_GENERIC_EXECUTE, 0, false), NtOpenMode::ReadOnly);
+    }
+
+    #[test]
+    fn generic_rights_map_to_the_file_specific_rights_they_stand_for() {
+        assert_eq!(map_generic_access(GENERIC_READ), FILE_GENERIC_READ);
+        assert_eq!(map_generic_access(GENERIC_WRITE), FILE_GENERIC_WRITE);
+        assert_eq!(map_generic_access(GENERIC_EXECUTE), FILE_GENERIC_EXECUTE);
+        assert_eq!(map_generic_access(GENERIC_ALL), FILE_ALL_ACCESS);
+        // No generic bit survives the mapping, and specific bits are kept.
+        assert_eq!(map_generic_access(GENERIC_READ | FILE_WRITE_DATA),
+            FILE_GENERIC_READ | FILE_WRITE_DATA);
+        assert_eq!(map_generic_access(GENERIC_ALL) & (GENERIC_READ | GENERIC_WRITE | GENERIC_EXECUTE | GENERIC_ALL), 0);
+    }
+
+    #[test]
+    fn write_access_selects_the_descriptor_mode_and_never_applies_to_a_directory() {
+        assert_eq!(open_mode(FILE_WRITE_DATA, 0, false), NtOpenMode::WriteOnly);
+        assert_eq!(open_mode(FILE_READ_DATA | FILE_WRITE_DATA, 0, false), NtOpenMode::ReadWrite);
+        assert_eq!(open_mode(FILE_APPEND_DATA, 0, false), NtOpenMode::Append);
+        assert_eq!(open_mode(FILE_APPEND_DATA | FILE_WRITE_DATA, 0, false), NtOpenMode::WriteOnly);
+        // Attribute and extended-attribute writes need a writable descriptor.
+        assert_eq!(open_mode(FILE_WRITE_ATTRIBUTES, 0, false), NtOpenMode::WriteOnly);
+        assert_eq!(open_mode(FILE_WRITE_EA | FILE_READ_DATA, 0, false), NtOpenMode::ReadWrite);
+        // A directory is never opened writable, whether it is named as one or
+        // simply turns out to be one.
+        assert_eq!(open_mode(FILE_WRITE_DATA, FILE_DIRECTORY_FILE, false), NtOpenMode::ReadOnly);
+        assert_eq!(open_mode(GENERIC_WRITE, 0, true), NtOpenMode::ReadOnly);
     }
 
     #[test]

@@ -7,7 +7,7 @@
 
 use super::{CHKSTK_INDEX, C_SPECIFIC_HANDLER_INDEX, DBG_BREAK_POINT_INDEX};
 
-pub const NTDLL_EXPORTS: [&[u8]; 562] = [
+pub const NTDLL_EXPORTS: [&[u8]; 564] = [
     b"NtAllocateVirtualMemory", b"NtFreeVirtualMemory", b"NtProtectVirtualMemory", b"NtQueryVirtualMemory",
     b"NtTerminateProcess", b"NtCreateEvent", b"NtClose", b"NtSetEvent", b"NtResetEvent", b"NtWaitForSingleObject",
     b"NtCreateFile", b"NtOpenFile", b"NtReadFile", b"NtWriteFile", b"NtQueryInformationFile", b"NtSetInformationFile", b"NtQueryDirectoryFile", b"NtWaitForMultipleObjects",
@@ -293,6 +293,8 @@ pub const NTDLL_EXPORTS: [&[u8]; 562] = [
     b"NtGetCurrentProcessorNumber",
     b"NtAreMappedFilesTheSame",
     b"NtContinueEx",
+    b"NtGetNextThread",
+    b"NtInitializeNlsFiles",
 ];
 
 /// Service a catalog index selects, or `None` for the machine-code entries and
@@ -812,6 +814,8 @@ pub fn service_for_index(index: usize) -> Option<syscall::nt::NtService> {
             559 => Some(syscall::nt::NtService::NtGetCurrentProcessorNumber),
             560 => Some(syscall::nt::NtService::NtAreMappedFilesTheSame),
             561 => Some(syscall::nt::NtService::NtContinueEx),
+            562 => Some(syscall::nt::NtService::NtGetNextThread),
+            563 => Some(syscall::nt::NtService::NtInitializeNlsFiles),
             // Neither machine-code entry traps; their selectors are never encoded.
             DBG_BREAK_POINT_INDEX | CHKSTK_INDEX | C_SPECIFIC_HANDLER_INDEX => None,
             _ => None,

@@ -29,8 +29,8 @@ pub(crate) fn begin(index: u32, args: u64, length: u32, completion: sched::nt_ca
         return STATUS_INVALID_PARAMETER;
     };
     let Some(task) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
-    let ntdll = crate::nt_loader_proc::module_base_by_name(&task, b"ntdll.dll").unwrap_or(0);
-    let Some(continuation) = elf_load::pe_loader::resolve_nt_runtime_wndproc_continuation(ntdll) else { return STATUS_INVALID_PARAMETER; };
+    let Some(continuation) = crate::nt_loader_proc::support_root(&task)
+        .and_then(elf_load::pe_loader::nt_support::wndproc_continuation) else { return STATUS_INVALID_PARAMETER; };
     let regs = hal_x86_64::current_pt_regs();
     if regs.is_null() { return STATUS_INVALID_PARAMETER; }
     // SAFETY: the live NT syscall frame of the calling thread, retargeted at

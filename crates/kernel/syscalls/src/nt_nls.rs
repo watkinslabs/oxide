@@ -26,7 +26,10 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         return Some(init_codepage_table(call.args.a0, call.args.a1));
     }
     if call.service == syscall::nt::NtService::RtlGetLocaleFileMappingAddress {
-        return Some(get_locale_mapping(call));
+        return Some(get_locale_mapping(call, crate::nt_nls_policy::SizeArgument::Required));
+    }
+    if call.service == syscall::nt::NtService::NtInitializeNlsFiles {
+        return Some(get_locale_mapping(call, crate::nt_nls_policy::SizeArgument::Optional));
     }
     if call.service != syscall::nt::NtService::NtGetNlsSectionPtr { return None; }
     Some(get_section(call))
@@ -102,13 +105,19 @@ fn init_codepage_table(table: u64, info: u64) -> u64 {
     STATUS_SUCCESS
 }
 
-fn get_locale_mapping(call: NtCall) -> u64 {
-    if call.args.a0 == 0 || call.args.a1 == 0 || call.args.a2 == 0 { return STATUS_INVALID_PARAMETER; }
+/// Map the locale file and report where it landed. The two services that do
+/// this differ only in whether the caller must supply somewhere to store the
+/// mapped extent; the mapping itself is the same.
+fn get_locale_mapping(call: NtCall, extent: crate::nt_nls_policy::SizeArgument) -> u64 {
+    let size = match crate::nt_nls_policy::admit_arguments(call.args.a0, call.args.a1, call.args.a2, extent) {
+        Ok(size) => size,
+        Err(status) => return status,
+    };
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
-    let status = map_named(cur, "locale".into(), call.args.a0, call.args.a2);
+    let status = map_named(cur, "locale".into(), call.args.a0, size);
     if status != STATUS_SUCCESS { return status; }
-    if uaccess::put_user_u32(call.args.a1, 0x0409).is_err() { return STATUS_INVALID_PARAMETER; }
+    if uaccess::put_user_u32(call.args.a1, crate::nt_nls_policy::SYSTEM_LCID).is_err() { return STATUS_INVALID_PARAMETER; }
     STATUS_SUCCESS
 }
 
@@ -122,18 +131,21 @@ fn get_section(call: NtCall) -> u64 {
     let name = match section {
         NLS_SORTKEYS if id == 0 => "sortdefault",
         NLS_CASEMAP if id == 0 => "l_intl",
-        NLS_CODEPAGE => return map_named(cur, format!("c_{id:03}"), pointer.as_u64(), size.as_u64()),
+        NLS_CODEPAGE => return map_named(cur, format!("c_{id:03}"), pointer.as_u64(), Some(size.as_u64())),
         NLS_NORMALIZE => match id {
             1 => "normnfc", 2 => "normnfd", 3 => "normnfkc", 4 => "normnfkd", 13 => "normidna",
             _ => return STATUS_OBJECT_NAME_NOT_FOUND,
         },
         _ => return STATUS_OBJECT_NAME_NOT_FOUND,
     };
-    map_named(cur, name.into(), pointer.as_u64(), size.as_u64())
+    map_named(cur, name.into(), pointer.as_u64(), Some(size.as_u64()))
 }
 
-fn map_named(cur: &sched::Task, name: alloc::string::String, pointer: u64, size: u64) -> u64 {
-    if pointer == 0 || size == 0 { return STATUS_INVALID_PARAMETER; }
+/// `size` is where the mapped extent is reported, when the caller asked for
+/// it at all; the initialisation entry never dereferences that argument.
+fn map_named(cur: &sched::Task, name: alloc::string::String, pointer: u64, size: Option<u64>) -> u64 {
+    if pointer == 0 { return STATUS_INVALID_PARAMETER; }
+    if matches!(size, Some(0)) { return STATUS_INVALID_PARAMETER; }
     // The Windows smoke image owns the complete NLS catalog at this explicit
     // boundary; it is not part of the host Wine installation path.
     let path = if name == "locale" { "/usr/local/share/oxide/windows/nls/locale.nls".into() }
@@ -156,7 +168,11 @@ fn map_named(cur: &sched::Task, name: alloc::string::String, pointer: u64, size:
         Ok(address) => address.as_u64(),
         Err(_) => return STATUS_NO_MEMORY,
     };
-    if uaccess::put_user_u64(pointer, address).is_err() || uaccess::put_user_u64(size, file_size).is_err() {
+    let extent_written = match size {
+        Some(size) => uaccess::put_user_u64(size, file_size).is_ok(),
+        None => true,
+    };
+    if uaccess::put_user_u64(pointer, address).is_err() || !extent_written {
         let _ = mm.munmap(hal::UserVirtAddr::new(address).unwrap(), mapped as usize);
         return STATUS_INVALID_PARAMETER;
     }

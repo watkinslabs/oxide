@@ -186,7 +186,9 @@ pub fn find_exported_routine(module: u64, name_address: u64) -> u64 {
         pe_trace! { klog::write_raw(b"[WINDOWS-PE-EXPORT] name-read-miss module="); klog::write_hex_u64(module); klog::write_raw(b"\n"); }
         return 0;
     };
-    let data = is_ntdll.then(|| elf_load::pe_loader::resolve_nt_runtime_data_export(module, &name)).flatten();
+    let synthetic = is_ntdll && support_root(&cur)
+        .is_some_and(|root| elf_load::pe_loader::nt_support::is_synthetic_module(root, module));
+    let data = synthetic.then(|| elf_load::pe_loader::resolve_nt_runtime_data_export(module, &name)).flatten();
     pe_trace! {
         klog::write_raw(b"[WINDOWS-PE-EXPORT] module=");
         klog::write_hex_u64(module);
@@ -212,7 +214,7 @@ pub fn find_exported_routine(module: u64, name_address: u64) -> u64 {
         return address;
     }
     let result = resolve_export(&cur, module, module_size, Some(&name), 0, 0)
-        .or_else(|| is_ntdll.then(|| elf_load::pe_loader::resolve_nt_runtime_export(module, &name)).flatten());
+        .or_else(|| synthetic.then(|| elf_load::pe_loader::resolve_nt_runtime_export(module, &name)).flatten());
     result.and_then(|address| callable_win32_export(&cur, address)).unwrap_or(0)
 }
 
@@ -221,8 +223,10 @@ pub fn find_exported_routine(module: u64, name_address: u64) -> u64 {
 #[cfg(target_arch = "x86_64")]
 pub(crate) fn resolve_exported_routine_by_name(cur: &sched::Task, module: u64, name: &[u8]) -> Option<u64> {
     let (module_size, is_ntdll) = module_info(cur, module)?;
+    let synthetic = is_ntdll && support_root(cur)
+        .is_some_and(|root| elf_load::pe_loader::nt_support::is_synthetic_module(root, module));
     resolve_export(cur, module, module_size, Some(name), 0, 0)
-        .or_else(|| is_ntdll.then(|| elf_load::pe_loader::resolve_nt_runtime_export(module, name)).flatten())
+        .or_else(|| synthetic.then(|| elf_load::pe_loader::resolve_nt_runtime_export(module, name)).flatten())
         .and_then(|address| callable_win32_export(cur, address))
 }
 
@@ -325,6 +329,16 @@ fn module_containing(cur: &sched::Task, address: u64) -> Option<(u64, u32)> {
         entry = read_u64_checked(entry.checked_add(LIST_LINK_OFFSET)?)?;
     }
     None
+}
+
+/// Address-space root the NT runtime support region is registered under. The
+/// continuations and dispatchers live in a region of the kernel's own, not at
+/// an offset from any module, so every consumer looks them up by this key.
+/// # C: O(1)
+pub(crate) fn support_root(cur: &sched::Task) -> Option<u64> {
+    // SAFETY: cur is the running Task in a syscall path; its address space
+    // cannot be torn down while this borrow of mm_ref is live.
+    (unsafe { cur.mm_ref() }).map(|mm| mm.root_pa())
 }
 
 pub(crate) fn module_base_by_name(cur: &sched::Task, wanted: &[u8]) -> Option<u64> {

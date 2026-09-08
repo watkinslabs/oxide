@@ -436,6 +436,10 @@ pub enum NtService {
     NtAreMappedFilesTheSame = 597,
     /// Resume from a context record, optionally delivering a pending user APC first.
     NtContinueEx = 598,
+    /// Open a handle to the next thread of one process.
+    NtGetNextThread = 599,
+    /// Map the locale file and report its address and locale identifier.
+    NtInitializeNlsFiles = 600,
 }
 impl NtService {
     /// Return the tagged entry selector emitted by an NTDLL syscall stub.
@@ -1132,6 +1136,8 @@ pub fn decode(service: u32, args: SyscallArgs) -> Option<NtCall> {
     if service == 596 { return Some(NtCall { service: NtService::NtGetCurrentProcessorNumber, args }); }
     if service == 597 { return Some(NtCall { service: NtService::NtAreMappedFilesTheSame, args }); }
     if service == 598 { return Some(NtCall { service: NtService::NtContinueEx, args }); }
+    if service == 599 { return Some(NtCall { service: NtService::NtGetNextThread, args }); }
+    if service == 600 { return Some(NtCall { service: NtService::NtInitializeNlsFiles, args }); }
     let service = match service {
         0 => NtService::AllocateVirtualMemory,
         1 => NtService::FreeVirtualMemory,
@@ -1325,7 +1331,7 @@ pub fn decode_memory(call: NtCall) -> Result<NtMemoryCall, Errno> {
         NtService::RtlAddAccessDeniedObjectAce => Err(Errno::Enosys),
         NtService::RtlAddAuditAccessObjectAce => Err(Errno::Enosys),
         NtService::RtlAddMandatoryAce => Err(Errno::Enosys),
-        NtService::RtlAcquireSRWLockExclusive | NtService::RtlAcquireSRWLockShared | NtService::RtlReleaseSRWLockExclusive | NtService::RtlReleaseSRWLockShared | NtService::RtlTryAcquireSRWLockExclusive | NtService::RtlWakeConditionVariable | NtService::RtlAddFunctionTable | NtService::RtlDeleteFunctionTable | NtService::RtlInstallFunctionTableCallback | NtService::RtlCompareString | NtService::RtlCopyUnicodeString | NtService::RtlEqualUnicodeString | NtService::RtlComputeCrc32 | NtService::RtlImageRvaToSection | NtService::RtlIsCurrentProcess | NtService::Wcslwr | NtService::NtAlertThreadByThreadId | NtService::NtAlertMultipleThreadByThreadId | NtService::NtWaitForAlertByThreadId | NtService::NtCreateKeyedEvent | NtService::NtOpenKeyedEvent | NtService::NtWaitForKeyedEvent | NtService::NtReleaseKeyedEvent | NtService::NtGetCurrentProcessorNumber | NtService::NtAreMappedFilesTheSame | NtService::NtContinueEx => Err(Errno::Enosys),
+        NtService::RtlAcquireSRWLockExclusive | NtService::RtlAcquireSRWLockShared | NtService::RtlReleaseSRWLockExclusive | NtService::RtlReleaseSRWLockShared | NtService::RtlTryAcquireSRWLockExclusive | NtService::RtlWakeConditionVariable | NtService::RtlAddFunctionTable | NtService::RtlDeleteFunctionTable | NtService::RtlInstallFunctionTableCallback | NtService::RtlCompareString | NtService::RtlCopyUnicodeString | NtService::RtlEqualUnicodeString | NtService::RtlComputeCrc32 | NtService::RtlImageRvaToSection | NtService::RtlIsCurrentProcess | NtService::Wcslwr | NtService::NtAlertThreadByThreadId | NtService::NtAlertMultipleThreadByThreadId | NtService::NtWaitForAlertByThreadId | NtService::NtCreateKeyedEvent | NtService::NtOpenKeyedEvent | NtService::NtWaitForKeyedEvent | NtService::NtReleaseKeyedEvent | NtService::NtGetCurrentProcessorNumber | NtService::NtAreMappedFilesTheSame | NtService::NtContinueEx | NtService::NtGetNextThread | NtService::NtInitializeNlsFiles => Err(Errno::Enosys),
         NtService::RtlAddRefActivationContext => Err(Errno::Enosys),
         NtService::RtlAllocateAndInitializeSid => Err(Errno::Enosys),
         NtService::RtlAreAllAccessesGranted => Err(Errno::Enosys),
@@ -1695,4 +1701,5 @@ pub fn decode_terminate(call: NtCall) -> Result<(u64, u32), Errno> {
     Ok((call.args.a0, call.args.a1 as u32))
 }
 #[path = "nt/ordinals.rs"] pub mod ordinals;
+#[path = "nt/windows_abi.rs"] pub mod windows_abi;
 #[cfg(test)] #[path = "nt/tests.rs"] mod tests;

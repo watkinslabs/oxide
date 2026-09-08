@@ -29,10 +29,6 @@ const FILE_WRITE_ATTRIBUTES: u32 = 0x0100;
 const FILE_LIST_DIRECTORY: u32 = 0x0001;
 const FILE_APPEND_DATA: u32 = 0x0004;
 const SYNCHRONIZE_ACCESS: u32 = 0x0010_0000;
-const FILE_GENERIC_READ: u32 = 0x0012_0089;
-const FILE_GENERIC_WRITE: u32 = 0x0012_0116;
-const GENERIC_READ: u32 = 0x8000_0000;
-const GENERIC_WRITE: u32 = 0x4000_0000;
 const FILE_NON_DIRECTORY_FILE: u32 = 0x40;
 const FILE_DIRECTORY_FILE: u32 = 0x1;
 const MAX_NT_IO: usize = 16 * 1024 * 1024;
@@ -569,7 +565,44 @@ fn open_existing(cur: &sched::Task, addr: u64, _create: bool) -> u64 {
         request.share_access, 0, CreateDisposition::Open)
 }
 
+/// Failing NT opens the boot log has already named. A healthy run makes none;
+/// a failing one makes a bounded burst while a loader walks its search path,
+/// and the whole point is that the first of them names the path.
+static REPORTED_OPEN_FAILURES: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+/// Cap on reported failures. A loader walks a search path and most candidates
+/// are absent, so the burst is bounded rather than filtered: an absent name is
+/// exactly the result a missing-module failure is made of, and excluding it
+/// hid the one line that mattered.
+const MAX_REPORTED_OPEN_FAILURES: u32 = 512;
+
+/// Report one failing NT path open. Two evenings were spent inferring which
+/// path a loader could not open from the status it reported afterwards, which
+/// names neither the path nor the reason.
+/// # C: O(path length)
+fn report_open_failure(path: &str, status: u64) {
+    if REPORTED_OPEN_FAILURES.fetch_add(1, core::sync::atomic::Ordering::Relaxed) < MAX_REPORTED_OPEN_FAILURES {
+        klog::write_raw(b"[WINDOWS-NT-OPEN-FAIL] status=");
+        klog::write_hex_u64(status);
+        klog::write_raw(b" path=");
+        klog::write_raw(path.as_bytes());
+        klog::write_raw(b"\n");
+    }
+}
+
 fn open_path(cur: &sched::Task, output: u64, desired: u32, attrs: u64, options: u32,
+             sharing: u32, file_attributes: u32, disposition: CreateDisposition) -> u64 {
+    // A name the kernel cannot decode is itself a failing open and must say so;
+    // reporting only decodable ones leaves the worst case silent.
+    let Some(path) = object_path_with_root(attrs, &cur.thread_group.nt_handles()) else {
+        report_open_failure("<undecodable-object-name>", STATUS_INVALID_PARAMETER);
+        return STATUS_INVALID_PARAMETER;
+    };
+    let status = open_path_resolved(cur, output, desired, &path, options, sharing, file_attributes, disposition);
+    if status != STATUS_SUCCESS { report_open_failure(&path, status); }
+    status
+}
+
+fn open_path_resolved(cur: &sched::Task, output: u64, desired: u32, path: &str, options: u32,
              sharing: u32, file_attributes: u32, disposition: CreateDisposition) -> u64 {
     if sharing & !0x7 != 0 { return STATUS_INVALID_PARAMETER; }
     let delete = match crate::nt_file_policy::delete_on_close_admission(options, desired) {
@@ -577,21 +610,22 @@ fn open_path(cur: &sched::Task, output: u64, desired: u32, attrs: u64, options: 
         None => return STATUS_INVALID_PARAMETER,
     };
     let table = cur.thread_group.nt_handles();
-    let Some(path) = object_path_with_root(attrs, &table) else { return STATUS_INVALID_PARAMETER; };
-    if let Some(pipe) = sched::nt_object::lookup_object(&path, sched::nt_object::NtObjectType::NamedPipe) {
+    if let Some(pipe) = sched::nt_object::lookup_object(path, sched::nt_object::NtObjectType::NamedPipe) {
         return open_named_pipe(cur, output, desired, sharing, disposition, pipe);
     }
-    let wants_write = desired & (GENERIC_WRITE | FILE_GENERIC_WRITE | FILE_WRITE_DATA | FILE_APPEND_DATA) != 0;
-    let wants_read = desired & (GENERIC_READ | FILE_GENERIC_READ | FILE_READ_DATA) != 0;
-    if !wants_read && !wants_write && !crate::nt_file_policy::access_mask_admits_open(desired) {
-        return STATUS_ACCESS_DENIED;
-    }
-    let mut flags = if wants_write {
-        if desired & FILE_APPEND_DATA != 0 { vfs::OpenFlags::O_APPEND } else { vfs::OpenFlags::O_RDWR }
-    } else { vfs::OpenFlags::O_RDONLY };
+    // The access mask decides what the descriptor must allow, never whether
+    // the open is permitted: a mask with no data access at all opens
+    // read-only. Refusing those failed every traverse of a directory and
+    // every execute-only open of a module.
+    let mut flags = match crate::nt_file_policy::open_mode(desired, options, false) {
+        crate::nt_file_policy::NtOpenMode::ReadOnly => vfs::OpenFlags::O_RDONLY,
+        crate::nt_file_policy::NtOpenMode::ReadWrite => vfs::OpenFlags::O_RDWR,
+        crate::nt_file_policy::NtOpenMode::WriteOnly => vfs::OpenFlags::O_WRONLY,
+        crate::nt_file_policy::NtOpenMode::Append => vfs::OpenFlags::O_APPEND,
+    };
     if options & FILE_DIRECTORY_FILE != 0 { flags |= vfs::OpenFlags::O_DIRECTORY; }
     if options & FILE_NON_DIRECTORY_FILE != 0 && path.ends_with('/') { return STATUS_INVALID_PARAMETER; }
-    let lookup = crate::pathresolve::resolve_at_path(crate::pathresolve::AT_FDCWD, &path,
+    let lookup = crate::pathresolve::resolve_at_path(crate::pathresolve::AT_FDCWD, path,
         crate::nt_path::windows_lookup_flags());
     let (inode, dentry, mnt_id, created) = match lookup {
         Ok(_vp) if disposition.rejects_existing() => return STATUS_OBJECT_NAME_COLLISION,
@@ -599,7 +633,7 @@ fn open_path(cur: &sched::Task, output: u64, desired: u32, attrs: u64, options: 
         Err(rv) if disposition.allows_missing() && rv == -(Errno::Enoent.as_i32() as i64) => {
             let mut parent_flags = crate::nt_path::windows_lookup_flags();
             parent_flags.parent = true;
-            let Ok(parent) = crate::pathresolve::resolve_parent_at_flags(crate::pathresolve::AT_FDCWD, &path, parent_flags) else {
+            let Ok(parent) = crate::pathresolve::resolve_parent_at_flags(crate::pathresolve::AT_FDCWD, path, parent_flags) else {
                 return STATUS_OBJECT_NAME_NOT_FOUND;
             };
             let Some(name) = parent.last_component.clone() else { return STATUS_INVALID_PARAMETER; };
@@ -613,6 +647,15 @@ fn open_path(cur: &sched::Task, output: u64, desired: u32, attrs: u64, options: 
         }
         Err(rv) => return crate::nt_file_policy::status_from_errno(rv),
     };
+    // A name that turns out to be a directory is opened read-only even when
+    // write access was asked for; the reference reaches the same result by
+    // retrying the failed writable open.
+    if inode.file_type() == vfs::FileType::Directory {
+        let directory = flags & vfs::OpenFlags::O_DIRECTORY;
+        if crate::nt_file_policy::open_mode(desired, options, true) == crate::nt_file_policy::NtOpenMode::ReadOnly {
+            flags = vfs::OpenFlags::O_RDONLY | directory;
+        }
+    }
     if let Some(rv) = crate::open_common::enforce_open_perm(&inode, mnt_id, flags.bits(), created) {
         return crate::nt_file_policy::status_from_errno(rv);
     }

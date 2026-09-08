@@ -23,6 +23,26 @@
     }
 
     #[test]
+    fn a_loaded_image_answers_one_allocation_base_from_every_fragment() {
+        let as_ = AddressSpace::new(0x7_4100).unwrap();
+        let image = load_pe_image_unbound(&tiny_pe(), &as_).unwrap();
+        let base = UserVirtAddr::new(image.base).unwrap();
+        // Per-section protections split the reservation; the header page and
+        // the text page are separate fragments with different protections.
+        let header = as_.find_vma(base).unwrap();
+        let text = as_.find_vma(UserVirtAddr::new(image.base + 0x1000).unwrap()).unwrap();
+        assert_ne!(header.start, text.start);
+        assert_ne!(header.prot, text.prot);
+        // A query anywhere in the image names the image, never the fragment.
+        // The runtime obtains its own module handle exactly this way.
+        for offset in [0u64, 0x1000, 0x1fff, 0x2000] {
+            let at = UserVirtAddr::new(image.base + offset).unwrap();
+            let info = crate::nt_memory::query(&as_, at).unwrap();
+            assert_eq!(info.allocation_base.as_u64(), image.base);
+        }
+    }
+
+    #[test]
     fn installed_wine_notepad_graph_loads_native_ntdll_surface() {
         let roots = [
             "/usr/lib64/wine/x86_64-windows",

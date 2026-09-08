@@ -136,8 +136,8 @@ unsafe fn deliver_nt_apc(regs: *mut UserRegs) -> bool {
     let Some(callback_rsp) = frame.rsp.checked_sub(FRAME_BYTES)
         .map(|value| (value & !0xf) | 8) else { return false; };
     if !uaccess::access_ok(callback_rsp, FRAME_BYTES as usize) { return false; }
-    let ntdll = crate::nt_loader_proc::module_base_by_name(&task, b"ntdll.dll").unwrap_or(0);
-    let Some(continuation) = elf_load::pe_loader::resolve_nt_runtime_apc_continuation(ntdll) else { return false; };
+    let Some(continuation) = crate::nt_loader_proc::support_root(&task)
+        .and_then(elf_load::pe_loader::nt_support::apc_continuation) else { return false; };
     let put = |offset: u64, value: u64| -> bool {
         uaccess::put_user_u64(callback_rsp.checked_add(offset).unwrap_or(0), value).is_ok()
     };

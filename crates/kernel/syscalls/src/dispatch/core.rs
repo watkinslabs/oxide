@@ -112,7 +112,13 @@ fn dispatch_routed_syscall(entry: (Option<u64>, u64), nr: u64, args: &SyscallArg
         // publishes no service for is an unimplemented service, never the
         // Linux call of the same number.
         if let Ok(id) = u32::try_from(nr) {
-            if let Some(call) = syscall::nt::ordinals::call_for_ordinal(id, *args) { return dispatch_nt_call(call); }
+            // A stock service stub hands its arguments over in the shipped
+            // runtime's own convention, not the host's: converting them here,
+            // once, is what lets each service's decode keep reading argument
+            // positions. Only the raw ordinal route needs it — a tagged entry
+            // arrives from a stub that already marshalled.
+            let args = syscall::nt::windows_abi::windows_args(*args, crate::nt_dispatch::stack_argument);
+            if let Some(call) = syscall::nt::ordinals::call_for_ordinal(id, args) { return dispatch_nt_call(call); }
             if syscall::nt::ordinals::is_runtime_ordinal(id) {
                 return crate::nt_wine_window::unclaimed::STATUS_INVALID_SYSTEM_SERVICE as i64;
             }

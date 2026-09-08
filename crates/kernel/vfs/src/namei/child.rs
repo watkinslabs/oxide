@@ -112,7 +112,16 @@ impl Nameidata {
             Err(crate::types::VfsError::Enoent) if self.flags.case_insensitive => {
                 match self.cur_inode.lookup_casefold(comp) {
                     Ok(inode) => Ok(inode),
-                    Err(crate::types::VfsError::Enosys) => Err(crate::types::VfsError::Enoent),
+                    // A filesystem with no case-folding index of its own is
+                    // resolved by scanning the directory for the stored
+                    // spelling, then looking that up. Without this every
+                    // case-insensitive path is served case-sensitively.
+                    Err(crate::types::VfsError::Enosys) => {
+                        match super::casefold::stored_name(&self.cur_inode, comp) {
+                            Some(stored) => self.cur_inode.lookup(&stored),
+                            None => Err(crate::types::VfsError::Enoent),
+                        }
+                    }
                     Err(error) => Err(error),
                 }
             }

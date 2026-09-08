@@ -26,6 +26,12 @@ use crate::process_env;
 pub const RUNTIME_MODULE: &[u8] = b"ntdll.dll";
 /// The runtime's initialization entry, which the module publishes by name.
 pub const RUNTIME_INIT_ENTRY: &[u8] = b"LdrInitializeThunk";
+/// Data the runtime module exports for the kernel side to fill in: the two
+/// dispatcher pointers it calls through and the identity of the Unix-call
+/// table. The module publishes the slots and reads them; it never writes
+/// them, so an unfilled slot is a call through a null pointer.
+pub const RUNTIME_SLOT_NAMES: [&[u8]; 3] =
+    [b"__wine_syscall_dispatcher", b"__wine_unix_call_dispatcher", b"__wine_unixlib_handle"];
 /// Windows paths the two mapped modules are published under.
 const RUNTIME_PATH: &str = "C:\\Windows\\System32\\ntdll.dll";
 
@@ -63,8 +69,13 @@ pub fn load(blob: &[u8], runtime_blob: &[u8], as_: &AddressSpace,
     let runtime_parsed = pe::parse(runtime_blob)?;
     let _ = crate::nt_ordinals::install_from_image(&runtime_parsed);
 
+    // The runtime support region is mapped before either image so the module
+    // can be published with its data slots already pointing at real code.
+    let support = crate::pe_loader::nt_support::map_and_publish(as_)?;
+    let slots = runtime_slots(&runtime_parsed, &support)?;
+
     let image = crate::pe_loader::load_pe_image_unbound(blob, as_)?;
-    let runtime = crate::pe_loader::load_pe_image_unbound(runtime_blob, as_)?;
+    let runtime = crate::pe_loader::load_pe_image_unbound_with_slots(runtime_blob, as_, &slots)?;
     let init = runtime_init_entry(&runtime_parsed, runtime.base)?;
 
     let mut environment_input = input.clone();
@@ -86,6 +97,23 @@ pub fn load(blob: &[u8], runtime_blob: &[u8], as_: &AddressSpace,
     let startup = crate::pe_startup::PeStartupTransaction::begin_with_transfer(as_, &image, &environment,
         stack_base, stack_top, &entry, init)?;
     Ok(RuntimeHandover { image, runtime, environment, entry, context, startup })
+}
+
+/// Pair each runtime-owned data slot with the support-region address it must
+/// hold. A module missing any of the three cannot be entered: its own
+/// initialisation would call through a slot nothing ever writes.
+/// # C: O(N_slots * export names)
+pub fn runtime_slots(parsed: &pe::Image<'_>, support: &crate::pe_loader::nt_support::NtRuntimeSupport)
+    -> Result<[(u32, u64); RUNTIME_SLOT_NAMES.len()], pe::Error>
+{
+    let values = [support.wine_dispatcher, support.wine_unix_dispatcher, syscall::nt::WINE_UNIXLIB_HANDLE];
+    let mut slots = [(0u32, 0u64); RUNTIME_SLOT_NAMES.len()];
+    for (index, name) in RUNTIME_SLOT_NAMES.iter().enumerate() {
+        let thunk = pe::ImportThunk::Name { hint: 0, name };
+        let rva = parsed.export_rva(&thunk)?.ok_or(pe::Error::Unsupported)?;
+        slots[index] = (rva, values[index]);
+    }
+    Ok(slots)
 }
 
 /// Resolve the runtime's initialization entry to a mapped user address.
