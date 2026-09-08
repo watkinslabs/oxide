@@ -34,8 +34,19 @@ impl WindowManager {
         self.get(source).ok_or(WindowError::NoSuchWindow)?;
         let origin = self.rect(source).ok_or(WindowError::NoSuchWindow)?;
         if buttons & !POINTER_FLAGS != 0 || i16::try_from(wheel_delta).is_err() || i16::try_from(hwheel_delta).is_err() { return Err(WindowError::InvalidParent); }
-        let screen = (origin.left.checked_add(x).ok_or(WindowError::InvalidParent)?,
-            origin.top.checked_add(y).ok_or(WindowError::InvalidParent)?);
+        // A child's rectangle is stated in its parent's client space, so its
+        // own left/top is an offset inside the parent and not a screen
+        // position. Taking it for one puts every pointer message a control
+        // reports at the parent's offset instead of the control's place on the
+        // screen, and the hit test at retrieval then answers for a point the
+        // control does not cover: the control is dead to the pointer. Every
+        // ancestor's client origin comes from the canonical mapping owner.
+        let ancestors = match self.get(source).ok_or(WindowError::NoSuchWindow)?.parent {
+            Some(parent) => self.client_origin(parent).ok_or(WindowError::NoSuchWindow)?,
+            None => (0, 0),
+        };
+        let screen = (ancestors.0.checked_add(origin.left).and_then(|left| left.checked_add(x)).ok_or(WindowError::InvalidParent)?,
+            ancestors.1.checked_add(origin.top).and_then(|top| top.checked_add(y)).ok_or(WindowError::InvalidParent)?);
         let target = self.capture.unwrap_or(source);
         let owner = self.get(target).ok_or(WindowError::NoSuchWindow)?.owner_tid;
         let buttons = buttons as u16;
