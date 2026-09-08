@@ -28,6 +28,7 @@ pub(crate) mod nt_file_policy;
 pub(crate) mod nt_token_pseudo;
 pub(crate) mod nt_file_status;
 pub(crate) mod nt_file_args;
+pub(crate) mod nt_file_sig;
 pub(crate) mod nt_file_trace;
 pub(crate) mod nt_object_name;
 mod nt_file_async_policy;

@@ -18,26 +18,29 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
 
 fn read(call: NtCall) -> u64 {
     let Some(cur) = sched::live::current() else { return policy::STATUS_INVALID_PARAMETER; };
-    if !cur.is_nt_personality() || call.args.a0 > u32::MAX as u64 { return policy::STATUS_INVALID_PARAMETER; }
-    let Some(length) = crate::nt_dispatch::stack_argument(6) else { return policy::STATUS_INVALID_PARAMETER; };
-    let Some(offset_ptr) = crate::nt_dispatch::stack_argument(7) else { return policy::STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() { return policy::STATUS_INVALID_PARAMETER; }
+    let Some(length_arg) = crate::nt_dispatch::stack_argument(6) else { return policy::STATUS_INVALID_PARAMETER; };
+    let Some(offset_arg) = crate::nt_dispatch::stack_argument(7) else { return policy::STATUS_INVALID_PARAMETER; };
     let Some(_key) = crate::nt_dispatch::stack_argument(8) else { return policy::STATUS_INVALID_PARAMETER; };
+    let args = [call.args.a0, call.args.a1, call.args.a2, call.args.a3, call.args.a4, call.args.a5];
+    let request = crate::nt_file_sig::segment_io(args, length_arg, offset_arg);
+    let length = u64::from(request.length);
     if length > MAX_NT_IO as u64 { return policy::STATUS_INVALID_PARAMETER; }
-    let offset = if offset_ptr == 0 { None } else {
-        let Ok(raw) = uaccess::get_user_u64(offset_ptr) else { return policy::STATUS_INVALID_PARAMETER; };
+    let offset = if request.offset_ptr == 0 { None } else {
+        let Ok(raw) = uaccess::get_user_u64(request.offset_ptr) else { return policy::STATUS_INVALID_PARAMETER; };
         let value = raw as i64;
         if value < 0 && value != FILE_USE_FILE_POINTER_POSITION { return policy::STATUS_INVALID_PARAMETER; }
         if value == FILE_USE_FILE_POINTER_POSITION { None } else { Some(raw) }
     };
     let table = cur.thread_group.nt_handles();
-    let native = sched::nt_object::NtHandle::from_raw(call.args.a0 as u32);
+    let native = sched::nt_object::NtHandle::from_raw(request.file);
     let Some(object) = table.get(native, policy::FILE_READ_DATA) else {
         return if table.contains(native) { policy::STATUS_ACCESS_DENIED } else { policy::STATUS_INVALID_HANDLE };
     };
     let Some(file) = object.file() else { return policy::STATUS_INVALID_HANDLE; };
     let Some(info) = object.file_info() else { return policy::STATUS_INVALID_HANDLE; };
     let page_size = hal::PAGE_SIZE_BYTES as usize;
-    let pages = match policy::validate_shape(call.args.a4, call.args.a5, length as usize,
+    let pages = match policy::validate_shape(request.io_status, request.segments, length as usize,
         page_size, MAX_NT_IO, info.fd_type, info.options) {
         Ok(pages) => pages,
         Err(status) => return status,
@@ -47,7 +50,7 @@ fn read(call: NtCall) -> u64 {
     let mut status = policy::STATUS_SUCCESS;
     for index in 0..pages {
         let Some(entry_offset) = (index as u64).checked_mul(8) else { status = policy::STATUS_INVALID_PARAMETER; break; };
-        let Some(entry) = call.args.a5.checked_add(entry_offset) else { status = policy::STATUS_INVALID_USER_BUFFER; break; };
+        let Some(entry) = request.segments.checked_add(entry_offset) else { status = policy::STATUS_INVALID_USER_BUFFER; break; };
         let Ok(destination) = uaccess::get_user_u64(entry) else { status = policy::STATUS_INVALID_USER_BUFFER; break; };
         if !policy::validate_segment(destination, page_size) { status = policy::STATUS_INVALID_USER_BUFFER; break; }
         let result = match offset {
@@ -69,7 +72,7 @@ fn read(call: NtCall) -> u64 {
         if bytes != page_size { break; }
     }
     if status == policy::STATUS_SUCCESS { status = policy::completion_status(length as usize, total); }
-    super::nt_file::write_io_status(call.args.a4, status, total as u64);
-    super::nt_file::post_completion(&object, call.args.a3, status, total as u64);
+    super::nt_file::write_io_status(request.io_status, status, total as u64);
+    super::nt_file::post_completion(&object, request.apc_context, status, total as u64);
     status
 }

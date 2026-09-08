@@ -31,6 +31,11 @@ const FILE_APPEND_DATA: u32 = 0x0004;
 const SYNCHRONIZE_ACCESS: u32 = 0x0010_0000;
 const FILE_NON_DIRECTORY_FILE: u32 = 0x40;
 const FILE_DIRECTORY_FILE: u32 = 0x1;
+/// `FILE_CREATE`: the named-pipe disposition that must not reuse an instance.
+const FILE_CREATE: u32 = 2;
+/// The reserved byte offset that asks a read or write to use the file's own
+/// position rather than an absolute one.
+const FILE_USE_FILE_POINTER_POSITION: i64 = -2;
 const MAX_NT_IO: usize = 16 * 1024 * 1024;
 const FILE_BASIC_INFORMATION: u32 = 4;
 const FILE_STANDARD_INFORMATION: u32 = 5;
@@ -95,8 +100,10 @@ pub fn dispatch(call: NtFileCall) -> u64 {
             crate::nt_file_volume::query(cur, handle, io_status.as_u64(), information.as_u64(), length, information_class),
         NtFileCall::SetInformation { request } => set_information(cur, request.as_u64()),
         NtFileCall::QueryDirectory { request } => query_directory(cur, request.as_u64()),
-        NtFileCall::Lock { request } => crate::nt_file_lock::dispatch(cur, request.as_u64(), false),
-        NtFileCall::Unlock { request } => crate::nt_file_lock::dispatch(cur, request.as_u64(), true),
+        // The two lock services are claimed by the native Windows-convention
+        // path above; a request-block form of them has no caller and must not
+        // become a second decode of the same arguments.
+        NtFileCall::Lock { .. } | NtFileCall::Unlock { .. } => STATUS_INVALID_PARAMETER,
         NtFileCall::Cancel { handle, io_status } => cancel(cur, handle, None, io_status.as_u64()),
         NtFileCall::CancelEx { handle, io, io_status } => cancel(cur, handle, io.map(|ptr| ptr.as_u64()), io_status.as_u64()),
         NtFileCall::CancelSynchronous { handle, io, io_status } => cancel_synchronous(cur, handle, io.map(|ptr| ptr.as_u64()), io_status.as_u64()),
@@ -110,6 +117,7 @@ pub fn dispatch(call: NtFileCall) -> u64 {
 pub fn dispatch_native(call: NtCall) -> Option<u64> {
     if let Some(result) = crate::nt_file_scatter::dispatch(call) { return Some(result); }
     if let Some(result) = crate::nt_file_gather::dispatch(call) { return Some(result); }
+    if let Some(result) = crate::nt_file_lock::dispatch_native(call) { return Some(result); }
     match call.service {
         NtService::NtCreateNamedPipeFile => Some(native_create_named_pipe(call)),
         NtService::FsControlFile => Some(native_fs_control(call)),
@@ -118,10 +126,7 @@ pub fn dispatch_native(call: NtCall) -> Option<u64> {
         NtService::ReadFile => Some(native_io(call, false)),
         NtService::WriteFile => Some(native_io(call, true)),
         NtService::QueryInformationFile => Some(native_query_information(call)),
-        NtService::NtQueryVolumeInformationFile => Some(crate::nt_file_volume::query(
-            sched::live::current()?, call.args.a0 as u32, call.args.a1, call.args.a2,
-            call.args.a3 as u32, call.args.a4 as u32,
-        )),
+        NtService::NtQueryVolumeInformationFile => Some(native_query_volume_information(call)),
         NtService::SetInformationFile => Some(native_set_information(call)),
         NtService::QueryDirectoryFile => Some(native_query_directory(call)),
         _ => None,
@@ -170,19 +175,22 @@ pub(crate) fn write_registry_hive(file: &vfs::File, bytes: &[u8]) -> u64 {
 
 fn native_fs_control(call: NtCall) -> u64 {
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
-    if !cur.is_nt_personality() || call.args.a0 > u32::MAX as u64 || call.args.a4 == 0 {
-        return STATUS_INVALID_PARAMETER;
-    }
+    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
     let Some(input) = crate::nt_dispatch::stack_argument(6) else { return STATUS_INVALID_PARAMETER; };
     let Some(input_length) = crate::nt_dispatch::stack_argument(7) else { return STATUS_INVALID_PARAMETER; };
     let Some(output) = crate::nt_dispatch::stack_argument(8) else { return STATUS_INVALID_PARAMETER; };
     let Some(output_length) = crate::nt_dispatch::stack_argument(9) else { return STATUS_INVALID_PARAMETER; };
-    let handle = sched::nt_object::NtHandle::from_raw(call.args.a0 as u32);
+    let args = [call.args.a0, call.args.a1, call.args.a2, call.args.a3, call.args.a4, call.args.a5];
+    let Some(request) = crate::nt_file_sig::device_control(args, [input, input_length, output, output_length]) else {
+        return STATUS_INVALID_PARAMETER;
+    };
+    let handle = sched::nt_object::NtHandle::from_raw(request.file);
     let table = cur.thread_group.nt_handles();
     let Some(object) = table.get(handle, 0) else { return STATUS_INVALID_HANDLE; };
-    let code = crate::nt_file_args::ulong(call.args.a5);
-    let input_length = crate::nt_file_args::ulong(input_length) as u64;
-    let output_length = crate::nt_file_args::ulong(output_length) as u64;
+    let code = request.code;
+    let (input, output) = (request.input, request.output);
+    let input_length = u64::from(request.input_length);
+    let output_length = u64::from(request.output_length);
     if code == FSCTL_GET_OBJECT_ID {
         return file_object_id(&object, call.args.a4, output, output_length);
     }
@@ -264,37 +272,32 @@ fn file_object_id(object: &alloc::sync::Arc<sched::nt_object::NtObject>, io_stat
 
 fn native_create_named_pipe(call: NtCall) -> u64 {
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
-    if !cur.is_nt_personality() || call.args.a0 == 0 || call.args.a2 == 0
-        || call.args.a1 > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
-    let sharing = call.args.a4;
-    let disposition = call.args.a5;
-    let Some(options) = crate::nt_dispatch::stack_argument(6) else { return STATUS_INVALID_PARAMETER; };
-    let Some(pipe_type) = crate::nt_dispatch::stack_argument(7) else { return STATUS_INVALID_PARAMETER; };
-    let Some(read_mode) = crate::nt_dispatch::stack_argument(8) else { return STATUS_INVALID_PARAMETER; };
-    let Some(completion_mode) = crate::nt_dispatch::stack_argument(9) else { return STATUS_INVALID_PARAMETER; };
-    let Some(max_instances) = crate::nt_dispatch::stack_argument(10) else { return STATUS_INVALID_PARAMETER; };
-    let Some(inbound_quota) = crate::nt_dispatch::stack_argument(11) else { return STATUS_INVALID_PARAMETER; };
-    let Some(outbound_quota) = crate::nt_dispatch::stack_argument(12) else { return STATUS_INVALID_PARAMETER; };
-    let Some(timeout_ptr) = crate::nt_dispatch::stack_argument(13) else { return STATUS_INVALID_PARAMETER; };
-    if [sharing, disposition, options, pipe_type, read_mode, completion_mode,
-        max_instances, inbound_quota, outbound_quota].iter().any(|value| *value > u32::MAX as u64) {
-        return STATUS_INVALID_PARAMETER;
+    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    let mut tail = [0u64; 8];
+    let mut index = 0;
+    while index < tail.len() {
+        let Some(value) = crate::nt_dispatch::stack_argument(6 + index) else { return STATUS_INVALID_PARAMETER; };
+        tail[index] = value;
+        index += 1;
     }
-    let timeout_100ns = if timeout_ptr == 0 { 0 } else {
-        match uaccess::get_user_u64(timeout_ptr) { Ok(value) => value as i64, Err(_) => return STATUS_INVALID_PARAMETER }
+    let args = [call.args.a0, call.args.a1, call.args.a2, call.args.a3, call.args.a4, call.args.a5];
+    let Some(request) = crate::nt_file_sig::named_pipe_create(args, tail) else { return STATUS_INVALID_PARAMETER; };
+    let disposition = request.disposition;
+    let timeout_100ns = if request.timeout == 0 { 0 } else {
+        match uaccess::get_user_u64(request.timeout) { Ok(value) => value as i64, Err(_) => return STATUS_INVALID_PARAMETER }
     };
-    let config = sched::nt_object::NtPipeConfig { pipe_type: pipe_type as u32,
-        read_mode: read_mode as u32, completion_mode: completion_mode as u32,
-        max_instances: max_instances as u32, inbound_quota: inbound_quota as u32,
-        outbound_quota: outbound_quota as u32, timeout_100ns, sharing: sharing as u32 };
-    if !sched::nt_object::NtPipe::validate_create(config, call.args.a1 as u32) {
+    let config = sched::nt_object::NtPipeConfig { pipe_type: request.pipe_type,
+        read_mode: request.read_mode, completion_mode: request.completion_mode,
+        max_instances: request.max_instances, inbound_quota: request.inbound_quota,
+        outbound_quota: request.outbound_quota, timeout_100ns, sharing: request.sharing };
+    if !sched::nt_object::NtPipe::validate_create(config, request.access) {
         return STATUS_INVALID_PARAMETER;
     }
-    let Some(path) = object_path(call.args.a2) else { return STATUS_INVALID_PARAMETER; };
+    let Some(path) = object_path(request.attributes) else { return STATUS_INVALID_PARAMETER; };
     let table = cur.thread_group.nt_handles();
     let (pipe, state) = if let Some(existing) = sched::nt_object::lookup_object(&path, sched::nt_object::NtObjectType::NamedPipe) {
         let Some(pipe) = existing.pipe() else { return STATUS_INVALID_HANDLE; };
-        if pipe.config().sharing != config.sharing || disposition as u32 == 2 {
+        if pipe.config().sharing != config.sharing || disposition == FILE_CREATE {
             return STATUS_ACCESS_DENIED;
         }
         (pipe, sched::nt_object::NamedObjectState::Existing)
@@ -307,14 +310,14 @@ fn native_create_named_pipe(call: NtCall) -> u64 {
     };
     if !pipe.reserve_instance() { return STATUS_INSTANCE_NOT_AVAILABLE; }
     let handle_object = table.new_named_pipe_endpoint(pipe, sched::nt_object::NtPipeSide::Server);
-    let Some(handle) = table.insert(handle_object, call.args.a1 as u32 | SYNCHRONIZE_ACCESS) else { return STATUS_INVALID_PARAMETER; };
-    if uaccess::put_user_u64(call.args.a0, u64::from(handle.raw())).is_err() {
+    let Some(handle) = table.insert(handle_object, request.access | SYNCHRONIZE_ACCESS) else { return STATUS_INVALID_PARAMETER; };
+    if uaccess::put_user_u64(request.handle_out, u64::from(handle.raw())).is_err() {
         let _ = table.close(handle);
         return STATUS_INVALID_PARAMETER;
     }
-    if call.args.a3 != 0 {
-        if uaccess::put_user_u64(call.args.a3, STATUS_SUCCESS).is_err()
-            || uaccess::put_user_u64(call.args.a3 + 8, if state == sched::nt_object::NamedObjectState::Created { 2 } else { 1 }).is_err() {
+    if request.io_status != 0 {
+        if uaccess::put_user_u64(request.io_status, STATUS_SUCCESS).is_err()
+            || uaccess::put_user_u64(request.io_status + 8, if state == sched::nt_object::NamedObjectState::Created { 2 } else { 1 }).is_err() {
             let _ = table.close(handle);
             return STATUS_INVALID_PARAMETER;
         }
@@ -354,17 +357,21 @@ fn native_io(call: NtCall, write: bool) -> u64 {
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
     let Some(length) = crate::nt_dispatch::stack_argument(6) else { return STATUS_INVALID_PARAMETER; };
-    let Some(offset) = crate::nt_dispatch::stack_argument(7) else { return STATUS_INVALID_PARAMETER; };
-    if call.args.a0 > u32::MAX as u64 || call.args.a4 == 0 || call.args.a5 == 0 { return STATUS_INVALID_PARAMETER; }
-    let length = crate::nt_file_args::ulong(length) as u64;
-    let offset = if offset == 0 { 0 } else { read_u64(offset).unwrap_or(u64::MAX) };
-    if offset == u64::MAX { return STATUS_INVALID_PARAMETER; }
-    native_io_values(cur, call.args.a0 as u32, call.args.a1, call.args.a4, call.args.a5,
-        length as u32, offset, write)
+    let Some(offset_ptr) = crate::nt_dispatch::stack_argument(7) else { return STATUS_INVALID_PARAMETER; };
+    let args = [call.args.a0, call.args.a1, call.args.a2, call.args.a3, call.args.a4, call.args.a5];
+    let Some(request) = crate::nt_file_sig::file_io(args, length, offset_ptr) else { return STATUS_INVALID_PARAMETER; };
+    let offset = if request.offset_ptr == 0 { None } else {
+        let Ok(raw) = uaccess::get_user_u64(request.offset_ptr) else { return STATUS_ACCESS_VIOLATION; };
+        // An explicit byte offset of zero names the first byte of the file; only
+        // the reserved position value asks for the file's own pointer.
+        if raw as i64 == FILE_USE_FILE_POINTER_POSITION { None } else { Some(raw) }
+    };
+    native_io_values(cur, request.file, request.event, request.io_status, request.buffer,
+        request.length, offset, write)
 }
 
 fn native_io_values(cur: &sched::Task, handle: u32, event: u64, io_status: u64, buffer: u64,
-                    length: u32, offset: u64, write: bool) -> u64 {
+                    length: u32, offset: Option<u64>, write: bool) -> u64 {
     if length as usize > MAX_NT_IO { return STATUS_INVALID_PARAMETER; }
     let required = if write { FILE_WRITE_DATA } else { FILE_READ_DATA };
     let native = sched::nt_object::NtHandle::from_raw(handle);
@@ -426,9 +433,10 @@ fn native_io_values(cur: &sched::Task, handle: u32, event: u64, io_status: u64, 
     let mut data = vec![0u8; length as usize];
     let result = if write {
         if uaccess::copy_from_user(&mut data, buffer).is_err() { return STATUS_ACCESS_VIOLATION; }
-        if offset == 0 { file.write(&data).map(|n| n as u64) } else { file.pwrite(&data, offset as i64).map(|n| n as u64) }
+        match offset { None => file.write(&data).map(|n| n as u64),
+            Some(at) => file.pwrite(&data, at as i64).map(|n| n as u64) }
     } else {
-        let result = if offset == 0 { file.read(&mut data) } else { file.pread(&mut data, offset as i64) };
+        let result = match offset { None => file.read(&mut data), Some(at) => file.pread(&mut data, at as i64) };
         if let Ok(n) = result { if uaccess::copy_to_user(buffer, &data[..n]).is_err() { return STATUS_ACCESS_VIOLATION; } }
         result.map(|n| n as u64)
     };
@@ -453,27 +461,49 @@ fn native_io_values(cur: &sched::Task, handle: u32, event: u64, io_status: u64, 
     }
 }
 
+/// The six register-or-frame argument slots of one native NT service call, in
+/// the order the Windows calling convention places them. # C: O(1)
+fn native_args(call: NtCall) -> [u64; 6] {
+    [call.args.a0, call.args.a1, call.args.a2, call.args.a3, call.args.a4, call.args.a5]
+}
+
+fn native_query_volume_information(call: NtCall) -> u64 {
+    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
+    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    let Some(request) = crate::nt_file_sig::file_information(native_args(call)) else { return STATUS_INVALID_PARAMETER; };
+    crate::nt_file_volume::query(cur, request.file, request.io_status, request.buffer,
+        request.length, request.class)
+}
+
 fn native_query_information(call: NtCall) -> u64 {
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
-    if !cur.is_nt_personality() || call.args.a0 > u32::MAX as u64 || call.args.a1 == 0 || call.args.a2 == 0 { return STATUS_INVALID_PARAMETER; }
-    query_information_values(cur, call.args.a0 as u32, call.args.a1, call.args.a2,
-        crate::nt_file_args::ulong(call.args.a3), crate::nt_file_args::ulong(call.args.a4))
+    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    let Some(request) = crate::nt_file_sig::file_information(native_args(call)) else { return STATUS_INVALID_PARAMETER; };
+    query_information_values(cur, request.file, request.io_status, request.buffer,
+        request.length, request.class)
 }
 
 fn native_set_information(call: NtCall) -> u64 {
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
-    if !cur.is_nt_personality() || call.args.a0 > u32::MAX as u64 || call.args.a1 == 0 || call.args.a2 == 0 { return STATUS_INVALID_PARAMETER; }
-    set_information_values(cur, call.args.a0 as u32, call.args.a1, call.args.a2,
-        crate::nt_file_args::ulong(call.args.a3), crate::nt_file_args::ulong(call.args.a4))
+    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    let Some(request) = crate::nt_file_sig::file_information(native_args(call)) else { return STATUS_INVALID_PARAMETER; };
+    set_information_values(cur, request.file, request.io_status, request.buffer,
+        request.length, request.class)
 }
 
 fn native_query_directory(call: NtCall) -> u64 {
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
-    let Some(length) = crate::nt_dispatch::stack_argument(6) else { return STATUS_INVALID_PARAMETER; };
-    let Some(class) = crate::nt_dispatch::stack_argument(7) else { return STATUS_INVALID_PARAMETER; };
-    if !cur.is_nt_personality() || call.args.a0 > u32::MAX as u64 || call.args.a4 == 0 || call.args.a5 == 0 { return STATUS_INVALID_PARAMETER; }
-    query_directory_values(cur, call.args.a0 as u32, call.args.a4, call.args.a5,
-        crate::nt_file_args::ulong(length), crate::nt_file_args::ulong(class))
+    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
+    let mut tail = [0u64; 5];
+    let mut index = 0;
+    while index < tail.len() {
+        let Some(value) = crate::nt_dispatch::stack_argument(6 + index) else { return STATUS_INVALID_PARAMETER; };
+        tail[index] = value;
+        index += 1;
+    }
+    let Some(request) = crate::nt_file_sig::directory_enumeration(native_args(call), tail) else { return STATUS_INVALID_PARAMETER; };
+    query_directory_values(cur, request.directory, request.io_status, request.buffer,
+        request.length, request.class)
 }
 
 fn query_attributes(cur: &sched::Task, attributes: u64, information: u64) -> u64 {
