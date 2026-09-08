@@ -87,4 +87,43 @@ pub fn query_record_bytes(class: u32, length: u32, is_image: bool) -> Result<u32
     Ok(bytes)
 }
 
+// Access rights a section object grants. The specific rights, the standard
+// rights every object type carries, and the four generic rights a caller may
+// ask in place of them; a generic right names the specific set the type maps
+// it to, and reaches the object only in that mapped form.
+pub const SECTION_QUERY: u32 = 0x0001;
+pub const SECTION_MAP_WRITE: u32 = 0x0002;
+pub const SECTION_MAP_READ: u32 = 0x0004;
+pub const SECTION_MAP_EXECUTE: u32 = 0x0008;
+pub const SECTION_EXTEND_SIZE: u32 = 0x0010;
+pub const STANDARD_RIGHTS_REQUIRED: u32 = 0x000f_0000;
+pub const STANDARD_RIGHTS_READ: u32 = 0x0002_0000;
+pub const STANDARD_RIGHTS_WRITE: u32 = 0x0002_0000;
+pub const STANDARD_RIGHTS_EXECUTE: u32 = 0x0002_0000;
+pub const SYNCHRONIZE: u32 = 0x0010_0000;
+pub const SECTION_ALL_ACCESS: u32 = STANDARD_RIGHTS_REQUIRED
+    | SECTION_QUERY | SECTION_MAP_WRITE | SECTION_MAP_READ | SECTION_MAP_EXECUTE | SECTION_EXTEND_SIZE;
+/// Every right this object type answers for.
+pub const SECTION_VALID_ACCESS: u32 = SECTION_ALL_ACCESS | SYNCHRONIZE;
+const GENERIC_READ: u32 = 0x8000_0000;
+const GENERIC_WRITE: u32 = 0x4000_0000;
+const GENERIC_EXECUTE: u32 = 0x2000_0000;
+const GENERIC_ALL: u32 = 0x1000_0000;
+
+/// Expand the generic rights in a requested mask into the specific rights this
+/// object type maps them to. A generic bit never survives the expansion.
+/// # C: O(1)
+pub const fn map_access(desired: u32) -> u32 {
+    let mut access = desired;
+    if desired & GENERIC_READ != 0 { access |= STANDARD_RIGHTS_READ | SECTION_QUERY | SECTION_MAP_READ; }
+    if desired & GENERIC_WRITE != 0 { access |= STANDARD_RIGHTS_WRITE | SECTION_MAP_WRITE; }
+    if desired & GENERIC_EXECUTE != 0 { access |= STANDARD_RIGHTS_EXECUTE | SECTION_MAP_EXECUTE; }
+    if desired & GENERIC_ALL != 0 { access |= SECTION_ALL_ACCESS; }
+    access & !(GENERIC_READ | GENERIC_WRITE | GENERIC_EXECUTE | GENERIC_ALL)
+}
+
+/// Whether the mapped request asks only for rights this type answers for.
+/// # C: O(1)
+pub const fn access_admitted(desired: u32) -> bool { map_access(desired) & !SECTION_VALID_ACCESS == 0 }
+
 #[cfg(test)] #[path = "tests/nt_section_image.rs"] mod tests;
