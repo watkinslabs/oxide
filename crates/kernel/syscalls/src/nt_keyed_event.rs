@@ -27,14 +27,6 @@ pub use crate::nt_access::{KEYEDEVENT_ALL_ACCESS, KEYEDEVENT_WAIT, KEYEDEVENT_WA
     STANDARD_RIGHTS_EXECUTE, STANDARD_RIGHTS_READ, STANDARD_RIGHTS_REQUIRED, STANDARD_RIGHTS_WRITE, SYNCHRONIZE,
     GENERIC_ALL, GENERIC_EXECUTE, GENERIC_READ, GENERIC_WRITE};
 
-/// Replace the generic bits of a requested access mask with the rights a
-/// keyed event grants for each of them, refusing a request that names a right
-/// this type does not answer for. A keyed event grants no wait-object right
-/// through any generic right, so a handle to one is waitable as an object
-/// only when the caller named that right itself.
-/// # C: O(1)
-pub fn granted_access(desired: u32) -> u32 { crate::nt_access::KEYED_EVENT.map(desired) }
-
 /// The mask an admitted request records, or nothing when the request names a
 /// right a keyed event does not answer for. # C: O(1)
 pub fn admitted_access(desired: u32) -> Option<u32> { crate::nt_access::KEYED_EVENT.grant(desired) }

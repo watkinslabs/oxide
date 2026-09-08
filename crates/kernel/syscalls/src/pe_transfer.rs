@@ -4,6 +4,12 @@
 //! the launcher staged. The bootstrap owns the process dynamic loader, so when
 //! one is staged it starts first no matter which loader prepared the image;
 //! the runtime entry travels to it in the environment instead.
+//!
+//! The resolution stays ungated so it is testable without a target build; its
+//! only kernel caller is the x86_64 PE commit, because the NT personality is
+//! x86_64-only, so no path reaches it in an aarch64 build.
+
+#![cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
 
 /// The register state a prepared PE process resumes with.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]

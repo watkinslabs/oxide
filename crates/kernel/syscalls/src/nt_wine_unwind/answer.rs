@@ -30,7 +30,11 @@ pub enum UnwindRefusal {
     MalformedFrameProgram,
     /// The caller's context or dispatch record could not be read or written.
     InaccessibleRecord,
-    /// This machine has no builtin-frame unwinder.
+    /// This machine has no builtin-frame unwinder. Constructed only by the
+    /// non-x86_64 entry, so an x86_64 build reaches it by no path; the
+    /// refusal vocabulary is complete for every architecture rather than the
+    /// one being built.
+    #[cfg_attr(target_arch = "x86_64", allow(dead_code))]
     UnsupportedMachine,
 }
 

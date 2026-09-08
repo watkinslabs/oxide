@@ -169,3 +169,38 @@ fn a_key_admits_the_registry_view_a_request_selects() {
     assert!(KEY.grant(0x0002_0019 | 0x0200).is_some());
     assert_eq!(KEY.grant(0x0000_0800), None);
 }
+
+#[test]
+fn a_generic_right_reaches_an_event_handle_only_as_the_rights_it_names() {
+    // The three sites that create or open an event and a semaphore each
+    // expanded GENERIC_ALL alone and passed every other generic right
+    // through untouched, so a handle recorded the raw generic bit. Nothing
+    // that later tests a handle's access looks for a generic bit, so the
+    // right the caller asked for was absent from the mask it was granted.
+    assert_eq!(EVENT.grant(GENERIC_WRITE), Some(STANDARD_RIGHTS_WRITE | EVENT_MODIFY_STATE));
+    assert_eq!(EVENT.grant(GENERIC_READ), Some(STANDARD_RIGHTS_READ | EVENT_QUERY_STATE));
+    assert_eq!(EVENT.grant(GENERIC_EXECUTE), Some(STANDARD_RIGHTS_EXECUTE | SYNCHRONIZE));
+    assert_eq!(EVENT.grant(GENERIC_ALL), Some(EVENT_ALL_ACCESS));
+    assert_eq!(SEMAPHORE.grant(GENERIC_WRITE), Some(STANDARD_RIGHTS_WRITE | SEMAPHORE_MODIFY_STATE));
+    assert_eq!(SEMAPHORE.grant(GENERIC_ALL), Some(SEMAPHORE_ALL_ACCESS));
+    for mask in [EVENT.grant(GENERIC_ALL), EVENT.grant(GENERIC_WRITE), SEMAPHORE.grant(GENERIC_ALL)] {
+        assert_eq!(mask.unwrap() & (GENERIC_READ | GENERIC_WRITE | GENERIC_EXECUTE | GENERIC_ALL), 0);
+    }
+}
+
+#[test]
+fn setting_an_event_needs_a_right_a_generic_write_handle_now_carries() {
+    // The failure this closes: NtOpenEvent for GENERIC_WRITE recorded
+    // 0x4000_0000, and NtSetEvent tests the handle for EVENT_MODIFY_STATE,
+    // which that mask does not contain — so the set was refused on a handle
+    // whose whole purpose was to permit it.
+    let granted = EVENT.grant(GENERIC_WRITE).unwrap();
+    assert_eq!(granted & EVENT_MODIFY_STATE, EVENT_MODIFY_STATE);
+    assert_eq!(GENERIC_WRITE & EVENT_MODIFY_STATE, 0);
+}
+
+#[test]
+fn an_event_refuses_a_right_it_does_not_answer_for() {
+    assert_eq!(EVENT.grant(EVENT_ALL_ACCESS | 0x0000_0800), None);
+    assert_eq!(EVENT.grant(EVENT_ALL_ACCESS), Some(EVENT_ALL_ACCESS));
+}
