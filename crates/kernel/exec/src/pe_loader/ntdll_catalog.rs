@@ -7,7 +7,7 @@
 
 use super::{CHKSTK_INDEX, C_SPECIFIC_HANDLER_INDEX, DBG_BREAK_POINT_INDEX};
 
-pub const NTDLL_EXPORTS: [&[u8]; 564] = [
+pub const NTDLL_EXPORTS: [&[u8]; 566] = [
     b"NtAllocateVirtualMemory", b"NtFreeVirtualMemory", b"NtProtectVirtualMemory", b"NtQueryVirtualMemory",
     b"NtTerminateProcess", b"NtCreateEvent", b"NtClose", b"NtSetEvent", b"NtResetEvent", b"NtWaitForSingleObject",
     b"NtCreateFile", b"NtOpenFile", b"NtReadFile", b"NtWriteFile", b"NtQueryInformationFile", b"NtSetInformationFile", b"NtQueryDirectoryFile", b"NtWaitForMultipleObjects",
@@ -295,6 +295,8 @@ pub const NTDLL_EXPORTS: [&[u8]; 564] = [
     b"NtContinueEx",
     b"NtGetNextThread",
     b"NtInitializeNlsFiles",
+    b"NtSetDefaultLocale",
+    b"NtSetDefaultUILanguage"
 ];
 
 /// Service a catalog index selects, or `None` for the machine-code entries and
@@ -816,6 +818,8 @@ pub fn service_for_index(index: usize) -> Option<syscall::nt::NtService> {
             561 => Some(syscall::nt::NtService::NtContinueEx),
             562 => Some(syscall::nt::NtService::NtGetNextThread),
             563 => Some(syscall::nt::NtService::NtInitializeNlsFiles),
+            564 => Some(syscall::nt::NtService::NtSetDefaultLocale),
+            565 => Some(syscall::nt::NtService::NtSetDefaultUILanguage),
             // Neither machine-code entry traps; their selectors are never encoded.
             DBG_BREAK_POINT_INDEX | CHKSTK_INDEX | C_SPECIFIC_HANDLER_INDEX => None,
             _ => None,

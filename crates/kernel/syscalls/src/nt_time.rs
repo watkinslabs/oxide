@@ -40,25 +40,6 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == NtService::RtlQueryDynamicTimeZoneInformation { return Some(query_dynamic_time_zone_information(call.args.a0)); }
     if call.service == NtService::RtlLocalTimeToSystemTime { return Some(local_time_to_system_time(call.args.a0, call.args.a1)); }
     if call.service == NtService::RtlSystemTimeToLocalTime { return Some(system_time_to_local_time(call.args.a0, call.args.a1)); }
-    if call.service == NtService::NtQueryDefaultLocale {
-        let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
-        if !cur.is_nt_personality() || call.args.a0 > 1 || call.args.a1 == 0 { return Some(STATUS_INVALID_PARAMETER); }
-        // The current NT personality is initialized from the en-US baseline;
-        // the locale/NLS service can replace this once per-user LCID state is
-        // owned by the environment layer.
-        return Some(if uaccess::put_user_u32(call.args.a1, 0x0409).is_ok() { STATUS_SUCCESS } else { STATUS_INVALID_PARAMETER });
-    }
-    if call.service == NtService::NtQueryDefaultUILanguage {
-        let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
-        if !cur.is_nt_personality() || call.args.a0 == 0 { return Some(STATUS_INVALID_PARAMETER); }
-        let language = 0x0409u16.to_ne_bytes();
-        return Some(if uaccess::copy_to_user(call.args.a0, &language).is_ok() { STATUS_SUCCESS } else { STATUS_INVALID_PARAMETER });
-    }
-    if call.service == NtService::NtQueryInstallUILanguage {
-        let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
-        if !cur.is_nt_personality() || call.args.a0 == 0 { return Some(STATUS_INVALID_PARAMETER); }
-        return Some(if uaccess::copy_to_user(call.args.a0, &0x0409u16.to_ne_bytes()).is_ok() { STATUS_SUCCESS } else { STATUS_INVALID_PARAMETER });
-    }
     if call.service == NtService::NtQueryPerformanceCounter {
         let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
         if !cur.is_nt_personality() || call.args.a0 == 0 { return Some(STATUS_INVALID_PARAMETER); }
