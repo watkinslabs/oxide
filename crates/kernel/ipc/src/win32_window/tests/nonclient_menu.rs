@@ -115,3 +115,17 @@ fn a_bare_alt_opens_the_root_window_and_a_character_stays_on_the_window() {
     assert_eq!(latch.key(WM_SYSCHAR, 0, b'f' as u32, false, true),
         Some(KeyMenuAction::SysCommand { command: SC_KEYMENU, character: b'f' as u32, target: KeyMenuTarget::Window }));
 }
+
+/// The key that opens a bar is delivered to whatever holds focus, which for an
+/// application with an edit control is the child. Only the frame owns the bar,
+/// so the request has to climb; a child that is also a popup owns its own.
+#[test]
+fn a_child_cannot_own_a_menu_and_a_popup_child_can() {
+    const WS_CHILD: u32 = 0x4000_0000;
+    const WS_POPUP: u32 = 0x8000_0000;
+    const WS_OVERLAPPED: u32 = 0;
+    assert!(super::super::nonclient_menu::menu_disallowed(WS_CHILD));
+    assert!(!super::super::nonclient_menu::menu_disallowed(WS_CHILD | WS_POPUP));
+    assert!(!super::super::nonclient_menu::menu_disallowed(WS_POPUP));
+    assert!(!super::super::nonclient_menu::menu_disallowed(WS_OVERLAPPED));
+}
