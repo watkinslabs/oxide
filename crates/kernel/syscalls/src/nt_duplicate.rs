@@ -38,7 +38,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         desired_access
     };
     let Some(duplicate) = table.duplicate(source_handle, access) else { return Some(STATUS_INVALID_HANDLE); };
-    if uaccess::put_user_u32(target, duplicate.raw()).is_err() {
+    if uaccess::put_user_u64(target, u64::from(duplicate.raw())).is_err() {
         let _ = table.close(duplicate);
         return Some(STATUS_INVALID_PARAMETER);
     }

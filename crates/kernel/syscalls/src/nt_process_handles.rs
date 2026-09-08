@@ -141,7 +141,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
         access
     };
     let Some(native) = table.insert(object, access) else { return Some(STATUS_NO_MEMORY); };
-    if uaccess::put_user_u32(handle.as_u64(), native.raw()).is_err() {
+    if uaccess::put_user_u64(handle.as_u64(), u64::from(native.raw())).is_err() {
         let _ = table.close(native);
         return Some(STATUS_INVALID_PARAMETER);
     }
