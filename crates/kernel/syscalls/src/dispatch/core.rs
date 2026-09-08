@@ -118,7 +118,10 @@ fn dispatch_routed_syscall(entry: (Option<u64>, u64), nr: u64, args: &SyscallArg
             // positions. Only the raw ordinal route needs it — a tagged entry
             // arrives from a stub that already marshalled.
             let args = syscall::nt::windows_abi::windows_args(*args, crate::nt_dispatch::stack_argument);
-            if let Some(call) = syscall::nt::ordinals::call_for_ordinal(id, args) { return dispatch_nt_call(call); }
+            if let Some(call) = syscall::nt::ordinals::call_for_ordinal(id, args) {
+                report_ordinal(id, call.service);
+                return dispatch_nt_call(call);
+            }
             if syscall::nt::ordinals::is_runtime_ordinal(id) {
                 return crate::nt_wine_window::unclaimed::STATUS_INVALID_SYSTEM_SERVICE as i64;
             }
@@ -414,3 +417,20 @@ use diagnostic_trace::trace_swapon_process;
 use diagnostic_trace::trace_random_seed_syscall;
 #[cfg(feature = "debug-boot")]
 use diagnostic_trace::trace_einval;
+/// Name the service a raw ordinal routed to, bounded, so a boot log carries
+/// the mapping the shipped module actually asked for rather than only the
+/// service that answered. A misrouted ordinal and a refusing service look
+/// identical without it.
+#[cfg(target_os = "oxide-kernel")]
+fn report_ordinal(id: u32, service: syscall::nt::NtService) {
+    const MAX_REPORTED_ORDINALS: u32 = 4096;
+    static REPORTED: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+    if REPORTED.fetch_add(1, core::sync::atomic::Ordering::Relaxed) >= MAX_REPORTED_ORDINALS { return; }
+    klog::write_raw(b"[WINDOWS-NT-ORD] ord=");
+    klog::write_hex_u64(id as u64);
+    klog::write_raw(b" service=");
+    klog::write_hex_u64(service as u32 as u64);
+    klog::write_raw(b"\n");
+}
+
+
