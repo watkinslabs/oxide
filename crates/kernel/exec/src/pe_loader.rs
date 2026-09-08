@@ -1,5 +1,7 @@
 #[path = "pe_loader/ntdll_catalog.rs"]
 pub mod ntdll_catalog;
+#[path = "pe_loader/nt_support.rs"]
+pub mod nt_support;
 use ntdll_catalog::NTDLL_EXPORTS;
 use alloc::sync::Arc; use crate::pe_init; use crate::pe_modules; use crate::process_env; use hal::UserVirtAddr; use pe::{self, SectionFlags}; use vmm::{AddressSpace, MmapPlacement, VmaBacking, VmaFlags, VmaProt};
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -189,54 +191,33 @@ pub fn resolve_nt_runtime_export(base: u64, name: &[u8]) -> Option<u64> {
     None
 }
 
-/// Resolve the private synchronous window-procedure continuation.
-pub fn resolve_nt_runtime_wndproc_continuation(base: u64) -> Option<u64> {
+/// Byte offset of the support region within the synthetic runtime page.
+/// # C: O(N_exports)
+pub fn synthetic_support_offset() -> Option<u64> {
     let mut offset = 0u64;
     for (index, _) in NTDLL_EXPORTS.iter().enumerate() { offset = offset.checked_add(runtime_stub_bytes(index) as u64)?; }
-    offset = offset.checked_add(pe::nt_stub::encode_x64_run_once_continuation(syscall::nt::NtService::RtlRunOnceComplete.entry()).len() as u64)?;
-    base.checked_add(offset)
+    Some(offset)
 }
 
-/// Resolve the private native APC return leg in the synthetic ntdll page.
-pub fn resolve_nt_runtime_apc_continuation(base: u64) -> Option<u64> {
-    let mut offset = 0u64;
-    for (index, _) in NTDLL_EXPORTS.iter().enumerate() { offset = offset.checked_add(runtime_stub_bytes(index) as u64)?; }
-    offset = offset.checked_add(pe::nt_stub::encode_x64_run_once_continuation(syscall::nt::NtService::RtlRunOnceComplete.entry()).len() as u64)?;
-    offset = offset.checked_add(pe::nt_stub::encode_x64_wndproc_continuation(syscall::nt::NtService::CallbackReturn.entry()).len() as u64)?;
-    base.checked_add(offset)
-}
-
-/// Resolve the address of a runtime-owned exported entry.
-/// # C: O(1)
+/// Resolve one runtime-owned data slot in the synthetic runtime page. The
+/// three symbols are exported data: the runtime obtains the slot address and
+/// loads the pointer from it, so the slot identity stays distinct from the
+/// code entry it holds. Callers must first establish that `base` names the
+/// synthetic page; a real shipped module owns its own slots.
+/// # C: O(N_exports)
 pub fn resolve_nt_runtime_data_export(base: u64, name: &[u8]) -> Option<u64> {
-    if name != WINE_SYSCALL_DISPATCHER && name != b"__wine_unix_call_dispatcher" && name != b"__wine_unixlib_handle" { return None; }
-    let mut offset = 0u64;
-    for (index, _) in NTDLL_EXPORTS.iter().enumerate() { offset = offset.checked_add(runtime_stub_bytes(index) as u64)?; }
-    let continuation = pe::nt_stub::encode_x64_run_once_continuation(syscall::nt::NtService::RtlRunOnceComplete.entry());
-    let wndproc_continuation = pe::nt_stub::encode_x64_wndproc_continuation(syscall::nt::NtService::CallbackReturn.entry());
-    let apc_continuation = pe::nt_stub::encode_x64_apc_continuation();
-    // Wine declares these three symbols as data. Its unix_lib initializer
-    // obtains the symbol address, then loads the dispatcher pointer from that
-    // slot before jumping. Keep the slot identity distinct from the code
-    // entry; returning the code address makes Wine interpret instruction bytes
-    // as a function pointer.
-    let data_offset = offset.checked_add(continuation.len() as u64)?.checked_add(wndproc_continuation.len() as u64)?
-        .checked_add(apc_continuation.len() as u64)?;
-    let target = if name == WINE_SYSCALL_DISPATCHER { data_offset }
-        else if name == b"__wine_unix_call_dispatcher" { data_offset.checked_add(8)? }
-        else { data_offset.checked_add(16)? };
-    base.checked_add(target)
+    let at = nt_support::support_offsets();
+    let slot = if name == WINE_SYSCALL_DISPATCHER { at.syscall_dispatcher_slot }
+        else if name == b"__wine_unix_call_dispatcher" { at.unix_call_dispatcher_slot }
+        else if name == b"__wine_unixlib_handle" { at.unixlib_handle_slot }
+        else { return None; };
+    base.checked_add(synthetic_support_offset()?)?.checked_add(slot as u64)
 }
 pub fn map_nt_runtime(as_: &AddressSpace) -> Result<NtRuntime, pe::Error> {
     let page = hal::PAGE_SIZE_BYTES as usize;
-    let continuation = pe::nt_stub::encode_x64_run_once_continuation(syscall::nt::NtService::RtlRunOnceComplete.entry());
-    let stub_bytes: usize = NTDLL_EXPORTS.iter().enumerate().map(|(index, _)| runtime_stub_bytes(index)).sum();
-    let wine_dispatcher = pe::nt_stub::encode_x64_wine_dispatcher_stub(syscall::nt::NtService::WineSyscall.entry());
-    let wine_unix_dispatcher = pe::nt_stub::encode_x64_unix_call_dispatcher_stub(syscall::nt::NtService::WineUnixCall.entry());
-    let wndproc_continuation = pe::nt_stub::encode_x64_wndproc_continuation(syscall::nt::NtService::CallbackReturn.entry());
-    let apc_continuation = pe::nt_stub::encode_x64_apc_continuation();
-    let code_bytes = stub_bytes + continuation.len() + wndproc_continuation.len() + apc_continuation.len() + 24 + pe::nt_stub::X64_RELAY_STUB_BYTES + wine_dispatcher.len() + wine_unix_dispatcher.len() + 8
-        + syscall::nt_wine_unix::WINE_UNIX_FUNCTION_COUNT * core::mem::size_of::<u64>();
+    let at = nt_support::support_offsets();
+    let stub_bytes: usize = synthetic_support_offset().ok_or(pe::Error::Einval)? as usize;
+    let code_bytes = stub_bytes.checked_add(at.bytes).ok_or(pe::Error::Einval)?;
     let mapped_bytes = (code_bytes + page - 1) / page * page;
     let arena = as_.get_unmapped_area(mapped_bytes).map_err(|_| pe::Error::Einval)?.as_u64();
     let base_address = UserVirtAddr::new(arena).ok_or(pe::Error::Einval)?;
@@ -265,62 +246,31 @@ pub fn map_nt_runtime(as_: &AddressSpace) -> Result<NtRuntime, pe::Error> {
         debug_assert_eq!(bytes.len(), runtime_stub_bytes(index));
         offset += bytes.len();
     }
-    code[offset..offset + continuation.len()].copy_from_slice(&continuation);
-    offset += continuation.len();
-    code[offset..offset + wndproc_continuation.len()].copy_from_slice(&wndproc_continuation);
-    offset += wndproc_continuation.len();
-    code[offset..offset + apc_continuation.len()].copy_from_slice(&apc_continuation);
-    let data_offset = offset + apc_continuation.len();
-    let relay_offset = data_offset + 24;
-    let relay = pe::nt_stub::encode_x64_relay_stub(syscall::nt::NtService::RelayCall.entry());
-    code[relay_offset..relay_offset + relay.len()].copy_from_slice(&relay);
-    let dispatcher_offset = relay_offset + relay.len();
-    code[dispatcher_offset..dispatcher_offset + wine_dispatcher.len()].copy_from_slice(&wine_dispatcher);
-    let unix_dispatcher_offset = dispatcher_offset + wine_dispatcher.len();
-    code[unix_dispatcher_offset..unix_dispatcher_offset + wine_unix_dispatcher.len()].copy_from_slice(&wine_unix_dispatcher);
-    let handle_offset = unix_dispatcher_offset + wine_unix_dispatcher.len();
-    code[handle_offset..handle_offset + 8].copy_from_slice(&syscall::nt::WINE_UNIXLIB_HANDLE.to_le_bytes());
-    let table_offset = handle_offset + 8;
-    let dispatcher = arena.checked_add(dispatcher_offset as u64).ok_or(pe::Error::Einval)?;
-    let unix_callable = arena.checked_add(unix_dispatcher_offset as u64).ok_or(pe::Error::Einval)?;
-    let callable = arena.checked_add(unix_dispatcher_offset as u64).ok_or(pe::Error::Einval)?;
-    let table_end = table_offset.checked_add(syscall::nt_wine_unix::WINE_UNIX_FUNCTION_COUNT * core::mem::size_of::<u64>()).ok_or(pe::Error::Einval)?;
-    if table_end > code.len() { return Err(pe::Error::Einval); }
-    for slot in code[table_offset..table_end].chunks_exact_mut(core::mem::size_of::<u64>()) {
-        slot.copy_from_slice(&callable.to_le_bytes());
-    }
-    code[data_offset..data_offset + 8].copy_from_slice(&dispatcher.to_le_bytes());
-    code[data_offset + 8..data_offset + 16].copy_from_slice(&unix_callable.to_le_bytes());
-    code[data_offset + 16..data_offset + 24].copy_from_slice(&syscall::nt::WINE_UNIXLIB_HANDLE.to_le_bytes());
+    // The support region has one owner. Encode it at its final address and
+    // copy it in whole; nothing here re-derives an item offset.
+    let support_base = arena.checked_add(stub_bytes as u64).ok_or(pe::Error::Einval)?;
+    let region = nt_support::build_support_region(support_base).ok_or(pe::Error::Einval)?;
+    code.get_mut(stub_bytes..stub_bytes + region.len()).ok_or(pe::Error::Einval)?.copy_from_slice(&region);
     let data = as_.stash_bytes(code.into_boxed_slice());
     let base = as_.mmap_with_may_at(MmapPlacement::FixedNoReplace(base_address), mapped_bytes, VmaProt::READ | VmaProt::EXEC, VmaProt::READ | VmaProt::EXEC, VmaFlags::PRIVATE,
         VmaBacking::KernelBytes { data, off: 0 }).map_err(|_| pe::Error::Einval)?;
     for address in &mut addresses { *address = base.as_u64().checked_add(*address).ok_or(pe::Error::Einval)?; }
-    let relay_call = base.as_u64().checked_add(relay_offset as u64).ok_or(pe::Error::Einval)?;
-    let wine_dispatcher = base.as_u64().checked_add(dispatcher_offset as u64).ok_or(pe::Error::Einval)?;
-    let wine_unix_dispatcher = base.as_u64().checked_add(unix_dispatcher_offset as u64).ok_or(pe::Error::Einval)?;
-    let wine_unixlib_handle = base.as_u64().checked_add(handle_offset as u64).ok_or(pe::Error::Einval)?;
-    let entries = [wine_unix_dispatcher; syscall::nt_wine_unix::WINE_UNIX_FUNCTION_COUNT];
     // Oxide owns the native NTDLL Unix-call implementations in the kernel;
-    // this table is the process-local identity Wine stores in
-    // __wine_unixlib_handle. The dispatcher validates the bounded entry and
+    // the published table is the process-local identity the runtime stores in
+    // its unixlib handle slot. The dispatcher validates the bounded entry and
     // executes the typed implementation, so the PE side never receives an
     // arbitrary user pointer as a substitute for the native table.
-    if crate::unixlib::register_callable_table(
-        as_, crate::unixlib::MappedUnixlib { base: base.as_u64(), end: base.as_u64().checked_add(mapped_bytes as u64).ok_or(pe::Error::Einval)? },
-        table_offset as u64, &entries, &[(base.as_u64(), base.as_u64().checked_add(table_end as u64).ok_or(pe::Error::Einval)?)]).is_err() {
-        let _ = as_.munmap(base, mapped_bytes);
-        return Err(pe::Error::Einval);
-    }
-    Ok(NtRuntime { base, bytes: mapped_bytes, relay_call, wine_dispatcher, wine_unix_dispatcher, wine_unixlib_handle, addresses })
+    let region_base = base.as_u64().checked_add(stub_bytes as u64).ok_or(pe::Error::Einval)?;
+    let region_end = base.as_u64().checked_add(mapped_bytes as u64).ok_or(pe::Error::Einval)?;
+    let support = match nt_support::publish(as_, region_base, region_end, Some(base.as_u64())) {
+        Ok(support) => support,
+        Err(error) => { let _ = as_.munmap(base, mapped_bytes); return Err(error); }
+    };
+    Ok(NtRuntime { base, bytes: mapped_bytes, relay_call: support.relay_call,
+        wine_dispatcher: support.wine_dispatcher, wine_unix_dispatcher: support.wine_unix_dispatcher,
+        wine_unixlib_handle: support.unixlib_handle_datum, addresses })
 }
 
-/// Resolve the private run-once callback continuation in the synthetic ntdll page.
-pub fn resolve_nt_runtime_run_once_continuation(base: u64) -> Option<u64> {
-    let mut offset = 0u64;
-    for (index, _) in NTDLL_EXPORTS.iter().enumerate() { offset = offset.checked_add(runtime_stub_bytes(index) as u64)?; }
-    base.checked_add(offset)
-}
 fn ascii_eq_ignore_case(left: &[u8], right: &[u8]) -> bool {
     left.len() == right.len() && left.iter().zip(right).all(|(a, b)| a.to_ascii_lowercase() == b.to_ascii_lowercase())
 }
@@ -548,17 +498,26 @@ pub fn load_pe_image_with_resolver<R: ImportResolver>(blob: &[u8], as_: &Address
 }
 /// Map one validated image using the shared import resolver and optional exact placement. # C: O(SizeOfImage + N_sections)
 pub fn load_pe_image_with_resolver_at<R: ImportResolver>(blob: &[u8], as_: &AddressSpace, resolver: &R, exact_base: Option<UserVirtAddr>, relay_call: u64) -> Result<PeLoadedImage, pe::Error> {
-    load_pe_image_with_resolver_at_mode(blob, as_, resolver, exact_base, relay_call, true, true)
+    load_pe_image_with_resolver_at_mode(blob, as_, resolver, exact_base, relay_call, true, true, &[])
 }
 /// Map an image and leave its import table exactly as the file carries it.
 /// The user-mode loader binds its own graph; binding here would give the same
 /// slots a second writer.
 /// # C: O(image bytes)
 pub fn load_pe_image_unbound(blob: &[u8], as_: &AddressSpace) -> Result<PeLoadedImage, pe::Error> {
-    load_pe_image_with_resolver_at_mode(blob, as_, &RejectImports, None, 0, false, false)
+    load_pe_image_with_resolver_at_mode(blob, as_, &RejectImports, None, 0, false, false, &[])
 }
 
-fn load_pe_image_with_resolver_at_mode<R: ImportResolver>(blob: &[u8], as_: &AddressSpace, resolver: &R, exact_base: Option<UserVirtAddr>, relay_call: u64, validate_imports: bool, bind: bool) -> Result<PeLoadedImage, pe::Error> {
+/// Map an unbound image after writing kernel-owned values into image RVAs.
+/// The runtime module exports data slots the kernel must fill before the
+/// module's own initialisation reads them; each `(rva, value)` is written
+/// after relocations, so a relocated slot keeps the kernel's value.
+/// # C: O(image bytes + N_slots)
+pub fn load_pe_image_unbound_with_slots(blob: &[u8], as_: &AddressSpace, slots: &[(u32, u64)]) -> Result<PeLoadedImage, pe::Error> {
+    load_pe_image_with_resolver_at_mode(blob, as_, &RejectImports, None, 0, false, false, slots)
+}
+
+fn load_pe_image_with_resolver_at_mode<R: ImportResolver>(blob: &[u8], as_: &AddressSpace, resolver: &R, exact_base: Option<UserVirtAddr>, relay_call: u64, validate_imports: bool, bind: bool, slots: &[(u32, u64)]) -> Result<PeLoadedImage, pe::Error> {
     let parsed = pe::parse(blob)?;
     // Validate every image-owned TLS address before binding or reserving
     // anything; malformed TLS must leave no VMA behind.
@@ -595,6 +554,15 @@ fn load_pe_image_with_resolver_at_mode<R: ImportResolver>(blob: &[u8], as_: &Add
     // orig_func and the native RelayCall would recurse into that thunk.
     // Imports still resolve relay_export_rva through PeGraphResolver; direct
     // exports remain untouched until Wine has initialized its descriptor.
+    for &(rva, value) in slots {
+        let start = rva as usize;
+        let end = start.checked_add(core::mem::size_of::<u64>()).ok_or(pe::Error::Einval)?;
+        let Some(slot) = image.get_mut(start..end) else {
+            let _ = as_.munmap(reservation, len);
+            return Err(pe::Error::Einval);
+        };
+        slot.copy_from_slice(&value.to_le_bytes());
+    }
     if relay_call != 0 {
         if let Some(descriptor_rva) = parsed.relay_descriptor_rva()? {
             let slot = (descriptor_rva as usize).checked_add(8).ok_or(pe::Error::Einval)?;
@@ -710,7 +678,7 @@ pub fn load_pe_module_graph<'a, R: ImportResolver>(modules: &[pe::Module<'a>], a
     let resolver = PeGraphResolver { modules: &exports, fallback };
     let mut loaded = alloc::vec::Vec::new();
     for (module, base) in modules.iter().zip(&bases) {
-        match load_pe_image_with_resolver_at_mode(module.image.raw, as_, &resolver, UserVirtAddr::new(base.base), relay_call, false, true) {
+        match load_pe_image_with_resolver_at_mode(module.image.raw, as_, &resolver, UserVirtAddr::new(base.base), relay_call, false, true, &[]) {
             Ok(image) => loaded.push(PeLoadedModule { name: module.name, image }),
             Err(error) => {
                 for entry in &bases { if let Some(address) = UserVirtAddr::new(entry.base) { let _ = as_.munmap(address, entry.size as usize); } }

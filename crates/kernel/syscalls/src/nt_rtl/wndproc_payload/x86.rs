@@ -22,8 +22,8 @@ pub(crate) fn begin(hwnd: u64, message: u64, wparam: u64, wndproc: u64, bytes: &
     let mm = (unsafe { task.mm_ref() }).ok_or(INVALID)?;
     let target = hal::UserVirtAddr::new(wndproc).ok_or(INVALID)?;
     if !mm.find_vma(target).is_some_and(|vma| vma.prot.contains(vmm::VmaProt::EXEC)) { return Err(INVALID); }
-    let ntdll = crate::nt_loader_proc::module_base_by_name(task, b"ntdll.dll").ok_or(INVALID)?;
-    let continuation = elf_load::pe_loader::resolve_nt_runtime_wndproc_continuation(ntdll).ok_or(INVALID)?;
+    let root = crate::nt_loader_proc::support_root(task).ok_or(INVALID)?;
+    let continuation = elf_load::pe_loader::nt_support::wndproc_continuation(root).ok_or(INVALID)?;
     let regs = hal_x86_64::current_pt_regs();
     if regs.is_null() { return Err(INVALID); }
     // SAFETY: this syscall exclusively owns the active Task's saved user register frame.

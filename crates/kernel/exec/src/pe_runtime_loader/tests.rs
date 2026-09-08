@@ -80,3 +80,64 @@ fn a_catalog_without_the_runtime_module_cannot_hand_over() {
     assert!(load(&exe, b"not a PE image", &as_, &input(), 0, 0).is_err());
 }
 
+
+#[test]
+fn the_runtime_module_exports_every_slot_the_kernel_must_fill() {
+    let Some(blob) = staged("ntdll.dll") else { return };
+    let parsed = pe::parse(&blob).expect("the staged runtime module must parse");
+    let support = crate::pe_loader::nt_support::describe(0x7000_0000, None).unwrap();
+    let slots = runtime_slots(&parsed, &support).expect("the module must export all three slots");
+    assert_eq!(slots.len(), RUNTIME_SLOT_NAMES.len());
+    // Distinct, non-zero RVAs inside the image; the handle slot follows the
+    // Unix-call dispatcher slot, as the module declares them.
+    for (rva, value) in slots {
+        assert!(rva != 0 && (rva as u64) < parsed.size_of_image as u64);
+        assert_ne!(value, 0);
+    }
+    assert_eq!(slots[0].1, support.wine_dispatcher);
+    assert_eq!(slots[1].1, support.wine_unix_dispatcher);
+    assert_eq!(slots[2].1, syscall::nt::WINE_UNIXLIB_HANDLE);
+    assert!(slots.iter().map(|(rva, _)| *rva).collect::<alloc::collections::BTreeSet<_>>().len() == RUNTIME_SLOT_NAMES.len());
+}
+
+#[test]
+fn the_handover_fills_the_runtime_modules_dispatcher_slots_in_the_mapped_image() {
+    let _guard = crate::nt_ordinals::TABLE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (Some(exe), Some(runtime_blob)) = (staged("notepad.exe"), staged("ntdll.dll")) else { return };
+    let as_ = vmm::AddressSpace::new(0x100_100).expect("address space must initialize");
+    let stack_bytes = 0x10_000usize;
+    let stack = as_.mmap(None, stack_bytes, VmaProt::READ | VmaProt::WRITE, VmaFlags::PRIVATE,
+        VmaBacking::Anonymous, false).expect("thread stack must map");
+    syscall::nt::ordinals::clear();
+    let handover = load(&exe, &runtime_blob, &as_, &input(), stack.as_u64(), stack.as_u64() + stack_bytes as u64)
+        .expect("the runtime handover must load");
+    let root = as_.root_pa();
+    let support = crate::elf_modules::nt_support(root).expect("the handover must publish a support region");
+
+    let parsed = pe::parse(&runtime_blob).unwrap();
+    let read = |rva: u32| -> u64 {
+        let address = hal::UserVirtAddr::new(handover.runtime.base + rva as u64).unwrap();
+        let vma = as_.find_vma(address).expect("the slot must lie in a mapped image segment");
+        let (data, base_off) = match vma.backing { VmaBacking::KernelBytes { data, off } => (data, off), _ => panic!("image must be kernel-backed") };
+        let off = base_off as usize + (address.as_u64() - vma.start.as_u64()) as usize;
+        u64::from_le_bytes(data[off..off + 8].try_into().unwrap())
+    };
+    let slots = runtime_slots(&parsed, &support).unwrap();
+    // The module loads each slot and calls or reads through it. Every one is
+    // the address the kernel published, never the null the image ships with.
+    assert_eq!(read(slots[0].0), support.wine_dispatcher);
+    assert_eq!(read(slots[1].0), support.wine_unix_dispatcher);
+    assert_eq!(read(slots[2].0), syscall::nt::WINE_UNIXLIB_HANDLE);
+
+    // And the bootstrap handle names a registered table, so a call through the
+    // published dispatcher is admitted rather than refused.
+    let table = crate::elf_modules::unixlib_descriptor(root).expect("the Unix-call table must be registered");
+    assert_eq!(table.table_address, support.table_address);
+    assert!(table.entries.iter().all(|entry| *entry == support.wine_unix_dispatcher));
+
+    // The support region is not the runtime module: nothing may resolve an
+    // item by adding a block size to the module base.
+    assert!(!crate::pe_loader::nt_support::is_synthetic_module(root, handover.runtime.base));
+    crate::elf_modules::clear(root);
+    syscall::nt::ordinals::clear();
+}

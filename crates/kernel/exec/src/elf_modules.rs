@@ -45,6 +45,22 @@ static SYMBOLS: Spinlock<BTreeMap<u64, Vec<ElfRuntimeSymbol>>, Modules> =
     Spinlock::new(BTreeMap::new());
 static UNIXLIBS: Spinlock<BTreeMap<u64, Vec<ElfUnixlibDescriptor>>, Modules> =
     Spinlock::new(BTreeMap::new());
+static NT_SUPPORT: Spinlock<BTreeMap<u64, crate::pe_loader::nt_support::NtRuntimeSupport>, Modules> =
+    Spinlock::new(BTreeMap::new());
+
+/// Publish the NT runtime support region for one address space. The loader
+/// that maps the region is the only publisher; every consumer reads the
+/// addresses from here rather than deriving them from a module base.
+/// # C: O(log N_address_spaces)
+pub fn register_nt_support(as_: &AddressSpace, support: crate::pe_loader::nt_support::NtRuntimeSupport) {
+    NT_SUPPORT.lock().insert(as_.root_pa(), support);
+}
+
+/// The registered support region for one address space, if it has one.
+/// # C: O(log N_address_spaces)
+pub fn nt_support(root: u64) -> Option<crate::pe_loader::nt_support::NtRuntimeSupport> {
+    NT_SUPPORT.lock().get(&root).copied()
+}
 
 pub fn register(as_: &AddressSpace, modules: &[ElfRuntimeModule]) {
     MODULES.lock().insert(as_.root_pa(), modules.to_vec());
@@ -163,6 +179,7 @@ pub fn clear(root: u64) {
     MODULES.lock().remove(&root);
     SYMBOLS.lock().remove(&root);
     UNIXLIBS.lock().remove(&root);
+    NT_SUPPORT.lock().remove(&root);
 }
 
 #[cfg(test)]

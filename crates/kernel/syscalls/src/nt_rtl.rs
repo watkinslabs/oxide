@@ -614,12 +614,8 @@ fn run_once_execute_once_x86(once: u64, func: u64, param: u64, context: u64) -> 
     }
     let Some(task) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !task.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
-    // The loader list is ordered by load/discovery, not by a guaranteed
-    // ntdll-first rule. Locate the synthetic runtime module by its published
-    // base name; assuming the first entry was ntdll produced a continuation
-    // inside advapi32's relay body (the exact mid-relay jump caught in smoke).
-    let ntdll = crate::nt_loader_proc::module_base_by_name(task, b"ntdll.dll").unwrap_or(0);
-    let Some(continuation) = elf_load::pe_loader::resolve_nt_runtime_run_once_continuation(ntdll) else { return STATUS_INVALID_PARAMETER; };
+    let Some(continuation) = crate::nt_loader_proc::support_root(task)
+        .and_then(elf_load::pe_loader::nt_support::run_once_continuation) else { return STATUS_INVALID_PARAMETER; };
     let regs = hal_x86_64::current_pt_regs();
     if regs.is_null() { return STATUS_INVALID_PARAMETER; }
     let frame = unsafe { &mut *regs };
@@ -693,10 +689,10 @@ fn begin_callback_with_payload(hwnd: u64, message: u64, wparam: u64, lparam: u64
     }
     let Some(task) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !task.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
-    let ntdll = crate::nt_loader_proc::module_base_by_name(task, b"ntdll.dll").unwrap_or(0);
-    let Some(continuation) = elf_load::pe_loader::resolve_nt_runtime_wndproc_continuation(ntdll) else {
-        // Without ntdll's callback continuation there is nothing to return to.
-        reject_create_callback(b"no-continuation", hwnd, message, ntdll);
+    let root = crate::nt_loader_proc::support_root(task).unwrap_or(0);
+    let Some(continuation) = elf_load::pe_loader::nt_support::wndproc_continuation(root) else {
+        // Without the runtime callback continuation there is nothing to return to.
+        reject_create_callback(b"no-continuation", hwnd, message, root);
         return STATUS_INVALID_PARAMETER;
     };
     let regs = hal_x86_64::current_pt_regs();
@@ -786,8 +782,8 @@ pub(crate) fn begin_wndproc_create_callback(hwnd: u64, message: u64, wndproc: u6
     }
     let Some(task) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !task.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
-    let ntdll = crate::nt_loader_proc::module_base_by_name(task, b"ntdll.dll").unwrap_or(0);
-    let Some(continuation) = elf_load::pe_loader::resolve_nt_runtime_wndproc_continuation(ntdll) else { return STATUS_INVALID_PARAMETER; };
+    let Some(continuation) = crate::nt_loader_proc::support_root(task)
+        .and_then(elf_load::pe_loader::nt_support::wndproc_continuation) else { return STATUS_INVALID_PARAMETER; };
     let regs = hal_x86_64::current_pt_regs();
     if regs.is_null() { return STATUS_INVALID_PARAMETER; }
     let frame = unsafe { &mut *regs };
