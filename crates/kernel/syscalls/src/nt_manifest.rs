@@ -54,6 +54,12 @@ pub(crate) mod nt_desktop_names;
 pub(crate) mod nt_process_membership;
 pub(crate) mod nt_process_naming;
 pub(crate) mod nt_ulong;
+// Argument positions, ULONG widths and refusals of the virtual-memory and
+// section services; ungated so each decision is answerable by a test. The
+// recorded positions of the arguments no decision reads are what makes the
+// arity checkable, so the module keeps them whether or not code names them.
+#[allow(dead_code)]
+pub(crate) mod nt_memory_args;
 pub(crate) mod nt_directory_notify_policy;
 mod nt_path;
 mod nt_path_type;
