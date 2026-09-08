@@ -1,6 +1,6 @@
 //! Native NT registry boundary backed by the userspace registry owner.
 
-use alloc::{string::{String, ToString}, sync::Arc, vec::Vec};
+use alloc::{string::String, sync::Arc, vec::Vec};
 use syscall::nt::{NtCall, NtService};
 use syscall::registry_wire;
 
@@ -200,7 +200,7 @@ fn open_key(call: NtCall) -> u64 {
     let Some(current) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !current.is_nt_personality() || call.args.a0 == 0 || call.args.a2 == 0 || call.args.a1 > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
     if call.service == NtService::NtOpenKeyEx && call.args.a3 != 0 { return STATUS_INVALID_PARAMETER; }
-    let Some((root, relative, name)) = key_name(call.args.a2, &current) else { return STATUS_INVALID_PARAMETER; };
+    let (root, relative, name) = match key_name(call.args.a2, &current) { Ok(parts) => parts, Err(status) => return status };
     let request = if let Some(handle) = relative { frame_relative(registry_wire::OPEN_RELATIVE, handle, &name) } else { frame_root(registry_wire::OPEN, root, &name) };
     let Some(reply) = transact(&request) else { return STATUS_UNSUCCESSFUL; };
     let Reply::Handle(remote) = reply else { return reply_status(reply); };
@@ -213,7 +213,7 @@ fn open_key(call: NtCall) -> u64 {
 fn create_key(call: NtCall) -> u64 {
     let Some(current) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !current.is_nt_personality() || call.args.a0 == 0 || call.args.a2 == 0 || call.args.a1 > u32::MAX as u64 || call.args.a5 != 0 { return STATUS_INVALID_PARAMETER; }
-    let Some((root, relative, name)) = key_name(call.args.a2, &current) else { return STATUS_INVALID_PARAMETER; };
+    let (root, relative, name) = match key_name(call.args.a2, &current) { Ok(parts) => parts, Err(status) => return status };
     let request = if let Some(handle) = relative { frame_relative(registry_wire::CREATE_RELATIVE, handle, &name) } else { frame_root(registry_wire::CREATE, root, &name) };
     let Some(reply) = transact(&request) else { return STATUS_UNSUCCESSFUL; };
     let Reply::Handle(remote) = reply else { return reply_status(reply); };
@@ -376,7 +376,7 @@ fn save_key_native(call: NtCall) -> u64 {
 fn load_key_native(call: NtCall) -> u64 {
     let Some(current) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !current.is_nt_personality() || call.args.a0 == 0 || call.args.a1 == 0 { return STATUS_INVALID_PARAMETER; }
-    let Some((root, relative, name)) = key_name(call.args.a0, &current) else { return STATUS_INVALID_PARAMETER; };
+    let (root, relative, name) = match key_name(call.args.a0, &current) { Ok(parts) => parts, Err(status) => return status };
     let bytes = match crate::nt_file::read_registry_hive(&current, call.args.a1) {
         Ok(bytes) => bytes,
         Err(status) => return status,
@@ -534,20 +534,20 @@ fn remote_key(current: &sched::Task, raw: u32, access: u32) -> Option<u64> {
     (object.kind() == sched::nt_object::NtObjectType::Key).then_some(object.id())
 }
 
-fn key_name(attributes: u64, current: &sched::Task) -> Option<(u8, Option<u64>, String)> {
-    let mut bytes = [0u8; 48]; uaccess::copy_from_user(&mut bytes, attributes).ok()?;
-    if u32::from_le_bytes(bytes[0..4].try_into().ok()?) < 48 { return None; }
-    let root = u64::from_le_bytes(bytes[8..16].try_into().ok()?);
-    let object_name = u64::from_le_bytes(bytes[16..24].try_into().ok()?);
-    let name = read_unicode(object_name)?;
-    if let Some(remote) = (root != 0).then(|| remote_key(current, root as u32, 0)).flatten() { return Some((0, Some(remote), name)); }
-    if root != 0 { return None; }
-    let folded = name.to_ascii_lowercase();
-    for (prefix, code) in [("\\registry\\machine\\software\\classes", 2u8), ("\\registry\\user\\current", 1u8), ("\\registry\\machine", 0u8), ("\\registry\\user", 1u8)] {
-        if folded == prefix { return Some((code, None, String::new())); }
-        if let Some(rest) = folded.strip_prefix(&(prefix.to_string() + "\\")) { return Some((code, None, rest.to_string())); }
+fn key_name(attributes: u64, current: &sched::Task) -> Result<(u8, Option<u64>, String), u64> {
+    let mut bytes = [0u8; 48];
+    if uaccess::copy_from_user(&mut bytes, attributes).is_err() { return Err(STATUS_ACCESS_VIOLATION); }
+    let Ok(length) = bytes[0..4].try_into().map(u32::from_le_bytes) else { return Err(STATUS_INVALID_PARAMETER); };
+    if (length as usize) < bytes.len() { return Err(STATUS_INVALID_PARAMETER); }
+    let Ok(root) = bytes[8..16].try_into().map(u64::from_le_bytes) else { return Err(STATUS_INVALID_PARAMETER); };
+    let Ok(object_name) = bytes[16..24].try_into().map(u64::from_le_bytes) else { return Err(STATUS_INVALID_PARAMETER); };
+    let Some(name) = read_unicode(object_name) else { return Err(STATUS_INVALID_PARAMETER); };
+    if root == 0 {
+        let (hive, within) = crate::nt_registry_path::classify_absolute(&name)?;
+        return Ok((hive, None, within));
     }
-    None
+    let Some(remote) = remote_key(current, root as u32, 0) else { return Err(STATUS_INVALID_HANDLE); };
+    Ok((crate::nt_registry_path::ROOT_MACHINE, Some(remote), crate::nt_registry_path::classify_relative(&name)?))
 }
 
 fn read_unicode(address: u64) -> Option<String> { String::from_utf16(&read_unicode_units(address)?).ok() }
