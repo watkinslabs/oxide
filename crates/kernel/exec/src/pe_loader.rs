@@ -588,6 +588,11 @@ fn load_pe_image_with_resolver_at_mode<R: ImportResolver>(blob: &[u8], as_: &Add
         VmaFlags::PRIVATE, VmaBacking::KernelBytes { data: Arc::clone(&data), off: 0 })
         .map_err(|_| pe::Error::Einval)?;
     let mut transaction = PeImageTransaction::new(as_, reservation, len);
+    // One image is one allocation. The per-section protections below split the
+    // reservation into fragments, and a memory query anywhere in the image must
+    // still answer with the image base: the runtime obtains its own module
+    // handle exactly that way, by querying an address inside its own text.
+    if !as_.set_mapping_origin(reservation) { return Err(pe::Error::Einval); }
     let header_len = align_up(parsed.size_of_headers, parsed.section_alignment);
     as_.mprotect(reservation, header_len as usize, VmaProt::READ).map_err(|_| pe::Error::Einval)?;
     for section in &parsed.sections {
