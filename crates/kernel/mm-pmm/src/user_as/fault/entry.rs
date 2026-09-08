@@ -376,6 +376,42 @@ fn handle(va_raw: u64, fault: FaultKind, user_mode: bool, ip: u64)
                 }
                 None => klog::write_raw(b" vma=none"),
             }
+            // The faulting address alone cannot name the code that faulted: a
+            // null dereference reports va=0 whatever ran. Resolving the
+            // instruction pointer's mapping names the image and the offset
+            // inside it, which is what a disassembly can be taken at. Without
+            // it the image base has to be guessed from a symbol whose page
+            // offset happens to match, and a wrong guess disassembles noise.
+            match UserVirtAddr::new(ip).and_then(|rip| mm.find_vma(rip)) {
+                Some(vma) => {
+                    klog::write_raw(b" rip-vma=");
+                    klog::write_hex_u64(vma.start.as_u64());
+                    klog::write_raw(b"-");
+                    klog::write_hex_u64(vma.end.as_u64());
+                    klog::write_raw(b" rip-delta=");
+                    klog::write_hex_u64(ip.wrapping_sub(vma.start.as_u64()));
+                    // The image offset is what a disassembly is taken at, and
+                    // the mapping start is not the image base: the loader maps
+                    // the whole image once and then reprotects each section,
+                    // which splits that mapping, so the start is a section
+                    // boundary. Both backings carry the offset of the mapping
+                    // within the image, so adding the delta gives the image
+                    // offset outright. A PE image is stashed bytes, not a file
+                    // mapping; reporting only the file form printed nothing
+                    // for exactly the images this trace exists to name, and a
+                    // sweep of every shipped module could not recover it.
+                    let image_off = match &vma.backing {
+                        VmaBacking::File { off, .. } => Some(*off),
+                        VmaBacking::KernelBytes { off, .. } => Some(*off as u64),
+                        _ => None,
+                    };
+                    if let Some(off) = image_off {
+                        klog::write_raw(b" rip-image-off=");
+                        klog::write_hex_u64(off.wrapping_add(ip.wrapping_sub(vma.start.as_u64())));
+                    }
+                }
+                None => klog::write_raw(b" rip-vma=none"),
+            }
         }
         klog::write_raw(b"\n");
     }
