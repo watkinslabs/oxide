@@ -31,8 +31,58 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service == syscall::nt::NtService::NtInitializeNlsFiles {
         return Some(get_locale_mapping(call, crate::nt_nls_policy::SizeArgument::Optional));
     }
+    if let Some(status) = locale_dispatch(call) { return Some(status); }
     if call.service != syscall::nt::NtService::NtGetNlsSectionPtr { return None; }
     Some(get_section(call))
+}
+
+/// Answer the five services that report or replace this process's locale and
+/// interface language. Each process owns its three values, so a replacement
+/// is visible to that process alone.
+fn locale_dispatch(call: NtCall) -> Option<u64> {
+    use syscall::nt::NtService;
+    use core::sync::atomic::Ordering;
+    if !matches!(call.service, NtService::NtQueryDefaultLocale | NtService::NtSetDefaultLocale
+        | NtService::NtQueryDefaultUILanguage | NtService::NtSetDefaultUILanguage
+        | NtService::NtQueryInstallUILanguage) { return None; }
+    let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
+    if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
+    let group = &cur.thread_group;
+    let stored = crate::nt_locale::Locales::from_stored(
+        group.nt_system_lcid.load(Ordering::Relaxed),
+        group.nt_user_lcid.load(Ordering::Relaxed),
+        group.nt_user_ui_language.load(Ordering::Relaxed) as u16);
+    Some(match call.service {
+        NtService::NtQueryDefaultLocale => match crate::nt_locale::admit_locale_query(call.args.a0, call.args.a1) {
+            Ok(which) => write_u32(call.args.a1, stored.locale(which)),
+            Err(status) => status,
+        },
+        NtService::NtSetDefaultLocale => match crate::nt_locale::admit_locale_set(call.args.a0, call.args.a1) {
+            Ok((crate::nt_locale::Which::System, lcid)) => { group.nt_system_lcid.store(lcid, Ordering::Relaxed); STATUS_SUCCESS }
+            Ok((crate::nt_locale::Which::User, lcid)) => { group.nt_user_lcid.store(lcid, Ordering::Relaxed); STATUS_SUCCESS }
+            Err(status) => status,
+        },
+        NtService::NtQueryDefaultUILanguage => match crate::nt_locale::admit_language_query(call.args.a0) {
+            Ok(()) => write_u16(call.args.a0, stored.ui),
+            Err(status) => status,
+        },
+        NtService::NtSetDefaultUILanguage => match crate::nt_locale::admit_language_set(call.args.a0) {
+            Ok(language) => { group.nt_user_ui_language.store(language as u32, Ordering::Relaxed); STATUS_SUCCESS }
+            Err(status) => status,
+        },
+        _ => match crate::nt_locale::admit_language_query(call.args.a0) {
+            Ok(()) => write_u16(call.args.a0, stored.install_language()),
+            Err(status) => status,
+        },
+    })
+}
+
+fn write_u32(address: u64, value: u32) -> u64 {
+    if uaccess::put_user_u32(address, value).is_ok() { STATUS_SUCCESS } else { STATUS_INVALID_PARAMETER }
+}
+
+fn write_u16(address: u64, value: u16) -> u64 {
+    if uaccess::copy_to_user(address, &value.to_le_bytes()).is_ok() { STATUS_SUCCESS } else { STATUS_INVALID_PARAMETER }
 }
 
 /// Build the x86_64 CPTABLEINFO view from a mapped Wine NLS code-page file.
