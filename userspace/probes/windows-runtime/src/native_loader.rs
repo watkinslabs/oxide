@@ -14,6 +14,10 @@ const STATUS_FAILURE_MASK: u64 = 0xc000_0000;
 #[derive(Debug)]
 pub enum NativeLoaderError {
     InvalidInput,
+    /// A step of the native load left nothing to publish, and which step it
+    /// was is the whole diagnosis: every one of them used to report the same
+    /// word, so a failed registration named no cause at all.
+    Unresolved(&'static str),
     Host(io::Error),
     DynamicLoader(String),
     MissingAttach,
@@ -180,19 +184,19 @@ pub fn load_and_register_unixlib(path: &Path, name: &[u8]) -> Result<(), NativeL
     // SAFETY: `handle` is the live handle returned by dlopen and `symbol` is
     // NUL-terminated; dlsym returns the exported table address if present.
     let table_ptr = unsafe { libc::dlsym(handle, symbol.as_ptr()) } as u64;
-    if table_ptr == 0 { return Err(NativeLoaderError::InvalidInput); }
+    if table_ptr == 0 { return Err(NativeLoaderError::Unresolved("the object exports no unix-call table")); }
     let mut address = MaybeUninit::<libc::Dl_info>::zeroed();
     // SAFETY: table_ptr came from dlsym; dladdr only writes the caller-owned
     // Dl_info structure and does not retain it.
-    if unsafe { libc::dladdr(table_ptr as *const c_void, address.as_mut_ptr()) } == 0 { return Err(NativeLoaderError::InvalidInput); }
+    if unsafe { libc::dladdr(table_ptr as *const c_void, address.as_mut_ptr()) } == 0 { return Err(NativeLoaderError::Unresolved("the table address belongs to no loaded object")); }
     // SAFETY: dladdr returned nonzero, so the output is initialized.
     let address = unsafe { address.assume_init() };
     let mut found: (u64, Option<LoadedObject>) = (address.dli_fbase as u64, None);
     // SAFETY: the callback obeys the dl_iterate_phdr ABI and `found` lives
     // until iteration returns.
     unsafe { libc::dl_iterate_phdr(Some(find_loaded_object), (&mut found as *mut _) as *mut c_void); }
-    let object = found.1.ok_or(NativeLoaderError::InvalidInput)?;
-    if object.table_count == 0 { return Err(NativeLoaderError::InvalidInput); }
+    let object = found.1.ok_or(NativeLoaderError::Unresolved("the loaded object list does not carry the table's base"))?;
+    if object.table_count == 0 { return Err(NativeLoaderError::Unresolved("the exported table declares no entries")); }
     // SAFETY: dlsym identified an exported array whose dynamic symbol size is
     // bounded by the loader-owned object metadata just inspected.
     let table = unsafe { std::slice::from_raw_parts(table_ptr as *const u64, object.table_count) };
