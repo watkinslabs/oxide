@@ -55,7 +55,7 @@ pub(crate) mod dc_state;
 mod dc_lease;
 mod output;
 pub(crate) use output::{flush_pending_for_current, request_output_for_group};
-pub(crate) use dc_lease::{get_dc_ex_for_current, release_dc_lease_for_current, lease_window_for_current};
+pub(crate) use dc_lease::{get_dc_ex_for_current, release_dc_lease_for_current, lease_window_for_current, enable_dc_for_current};
 mod pen;
 #[path = "nt_gdi/polygon.rs"]
 mod polygon;
@@ -69,7 +69,7 @@ pub(crate) use visibility::visibility_clip_for_current;
 pub(crate) mod nonclient_scroll;
 pub(crate) use nonclient_scroll::repaint_nonclient_scroll_for_current;
 pub(crate) use lifecycle::select_font_for_current as select_font_raw;
-pub(crate) use system_brush::{set_system_color, system_color_brush_for_current, system_color_value};
+pub(crate) use system_brush::{set_system_color, system_color_brush_for_current, system_color_pen_for_current, system_color_value};
 pub(crate) use menu_face::menu_face_for_current;
 pub(crate) use lifecycle::delete_object_for_current as delete_paint_dc_current;
 pub(crate) use lifecycle::create_dc_for_current as create_paint_dc_for_current;

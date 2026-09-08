@@ -98,9 +98,13 @@ pub(crate) fn icon_param_for_current(handle: u64) -> u64 { with_state(|state| st
 
 /// # C: O(N_nt_processes + N_cursor_objects)
 #[allow(dead_code)] // KI-0673
-pub(crate) fn set_icon_param_for_current(handle: u64, param: u64) -> u64 {
-    with_state_mut(|state| state.set_icon_param(handle, param)).unwrap_or(0)
+/// Install the free-icon callback and its parameter together, answering the
+/// parameter they replaced. The pair is one record: whoever replaces the
+/// parameter replaces the callback that will free it. # C: O(N_nt_processes)
+pub(crate) fn set_icon_free_params_for_current(handle: u64, callback: u64, param: u64) -> u64 {
+    with_state_mut(|state| state.set_icon_free_params(handle, callback, param)).unwrap_or(0)
 }
+
 
 /// Icon a window presents: its own, falling back to its class icon. The small
 /// class icon answers the small request. # C: O(N_nt_processes + N_windows)

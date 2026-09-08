@@ -66,6 +66,10 @@ pub(crate) mod nt_wine_hwnd_param_contract;
 pub(crate) mod nt_wine_hwnd_call_contract;
 #[path = "nt_wine_window/msg_filter.rs"]
 pub(crate) mod nt_wine_msg_filter_contract;
+#[path = "nt_wine_window/no_param.rs"]
+pub(crate) mod nt_wine_no_param_contract;
+#[path = "nt_wine_window/one_param.rs"]
+pub(crate) mod nt_wine_one_param_contract;
 #[path = "nt_wine_window/two_param.rs"]
 pub(crate) mod nt_wine_two_param_contract;
 #[path = "nt_wine_window/accel_raw.rs"]

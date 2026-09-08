@@ -23,6 +23,13 @@ pub(crate) const MONITORINFO_BYTES: usize = 40;
 pub(crate) const MONITORINFOEXW_BYTES: usize = 104;
 pub(crate) const RECT_BYTES: usize = 16;
 pub(crate) const ADJUST_PARAMS_BYTES: usize = 16;
+/// `struct free_icon_params`: the dispatch callback that frees the icon, then
+/// the opaque client parameter it frees.
+pub(crate) const FREE_ICON_PARAMS_BYTES: usize = 16;
+/// The answer an unrecognised code carries. The result word is used directly
+/// as a window procedure, a monitor handle or a rectangle-success flag, so a
+/// status returned in that position is read as a valid value.
+pub(crate) const UNHANDLED: u64 = 0;
 const DEVICE_NAME: &[u8] = b"\\\\.\\DISPLAY";
 
 const WS_BORDER: u32 = 0x0080_0000;

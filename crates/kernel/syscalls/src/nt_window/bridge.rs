@@ -113,6 +113,17 @@ fn keyboard_target(state: &WindowManager, source: WindowId) -> WindowId {
 /// Process ownership was checked before supplying this canonical manager.
 /// Pointer mutation is delegated to that manager, never retained in the adapter.
 /// # C: O(windows + text + queued messages)
+/// Whether one compositor record is a key repeat: a press of a key already
+/// held. Auto-repeat off drops exactly these and nothing else, so the first
+/// press and every release still arrive.
+/// # C: O(1)
+pub(super) fn is_key_repeat(state: &WindowManager, record: &Record) -> bool {
+    if record.header.opcode != Opcode::Key { return false; }
+    let key = wire::u32_at(&record.payload, 0).unwrap_or(u32::MAX);
+    let pressed = wire::u32_at(&record.payload, 8) == Ok(1);
+    pressed && key <= 0xff && state.key_is_down(key as u8)
+}
+
 pub(super) fn apply_event(
     state: &mut WindowManager, keys: &mut SysKeyLatch, record: &Record,
     pointer: impl FnOnce(&mut WindowManager, WindowId, i32, i32, u32, i32, i32) -> bool,
@@ -289,10 +300,16 @@ mod live {
         let (accepted, wait) = {
             let mut entries = super::super::GUI.lock();
             let Some(entry) = entries.iter_mut().find(|e| e.group.ptr_eq(&Arc::downgrade(group))) else { return false; };
+            // A held key that repeats is a repeat only while the session wants
+            // repeats; the first press and every release are never dropped.
+            if is_key_repeat(&entry.state, record) && !super::super::keyboard_auto_repeat() { return false; }
             let accepted = apply_event(&mut entry.state, &mut entry.sys_key, record, |state, id, x, y, buttons, wheel, hwheel| {
                 state.post_compositor_pointer(id, x, y, buttons, wheel, hwheel).is_ok()
             });
             if accepted && record.header.opcode == Opcode::Focus { entry.foreground = entry.state.active_window().is_some(); }
+            // Keyboard and pointer traffic is what the idle timer measures;
+            // configuration and damage from the display are not user input.
+            if accepted && matches!(record.header.opcode, Opcode::Key | Opcode::Text | Opcode::Pointer) { super::super::note_user_input(); }
             (accepted, Arc::clone(&entry.wait))
         };
         // The display is short of pixels it asked for, not waiting on an

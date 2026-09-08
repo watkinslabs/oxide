@@ -59,6 +59,13 @@ pub fn primary_system_dpi() -> u32 {
     crate::dpi_from_geometry(mode.hdisplay as u32, mode.vdisplay as u32, info.mm_width, info.mm_height)
 }
 
+/// The primary display adapter's locally unique identifier. Adapter identity
+/// belongs to the card registry; callers must not mint a second one. The value
+/// is zero when no card is registered. # C: O(N_cards)
+pub fn primary_adapter_luid() -> u64 {
+    CARDS.lock().iter().position(|slot| slot.is_some()).map_or(0, |index| index as u64 + 1)
+}
+
 /// Return the primary display's vertical refresh in whole hertz, or zero when
 /// no card names one. The DRM driver owns the mode; callers must not keep a
 /// second frequency table. # C: O(1)

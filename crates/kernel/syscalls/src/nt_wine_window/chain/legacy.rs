@@ -72,8 +72,6 @@ pub(super) fn route(ordinal: u64, a: &Args) -> Option<u64> {
         WINE_THUNKED_MENU_ITEM_INFO => crate::nt_window::thunked_menu_item_info(a[0], a[1], a[2], a[3], a[4]),
         WINE_GET_MENU_ITEM_RECT => menu_item_rect(a),
         WINE_GET_MENU_BAR_INFO => menu_bar_info(a),
-        WINE_CALL_ONE_PARAM => return Some(call_one_param(a)),
-        WINE_CALL_NO_PARAM => return Some(call_no_param(a)),
         WINE_NTUSER_GET_SYSTEM_DPI_FOR_PROCESS => {
             let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
             if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
@@ -110,35 +108,6 @@ fn menu_bar_info(a: &Args) -> u64 {
     if uaccess::copy_to_user(a[3], &raw).is_ok() { 1 } else { 0 }
 }
 
-/// `NtUserCallOneParam` selects its work with a code, not an ordinal.
-/// # C: O(1) plus the selected code's own cost
-fn call_one_param(a: &Args) -> u64 {
-    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
-    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
-    let code = a[1] as u32 as u64;
-    if code == CALL_ONE_PARAM_CREATE_CURSOR_ICON { return crate::nt_window::user_input::create_cursor_icon_for_current(a[0] != 0); }
-    if code == CALL_ONE_PARAM_GET_ICON_PARAM { return crate::nt_window::user_input::icon_param_for_current(a[0]); }
-    if code == CALL_ONE_PARAM_GET_MENU_ITEM_COUNT { return crate::nt_window::menu_item_count_for_current(a[0]); }
-    if code == crate::nt_window_policy::CALL_ONE_PARAM_GET_SYSTEM_METRICS { return metrics::get(a[0]); }
-    klog::write_raw(b"[WINDOWS-RAW-UNHANDLED] ordinal=133d code="); klog::write_hex_u64(code); klog::write_raw(b"\n");
-    STATUS_NOT_IMPLEMENTED
-}
-
-/// # C: O(1) plus the selected code's own cost
-fn call_no_param(a: &Args) -> u64 {
-    let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
-    if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
-    if a[0] == CALL_NO_PARAM_GET_DESKTOP_WINDOW { return builtin_classes::kernel::get_desktop_window(); }
-    if a[0] != CALL_NO_PARAM_GET_DIALOG_BASE_UNITS {
-        klog::write_raw(b"[WINDOWS-RAW-UNHANDLED] ordinal=133c code="); klog::write_hex_u64(a[0]); klog::write_raw(b"\n");
-        return STATUS_NOT_IMPLEMENTED;
-    }
-    let Some((width, height)) = crate::nt_gdi::dialog_base_units() else { return STATUS_INVALID_PARAMETER; };
-    let dpi = drm::primary_system_dpi() as i32;
-    let scale = |value: i32| value.saturating_mul(dpi).checked_div(96).unwrap_or(value).max(1) as u32;
-    (scale(width) as u64) | ((scale(height) as u64) << 16)
-}
-
 /// Publish the client procedure tables and bind the GDI client.
 /// # C: O(NTUSER_NB_PROCS + NTUSER_NB_WORKERS)
 fn initialize_client_pfn_arrays(a: &Args) -> u64 {
@@ -154,6 +123,12 @@ fn initialize_client_pfn_arrays(a: &Args) -> u64 {
     }
     if !crate::nt_rtl::validate_nt_user_pfn_tables(a[0], a[1], a[2]) {
         klog::write_raw(b"[WINDOWS-USER32-INIT] rejected=table\n");
+        return STATUS_INVALID_PARAMETER;
+    }
+    // The builtin class procedures occupy the first window-procedure slots, so
+    // a builtin handle resolves before the client allocates anything of its own.
+    if !crate::nt_window::publish_builtin_winprocs_for_current(a[0], a[1]) {
+        klog::write_raw(b"[WINDOWS-USER32-INIT] rejected=winproc-table\n");
         return STATUS_INVALID_PARAMETER;
     }
     if crate::nt_gdi::initialize_client_for_current().is_err() {

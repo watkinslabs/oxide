@@ -39,3 +39,37 @@ pub(crate) fn claim_init_builtin_classes_callback_for_current() -> bool {
         true
     }).unwrap_or(false)
 }
+
+/// Install the builtin class procedures in the process window-procedure
+/// table, so a builtin handle resolves before the client has allocated
+/// anything of its own. Each table is `NB_BUILTIN_PROCS` procedure words.
+/// # C: O(NB_BUILTIN_PROCS)
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) fn publish_builtin_winprocs_for_current(procs_a: u64, procs_w: u64) -> bool {
+    let Some(ansi) = read_proc_table(procs_a) else { return false; };
+    let Some(unicode) = read_proc_table(procs_w) else { return false; };
+    with_entry(|entry| { entry.state.publish_builtin_winprocs(&ansi, &unicode); true }).unwrap_or(false)
+}
+
+/// # C: O(NB_BUILTIN_PROCS)
+#[cfg(target_os = "oxide-kernel")]
+fn read_proc_table(base: u64) -> Option<[u64; ipc::win32_window::NB_BUILTIN_PROCS]> {
+    let mut table = [0u64; ipc::win32_window::NB_BUILTIN_PROCS];
+    for (index, slot) in table.iter_mut().enumerate() {
+        *slot = uaccess::get_user_u64(base.checked_add((index * 8) as u64)?).ok()?;
+    }
+    Some(table)
+}
+
+/// `NtUserCallTwoParam_AllocWinProc`. The procedure is answered unchanged when
+/// no slot is taken, so a caller never stores a null procedure.
+/// # C: O(processes + N_winprocs)
+pub(crate) fn alloc_winproc_for_current(func: u64, ansi: bool) -> u64 {
+    with_entry(|entry| entry.state.alloc_winproc(func, ansi)).unwrap_or(func)
+}
+
+/// `NtUserCallTwoParam_GetDialogProc`. A word that is not a handle this
+/// process issued is answered unchanged. # C: O(processes)
+pub(crate) fn dialog_proc_for_current(proc: u64, ansi: bool) -> u64 {
+    with_entry(|entry| entry.state.dialog_proc(proc, ansi)).unwrap_or(proc)
+}

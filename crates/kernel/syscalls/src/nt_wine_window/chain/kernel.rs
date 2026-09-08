@@ -28,6 +28,8 @@ fn binding(family: Family) -> Route {
         Family::CaretRaw => (|o, a: &Args| caret_raw::dispatch(o, [a[0], a[1], a[2], a[3]])) as Route,
         Family::HwndCall => (|o, a: &Args| hwnd_call::kernel::route(o, a)) as Route,
         Family::MsgFilter => (|o, _a: &Args| msg_filter::route(o, || false)) as Route,
+        Family::NoParam => (|o, a: &Args| no_param::kernel::route(o, a)) as Route,
+        Family::OneParam => (|o, a: &Args| one_param::kernel::route(o, a)) as Route,
         Family::TwoParam => (|o, a: &Args| two_param::kernel::route(o, a)) as Route,
         Family::DpiContext => (|o, a: &Args| dpi_context::kernel::route(o, a)) as Route,
         Family::InputContext => (|o, a: &Args| input_context::kernel::route(o, a)) as Route,
@@ -62,7 +64,6 @@ fn binding(family: Family) -> Route {
         Family::PrintRaw => (|o, a: &Args| crate::nt_print_raw::kernel::route(o, a)) as Route,
         Family::Redraw => (|o, a: &Args| (o == crate::nt_window::redraw::ORDINAL)
             .then(|| crate::nt_window::redraw::for_current(a[0], a[1], a[2], a[3] as u32))) as Route,
-        Family::SystemColorRaw => (|o, a: &Args| crate::nt_system_color_raw::route(o, a, crate::nt_gdi::system_color_brush_for_current)) as Route,
         Family::NonclientRaw => (|o, a: &Args| crate::nt_nonclient_raw::kernel::route(o, a)) as Route,
         Family::FontQuery => (|o, a: &Args| crate::nt_wine_font_query_contract::route(o, a,
             |dc| crate::nt_gdi::text_snapshot_for_current(dc).ok().and_then(|state| state.font),

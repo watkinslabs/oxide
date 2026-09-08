@@ -12,13 +12,13 @@
 /// bound in one entry and not the other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Family {
-    CaretRaw, HwndCall, MsgFilter, TwoParam, DpiContext, InputContext, QueryWindow, AccelRaw,
+    CaretRaw, HwndCall, MsgFilter, NoParam, OneParam, TwoParam, DpiContext, InputContext, QueryWindow, AccelRaw,
     ClipboardRaw, AtomRaw, HookRaw, StationRaw, WindowRaw,
     Scroll, MessageQueue, Timer, UpdateRegion, Caption, SysColors, ScrollBar, ScrollDc, MenuRaw,
     Display, Drag, DrawIcon,
     VisibilityRaw, RegionRaw, DcQueryRaw, PenRaw, SetRectRgnRaw, DcRaw, DcStateRaw, XformRaw,
     DrawRaw, PrintRaw,
-    Redraw, SystemColorRaw, NonclientRaw, FontQuery, FontFamily,
+    Redraw, NonclientRaw, FontQuery, FontFamily,
     PropertyRaw, DcObject, LongRaw, ClassSet, CursorRaw, CursorIconRaw, InputRaw, KeyboardRaw,
     RawInputRaw, PointerRaw, HwndParam,
     GdiRoute, ObjectRaw, BitmapRaw, GdiBitmapRaw, DeviceCaps, BrushRaw, ClipRaw, GdiShape,
@@ -29,7 +29,8 @@ pub(crate) enum Family {
 /// Every family that exists. A family absent from `ORDER` is unreachable from
 /// both entries, which is the defect this chain exists to make impossible.
 pub(crate) const ALL: &[Family] = &[
-    Family::CaretRaw, Family::HwndCall, Family::MsgFilter, Family::TwoParam, Family::DpiContext,
+    Family::CaretRaw, Family::HwndCall, Family::MsgFilter, Family::NoParam, Family::OneParam,
+    Family::TwoParam, Family::DpiContext,
     Family::InputContext, Family::QueryWindow, Family::AccelRaw,
     Family::ClipboardRaw, Family::AtomRaw, Family::HookRaw, Family::StationRaw, Family::WindowRaw,
     Family::Scroll, Family::MessageQueue, Family::Timer, Family::UpdateRegion, Family::Caption,
@@ -38,7 +39,7 @@ pub(crate) const ALL: &[Family] = &[
     Family::VisibilityRaw, Family::RegionRaw, Family::DcQueryRaw, Family::PenRaw,
     Family::SetRectRgnRaw, Family::DcRaw, Family::DcStateRaw, Family::XformRaw, Family::DrawRaw,
     Family::PrintRaw,
-    Family::Redraw, Family::SystemColorRaw, Family::NonclientRaw, Family::FontQuery,
+    Family::Redraw, Family::NonclientRaw, Family::FontQuery,
     Family::FontFamily,
     Family::PropertyRaw, Family::DcObject, Family::LongRaw, Family::ClassSet, Family::CursorRaw,
     Family::CursorIconRaw, Family::InputRaw, Family::KeyboardRaw, Family::RawInputRaw,
@@ -52,7 +53,8 @@ pub(crate) const ALL: &[Family] = &[
 /// is last because its admission set overlaps the keyboard-state queries the
 /// `KeyboardQuery` family owns.
 pub(crate) const ORDER: &[Family] = &[
-    Family::CaretRaw, Family::HwndCall, Family::MsgFilter, Family::TwoParam, Family::DpiContext,
+    Family::CaretRaw, Family::HwndCall, Family::MsgFilter, Family::NoParam, Family::OneParam,
+    Family::TwoParam, Family::DpiContext,
     Family::InputContext, Family::QueryWindow, Family::AccelRaw,
     Family::ClipboardRaw, Family::AtomRaw, Family::HookRaw, Family::StationRaw, Family::WindowRaw,
     Family::Scroll, Family::MessageQueue, Family::Timer, Family::UpdateRegion, Family::Caption,
@@ -61,7 +63,7 @@ pub(crate) const ORDER: &[Family] = &[
     Family::VisibilityRaw, Family::RegionRaw, Family::DcQueryRaw, Family::PenRaw,
     Family::SetRectRgnRaw, Family::DcRaw, Family::DcStateRaw, Family::XformRaw, Family::DrawRaw,
     Family::PrintRaw,
-    Family::Redraw, Family::SystemColorRaw, Family::NonclientRaw, Family::FontQuery,
+    Family::Redraw, Family::NonclientRaw, Family::FontQuery,
     Family::FontFamily,
     Family::PropertyRaw, Family::DcObject, Family::LongRaw, Family::ClassSet, Family::CursorRaw,
     Family::CursorIconRaw, Family::InputRaw, Family::KeyboardRaw, Family::RawInputRaw,
