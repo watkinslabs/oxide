@@ -10,10 +10,7 @@ const STATUS_INVALID_HANDLE: u64 = 0xc000_0008;
 const STATUS_BUFFER_TOO_SMALL: u64 = 0xc000_0023;
 const STATUS_NO_MORE_ENTRIES: u64 = 0x8000_001a;
 const STATUS_MORE_ENTRIES: u64 = 0x8000_0005;
-const DIRECTORY_TRAVERSE: u32 = 0x0000_0002;
-const DIRECTORY_QUERY: u32 = 0x0000_0001;
-const GENERIC_ALL: u32 = 0x1000_0000;
-const DIRECTORY_ALLOWED_ACCESS: u32 = 0xf01f_000f;
+use crate::nt_access::{DIRECTORY, DIRECTORY_QUERY, DIRECTORY_TRAVERSE};
 
 /// Open a named object-manager directory through the canonical NT namespace.
 /// # C: O(1) plus one user write
@@ -22,13 +19,9 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     if call.service != NtService::OpenDirectoryObject { return None; }
     let Some(cur) = sched::live::current() else { return Some(STATUS_INVALID_PARAMETER); };
     if !cur.is_nt_personality() || call.args.a0 == 0 || call.args.a2 == 0 { return Some(STATUS_INVALID_PARAMETER); }
-    if call.args.a1 as u32 & !DIRECTORY_ALLOWED_ACCESS != 0 { return Some(STATUS_INVALID_PARAMETER); }
+    let Some(granted_access) = DIRECTORY.grant(call.args.a1 as u32) else { return Some(STATUS_INVALID_PARAMETER); };
     let table = cur.thread_group.nt_handles();
     let Some(path) = resolve_object_path(call.args.a2, &table) else { return Some(STATUS_INVALID_PARAMETER); };
-    let requested_access = call.args.a1 as u32;
-    let granted_access = if requested_access & GENERIC_ALL != 0 {
-        requested_access | DIRECTORY_ALLOWED_ACCESS
-    } else { requested_access };
     let Some(handle) = table.open_directory(&path, granted_access) else {
         return Some(STATUS_OBJECT_NAME_NOT_FOUND);
     };

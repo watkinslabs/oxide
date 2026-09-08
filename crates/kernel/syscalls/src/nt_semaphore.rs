@@ -12,13 +12,7 @@ const STATUS_ACCESS_DENIED: u64 = 0xc000_0022;
 const STATUS_OBJECT_NAME_COLLISION: u64 = 0xc000_0035;
 const STATUS_OBJECT_TYPE_MISMATCH: u64 = 0xc000_0024;
 const STATUS_OBJECT_NAME_NOT_FOUND: u64 = 0xc000_0034;
-const SEMAPHORE_MODIFY_STATE: u32 = 2;
-const SEMAPHORE_ALL_ACCESS: u32 = 0x001f_0003;
-const GENERIC_ALL: u32 = 0x1000_0000;
-const GENERIC_READ: u32 = 0x8000_0000;
-const GENERIC_WRITE: u32 = 0x4000_0000;
-const GENERIC_EXECUTE: u32 = 0x2000_0000;
-const SEMAPHORE_ALLOWED_ACCESS: u32 = SEMAPHORE_ALL_ACCESS | GENERIC_READ | GENERIC_WRITE | GENERIC_EXECUTE | GENERIC_ALL;
+use crate::nt_access::{SEMAPHORE, SEMAPHORE_MODIFY_STATE};
 
 /// Dispatch named/unnamed semaphore creation and release using the canonical
 /// scheduler-backed count and wakeup protocol. # C: O(1)
@@ -32,10 +26,9 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     let table = cur.thread_group.nt_handles();
     Some(match object {
         NtObjectCall::CreateSemaphore { handle, desired_access, attributes, initial, maximum } => {
-            if desired_access & !SEMAPHORE_ALLOWED_ACCESS != 0
-                || initial < 0 || maximum <= 0 || initial > maximum
+            if initial < 0 || maximum <= 0 || initial > maximum
                 || maximum > u32::MAX as i64 { return Some(STATUS_INVALID_PARAMETER); }
-            let granted_access = if desired_access & GENERIC_ALL != 0 { desired_access | SEMAPHORE_ALL_ACCESS } else { desired_access };
+            let Some(granted_access) = SEMAPHORE.grant(desired_access) else { return Some(STATUS_INVALID_PARAMETER); };
             if attributes != 0 {
                 let Some(path) = crate::nt_directory::resolve_object_path(attributes, &table) else { return Some(STATUS_INVALID_PARAMETER); };
                 let (object, state) = sched::nt_object::create_semaphore(&path, initial, maximum);
@@ -61,6 +54,7 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
             if object.kind() != sched::nt_object::NtObjectType::Semaphore { return Some(STATUS_INVALID_HANDLE); }
             let Some(semaphore) = object.semaphore() else { return Some(STATUS_INVALID_HANDLE); };
             let Some(old) = semaphore.release(count) else { return Some(STATUS_INVALID_PARAMETER); };
+            table.wake_waiters();
             if let Some(previous) = previous {
                 if uaccess::put_user_u32(previous.as_u64(), old).is_err() { return Some(STATUS_INVALID_PARAMETER); }
             }
@@ -70,11 +64,3 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     })
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn access_masks_match_native_semaphore_contract() {
-        assert_eq!(super::SEMAPHORE_MODIFY_STATE, 2);
-        assert_eq!(super::SEMAPHORE_ALL_ACCESS, 0x001f_0003);
-    }
-}
