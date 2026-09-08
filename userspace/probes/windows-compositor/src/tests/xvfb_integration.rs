@@ -399,3 +399,63 @@ fn xvfb_a_server_resize_is_adopted_so_the_next_frame_still_reaches_the_window() 
     assert_eq!(&data[..4], &[0x66, 0x55, 0x44, 0x00]);
     unsafe { libc::free(reply as *mut _); ffi::xcb_disconnect(conn); }
 }
+
+/// A dialog is a top-level window of its own, and so is its owner. Each one
+/// holds its own retained surface and each frame lands in the window it was
+/// captured for: the server itself is asked for both windows' pixels after the
+/// two have been given different frames, and neither answers with the other's.
+/// Sharing one surface or one destination is what puts an application's two
+/// contents in a single screen area, alternating.
+#[test]
+fn xvfb_an_owned_dialog_holds_its_own_surface_and_its_own_destination() {
+    use crate::styles::{WS_CAPTION, WS_POPUP, WS_SYSMENU, WS_VISIBLE};
+    const OWNER_EDGE: u32 = 64; const DIALOG_EDGE: u32 = 32;
+    const OWNER_PIXEL: u32 = 0x0011_2233; const DIALOG_PIXEL: u32 = 0x0044_5566;
+    let server = xvfb();
+    let mut backend = Backend::connect(Some(&server.display)).unwrap();
+    let owner = 0xa1u32; let dialog = 0xa2u32;
+    backend.handle_command(BridgeCommand::Create { hwnd: owner, title: Vec::new(),
+        rect: Rect { left: 0, top: 0, right: OWNER_EDGE as i32, bottom: OWNER_EDGE as i32 },
+        parent: 0, style: WS_CAPTION | WS_SYSMENU | WS_VISIBLE, ex_style: 0 }).unwrap();
+    // The rectangle a dialog template names, offset inside its owner - not the
+    // owner's own rectangle.
+    backend.handle_command(BridgeCommand::Create { hwnd: dialog, title: Vec::new(),
+        rect: Rect { left: 8, top: 9, right: 8 + DIALOG_EDGE as i32, bottom: 9 + DIALOG_EDGE as i32 },
+        parent: owner as u64, style: WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE, ex_style: 0 }).unwrap();
+    backend.handle_command(BridgeCommand::Show { hwnd: owner }).unwrap();
+    backend.handle_command(BridgeCommand::Show { hwnd: dialog }).unwrap();
+
+    let owner_xid = backend.xid_for(owner).unwrap(); let dialog_xid = backend.xid_for(dialog).unwrap();
+    assert_ne!(owner_xid, dialog_xid, "two top-level windows are two X windows");
+    // A dialog is the window manager's to frame, and it is not an X child of
+    // its owner: it names the owner through the transient property instead.
+    assert_eq!(backend.parent_xid_for(dialog), backend.parent_xid_for(owner));
+    assert_eq!(backend.transient_xid_for(dialog), Some(owner_xid));
+    assert_eq!(backend.window_layout_for_test(dialog), Some((true, DIALOG_EDGE, DIALOG_EDGE)));
+    assert_eq!(backend.window_layout_for_test(owner), Some((true, OWNER_EDGE, OWNER_EDGE)));
+
+    let owner_frame = crate::Frame::new(OWNER_EDGE, OWNER_EDGE, OWNER_EDGE, vec![OWNER_PIXEL; (OWNER_EDGE * OWNER_EDGE) as usize],
+        Rect { left: 0, top: 0, right: OWNER_EDGE as i32, bottom: OWNER_EDGE as i32 }).unwrap();
+    let dialog_frame = crate::Frame::new(DIALOG_EDGE, DIALOG_EDGE, DIALOG_EDGE, vec![DIALOG_PIXEL; (DIALOG_EDGE * DIALOG_EDGE) as usize],
+        Rect { left: 0, top: 0, right: DIALOG_EDGE as i32, bottom: DIALOG_EDGE as i32 }).unwrap();
+    backend.handle_command(BridgeCommand::Frame { hwnd: owner, frame: owner_frame }).unwrap();
+    backend.handle_command(BridgeCommand::Frame { hwnd: dialog, frame: dialog_frame }).unwrap();
+    backend.flush();
+
+    let (conn, _) = unsafe { connect(&server.display) };
+    let read = |xid: ffi::Window| -> [u8; 4] {
+        let cookie = unsafe { ffi::xcb_get_image(conn, ffi::IMAGE_FORMAT_Z_PIXMAP, xid, 0, 0, 4, 4, u32::MAX) };
+        let mut err = ptr::null_mut();
+        let reply = unsafe { ffi::xcb_get_image_reply(conn, cookie, &mut err) };
+        assert!(!reply.is_null());
+        let len = unsafe { ffi::xcb_get_image_data_length(reply) };
+        let data = unsafe { std::slice::from_raw_parts(ffi::xcb_get_image_data(reply), len as usize) };
+        assert!(data.len() >= 4);
+        let out = [data[0], data[1], data[2], data[3]];
+        unsafe { libc::free(reply as *mut _); }
+        out
+    };
+    assert_eq!(read(owner_xid), [0x33, 0x22, 0x11, 0x00], "the owner keeps its own pixels");
+    assert_eq!(read(dialog_xid), [0x66, 0x55, 0x44, 0x00], "the dialog is drawn with its own frame");
+    unsafe { ffi::xcb_disconnect(conn); }
+}

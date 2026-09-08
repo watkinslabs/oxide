@@ -171,6 +171,8 @@ mod nt_window{
         pub fn process_for_current(_:super::NtCall,_:bool,_:syscall::nt::NtWindowCall)->Stage{Stage::Ready}}
     mod bridge{pub fn publish_destroy_current(_:u64)->Result<(),()>{Ok(())}pub fn publish_visibility_current(_:u64)->Result<(),()>{Ok(())}
         pub fn publish_title_current(_:u64)->Result<(),()>{Ok(())}pub fn publish_geometry_current(_:u64)->Result<(),()>{Ok(())}}
+    // Visibility publication for a show goes through the show projection.
+    mod show_order{pub fn publish_for_current(_:u64,_:u64,_:bool)->Result<(),()>{Ok(())}}
     pub mod production{include!(concat!(env!("CARGO_MANIFEST_DIR"),"/src/nt_window/dispatch.rs"));}
     pub(super) fn setup()->u32{let task=sched::live::current().unwrap();let mut entry=new_entry(&task.thread_group);
         let hwnd=entry.state.create(task.tid as u64,None,0).unwrap();

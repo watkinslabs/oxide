@@ -356,7 +356,10 @@ pub(super) fn dispatch_mode(call: NtCall, raw: bool) -> Option<u64> {
         if let Some(wait) = wake { wait.wake_all(); }
         if result.is_some_and(|status| status <= 1) {
             let published = match operation {
-                NtWindowCall::Show { hwnd, .. } => bridge::publish_visibility_current(hwnd),
+                // A show is not only a visibility change: the reference
+                // finishes it by placing the window at the top of its band and
+                // activating it, and `result` is the visibility it replaced.
+                NtWindowCall::Show { hwnd, command } => show_order::publish_for_current(hwnd, command as u64, result == Some(1)),
                 NtWindowCall::SetText { hwnd, .. } => bridge::publish_title_current(hwnd),
                 NtWindowCall::SetRect { hwnd, .. } | NtWindowCall::SetRectValues { hwnd, .. } => bridge::publish_geometry_current(hwnd),
                 _ => Ok(()),

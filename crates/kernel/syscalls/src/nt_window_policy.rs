@@ -20,6 +20,54 @@ pub(crate) fn show_command_visibility(command: u64) -> Option<bool> {
     }
 }
 
+
+pub(crate) const SW_SHOWNORMAL: u64 = 1;
+pub(crate) const SW_SHOWMINIMIZED: u64 = 2;
+pub(crate) const SW_SHOWMAXIMIZED: u64 = 3;
+pub(crate) const SW_SHOWNOACTIVATE: u64 = 4;
+pub(crate) const SW_SHOW: u64 = 5;
+pub(crate) const SW_MINIMIZE: u64 = 6;
+pub(crate) const SW_SHOWMINNOACTIVE: u64 = 7;
+pub(crate) const SW_SHOWNA: u64 = 8;
+pub(crate) const SW_RESTORE: u64 = 9;
+pub(crate) const SW_SHOWDEFAULT: u64 = 10;
+const WS_CHILD: u32 = 0x4000_0000;
+
+/// What one show command projects onto the window stack besides visibility:
+/// the reference finishes every show that reaches its positioning step by
+/// placing the window at the top of its band and activating it, and suppresses
+/// each of those two independently per command and for a child window. A show
+/// that projects neither leaves a newly mapped window wherever the display
+/// already had it in the stack - under whatever it was meant to appear over.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct ShowProjection { pub raise: bool, pub activate: bool }
+
+impl ShowProjection {
+    /// # C: O(1)
+    pub(crate) fn projects(self) -> bool { self.raise || self.activate }
+}
+
+/// Resolve that projection. `None` names the commands the reference answers
+/// without reaching its positioning step at all: an unknown command, a show of
+/// an already-visible window, and a hide of an already-hidden one.
+/// # C: O(1)
+pub(crate) fn show_projection(command: u64, style: u32, was_visible: bool) -> Option<ShowProjection> {
+    let child = style & WS_CHILD != 0;
+    let both = ShowProjection { raise: true, activate: true };
+    match command {
+        SW_HIDE => was_visible.then_some(ShowProjection { raise: !child, activate: false }),
+        // A minimize neither reorders nor activates, whichever window it is.
+        SW_MINIMIZE | SW_SHOWMINNOACTIVE | SW_FORCEMINIMIZE | SW_SHOWNOACTIVATE => Some(ShowProjection::default()),
+        // The iconic and maximized shows carry no child suppression.
+        SW_SHOWMINIMIZED | SW_SHOWMAXIMIZED => Some(both),
+        SW_SHOWNA => Some(ShowProjection { raise: !child, activate: false }),
+        SW_SHOW => (!was_visible).then_some(ShowProjection { raise: !child, activate: !child }),
+        SW_SHOWNORMAL | SW_RESTORE | SW_SHOWDEFAULT =>
+            (!was_visible).then_some(ShowProjection { raise: !child, activate: !child }),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{show_command_visibility, visibility_transition_message,
@@ -53,4 +101,50 @@ mod tests {
         assert_eq!(show_command_visibility(u64::MAX), None);
     }
 
+    use super::{show_projection, ShowProjection, SW_SHOW, SW_SHOWMAXIMIZED, SW_SHOWMINIMIZED,
+        SW_SHOWNA, SW_SHOWNOACTIVATE, SW_SHOWNORMAL, SW_MINIMIZE, SW_RESTORE, SW_SHOWMINNOACTIVE};
+    const WS_CHILD: u32 = 0x4000_0000;
+    const WS_POPUP: u32 = 0x8000_0000;
+    const DIALOG: u32 = WS_POPUP | 0x00C0_0000 | 0x0008_0000;
+
+    #[test]
+    fn showing_an_owned_dialog_raises_it_and_activates_it() {
+        assert_eq!(show_projection(SW_SHOW, DIALOG, false), Some(ShowProjection { raise: true, activate: true }));
+        assert_eq!(show_projection(SW_SHOWNORMAL, DIALOG, false), Some(ShowProjection { raise: true, activate: true }));
+        assert_eq!(show_projection(SW_RESTORE, DIALOG, false), Some(ShowProjection { raise: true, activate: true }));
+        assert!(show_projection(SW_SHOW, DIALOG, false).unwrap().projects());
+    }
+
+    #[test]
+    fn showing_a_child_control_touches_neither_stack_nor_activation() {
+        for command in [SW_SHOW, SW_SHOWNORMAL, SW_SHOWNA, SW_RESTORE] {
+            assert_eq!(show_projection(command, WS_CHILD, false), Some(ShowProjection::default()), "command {command}");
+        }
+        assert!(!show_projection(SW_SHOW, WS_CHILD, false).unwrap().projects());
+    }
+
+    #[test]
+    fn a_show_without_activation_still_raises_a_top_level_window() {
+        assert_eq!(show_projection(SW_SHOWNA, DIALOG, false), Some(ShowProjection { raise: true, activate: false }));
+        assert_eq!(show_projection(SW_SHOWNOACTIVATE, DIALOG, false), Some(ShowProjection::default()));
+        assert_eq!(show_projection(SW_MINIMIZE, DIALOG, false), Some(ShowProjection::default()));
+        assert_eq!(show_projection(SW_SHOWMINNOACTIVE, DIALOG, false), Some(ShowProjection::default()));
+    }
+
+    #[test]
+    fn the_iconic_and_maximized_shows_carry_no_child_suppression() {
+        for command in [SW_SHOWMINIMIZED, SW_SHOWMAXIMIZED] {
+            assert_eq!(show_projection(command, WS_CHILD, false), Some(ShowProjection { raise: true, activate: true }));
+            assert_eq!(show_projection(command, DIALOG, true), Some(ShowProjection { raise: true, activate: true }));
+        }
+    }
+
+    #[test]
+    fn a_show_that_changes_nothing_projects_nothing_at_all() {
+        assert_eq!(show_projection(SW_SHOW, DIALOG, true), None);
+        assert_eq!(show_projection(SW_SHOWNORMAL, DIALOG, true), None);
+        assert_eq!(show_projection(SW_HIDE, DIALOG, false), None);
+        assert_eq!(show_projection(SW_HIDE, DIALOG, true), Some(ShowProjection { raise: true, activate: false }));
+        assert_eq!(show_projection(12, DIALOG, false), None);
+    }
 }
