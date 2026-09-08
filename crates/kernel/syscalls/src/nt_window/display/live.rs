@@ -204,8 +204,5 @@ fn config_device_info() -> u64 { ERROR_NOT_SUPPORTED as u64 }
 /// nonclient metrics record is scaled, by the ratio the caller names.
 /// # C: O(1)
 fn parameters_for_dpi(action: u32, value: u32, ptr: u64, dpi: u32) -> u64 {
-    let _ = (value, dpi);
-    crate::nt_nonclient_raw::route(crate::nt_nonclient_raw::SYSTEM_PARAMETERS_INFO,
-        &[action as u64, value as u64, ptr, 0],
-        |pointer| uaccess::get_user_u32(pointer).ok(), crate::nt_native_gdi::begin_nonclient).unwrap_or(0)
+    crate::nt_nonclient_raw::kernel::route_for_dpi(action, value, ptr, 0, dpi)
 }

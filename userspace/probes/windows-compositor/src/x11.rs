@@ -127,12 +127,33 @@ impl Backend {
             BridgeCommand::Create { hwnd, title, rect, parent, style, ex_style } => { validate_title(&title).map_err(BackendError::Transport)?; self.create(hwnd, &title, rect, parent, style, ex_style)?; Ok(self.snapshot_event().into_iter().collect()) }
             BridgeCommand::Show { hwnd } => { self.show(hwnd)?; Ok(Vec::new()) }
             BridgeCommand::Hide { hwnd } => { let window = self.windows.get_mut(&hwnd).ok_or(BackendError::InvalidCommand)?; window.requested_visible = false; unsafe { ffi::xcb_unmap_window(self.conn, window.xid); ffi::xcb_flush(self.conn); } Ok(Vec::new()) }
-            BridgeCommand::SetTitle { hwnd, title } => { validate_title(&title).map_err(BackendError::Transport)?; let window = self.windows.get(&hwnd).ok_or(BackendError::InvalidCommand)?; let text = String::from_utf16_lossy(&title); unsafe { ffi::xcb_change_property(self.conn, ffi::PROP_MODE_REPLACE, window.xid, self.atoms.net_wm_name, self.atoms.utf8_string, 8, text.len() as u32, text.as_ptr() as *const _); ffi::xcb_flush(self.conn); } Ok(Vec::new()) }
+            BridgeCommand::SetTitle { hwnd, title } => { validate_title(&title).map_err(BackendError::Transport)?; let xid = self.windows.get(&hwnd).ok_or(BackendError::InvalidCommand)?.xid; self.publish_title(xid, &title); Ok(Vec::new()) }
             BridgeCommand::Configure { hwnd, rect } => { let window = self.windows.get_mut(&hwnd).ok_or(BackendError::InvalidCommand)?; let width = u32::try_from(rect.right - rect.left).map_err(|_| BackendError::InvalidCommand)?; let height = u32::try_from(rect.bottom - rect.top).map_err(|_| BackendError::InvalidCommand)?; let x_width = width.max(1); let x_height = height.max(1); let values = [rect.left as u32, rect.top as u32, x_width, x_height]; unsafe { ffi::xcb_configure_window(self.conn, window.xid, ffi::CONFIGURE_X | ffi::CONFIGURE_Y | ffi::CONFIGURE_WIDTH | ffi::CONFIGURE_HEIGHT, values.as_ptr()); if width == 0 || height == 0 || !window.requested_visible { ffi::xcb_unmap_window(self.conn, window.xid); } else { ffi::xcb_map_window(self.conn, window.xid); } ffi::xcb_flush(self.conn); } window.rect = rect; window.width = width; window.height = height; window.suppress_backing_configure = width == 0 || height == 0; Ok(Vec::new()) }
             BridgeCommand::Frame { hwnd, frame } => { self.present(hwnd, &frame)?; Ok(Vec::new()) }
             BridgeCommand::Position { hwnd, insertion, activate } => { self.position(hwnd, insertion, activate)?; Ok(Vec::new()) }
             BridgeCommand::Caret { hwnd, snapshot } => { self.update_caret(hwnd, snapshot)?; Ok(Vec::new()) }
             BridgeCommand::Destroy { hwnd } => { self.destroy(hwnd)?; Ok(Vec::new()) }
+        }
+    }
+
+    /// Publish one window's name under both the conventional single-byte
+    /// property and the extended UTF-8 one, and under the icon-name property
+    /// beside it, which is what a window manager reads when it has no
+    /// extended name to read. Publishing only the extended name leaves every
+    /// manager that reads the conventional one with a nameless window.
+    /// # C: O(N_units)
+    fn publish_title(&self, xid: ffi::Window, title: &[u16]) {
+        let text = String::from_utf16_lossy(title);
+        let utf8 = text.as_bytes();
+        let (kind, bytes) = match crate::protocol::encode_wm_name(title) {
+            crate::protocol::TitleEncoding::Latin1(bytes) => (ffi::ATOM_STRING, bytes),
+            crate::protocol::TitleEncoding::Utf8(bytes) => (self.atoms.utf8_string, bytes),
+        };
+        unsafe {
+            ffi::xcb_change_property(self.conn, ffi::PROP_MODE_REPLACE, xid, self.atoms.net_wm_name, self.atoms.utf8_string, 8, utf8.len() as u32, utf8.as_ptr() as *const _);
+            ffi::xcb_change_property(self.conn, ffi::PROP_MODE_REPLACE, xid, ffi::ATOM_WM_NAME, kind, 8, bytes.len() as u32, bytes.as_ptr() as *const _);
+            ffi::xcb_change_property(self.conn, ffi::PROP_MODE_REPLACE, xid, ffi::ATOM_WM_ICON_NAME, kind, 8, bytes.len() as u32, bytes.as_ptr() as *const _);
+            ffi::xcb_flush(self.conn);
         }
     }
 
@@ -283,8 +304,8 @@ impl Backend {
         // its mask bit, override-redirect before the event mask.
         let values = [u32::from(!crate::managed::at_creation(style, ex_style)), ffi::EVENT_KEY_PRESS | ffi::EVENT_KEY_RELEASE | ffi::EVENT_BUTTON_PRESS | ffi::EVENT_BUTTON_RELEASE | ffi::EVENT_POINTER_MOTION | ffi::EVENT_EXPOSURE | ffi::EVENT_STRUCTURE_NOTIFY | ffi::EVENT_FOCUS_CHANGE];
         unsafe { ffi::xcb_create_window(self.conn, self.depth, xid, x_parent, x as i16, y as i16, width.max(1) as u16, height.max(1) as u16, 0, ffi::WINDOW_CLASS_INPUT_OUTPUT, self.visual, ffi::CW_OVERRIDE_REDIRECT | ffi::CW_EVENT_MASK, values.as_ptr()); ffi::xcb_create_gc(self.conn, gc, xid, 0, ptr::null()); }
-        let title = String::from_utf16_lossy(title); let bytes = title.as_bytes();
-        unsafe { ffi::xcb_change_property(self.conn, ffi::PROP_MODE_REPLACE, xid, self.atoms.net_wm_name, self.atoms.utf8_string, 8, bytes.len() as u32, bytes.as_ptr() as *const _); ffi::xcb_change_property(self.conn, ffi::PROP_MODE_REPLACE, xid, self.atoms.wm_protocols, ffi::ATOM_ATOM, 32, 1, &self.atoms.wm_delete as *const _ as *const _); ffi::xcb_flush(self.conn); }
+        self.publish_title(xid, title);
+        unsafe { ffi::xcb_change_property(self.conn, ffi::PROP_MODE_REPLACE, xid, self.atoms.wm_protocols, ffi::ATOM_ATOM, 32, 1, &self.atoms.wm_delete as *const _ as *const _); ffi::xcb_flush(self.conn); }
         // The owner travels in the parent field for a window that is not an X
         // child, whatever its style: an owned window names its owner here, not
         // only a popup.

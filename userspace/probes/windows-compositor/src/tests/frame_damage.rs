@@ -81,3 +81,23 @@ fn the_bridge_record_trace_is_off_unless_the_environment_asks_for_it() {
     assert_eq!(crate::TRACE_ENV, "OXIDE_COMPOSITOR_TRACE");
     assert!(!crate::trace_events(), "an unset environment must not trace every input record");
 }
+
+/// A window name published only under the extended property leaves every
+/// manager that reads the conventional one with a nameless window, which is
+/// what an empty title bar over a named window looks like.
+#[test]
+fn a_latin1_name_encodes_as_the_conventional_single_byte_string() {
+    let title: Vec<u16> = "Untitled - Notepad".encode_utf16().collect();
+    assert_eq!(super::encode_wm_name(&title), super::TitleEncoding::Latin1(b"Untitled - Notepad".to_vec()));
+    // Every unit survives: a name truncated to one unit is the defect this pins.
+    let super::TitleEncoding::Latin1(bytes) = super::encode_wm_name(&title) else { panic!("latin1") };
+    assert_eq!(bytes.len(), title.len());
+}
+
+/// A name outside the single-byte range has to travel as UTF-8 instead.
+#[test]
+fn a_wide_name_encodes_as_utf8() {
+    let title: Vec<u16> = "Notepad \u{2014} \u{4e2d}".encode_utf16().collect();
+    let encoded = super::encode_wm_name(&title);
+    assert_eq!(encoded, super::TitleEncoding::Utf8("Notepad \u{2014} \u{4e2d}".as_bytes().to_vec()));
+}

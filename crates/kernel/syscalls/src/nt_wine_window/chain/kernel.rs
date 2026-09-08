@@ -63,8 +63,7 @@ fn binding(family: Family) -> Route {
         Family::Redraw => (|o, a: &Args| (o == crate::nt_window::redraw::ORDINAL)
             .then(|| crate::nt_window::redraw::for_current(a[0], a[1], a[2], a[3] as u32))) as Route,
         Family::SystemColorRaw => (|o, a: &Args| crate::nt_system_color_raw::route(o, a, crate::nt_gdi::system_color_brush_for_current)) as Route,
-        Family::NonclientRaw => (|o, a: &Args| crate::nt_nonclient_raw::route(o, a,
-            |pointer| uaccess::get_user_u32(pointer).ok(), crate::nt_native_gdi::begin_nonclient)) as Route,
+        Family::NonclientRaw => (|o, a: &Args| crate::nt_nonclient_raw::kernel::route(o, a)) as Route,
         Family::FontQuery => (|o, a: &Args| crate::nt_wine_font_query_contract::route(o, a,
             |dc| crate::nt_gdi::text_snapshot_for_current(dc).ok().and_then(|state| state.font),
             crate::nt_native_gdi::begin_query)) as Route,

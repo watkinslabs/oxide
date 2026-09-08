@@ -5,6 +5,7 @@ extern crate self as sched;
 extern crate self as ipc;
 extern crate self as uaccess;
 #[path="../desktop/geometry.rs"] mod desktop_geometry;
+#[path="../../../../ipc/src/win32_sysparams.rs"] pub mod win32_sysparams;
 #[path="../../../../ipc/src/win32_gdi.rs"] pub mod win32_gdi;
 static GDI:std::sync::LazyLock<Mutex<win32_gdi::GdiManager>>=std::sync::LazyLock::new(||Mutex::new(win32_gdi::GdiManager::new()));
 mod nt_gdi {

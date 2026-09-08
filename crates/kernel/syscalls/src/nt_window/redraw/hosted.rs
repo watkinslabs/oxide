@@ -4,6 +4,7 @@ extern crate alloc;
 extern crate self as ipc;
 extern crate self as sched;
 extern crate self as uaccess;
+#[path="../../../../ipc/src/win32_sysparams.rs"] pub mod win32_sysparams;
 #[path = "../../../../ipc/src/win32_gdi.rs"] pub mod win32_gdi;
 pub fn copy_from_user(_: &mut [u8], _: u64) -> Result<(), ()> { Err(()) }
 mod nt_gdi { pub fn region_snapshot_for_current(_: u64) -> Result<crate::win32_window::PaintRegion, ()> { Err(()) } }

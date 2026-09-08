@@ -55,6 +55,9 @@ pub mod win32_accel;
 pub mod win32_hook;
 /// Win32 GDI device-context and font state used by the native NT GUI layer.
 pub mod win32_gdi;
+/// Session-wide Win32 system parameters: the one owner of every setting the
+/// system-parameter entry point reads or writes.
+pub mod win32_sysparams;
 /// Win32 input contexts (HIMC) used by the native NT GUI layer.
 pub mod win32_imc;
 /// The wide-to-ANSI code page conversion every ANSI Win32 entry point answers

@@ -1,16 +1,26 @@
 //! Canonical immutable default nonclient profile derived from stock font metadata; 31ge§7.
-use super::{stock_object, Font, StockDescription, FontRecord, GdiError};
+use super::{stock_object, Font, StockDescription, FontRecord, GdiError, LOGFONTW_BYTES};
+/// `LOGFONTW` field offsets this profile writes past the metric fields the
+/// font record itself owns: the charset byte, the pitch-and-family byte, and
+/// the face-name array with its unit capacity.
+const CHARSET: usize = 23;
+const PITCH_AND_FAMILY: usize = 27;
+const FACE: usize = 28;
+const FACE_UNITS: usize = 31;
 pub const NONCLIENT_BYTES: usize = 504;
 pub const NONCLIENT_LEGACY_BYTES: usize = 500;
 const DEFAULT_GUI_FONT: u32 = 17;
-const FONT_OFFSETS: [usize; 5] = [24, 124, 224, 316, 408];
-const BORDER: i32 = 1;
-const SCROLL: i32 = 16;
-const CAPTION: i32 = 18;
-const SMALL_CAPTION: i32 = 15;
+use super::super::win32_sysparams::{default_pixels, table::slot, NONCLIENT_FACE_OFFSETS as FONT_OFFSETS};
+/// Every dimension the profile quotes is the settings owner's own default for
+/// that setting, so a client that reads one through the system-parameter entry
+/// point and the profile it is drawn with cannot disagree.
+const BORDER: i32 = default_pixels(slot::BORDER);
+const SCROLL: i32 = default_pixels(slot::SCROLL_WIDTH);
+const CAPTION: i32 = default_pixels(slot::CAPTION_HEIGHT);
+const SMALL_CAPTION: i32 = default_pixels(slot::SM_CAPTION_HEIGHT);
 /// Height, in pixels, the profile reserves for one menu band before the menu
 /// font's own cell is measured against it.
-pub const MENU_HEIGHT: i32 = 18;
+pub const MENU_HEIGHT: i32 = default_pixels(slot::MENU_HEIGHT);
 /// Weight the profile gives its caption face; every other face is regular.
 const CAPTION_WEIGHT: i32 = 700;
 const BODY_WEIGHT: i32 = 400;
@@ -40,8 +50,6 @@ pub fn system_metric_default(index: i32) -> Option<i32> {
 /// # C: O(1), fixed 504-byte output
 pub fn nonclient_defaults(size: u32) -> Result<[u8; NONCLIENT_BYTES], GdiError> {
     if size != NONCLIENT_BYTES as u32 && size != NONCLIENT_LEGACY_BYTES as u32 { return Err(GdiError::InvalidDimensions); }
-    let Some(stock) = stock_object(DEFAULT_GUI_FONT) else { return Err(GdiError::NoSuchObject); };
-    let StockDescription::Font(font) = stock.description else { return Err(GdiError::NoSuchObject); };
     let mut bytes = [0; NONCLIENT_BYTES];
     bytes[..4].copy_from_slice(&size.to_le_bytes());
     for (offset, value) in [(4, BORDER), (8, SCROLL), (12, SCROLL), (16, CAPTION), (20, CAPTION),
@@ -49,17 +57,38 @@ pub fn nonclient_defaults(size: u32) -> Result<[u8; NONCLIENT_BYTES], GdiError> 
         bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
     }
     for (index, offset) in FONT_OFFSETS.into_iter().enumerate() {
-        let mut logical = font.logical;
-        logical.weight = if index == 0 { CAPTION_WEIGHT } else { BODY_WEIGHT };
-        let mut record = FontRecord::from_font(logical)?.bytes();
-        record[23] = 1;
-        record[27] = font.pitch_and_family;
-        for (i, unit) in font.face.encode_utf16().take(31).enumerate() {
-            record[28 + i * 2..30 + i * 2].copy_from_slice(&unit.to_le_bytes());
-        }
+        let record = logfont(NonclientFont::AT_OFFSET[index])?;
         bytes[offset..offset + record.len()].copy_from_slice(&record);
     }
     Ok(bytes)
+}
+
+/// One face of the nonclient profile, in the order the profile stores them.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum NonclientFont { Caption, SmallCaption, Menu, Status, Message }
+
+impl NonclientFont {
+    /// Profile order, so a face and the offset it is written at cannot drift.
+    pub const AT_OFFSET: [Self; 5] = [Self::Caption, Self::SmallCaption, Self::Menu, Self::Status, Self::Message];
+}
+
+/// The `LOGFONTW` record one profile face carries. The caption face is the
+/// only bold one; every other face is the stock GUI description at regular
+/// weight, so a caller that reads a face out of the profile and one that asks
+/// for the same face by itself read one description.
+/// # C: O(1)
+pub fn logfont(role: NonclientFont) -> Result<[u8; LOGFONTW_BYTES], GdiError> {
+    let Some(stock) = stock_object(DEFAULT_GUI_FONT) else { return Err(GdiError::NoSuchObject); };
+    let StockDescription::Font(font) = stock.description else { return Err(GdiError::NoSuchObject); };
+    let mut logical = font.logical;
+    logical.weight = if role == NonclientFont::Caption { CAPTION_WEIGHT } else { BODY_WEIGHT };
+    let mut record = FontRecord::from_font(logical)?.bytes();
+    record[CHARSET] = 1;
+    record[PITCH_AND_FAMILY] = font.pitch_and_family;
+    for (i, unit) in font.face.encode_utf16().take(FACE_UNITS).enumerate() {
+        record[FACE + i * 2..FACE + 2 + i * 2].copy_from_slice(&unit.to_le_bytes());
+    }
+    Ok(record)
 }
 
 /// Logical font the profile names for menu text. It is the same face the

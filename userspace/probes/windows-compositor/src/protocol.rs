@@ -87,6 +87,25 @@ pub fn validate_title(title: &[u16]) -> Result<(), TransportError> {
     if title.len() > MAX_TITLE_UNITS || title.contains(&0) { Err(TransportError::InvalidTitle) } else { Ok(()) }
 }
 
+/// The property type a window name is published under, and the bytes that go
+/// with it. A name every unit of which is Latin-1 is published as the
+/// single-byte string type the window-name convention names; anything else has
+/// to travel as UTF-8, which is the type the extended name always uses.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TitleEncoding { Latin1(Vec<u8>), Utf8(Vec<u8>) }
+
+/// Encode one window name for the conventional `WM_NAME` property. The
+/// extended `_NET_WM_NAME` property is always UTF-8 and is encoded by the
+/// caller from the same string. # C: O(N_units)
+pub fn encode_wm_name(title: &[u16]) -> TitleEncoding {
+    let text = String::from_utf16_lossy(title);
+    if text.chars().all(|c| (c as u32) < 0x100) {
+        TitleEncoding::Latin1(text.chars().map(|c| c as u8).collect())
+    } else {
+        TitleEncoding::Utf8(text.into_bytes())
+    }
+}
+
 pub struct StreamTransport { stream: UnixStream, rx: Vec<u8>, next: u64 }
 
 impl StreamTransport {
