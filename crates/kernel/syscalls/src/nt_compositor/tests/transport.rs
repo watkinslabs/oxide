@@ -1,4 +1,4 @@
-use super::{Queue, Completion, TransportError, stream};
+use super::{Queue, Completion, Settled, TransportError, stream};
 use syscall::nt_compositor::{self as wire, Header, Opcode, Record};
 use alloc::vec;
 
@@ -255,16 +255,22 @@ fn only_a_presented_frame_reports_the_desktop_acknowledgement() {
     };
     let control = queue.enqueue(Opcode::Title, 7, b"name".to_vec()).unwrap();
     let (taken, _) = queue.take_send().unwrap(); queue.sent(taken).unwrap();
-    assert_eq!(queue.acknowledge(control, 7, 0), Ok(false));
+    assert_eq!(queue.acknowledge(control, 7, 0), Ok(Settled::Carried));
 
     let frame = queue.enqueue(Opcode::Frame, 7, pixels()).unwrap();
     let (taken, _) = queue.take_send().unwrap(); queue.sent(taken).unwrap();
-    assert_eq!(queue.acknowledge(frame, 7, 0), Ok(true));
+    assert_eq!(queue.acknowledge(frame, 7, 0), Ok(Settled::Presented));
 
-    // A frame the desktop refused is not an acknowledgement of pixels.
+    // A frame the desktop refused is not an acknowledgement of pixels, and it
+    // has to name the record refused: nobody waits on a drawing submission's
+    // completion, so this verdict is the only report a refused frame gets.
     let refused = queue.enqueue(Opcode::Frame, 7, pixels()).unwrap();
     let (taken, _) = queue.take_send().unwrap(); queue.sent(taken).unwrap();
-    assert_eq!(queue.acknowledge(refused, 7, 1), Ok(false));
+    assert_eq!(queue.acknowledge(refused, 7, 1), Ok(Settled::Refused { opcode: Opcode::Frame, status: 1 }));
+
+    let control = queue.enqueue(Opcode::Visibility, 7, 1u32.to_le_bytes().to_vec()).unwrap();
+    let (taken, _) = queue.take_send().unwrap(); queue.sent(taken).unwrap();
+    assert_eq!(queue.acknowledge(control, 7, 7), Ok(Settled::Refused { opcode: Opcode::Visibility, status: 7 }));
 }
 
 #[test]
@@ -285,10 +291,10 @@ fn a_record_in_flight_never_holds_back_the_one_behind_it() {
     queue.sent(second).unwrap();
     // Acknowledgements are matched by their own sequence, so they settle in
     // whatever order the desktop answers.
-    assert_eq!(queue.acknowledge(second, 1, 0), Ok(false));
+    assert_eq!(queue.acknowledge(second, 1, 0), Ok(Settled::Carried));
     assert_eq!(queue.take_completion(second), Ok(Completion::Presented));
     assert_eq!(queue.take_completion(first), Ok(Completion::Pending));
-    assert_eq!(queue.acknowledge(first, 1, 0), Ok(false));
+    assert_eq!(queue.acknowledge(first, 1, 0), Ok(Settled::Carried));
     assert_eq!(queue.take_completion(first), Ok(Completion::Presented));
 }
 
@@ -305,4 +311,29 @@ fn an_acknowledgement_for_a_record_the_socket_never_saw_is_refused() {
     queue.acknowledge(queued, 1, 0).unwrap();
     assert_eq!(queue.acknowledge(queued, 1, 0), Err(TransportError::Unknown));
     assert_eq!(queue.sent(pending), Err(TransportError::Unknown));
+}
+
+/// A refusal that arrives before the socket has finished handing the record
+/// over is still a refusal; the verdict does not wait on the transfer.
+#[test]
+fn a_refusal_that_races_the_transfer_is_still_reported_as_one() {
+    let mut queue = Queue::new();
+    let ticket = queue.enqueue(Opcode::Frame, 1, frame_payload()).unwrap();
+    let _ = queue.take_send().unwrap();
+    assert_eq!(queue.acknowledge(ticket, 1, 2), Ok(Settled::Refused { opcode: Opcode::Frame, status: 2 }));
+    queue.sent(ticket).unwrap();
+    assert_eq!(queue.take_completion(ticket), Ok(Completion::Failed(2)));
+}
+
+/// One pixel of a one-pixel window: the smallest payload the frame opcode
+/// admits, so these cases exercise the verdict and not the encoder.
+fn frame_payload() -> alloc::vec::Vec<u8> {
+    let mut payload = vec![];
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&4u32.to_le_bytes());
+    payload.extend_from_slice(&wire::PIXEL_BGRA8888.to_le_bytes());
+    payload.extend_from_slice(&wire::Damage { left: 0, top: 0, right: 1, bottom: 1 }.encode());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload
 }

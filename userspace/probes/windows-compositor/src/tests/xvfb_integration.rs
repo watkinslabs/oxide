@@ -353,3 +353,47 @@ fn xvfb_a_bare_popup_is_override_redirect_and_a_captioned_window_is_not() {
     assert_eq!(backend.transient_xid_for(frame), None);
     unsafe { ffi::xcb_disconnect(conn); }
 }
+
+/// A window manager sizes a window; the application does not. When the server
+/// reports the size it chose, that size is the window's, and the next frame
+/// the canonical owner paints is a frame of it. Holding the size the client
+/// asked for instead refuses that frame and every one after it, and the window
+/// keeps its last pixels for as long as it lives.
+#[test]
+fn xvfb_a_server_resize_is_adopted_so_the_next_frame_still_reaches_the_window() {
+    let server = xvfb();
+    let mut backend = Backend::connect(Some(&server.display)).unwrap();
+    let hwnd = 0x61u32;
+    backend.handle_command(BridgeCommand::Create { hwnd, title: Vec::new(), rect: Rect { left: 0, top: 0, right: 128, bottom: 128 }, parent: 0, style: 0, ex_style: 0 }).unwrap();
+    backend.handle_command(BridgeCommand::Show { hwnd }).unwrap();
+    let first = crate::Frame::new(128, 128, 128, vec![0x0011_2233u32; 128 * 128], Rect { left: 0, top: 0, right: 128, bottom: 128 }).unwrap();
+    backend.handle_command(BridgeCommand::Frame { hwnd, frame: first }).unwrap();
+
+    let xid = backend.xid_for(hwnd).unwrap();
+    let (conn, _) = unsafe { connect(&server.display) };
+    let values = [96u32, 64u32];
+    unsafe { ffi::xcb_configure_window(conn, xid, ffi::CONFIGURE_WIDTH | ffi::CONFIGURE_HEIGHT, values.as_ptr()); ffi::xcb_flush(conn); }
+    let mut configured = None;
+    for _ in 0..200 {
+        while let Some(event) = backend.poll_event() { if let BridgeEvent::Configure { hwnd: id, rect } = event { configured = Some((id, rect)); } }
+        if configured.is_some() { break; }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let (id, rect) = configured.expect("the server never reported the resize");
+    assert_eq!(id, hwnd);
+    assert_eq!((rect.right - rect.left, rect.bottom - rect.top), (96, 64));
+    assert_eq!(backend.window_layout_for_test(hwnd), Some((true, 96, 64)));
+
+    let next = crate::Frame::new(96, 64, 96, vec![0x0044_5566u32; 96 * 64], Rect { left: 0, top: 0, right: 96, bottom: 64 }).unwrap();
+    backend.handle_command(BridgeCommand::Frame { hwnd, frame: next }).expect("a frame of the window's own extent must reach the window");
+
+    let cookie = unsafe { ffi::xcb_get_image(conn, ffi::IMAGE_FORMAT_Z_PIXMAP, xid, 0, 0, 4, 4, u32::MAX) };
+    let mut err = ptr::null_mut();
+    let reply = unsafe { ffi::xcb_get_image_reply(conn, cookie, &mut err) };
+    assert!(!reply.is_null());
+    let len = unsafe { ffi::xcb_get_image_data_length(reply) };
+    let data = unsafe { std::slice::from_raw_parts(ffi::xcb_get_image_data(reply), len as usize) };
+    assert!(data.len() >= 4);
+    assert_eq!(&data[..4], &[0x66, 0x55, 0x44, 0x00]);
+    unsafe { libc::free(reply as *mut _); ffi::xcb_disconnect(conn); }
+}

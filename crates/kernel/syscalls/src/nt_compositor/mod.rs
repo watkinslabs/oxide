@@ -5,7 +5,7 @@ mod stream;
 mod capability;
 #[cfg(target_os = "oxide-kernel")]
 pub(crate) mod caret;
-pub use queue::{Completion, Queue, TransportError};
+pub use queue::{Completion, Queue, Settled, TransportError};
 #[cfg(target_os = "oxide-kernel")]
 mod binding;
 #[cfg(target_os = "oxide-kernel")]

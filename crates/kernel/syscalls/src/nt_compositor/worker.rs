@@ -1,6 +1,6 @@
 use alloc::sync::Arc;
 use syscall::nt_compositor::{self as wire, Opcode};
-use super::{binding::{self, Binding}, stream, TransportError};
+use super::{binding::{self, Binding}, stream, Settled, TransportError};
 
 const LIFETIME_CHECK_NS: u64 = 100_000_000;
 const TRANSFER_TIMEOUT_NS: u64 = 5_000_000_000;
@@ -44,6 +44,27 @@ fn trace_event(opcode: Opcode, hwnd: u64, accepted: bool) {
     klog::write_raw(if accepted { b" accepted=1\n" } else { b" accepted=0\n" });
 }
 
+/// One line per record the desktop says it did not carry out. A drawing
+/// submission is handed over and nobody waits for its verdict, so a refusal
+/// is otherwise invisible: the window keeps its last pixels and every layer
+/// above reports success. Bounded, because a refusal that repeats does so per
+/// frame and the first few name the boundary just as well.
+fn trace_refused(opcode: Opcode, hwnd: u64, sequence: u64, status: u32) {
+    use core::sync::atomic::{AtomicU32, Ordering};
+    const BUDGET: u32 = 32;
+    static SPENT: AtomicU32 = AtomicU32::new(0);
+    if SPENT.fetch_add(1, Ordering::Relaxed) >= BUDGET { return; }
+    klog::write_raw(b"[WINDOWS-BRIDGE-REFUSED] op=");
+    klog::write_hex_u64(opcode as u16 as u64);
+    klog::write_raw(b" hwnd=");
+    klog::write_hex_u64(hwnd);
+    klog::write_raw(b" seq=");
+    klog::write_hex_u64(sequence);
+    klog::write_raw(b" status=");
+    klog::write_hex_u64(status as u64);
+    klog::write_raw(b"\n");
+}
+
 fn teardown(reason: &'static [u8], sequence: u64, hwnd: u64) {
     klog::write_raw(b"[WINDOWS-BRIDGE-DOWN] reason=");
     klog::write_raw(reason);
@@ -80,8 +101,9 @@ extern "C" fn reader(arg: usize) -> ! {
                 // The desktop confirming pixels it was handed is the frame
                 // milestone; nothing waits on the completion any more, so
                 // this is where that acknowledgement is observed.
-                Ok(true) => { crate::nt_gdi_frame_trace::acknowledged(sequence); crate::nt_milestone::desktop_ack() }
-                Ok(false) => {}
+                Ok(Settled::Presented) => { crate::nt_gdi_frame_trace::acknowledged(sequence); crate::nt_milestone::desktop_ack() }
+                Ok(Settled::Carried) => {}
+                Ok(Settled::Refused { opcode, status }) => trace_refused(opcode, hwnd, sequence, status),
                 Err(_) => { teardown(b"rx-ack-unmatched", sequence, hwnd); break; }
             }
         } else {
