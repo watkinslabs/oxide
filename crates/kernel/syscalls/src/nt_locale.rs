@@ -10,9 +10,6 @@
 pub fn language_of(lcid: u32) -> u16 { lcid as u16 }
 
 const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
-/// A caller-supplied boolean carries only these two values.
-const FALSE: u64 = 0;
-const TRUE: u64 = 1;
 
 /// Which of a process's two locales one call names.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -43,22 +40,16 @@ impl Locales {
     pub fn install_language(&self) -> u16 { language_of(self.system) }
 }
 
-/// Admit a query for one of the two locales: the selector is a boolean and
-/// the answer needs somewhere to go.
+/// Admit a query for one of the two locales: the answer needs somewhere to go.
 /// # C: O(1)
 pub fn admit_locale_query(user: u64, out: u64) -> Result<Which, u64> {
     if out == 0 { return Err(STATUS_INVALID_PARAMETER); }
-    which_of(user)
+    Ok(which_of(user))
 }
 
-/// Admit a replacement locale. The identifier is 32 bits wide, so a caller
-/// that supplied more than that named no locale at all.
+/// Admit a replacement locale.
 /// # C: O(1)
-pub fn admit_locale_set(user: u64, lcid: u64) -> Result<(Which, u32), u64> {
-    let which = which_of(user)?;
-    let lcid = u32::try_from(lcid).map_err(|_| STATUS_INVALID_PARAMETER)?;
-    Ok((which, lcid))
-}
+pub fn admit_locale_set(user: u64, lcid: u64) -> (Which, u32) { (which_of(user), lcid as u32) }
 
 /// Admit a query for a language identifier.
 /// # C: O(1)
@@ -67,14 +58,15 @@ pub fn admit_language_query(out: u64) -> Result<(), u64> {
     Ok(())
 }
 
-/// Admit a replacement interface language; it is 16 bits wide.
+/// The replacement interface language a caller passed; it is 16 bits wide and
+/// the rest of the register is not part of it.
 /// # C: O(1)
-pub fn admit_language_set(language: u64) -> Result<u16, u64> {
-    u16::try_from(language).map_err(|_| STATUS_INVALID_PARAMETER)
-}
+pub fn language_argument(language: u64) -> u16 { language as u16 }
 
-fn which_of(user: u64) -> Result<Which, u64> {
-    match user { FALSE => Ok(Which::System), TRUE => Ok(Which::User), _ => Err(STATUS_INVALID_PARAMETER) }
+/// Which locale a selector names. The selector is one byte wide and any value
+/// but zero names the user's own locale, so no value of it is a caller error.
+fn which_of(user: u64) -> Which {
+    if user as u8 == 0 { Which::System } else { Which::User }
 }
 
 #[cfg(test)]
