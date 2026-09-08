@@ -199,3 +199,28 @@ fn drawn_text_carries_the_same_justified_advances_as_the_measurement() {
     // No justification produces no synthesized advances at all.
     assert_eq!(super::render::justified_advances(&font, 0, 400, 0, 0, 0, &text).unwrap(), None);
 }
+
+/// The extent query DrawText issues carries a non-null `lpnFit` and a real
+/// maximum extent; the copy-out gate recomputes the fit count from the
+/// advances it copies back and refuses the whole answer when the two
+/// disagree. Both sides must agree for every truncation point, or the query
+/// answers FALSE with the caller's SIZE untouched.
+#[test]
+fn fit_bearing_extent_answers_survive_the_copy_out_gate() {
+    super::native::prepare_fonts().unwrap();
+    let text: Vec<u16> = "Wine license".encode_utf16().collect();
+    let font = super::native::selected_font(16, 400, 0).unwrap();
+    let full = super::measure::measure(&font, &request(text.len()), &text).unwrap();
+    let width = full.output.width;
+    for max_extent in [-1, 0, 1, width / 2, width - 1, width, width + 1, 4096] {
+        let mut ask = request(text.len());
+        ask.max_extent = max_extent;
+        ask.fit = 0x3000;
+        ask.cumulative = 0;
+        let measured = super::measure::measure(&font, &ask, &text).unwrap();
+        let advances: Vec<u8> = measured.cumulative.iter().flat_map(|p| p.to_le_bytes()).collect();
+        assert!(measured.output.extent_copy_count(&ask, &advances).is_some(),
+            "copy-out gate refused a fit-bearing extent answer at max_extent {max_extent}");
+        assert_eq!(measured.output.width, width, "max_extent {max_extent} truncated the reported width");
+    }
+}
