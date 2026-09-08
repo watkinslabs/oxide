@@ -431,25 +431,32 @@ fn get_dacl(descriptor: u64, present: u64, dacl: u64, defaulted: u64) -> u64 {
 fn access_check(call: NtCall) -> u64 {
     const STATUS_ACCESS_VIOLATION: u64 = 0xc000_0005;
     const PRIVILEGE_SET_BYTES: u32 = 20;
-    if call.args.a0 == 0 || call.args.a1 == 0 || call.args.a3 == 0 || call.args.a4 == 0 || call.args.a5 == 0 { return STATUS_ACCESS_VIOLATION; }
     let Some(granted) = crate::nt_dispatch::stack_argument(6) else { return STATUS_INVALID_PARAMETER; };
     let Some(access_status) = crate::nt_dispatch::stack_argument(7) else { return STATUS_INVALID_PARAMETER; };
-    if granted == 0 || access_status == 0 { return STATUS_ACCESS_VIOLATION; }
+    let arguments = crate::nt_access_check_policy::args(
+        [call.args.a0, call.args.a1, call.args.a2, call.args.a3, call.args.a4, call.args.a5],
+        [granted, access_status]);
+    // An absent descriptor is refused for the descriptor, not for the handle:
+    // a descriptor shorter than one cannot be read as one whether the caller
+    // passed none or passed an address that does not hold one.
+    let mut descriptor = [0u8; 20];
+    let readable = call.args.a0 != 0
+        && uaccess::copy_from_user(&mut descriptor, call.args.a0).is_ok()
+        && descriptor[0] == SECURITY_DESCRIPTOR_REVISION
+        && u16::from_le_bytes([descriptor[2], descriptor[3]]) & SELF_RELATIVE != 0;
+    if let Some(status) = crate::nt_access_check_policy::refusal(arguments, readable) { return status; }
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
     let table = cur.thread_group.nt_handles();
     let token_handle = sched::nt_object::NtHandle::from_raw(call.args.a1 as u32);
     let Some(token_object) = table.get(token_handle, TOKEN_QUERY) else { return if table.contains(token_handle) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE }; };
     let Some(token) = token_object.token() else { return STATUS_INVALID_HANDLE; };
-    let mut descriptor = [0u8; 20];
-    if uaccess::copy_from_user(&mut descriptor, call.args.a0).is_err() || descriptor[0] != SECURITY_DESCRIPTOR_REVISION { return STATUS_ACCESS_VIOLATION; }
     let control = u16::from_le_bytes([descriptor[2], descriptor[3]]);
-    if control & SELF_RELATIVE == 0 { return STATUS_ACCESS_VIOLATION; }
     let capacity = uaccess::get_user_u32(call.args.a5).unwrap_or(0);
     if uaccess::put_user_u32(call.args.a5, PRIVILEGE_SET_BYTES).is_err() { return STATUS_ACCESS_VIOLATION; }
     if capacity < PRIVILEGE_SET_BYTES { return 0xc000_0023; }
     if uaccess::copy_to_user(call.args.a4, &[0u8; PRIVILEGE_SET_BYTES as usize]).is_err() { return STATUS_ACCESS_VIOLATION; }
-    let mut desired = call.args.a2 as u32;
+    let mut desired = arguments.desired_access;
     let Some(mapping) = read_mapping(call.args.a3) else { return STATUS_ACCESS_VIOLATION; };
     desired = map_generic(desired, mapping);
     let dacl = u32::from_le_bytes(descriptor[16..20].try_into().unwrap());

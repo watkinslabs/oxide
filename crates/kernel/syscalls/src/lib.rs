@@ -134,6 +134,13 @@ mod nt_alert;
 mod nt_keyed_event;
 mod nt_nls_policy;
 mod nt_thread_enum;
+// The eleven-argument thread-creation record. The NT entry adapter still
+// reads six of the eleven; the record and its contract are proved here while
+// the adapter's own owner adopts them (KI ledger row for the arity defect).
+#[allow(dead_code)]
+mod nt_thread_create_args;
+mod nt_token_args;
+mod nt_access_check_policy;
 mod nt_mapped_files;
 mod nt_processor;
 #[cfg(target_os = "oxide-kernel")]

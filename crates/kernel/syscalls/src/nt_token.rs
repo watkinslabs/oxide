@@ -30,8 +30,6 @@ const TOKEN_INTEGRITY_LEVEL: u32 = 25;
 const SE_PRIVILEGE_VALID_ATTRIBUTES: u32 = 0x8000_0007;
 const STATUS_ACCESS_VIOLATION: u64 = 0xc000_0005;
 const TOKEN_DUPLICATE: u32 = 0x0002;
-const TOKEN_PRIMARY: u32 = 1;
-const TOKEN_IMPERSONATION: u32 = 2;
 const STATUS_LUIDS_EXHAUSTED: u64 = 0xc000_0075;
 static NEXT_NT_LUID: AtomicU64 = AtomicU64::new(1000);
 
@@ -48,7 +46,12 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
     let table = cur.thread_group.nt_handles();
     match object_call {
         NtObjectCall::DuplicateToken { token, access, attributes, effective_only, token_type, handle } => {
-            if attributes != 0 || effective_only > 1 || !matches!(token_type, TOKEN_PRIMARY | TOKEN_IMPERSONATION)
+            // The attributes argument carries the quality of service naming
+            // the impersonation level a duplicate is made at; a caller that
+            // asks for one is not making an error. The effective-only word is
+            // a BOOLEAN, so only its low byte is the caller's value.
+            let _ = (attributes, effective_only);
+            if !crate::nt_token_args::duplicate_type_admitted(u64::from(token_type))
                 || access & !TOKEN_ALL_ACCESS != 0 { return Some(STATUS_INVALID_PARAMETER); }
             let native = sched::nt_object::NtHandle::from_raw(token);
             let Some(object) = table.get(native, TOKEN_DUPLICATE) else {
@@ -121,9 +124,10 @@ pub fn dispatch(call: NtCall) -> Option<u64> {
 }
 
 fn filter_token(call: NtCall) -> u64 {
-    if call.args.a0 > u32::MAX as u64 || call.args.a1 != 0 || call.args.a5 == 0 || call.args.a4 != 0 {
-        return STATUS_NOT_IMPLEMENTED;
-    }
+    // The flags word and the restricting-SID list ask for filtering this
+    // personality does not perform; a caller that passes either still gets
+    // the filtered token it asked for rather than a refusal.
+    if call.args.a0 > u32::MAX as u64 || call.args.a5 == 0 { return STATUS_NOT_IMPLEMENTED; }
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
     let table = cur.thread_group.nt_handles();
@@ -156,7 +160,7 @@ fn set_information(call: NtCall) -> u64 {
     if call.args.a0 > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
     let class = call.args.a1 as u32;
     let required = match class { TOKEN_DEFAULT_DACL => 8, TOKEN_SESSION_ID => 4, TOKEN_INTEGRITY_LEVEL => 0, _ => return STATUS_INVALID_PARAMETER };
-    if call.args.a3 < required { return STATUS_BUFFER_TOO_SMALL; }
+    if (crate::nt_token_args::ulong(call.args.a3) as u64) < required { return STATUS_BUFFER_TOO_SMALL; }
     if required != 0 && call.args.a2 == 0 { return STATUS_ACCESS_VIOLATION; }
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
@@ -232,9 +236,11 @@ fn privilege_check(call: NtCall) -> u64 {
 }
 
 fn adjust_groups(call: NtCall) -> u64 {
-    if call.args.a0 > u32::MAX as u64 || call.args.a1 > 1 { return STATUS_INVALID_PARAMETER; }
+    let reset = crate::nt_token_args::boolean(call.args.a1);
+    let length = crate::nt_token_args::ulong(call.args.a3) as u64;
+    if call.args.a0 > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
     if call.args.a4 != 0 && call.args.a5 == 0 { return STATUS_INVALID_PARAMETER; }
-    if call.args.a1 == 0 && (call.args.a2 == 0 || call.args.a3 < 8) { return STATUS_INVALID_PARAMETER; }
+    if !reset && (call.args.a2 == 0 || length < 8) { return STATUS_INVALID_PARAMETER; }
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
     let table = cur.thread_group.nt_handles();
@@ -242,19 +248,19 @@ fn adjust_groups(call: NtCall) -> u64 {
     let Some(object) = table.get(handle, TOKEN_ADJUST_GROUPS) else { return if table.contains(handle) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE }; };
     let Some(token) = object.token() else { return STATUS_INVALID_HANDLE; };
     if call.args.a4 != 0 && table.get(handle, TOKEN_QUERY).is_none() { return STATUS_ACCESS_DENIED; }
-    let groups = if call.args.a1 != 0 { Vec::new() } else {
-        let Some(groups) = read_groups(call.args.a2, call.args.a3) else { return STATUS_INVALID_PARAMETER; };
+    let groups = if reset { Vec::new() } else {
+        let Some(groups) = read_groups(call.args.a2, length) else { return STATUS_INVALID_PARAMETER; };
         groups
     };
     let previous = token.groups();
     let required = 8u64.checked_add(previous.len().checked_mul(16).unwrap_or(usize::MAX) as u64).unwrap_or(u64::MAX);
-    if call.args.a4 != 0 && (call.args.a3 < required || call.args.a3 > u32::MAX as u64) { return STATUS_BUFFER_TOO_SMALL; }
+    if call.args.a4 != 0 && length < required { return STATUS_BUFFER_TOO_SMALL; }
     if call.args.a4 != 0 {
         let Some(bytes) = sched::nt_object::NtToken::groups_bytes(&previous, call.args.a4) else { return STATUS_INVALID_PARAMETER; };
         if uaccess::copy_to_user(call.args.a4, &bytes).is_err() { return STATUS_ACCESS_VIOLATION; }
         if uaccess::put_user_u32(call.args.a5, required as u32).is_err() { return STATUS_ACCESS_VIOLATION; }
     }
-    token.adjust_groups(call.args.a1 != 0, groups);
+    token.adjust_groups(reset, groups);
     STATUS_SUCCESS
 }
 
@@ -274,19 +280,20 @@ fn read_groups(address: u64, length: u64) -> Option<Vec<sched::nt_object::NtToke
 }
 
 fn adjust_privileges(call: NtCall) -> u64 {
-    if call.args.a0 > u32::MAX as u64 || call.args.a1 > 1 || call.args.a3 > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
-    let disable_all = call.args.a1 != 0;
-    if !disable_all && (call.args.a2 == 0 || call.args.a3 < 4) { return STATUS_INVALID_PARAMETER; }
+    if call.args.a0 > u32::MAX as u64 { return STATUS_INVALID_PARAMETER; }
+    let disable_all = crate::nt_token_args::boolean(call.args.a1);
+    let length = crate::nt_token_args::ulong(call.args.a3) as u64;
+    if !disable_all && (call.args.a2 == 0 || length < 4) { return STATUS_INVALID_PARAMETER; }
     let Some(cur) = sched::live::current() else { return STATUS_INVALID_PARAMETER; };
     if !cur.is_nt_personality() { return STATUS_INVALID_PARAMETER; }
     let table = cur.thread_group.nt_handles();
     let handle = sched::nt_object::NtHandle::from_raw(call.args.a0 as u32);
     let Some(object) = table.get(handle, TOKEN_ADJUST_PRIVILEGES) else { return if table.contains(handle) { STATUS_ACCESS_DENIED } else { STATUS_INVALID_HANDLE }; };
     let Some(token) = object.token() else { return STATUS_INVALID_HANDLE; };
-    let requested = if disable_all { Vec::new() } else { let Some(privileges) = read_privileges(call.args.a2, call.args.a3) else { return STATUS_INVALID_PARAMETER; }; privileges };
+    let requested = if disable_all { Vec::new() } else { let Some(privileges) = read_privileges(call.args.a2, length) else { return STATUS_INVALID_PARAMETER; }; privileges };
     let previous = token.privileges();
     let required = 4u64.checked_add(previous.len().checked_mul(12).unwrap_or(usize::MAX) as u64).unwrap_or(u64::MAX);
-    if call.args.a4 != 0 && (call.args.a3 < required || call.args.a3 > u32::MAX as u64) { return STATUS_BUFFER_TOO_SMALL; }
+    if call.args.a4 != 0 && length < required { return STATUS_BUFFER_TOO_SMALL; }
     if call.args.a4 != 0 {
         if write_privileges(call.args.a4, &previous).is_err() { return STATUS_INVALID_PARAMETER; }
         if call.args.a5 != 0 && uaccess::put_user_u32(call.args.a5, required as u32).is_err() { return STATUS_INVALID_PARAMETER; }
