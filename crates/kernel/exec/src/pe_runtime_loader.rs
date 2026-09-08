@@ -83,6 +83,13 @@ pub fn load(blob: &[u8], runtime_blob: &[u8], as_: &AddressSpace,
     let image = crate::pe_loader::load_pe_image_unbound(blob, as_)?;
     let runtime = crate::pe_loader::load_pe_image_unbound_with_slots(runtime_blob, as_, &slots)?;
     let init = runtime_init_entry(&runtime_parsed, runtime.base)?;
+    // Publish both mapped images in the address space's PE registry. It is the
+    // only record of where PE text lives, and the syscall router reads it to
+    // tell a service stub's ordinal from a Linux call issued by the native
+    // text sharing this address space. Unwinding and the image-view queries
+    // read the same registry; a handover that published nothing left every one
+    // of them blind.
+    register_runtime_images(as_, blob, &image, runtime_blob, &runtime)?;
 
     let mut environment_input = input.clone();
     environment_input.image_base = image.base;
@@ -111,6 +118,28 @@ pub fn load(blob: &[u8], runtime_blob: &[u8], as_: &AddressSpace,
     let startup = crate::pe_startup::PeStartupTransaction::begin_with_transfer(as_, &image, &environment,
         stack_base, stack_top, &entry, init)?;
     Ok(RuntimeHandover { image, runtime, environment, entry, context, context_image, startup })
+}
+
+/// Register the two kernel-mapped images of a runtime handover.
+/// # C: O(PE metadata + export tables)
+fn register_runtime_images(as_: &AddressSpace, blob: &[u8], image: &PeLoadedImage,
+    runtime_blob: &[u8], runtime: &PeLoadedImage) -> Result<(), pe::Error>
+{
+    let parsed = [pe::parse(blob)?, pe::parse(runtime_blob)?];
+    let images = [image, runtime];
+    let mut modules = alloc::vec::Vec::new();
+    for (image, parsed) in images.iter().zip(&parsed) {
+        modules.push(crate::pe_modules::PeRuntimeModule {
+            base: image.base, size: image.size,
+            exception_rva: image.exception_directory.0, exception_size: image.exception_directory.1,
+            exception_functions: parsed.exception_functions()?,
+        });
+    }
+    crate::pe_modules::register(as_, &modules);
+    for (image, parsed) in images.iter().zip(&parsed) {
+        if let Some(rvas) = parsed.export_rvas()? { crate::pe_modules::register_exports(as_, image.base, rvas); }
+    }
+    Ok(())
 }
 
 /// Map the pages the startup record occupies, carrying the record itself, over

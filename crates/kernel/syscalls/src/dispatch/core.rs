@@ -56,6 +56,28 @@ fn dispatch_nt_call(call: syscall::nt::NtCall) -> i64 {
     crate::nt_dispatch::dispatch(call) as i64
 }
 
+/// May the raw (untagged) ordinal tables claim this syscall word?
+///
+/// The rule and its tests are in `crate::nt_syscall_origin`; this is the
+/// kernel-side adapter that reads the two inputs — the personality, and the
+/// trapped user return address the entry frame carries — and looks the address
+/// up in the address space's own PE image registry.
+/// # C: O(N_images)
+#[inline]
+fn raw_nt_ordinals_claimed() -> bool {
+    use crate::nt_syscall_origin::{claims_raw_nt_ordinal, origin_of, PeImageExtent, SyscallOrigin};
+    let Some(task) = sched::live::current() else { return false; };
+    if !task.is_nt_personality() { return false; }
+    // SAFETY: the running task owns its address-space slot for the whole of this dispatch; the clone keeps the VMM state alive across the lookup.
+    let Some(mm) = (unsafe { task.mm_ref() }).map(|mm| mm.clone()) else { return false; };
+    let pc = crate::arch_frame::current_user_pc();
+    let origin = elf_load::pe_modules::with_modules(mm.root_pa(), |modules| {
+        if modules.is_empty() { return SyscallOrigin::Native; }
+        origin_of(pc, modules.iter().map(|module| PeImageExtent { base: module.base, size: module.size as u64 }))
+    });
+    claims_raw_nt_ordinal(true, origin)
+}
+
 #[inline(never)]
 fn dispatch_routed_syscall(entry: (Option<u64>, u64), nr: u64, args: &SyscallArgs) -> i64 {
     if let Some(rv) = entry.0 { return rv as i64; }
@@ -77,7 +99,7 @@ fn dispatch_routed_syscall(entry: (Option<u64>, u64), nr: u64, args: &SyscallArg
         klog::write_raw(b"[WINDOWS-PE-WINE-RAW-ENTRY] ordinal=");
         klog::write_hex_u64(nr);
         klog::write_raw(b" nt=");
-        klog::write_hex_u64(sched::live::current().is_some_and(|task| task.is_nt_personality()) as u64);
+        klog::write_hex_u64(raw_nt_ordinals_claimed() as u64);
         klog::write_raw(b"\n");
     }
     // No per-syscall or per-callback ordinal trace runs here. Every emitted
@@ -92,7 +114,7 @@ fn dispatch_routed_syscall(entry: (Option<u64>, u64), nr: u64, args: &SyscallArg
     // Real Wine win32u PE stubs use their generated raw ordinal namespace
     // rather than Oxide's tagged synthetic dispatcher entry. Only an NT task
     // may claim this otherwise-unreserved raw number.
-    if sched::live::current().is_some_and(|task| task.is_nt_personality()) {
+    if raw_nt_ordinals_claimed() {
         if let Some(rv) = crate::nt_wine_window::dispatch_raw_linux(nr, *args) { return rv as i64; }
         if crate::nt_wine_window::unclaimed::is_win32u_ordinal(nr) {
             static SEEN: crate::nt_wine_window::unclaimed::Seen = crate::nt_wine_window::unclaimed::Seen::new();

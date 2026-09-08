@@ -1476,7 +1476,11 @@ fn dispatch_service(call: NtCall) -> u64 {
                 let Some(vma) = mm.find_vma(base) else { return STATUS_MEMORY_NOT_ALLOCATED; };
                 if !vma.flags.contains(vmm::VmaFlags::NT_SECTION_VIEW) || vma.mapping_origin.is_none() { return STATUS_MEMORY_NOT_ALLOCATED; }
                 let Ok((start, len)) = mm.mapping_origin_extent(vma.mapping_origin.unwrap()) else { return STATUS_MEMORY_NOT_ALLOCATED; };
-                if elf_load::nt_unmap::unmap_range(&mm, start, len).is_ok() { STATUS_SUCCESS } else { STATUS_MEMORY_NOT_ALLOCATED }
+                if elf_load::nt_unmap::unmap_range(&mm, start, len).is_err() { return STATUS_MEMORY_NOT_ALLOCATED; }
+                // The extent no longer holds PE text; a record left behind
+                // would keep answering for whatever maps here next.
+                elf_load::pe_modules::unregister(mm.root_pa(), start.as_u64());
+                STATUS_SUCCESS
             }
             NtObjectCall::UnmapViewOfSectionEx { process, base, flags } => {
                 if !crate::nt_process_handles::permits_current_process(process, &cur, crate::nt_process_handles::PROCESS_VM_OPERATION)
@@ -1486,7 +1490,11 @@ fn dispatch_service(call: NtCall) -> u64 {
                 let Some(vma) = mm.find_vma(base) else { return STATUS_MEMORY_NOT_ALLOCATED; };
                 if !vma.flags.contains(vmm::VmaFlags::NT_SECTION_VIEW) || vma.mapping_origin.is_none() { return STATUS_MEMORY_NOT_ALLOCATED; }
                 let Ok((start, len)) = mm.mapping_origin_extent(vma.mapping_origin.unwrap()) else { return STATUS_MEMORY_NOT_ALLOCATED; };
-                if elf_load::nt_unmap::unmap_range(&mm, start, len).is_ok() { STATUS_SUCCESS } else { STATUS_MEMORY_NOT_ALLOCATED }
+                if elf_load::nt_unmap::unmap_range(&mm, start, len).is_err() { return STATUS_MEMORY_NOT_ALLOCATED; }
+                // The extent no longer holds PE text; a record left behind
+                // would keep answering for whatever maps here next.
+                elf_load::pe_modules::unregister(mm.root_pa(), start.as_u64());
+                STATUS_SUCCESS
             }
             NtObjectCall::QuerySection { section, class, info, length, return_length } => {
                 // The class and the buffer length are answered before the

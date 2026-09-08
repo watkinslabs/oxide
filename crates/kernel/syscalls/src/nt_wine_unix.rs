@@ -523,6 +523,12 @@ fn server_map_image_view(args: u64, table: &sched::nt_object::NtHandleTable) -> 
         let _ = mm.munmap(mapped, mapped_size);
         return server_reply(args, STATUS_NO_MEMORY);
     }
+    // An image view IS mapped PE text: publish its extent so the syscall
+    // router can tell this module's service stubs from the native code that
+    // shares the address space.
+    elf_load::pe_modules::append(&mm, elf_load::pe_modules::PeRuntimeModule {
+        base: mapped.as_u64(), size: mapped_size as u32,
+        exception_rva: 0, exception_size: 0, exception_functions: alloc::vec::Vec::new() });
     server_reply(args, STATUS_SUCCESS)
 }
 
@@ -557,7 +563,11 @@ fn server_unmap_view(args: u64) -> u64 {
     let Some(vma) = mm.find_vma(base) else { return STATUS_MEMORY_NOT_ALLOCATED; };
     if vma.start != base || !vma.flags.contains(vmm::VmaFlags::NT_SECTION_VIEW) || vma.mapping_origin.is_none() { return STATUS_MEMORY_NOT_ALLOCATED; }
     let Ok((start, len)) = mm.mapping_origin_extent(vma.mapping_origin.unwrap()) else { return STATUS_MEMORY_NOT_ALLOCATED; };
-    if elf_load::nt_unmap::unmap_range(&mm, start, len).is_ok() { STATUS_SUCCESS } else { STATUS_MEMORY_NOT_ALLOCATED }
+    if elf_load::nt_unmap::unmap_range(&mm, start, len).is_err() { return STATUS_MEMORY_NOT_ALLOCATED; }
+    // The extent no longer holds PE text; a record left behind would keep
+    // answering for whatever maps here next.
+    elf_load::pe_modules::unregister(mm.root_pa(), start.as_u64());
+    STATUS_SUCCESS
 }
 
 #[cfg(target_os = "oxide-kernel")]

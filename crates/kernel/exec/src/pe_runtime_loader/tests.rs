@@ -195,3 +195,39 @@ fn the_runtime_finds_its_own_module_handle_by_querying_its_text() {
     crate::elf_modules::clear(as_.root_pa());
     syscall::nt::ordinals::clear();
 }
+
+/// The handover publishes both mapped images in the address space's PE
+/// registry. That registry is what tells a service stub's syscall from a
+/// Linux syscall issued by the native text sharing the address space, so a
+/// handover that registered nothing made every caller in the process look
+/// native — and, read the other way, made the personality alone decide.
+#[test]
+fn the_handover_publishes_both_images_in_the_pe_registry() {
+    let _guard = crate::nt_ordinals::TABLE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (Some(exe), Some(runtime_blob)) = (staged("notepad.exe"), staged("ntdll.dll")) else { return };
+    let as_ = vmm::AddressSpace::new(0x100_400).expect("address space must initialize");
+    let stack_bytes = 0x20_000usize;
+    let stack = as_.mmap(None, stack_bytes, VmaProt::READ | VmaProt::WRITE, VmaFlags::PRIVATE,
+        VmaBacking::Anonymous, false).expect("thread stack must map");
+    syscall::nt::ordinals::clear();
+    crate::pe_modules::clear(as_.root_pa());
+    let handover = load(&exe, &runtime_blob, &as_, &input(), stack.as_u64(), stack.as_u64() + stack_bytes as u64)
+        .expect("the runtime handover must load");
+
+    let bases = crate::pe_modules::with_modules(as_.root_pa(),
+        |modules| modules.iter().map(|module| module.base).collect::<Vec<_>>());
+    assert_eq!(bases.len(), 2);
+    assert!(bases.contains(&handover.image.base) && bases.contains(&handover.runtime.base));
+
+    // Both entry points attribute to their own image; the thread stack, which
+    // is where native code and its return addresses live, attributes to none.
+    assert_eq!(crate::pe_modules::find(as_.root_pa(), handover.image.entry.as_u64()).map(|m| m.base),
+        Some(handover.image.base));
+    assert_eq!(crate::pe_modules::find(as_.root_pa(), handover.entry.rip.as_u64()).map(|m| m.base),
+        Some(handover.runtime.base));
+    assert!(crate::pe_modules::find(as_.root_pa(), stack.as_u64()).is_none());
+
+    crate::pe_modules::clear(as_.root_pa());
+    crate::elf_modules::clear(as_.root_pa());
+    syscall::nt::ordinals::clear();
+}
