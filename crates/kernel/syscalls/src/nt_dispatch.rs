@@ -100,8 +100,6 @@ const MEM_RESERVE: u32 = 0x2000;
 #[cfg(target_os = "oxide-kernel")]
 const MEM_COMMIT: u32 = 0x1000;
 #[cfg(target_os = "oxide-kernel")]
-const MEM_FREE: u32 = 0x10000;
-#[cfg(target_os = "oxide-kernel")]
 const MEM_TOP_DOWN: u32 = 0x100000;
 #[cfg(target_os = "oxide-kernel")]
 const MEM_WRITE_WATCH: u32 = 0x00200000;
@@ -111,8 +109,6 @@ const WRITE_WATCH_FLAG_RESET: u64 = 1;
 const MEM_RELEASE: u32 = 0x8000;
 #[cfg(target_os = "oxide-kernel")]
 const MEMORY_BASIC_INFORMATION_CLASS: u32 = 0;
-#[cfg(target_os = "oxide-kernel")]
-const MEMORY_BASIC_INFORMATION_BYTES: usize = 48;
 #[cfg(target_os = "oxide-kernel")]
 const STATUS_SUCCESS: u64 = 0;
 #[cfg(target_os = "oxide-kernel")]
@@ -137,7 +133,6 @@ const STATUS_BUFFER_TOO_SMALL: u64 = 0xc000_0023;
 #[cfg(target_os = "oxide-kernel")]
 const STATUS_ACCESS_DENIED: u64 = 0xc000_0022;
 const STATUS_SUSPEND_COUNT_EXCEEDED: u64 = 0xc000_004a;
-#[cfg(target_os = "oxide-kernel")]
 #[cfg(target_os = "oxide-kernel")]
 const STATUS_NOT_SAME_OBJECT: u64 = 0xc000_01ac;
 pub(crate) const STATUS_INFO_LENGTH_MISMATCH: u64 = 0xc000_0004;
@@ -335,6 +330,49 @@ fn compare_objects(cur: &sched::Task, first: u64, second: u64) -> u64 {
 /// # C: O(log N_vmas) plus usercopy
 #[cfg(target_os = "oxide-kernel")]
 pub fn dispatch(call: NtCall) -> u64 {
+    let status = dispatch_service(call);
+    if status_reportable(status, 0) {
+        let seen = REPORTED_STATUSES.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        if status_reportable(status, seen) { report_status(call, status); }
+    }
+    status
+}
+
+/// Failing NT results already reported. A refusal that names neither the
+/// service nor the status leaves a caller inferring which of four calls in a
+/// load sequence answered, which is not inferable from the status alone.
+#[cfg(target_os = "oxide-kernel")]
+static REPORTED_STATUSES: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// Reports left before the trace goes quiet. A refusal storm must not become
+/// the boot log.
+pub(crate) const MAX_REPORTED_STATUSES: u32 = 4096;
+
+/// Whether one answered status is worth a line: the NT status severity field
+/// marks an error, and the report budget is not yet spent. A warning or an
+/// informational status left a usable result behind and is not a refusal.
+/// # C: O(1)
+pub(crate) const fn status_reportable(status: u64, already_reported: u32) -> bool {
+    status & 0xc000_0000 == 0xc000_0000 && already_reported < MAX_REPORTED_STATUSES
+}
+
+/// Name the service that refused and the status it answered with.
+/// # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+fn report_status(call: NtCall, status: u64) {
+    klog::write_raw(b"[WINDOWS-NT-STATUS] service=");
+    klog::write_hex_u64(call.service as u32 as u64);
+    klog::write_raw(b" status=");
+    klog::write_hex_u64(status);
+    klog::write_raw(b" a0=");
+    klog::write_hex_u64(call.args.a0);
+    klog::write_raw(b" a1=");
+    klog::write_hex_u64(call.args.a1);
+    klog::write_raw(b"\n");
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn dispatch_service(call: NtCall) -> u64 {
     if call.service == nt::NtService::BindCompositor {
         crate::nt_compositor::set_event_handler(crate::nt_window::compositor_event);
         return crate::nt_compositor::bind_service(call.args.a0);
@@ -1722,7 +1760,7 @@ pub fn dispatch(call: NtCall) -> u64 {
             let old = match elf_load::nt_memory::protect(&mm, base, size, protection) { Ok(old) => old, Err(_) => return STATUS_INVALID_PARAMETER };
             if uaccess::put_user_u64(base_ptr, base.as_u64()).is_err()
                 || uaccess::put_user_u64(size_ptr, size as u64).is_err()
-                || uaccess::put_user_u32(old_protect.as_u64(), windows_protection_word(old)).is_err() { return STATUS_INVALID_PARAMETER; }
+                || uaccess::put_user_u32(old_protect.as_u64(), elf_load::nt_memory::windows_protection_word(old)).is_err() { return STATUS_INVALID_PARAMETER; }
             STATUS_SUCCESS
         }
         NtMemoryCall::Query { process, address, info_class, info, info_size, return_length } => {
@@ -1730,7 +1768,8 @@ pub fn dispatch(call: NtCall) -> u64 {
                 process, address, info_class, info.as_u64(), info_size,
                 return_length.map(|pointer| pointer.as_u64()),
             ) { return status; }
-            if info_class != MEMORY_BASIC_INFORMATION_CLASS || info_size < MEMORY_BASIC_INFORMATION_BYTES as u64 { return STATUS_INVALID_PARAMETER; }
+            if info_class != MEMORY_BASIC_INFORMATION_CLASS { return STATUS_INVALID_PARAMETER; }
+            if info_size < elf_load::nt_memory::BASIC_MEMORY_INFORMATION_BYTES as u64 { return STATUS_INFO_LENGTH_MISMATCH; }
             let address = match hal::UserVirtAddr::new(address) { Some(address) => address, None => return STATUS_INVALID_PARAMETER };
             let memory = match elf_load::nt_memory::query(&mm, address) {
                 Ok(memory) => memory,
@@ -1740,20 +1779,10 @@ pub fn dispatch(call: NtCall) -> u64 {
                 },
                 Err(_) => return STATUS_INVALID_PARAMETER,
             };
-            let mut bytes = [0u8; MEMORY_BASIC_INFORMATION_BYTES];
-            bytes[0..8].copy_from_slice(&memory.base.as_u64().to_ne_bytes());
-            bytes[8..16].copy_from_slice(&memory.allocation_base.as_u64().to_ne_bytes());
-            bytes[16..20].copy_from_slice(&windows_protection_word(memory.protection).to_ne_bytes());
-            bytes[20..24].copy_from_slice(&windows_protection_word(memory.may_protection).to_ne_bytes());
-            bytes[24..32].copy_from_slice(&(memory.size as u64).to_ne_bytes());
-            let state = if memory.allocation_base.as_u64() == 0 { MEM_FREE } else if memory.committed { MEM_COMMIT } else { MEM_RESERVE };
-            bytes[32..36].copy_from_slice(&state.to_ne_bytes());
-            bytes[36..40].copy_from_slice(&windows_protection_word(memory.protection).to_ne_bytes());
-            let kind: u32 = if memory.allocation_base.as_u64() == 0 { 0 } else if memory.mapped_view { 0x40000 } else { 0x20000 };
-            bytes[40..44].copy_from_slice(&kind.to_ne_bytes());
+            let bytes = elf_load::nt_memory::encode_basic_information(&memory);
             if uaccess::copy_to_user(info.as_u64(), &bytes).is_err() { return STATUS_INVALID_PARAMETER; }
             if let Some(return_length) = return_length {
-                if uaccess::put_user_u64(return_length.as_u64(), MEMORY_BASIC_INFORMATION_BYTES as u64).is_err() { return STATUS_INVALID_PARAMETER; }
+                if uaccess::put_user_u64(return_length.as_u64(), elf_load::nt_memory::BASIC_MEMORY_INFORMATION_BYTES as u64).is_err() { return STATUS_INVALID_PARAMETER; }
             }
             STATUS_SUCCESS
         }
@@ -1774,21 +1803,21 @@ pub fn dispatch(call: NtCall) -> u64 {
         NtMemoryCall::Unlock { address, size, unknown: _, .. } => crate::nt_memory_lock::unlock(&mm, address, size),
     }
 }
-#[cfg(target_os = "oxide-kernel")]
-fn windows_protection_word(protection: vmm::VmaProt) -> u32 {
-    match (protection.contains(vmm::VmaProt::READ), protection.contains(vmm::VmaProt::WRITE), protection.contains(vmm::VmaProt::EXEC)) {
-        (false, false, false) => 0x01,
-        (true, false, false) => 0x02,
-        (true, true, false) => 0x04,
-        (false, false, true) => 0x10,
-        (true, false, true) => 0x20,
-        (true, true, true) => 0x40,
-        _ => 0x01,
-    }
-}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn only_an_error_status_inside_the_report_budget_is_traced() {
+        // The four statuses the load sequence can answer with.
+        assert!(status_reportable(0xc000_000d, 0), "an invalid-parameter refusal is reported");
+        assert!(status_reportable(0xc000_0034, 0), "a name-not-found refusal is reported");
+        assert!(!status_reportable(0, 0), "success is not a refusal");
+        assert!(!status_reportable(0x4000_0003, 0), "a view away from the preferred base is not a refusal");
+        assert!(!status_reportable(0x8000_0005, 0), "a warning left a usable result behind");
+        assert!(status_reportable(0xc000_000d, MAX_REPORTED_STATUSES - 1));
+        assert!(!status_reportable(0xc000_000d, MAX_REPORTED_STATUSES), "the budget bounds the burst");
+    }
+
     #[test]
     fn untagged_linux_entry_is_not_an_nt_call() {
         let args = SyscallArgs { a0: 1, a1: 2, a2: 3, a3: 4, a4: 5, a5: 6 };

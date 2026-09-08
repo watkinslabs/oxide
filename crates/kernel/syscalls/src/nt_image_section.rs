@@ -44,7 +44,7 @@ pub(crate) fn map_view(mm: &vmm::AddressSpace, image: &pe::ImageSection, request
     };
     let widest = elf_load::nt_image_section::span_protection(image.max_prot()) | vmm::VmaProt::WRITE;
     let mapped = match mm.mmap_with_may_at(placement, len, vmm::VmaProt::READ, widest,
-        vmm::VmaFlags::PRIVATE | vmm::VmaFlags::NT_SECTION_VIEW,
+        vmm::VmaFlags::PRIVATE | vmm::VmaFlags::NT_SECTION_VIEW | vmm::VmaFlags::NT_IMAGE_VIEW,
         vmm::VmaBacking::KernelBytes { data: Arc::clone(&image.bytes), off: 0 }) {
         Ok(mapped) => mapped,
         Err(vmm::MmapError::Exists) => return Err(crate::nt_dispatch::STATUS_CONFLICTING_ADDRESSES),
