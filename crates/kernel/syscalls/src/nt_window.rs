@@ -85,6 +85,8 @@ pub(crate) mod bridge;
 mod geom_trace;
 #[path = "nt_window/keyboard.rs"]
 mod keyboard;
+#[path = "nt_window/key_message.rs"]
+pub(crate) mod key_message;
 #[path = "nt_window/query.rs"]
 mod query;
 #[path = "nt_window/imc.rs"]
@@ -161,6 +163,10 @@ struct GuiEntry { group: Weak<sched::thread_group::ThreadGroup>, state: ipc::win
     /// Alt and F10 open a menu bar on release, so the press is latched here
     /// until the release or the key that cancels it arrives.
     key_menu: ipc::win32_window::nonclient_menu::KeyMenuLatch,
+    /// Desktop key state and the Alt latch that decide whether one hardware
+    /// key transition is an ordinary or a system message, and which character
+    /// message the text following it becomes.
+    sys_key: key_message::SysKeyLatch,
     /// Latched once any thread of this process has drained its input, which is
     /// what an input-idle wait on the process waits for. Nothing clears it.
     idle: bool,

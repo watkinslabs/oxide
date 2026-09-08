@@ -5,15 +5,14 @@ use syscall::nt_compositor::{self as wire, Opcode, Record};
 
 #[cfg(test)]
 use gui::{WM_MOVE, WM_SIZE};
-use gui::hardware::WM_CHAR;
-const WM_SYSKEYDOWN: u32 = 0x0104;
-const WM_SYSKEYUP: u32 = 0x0105;
+use super::key_message::{KEY_ALT, SysKeyLatch};
 const KEY_EXTENDED: u32 = 1 << 24;
-const KEY_ALT: u32 = 1 << 29;
 const KEY_PREVIOUS: u32 = 1 << 30;
 const KEY_RELEASE: u32 = 1 << 31;
-// Wire modifiers use Win32 key-lParam bits, not X11 modifier masks.
-const KEY_FLAGS: u32 = KEY_EXTENDED | KEY_ALT | KEY_PREVIOUS;
+// Wire modifiers use Win32 key-lParam bits, not X11 modifier masks. The Alt
+// context bit is not among them: the keyboard source reports a transition, and
+// the state that bit reports is this side's own.
+const KEY_FLAGS: u32 = KEY_EXTENDED | KEY_PREVIOUS;
 const POINTER_FLAGS: u32 = 0x007f;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -96,7 +95,7 @@ fn keyboard_target(state: &WindowManager, source: WindowId) -> WindowId {
 /// Pointer mutation is delegated to that manager, never retained in the adapter.
 /// # C: O(windows + text + queued messages)
 pub(super) fn apply_event(
-    state: &mut WindowManager, record: &Record,
+    state: &mut WindowManager, keys: &mut SysKeyLatch, record: &Record,
     pointer: impl FnOnce(&mut WindowManager, WindowId, i32, i32, u32, i32, i32) -> bool,
 ) -> bool {
     if record.validate().is_err() { return false; }
@@ -126,19 +125,26 @@ pub(super) fn apply_event(
             let pressed = wire::u32_at(p, 8) == Ok(1);
             let modifiers = wire::u32_at(p, 12).unwrap_or(u32::MAX);
             if key == 0 || key > 0xff || scan > 0xff || modifiers & !KEY_FLAGS != 0 { return false; }
-            let flags = 1 | (scan << 16) | modifiers | if pressed { 0 } else { KEY_PREVIOUS | KEY_RELEASE };
-            let message = match (modifiers & KEY_ALT != 0, pressed) {
-                (true, true) => WM_SYSKEYDOWN, (true, false) => WM_SYSKEYUP,
-                (false, true) => gui::WM_KEYDOWN, (false, false) => gui::WM_KEYUP,
-            };
+            // The source states the transition; which message it becomes, and
+            // the Alt context bit, are decided here against the key state this
+            // side keeps - before the transition for the message, after it for
+            // the bit.
+            let decision = keys.key(key as u8, pressed);
+            let flags = 1 | (scan << 16) | modifiers | if decision.alt_context { KEY_ALT } else { 0 }
+                | if pressed { 0 } else { KEY_PREVIOUS | KEY_RELEASE };
             let target = keyboard_target(state, id);
-            state.post_compositor_key(target, WinMessage { hwnd: Some(target), message, wparam: key as u64, lparam: flags as i64 }).is_ok()
+            keys.note_key_message(decision.message, flags as i64);
+            state.post_compositor_key(target, WinMessage { hwnd: Some(target), message: decision.message, wparam: key as u64, lparam: flags as i64 }).is_ok()
         }
         Opcode::Text => {
             let Ok(text) = core::str::from_utf8(p) else { return false; };
             let target = keyboard_target(state, id);
             if state.check_message_capacity(target, text.encode_utf16().count()).is_err() { return false; }
-            for unit in text.encode_utf16() { if !post(state, target, WM_CHAR, unit as u64, 1) { return false; } }
+            // Text belongs to the key transition that produced it: a system
+            // key-down makes system characters, and they carry that key's own
+            // lParam so the default procedure reads its Alt context bit.
+            let (message, lparam) = keys.char_message();
+            for unit in text.encode_utf16() { if !post(state, target, message, unit as u64, lparam) { return false; } }
             true
         }
         Opcode::Pointer => {
@@ -264,7 +270,7 @@ mod live {
         let (accepted, wait) = {
             let mut entries = super::super::GUI.lock();
             let Some(entry) = entries.iter_mut().find(|e| e.group.ptr_eq(&Arc::downgrade(group))) else { return false; };
-            let accepted = apply_event(&mut entry.state, record, |state, id, x, y, buttons, wheel, hwheel| {
+            let accepted = apply_event(&mut entry.state, &mut entry.sys_key, record, |state, id, x, y, buttons, wheel, hwheel| {
                 state.post_compositor_pointer(id, x, y, buttons, wheel, hwheel).is_ok()
             });
             if accepted && record.header.opcode == Opcode::Focus { entry.foreground = entry.state.active_window().is_some(); }
@@ -287,6 +293,9 @@ pub(crate) use live::{handle_event, publish_create_current, publish_destroy_curr
 #[cfg(test)]
 #[path = "bridge/tests/events.rs"]
 mod tests;
+#[cfg(test)]
+#[path = "bridge/tests/keys.rs"]
+mod key_tests;
 #[cfg(test)]
 #[path = "bridge/tests/focus.rs"]
 mod focus_tests;
