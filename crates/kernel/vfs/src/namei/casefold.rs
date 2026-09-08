@@ -55,11 +55,20 @@ impl DirEmit for MatchingName<'_> {
     }
 }
 
+/// Whether a component may be resolved by folding at all. The empty name and
+/// the two directory entries the walk owns itself are never resolved by a
+/// scan: they have exactly one spelling, and an exact lookup has already
+/// answered for them.
+/// # C: O(1)
+pub(crate) fn resolvable_component(wanted: &str) -> bool {
+    !wanted.is_empty() && wanted != "." && wanted != ".."
+}
+
 /// The stored spelling of `wanted` in `dir`, or `None` when the directory has
 /// no entry equal to it under case folding.
 /// # C: O(directory entries)
 pub(crate) fn stored_name(dir: &Inode, wanted: &str) -> Option<String> {
-    if wanted.is_empty() || wanted == "." || wanted == ".." { return None; }
+    if !resolvable_component(wanted) { return None; }
     let mut actor = MatchingName { wanted, found: None, scanned: 0 };
     let mut ctx = DirContext::new(0, &mut actor);
     let _ = dir.readdir(&mut ctx);

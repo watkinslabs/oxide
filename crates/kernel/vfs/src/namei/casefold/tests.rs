@@ -21,29 +21,25 @@ fn folding_is_not_limited_to_ascii() {
     assert!(!names_fold_equal("é", "e"));
 }
 
+fn scan(wanted: &str, entries: &[&str]) -> Option<alloc::string::String> {
+    let mut actor = MatchingName { wanted, found: None, scanned: 0 };
+    for entry in entries {
+        if !actor.emit(entry, 1, FileType::Directory, 0) { break; }
+    }
+    actor.found
+}
+
 #[test]
 fn a_scan_answers_with_the_stored_spelling_and_skips_the_exact_name() {
-    struct Entry(&'static str);
-    let entries = [Entry("windows"), Entry("Windows"), Entry("Program Files")];
-    let mut actor = MatchingName { wanted: "Windows", found: None, scanned: 0 };
-    for entry in &entries {
-        if !actor.emit(entry.0, 1, FileType::Directory, 0) { break; }
-    }
-    // "Windows" itself is skipped: an exact lookup already missed it, so the
-    // directory listing containing it cannot be the resolution.
-    assert_eq!(actor.found.as_deref(), Some("windows"));
-
-    let mut actor = MatchingName { wanted: "SYSTEM32", found: None, scanned: 0 };
-    for entry in [Entry("windows"), Entry("system32")] {
-        if !actor.emit(entry.0, 1, FileType::Directory, 0) { break; }
-    }
-    assert_eq!(actor.found.as_deref(), Some("system32"));
-
-    let mut actor = MatchingName { wanted: "absent", found: None, scanned: 0 };
-    for entry in &entries {
-        if !actor.emit(entry.0, 1, FileType::Directory, 0) { break; }
-    }
-    assert_eq!(actor.found, None);
+    let entries = ["windows", "Windows", "Program Files"];
+    // The exact name comes FIRST here on purpose. An exact lookup has already
+    // missed it, so answering with it would return a name known not to
+    // resolve; the scan must walk past it to the stored spelling.
+    assert_eq!(scan("Windows", &["Windows", "windows"]).as_deref(), Some("windows"));
+    assert_eq!(scan("windows", &["windows", "Windows"]).as_deref(), Some("Windows"));
+    assert_eq!(scan("Windows", &entries).as_deref(), Some("windows"));
+    assert_eq!(scan("SYSTEM32", &["windows", "system32"]).as_deref(), Some("system32"));
+    assert_eq!(scan("absent", &entries), None);
 }
 
 #[test]
@@ -58,9 +54,14 @@ fn a_scan_stops_at_the_entry_bound_rather_than_holding_the_walk() {
     assert_eq!(actor.found, None);
 }
 
+/// The walk owns the two directory entries and the empty name; a scan must
+/// never be entered for them.
 #[test]
-fn dot_entries_never_resolve_by_folding() {
-    let mut actor = MatchingName { wanted: ".", found: None, scanned: 0 };
-    assert!(actor.emit("..", 1, FileType::Directory, 0));
-    assert_eq!(actor.found, None);
+fn the_empty_name_and_the_dot_entries_are_never_resolved_by_a_scan() {
+    assert!(!resolvable_component(""));
+    assert!(!resolvable_component("."));
+    assert!(!resolvable_component(".."));
+    assert!(resolvable_component("windows"));
+    assert!(resolvable_component("..."));
+    assert!(resolvable_component("..a"));
 }
