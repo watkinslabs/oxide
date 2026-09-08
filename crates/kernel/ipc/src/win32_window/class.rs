@@ -68,8 +68,8 @@ impl WindowManager {
         let atom = self.get(id)?.class_atom?;
         self.classes.iter().find(|class| class.atom == atom).map(|class| class.background)
     }
-    /// Class menu-name pointers of one registered atom. # C: O(N_classes)
-    pub fn class_menu_name_by_atom(&self, atom: u16) -> Option<ClassMenuName> {
+    /// Client menu-name handle of one registered atom. # C: O(N_classes)
+    pub fn class_menu_name_by_atom(&self, atom: u16) -> Option<u64> {
         self.classes.iter().find(|class| class.atom == atom).map(|class| class.menu_name)
     }
     /// Whole WNDCLASSEXW-shaped description of one registered atom, for the

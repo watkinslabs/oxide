@@ -80,3 +80,43 @@ fn every_service_the_shipped_module_exports_is_in_the_table_the_dispatcher_claim
         .map(|(ordinal, _)| *ordinal).collect::<Vec<_>>();
     assert!(outside.is_empty(), "shipped services outside the claimed table: {outside:x?}");
 }
+
+/// The window module the shipped editor's frame library actually calls into.
+fn shipped_frame_library() -> Vec<u8> {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../target/artifacts/wine/x86_64/x86_64-windows/user32.dll");
+    assert!(path.is_file(), "staged frame library missing at {}", path.display());
+    std::fs::read(&path).unwrap_or_else(|error| panic!("staged {} unreadable: {error}", path.display()))
+}
+
+/// Every window-module service the frame library imports by name.
+fn frame_library_imports(bytes: &[u8]) -> Vec<alloc::vec::Vec<u8>> {
+    let image = pe::parse(bytes).expect("the staged frame library parses as a PE image");
+    let mut out = Vec::new();
+    for import in image.imports().expect("the staged frame library's import directory decodes") {
+        if !import.name.eq_ignore_ascii_case(b"win32u.dll") { continue; }
+        for thunk in image.import_thunks(&import).expect("the window module's thunks decode") {
+            if let pe::ImportThunk::Name { name, .. } = thunk { out.push(name.to_vec()); }
+        }
+    }
+    out
+}
+
+/// The frame library builds a window's menu bar out of these services, so one
+/// of them unadmitted leaves the bar with no items, or no bar at all.
+#[test]
+fn every_menu_service_the_frame_library_imports_is_admitted() {
+    let module = shipped_image();
+    let shipped = shipped_services(&module);
+    let frame = shipped_frame_library();
+    let imported = frame_library_imports(&frame);
+    assert!(imported.len() > 100, "only {} window services imported; the import shape moved", imported.len());
+    let menu = imported.iter().filter(|name| name.windows(4).any(|window| window == b"Menu")).collect::<Vec<_>>();
+    assert!(menu.len() > 5, "only {} menu services imported; the menu path moved", menu.len());
+    let admitted = admitted();
+    let missing = menu.iter().filter(|name| {
+        let ordinal = shipped.iter().find(|(_, export)| *export == name.as_slice()).map(|(number, _)| *number as u64);
+        !ordinal.is_some_and(|ordinal| admitted.contains(&ordinal))
+    }).map(|name| alloc::string::String::from_utf8_lossy(name).into_owned()).collect::<Vec<_>>();
+    assert!(missing.is_empty(), "menu services the frame library imports and this dispatcher refuses: {missing:?}");
+}

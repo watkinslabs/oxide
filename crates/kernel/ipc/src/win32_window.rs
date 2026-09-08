@@ -463,7 +463,7 @@ pub use class_find::{CS_GLOBALCLASS, MAX_CLASS_EXTRA, instance_matches, registra
 
 #[path = "win32_window/class_types.rs"]
 mod class_types;
-pub use class_types::{ClassDescription, ClassMenuName, ClassRegistration, WindowClass};
+pub use class_types::{ClassDescription, ClassRegistration, WindowClass};
 #[path = "win32_window/state.rs"]
 mod state;
 #[path = "win32_window/timer.rs"]
