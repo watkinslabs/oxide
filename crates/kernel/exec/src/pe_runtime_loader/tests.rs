@@ -55,13 +55,20 @@ fn the_handover_maps_two_images_and_enters_the_runtimes_initialization_thunk() {
     assert_eq!(handover.entry.rcx, handover.context.as_u64());
     assert_eq!(handover.entry.personality, ExecutionPersonality::Nt);
 
-    // The context lives on the thread stack, inside the same writable
-    // anonymous mapping, with the extent the thunk scrubs entirely below it.
+    // The context lives on the thread stack, in a writable mapping carrying
+    // its own content, with the extent the thunk scrubs below it writable too
+    // and inside the same stack. The address space being built is never the
+    // active one, so the record cannot be written into it after the fact.
     let vma = as_.find_vma(handover.context).expect("the startup context must be mapped");
     assert!(vma.prot.contains(VmaProt::READ | VmaProt::WRITE));
-    assert!(matches!(vma.backing, VmaBacking::Anonymous), "the record belongs on the thread stack");
-    assert_eq!((vma.start.as_u64(), vma.end.as_u64()), (stack_base, stack_top));
+    assert!(matches!(vma.backing, VmaBacking::KernelBytes { .. }), "the record is published with its content");
+    assert!(vma.start.as_u64() >= stack_base && vma.end.as_u64() <= stack_top, "the record is on the stack");
     let placed = startup_stack::place(stack_base, stack_top).expect("the stack must carry a record");
+    for probe in [placed.scrub_floor, placed.stack_pointer, placed.context] {
+        let at = hal::UserVirtAddr::new(probe).expect("every probed stack address is canonical");
+        let vma = as_.find_vma(at).expect("the scrubbed extent must be mapped");
+        assert!(vma.prot.contains(VmaProt::READ | VmaProt::WRITE), "the runtime writes every byte of it");
+    }
     assert_eq!(handover.context.as_u64(), placed.context);
     assert_eq!(handover.entry.rsp.as_u64(), placed.stack_pointer);
     assert!(placed.scrub_floor >= stack_base);
