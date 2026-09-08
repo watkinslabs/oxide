@@ -15,6 +15,7 @@ extern crate std;
 
 mod membarrier;
 mod pe_exec;
+mod pe_transfer;
 mod affinity_abi;
 mod getdents_abi;
 mod net_errno;
