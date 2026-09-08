@@ -1,7 +1,12 @@
 //! The drawing contract: which colour every item state paints in, what the
 //! borders and separators fill, and where an item's text starts.
 use super::*;
-use crate::win32_menu::popup::{PopupMetrics, POPUP_BORDER};
+use crate::win32_menu::popup::POPUP_BORDER;
+use crate::win32_gdi::MenuMetrics;
+
+/// One advance, one cell height and one band, so a run's extent is its length
+/// times the cell.
+fn cells() -> MenuMetrics { MenuMetrics::uniform(8, 16, 19) }
 use crate::win32_menu::{MenuItem, MF_CHECKED, MF_DISABLED};
 use alloc::vec;
 
@@ -51,7 +56,7 @@ fn a_sunken_outer_edge_has_no_inner_fills_and_reverses_the_raised_pair() {
 #[test]
 fn a_popup_paints_its_menu_background_then_a_raised_border_before_any_item() {
     let (menus, menu) = menu_with(&[(1, 0, b"New", None)]);
-    let layout = menus.popup_layout(menu, PopupMetrics { char_width: 8, char_height: 16 }, i32::MAX).unwrap();
+    let layout = menus.popup_layout(menu, &cells(), i32::MAX).unwrap();
     let ops = menus.popup_draw_plan(menu, &layout).unwrap();
     assert_eq!(fills(&ops)[0], (MenuRect { left: 0, top: 0, right: layout.width, bottom: layout.height }, SystemColor::Menu));
     assert!(matches!(ops[1], MenuDrawOp::Fill { color: SystemColor::Light, .. }));
@@ -64,11 +69,11 @@ fn a_popup_paints_its_menu_background_then_a_raised_border_before_any_item() {
 #[test]
 fn a_popup_item_reserves_the_check_column_and_the_arrow_column_around_its_text() {
     let (menus, menu) = menu_with(&[(1, 0, b"Open", None)]);
-    let layout = menus.popup_layout(menu, PopupMetrics { char_width: 8, char_height: 16 }, i32::MAX).unwrap();
+    let layout = menus.popup_layout(menu, &cells(), i32::MAX).unwrap();
     let ops = menus.popup_draw_plan(menu, &layout).unwrap();
     let item = layout.items[0];
     let drawn = texts(&ops)[0];
-    assert_eq!(drawn.1.left, item.left + TEXT_GAP + crate::win32_menu::popup::CHECK_WIDTH);
+    assert_eq!(drawn.1.left, item.left + layout.text);
     assert_eq!(drawn.1.right, item.right - crate::win32_menu::popup::ARROW_WIDTH);
 }
 
@@ -76,7 +81,7 @@ fn a_popup_item_reserves_the_check_column_and_the_arrow_column_around_its_text()
 fn a_highlighted_popup_item_fills_the_selection_colour_and_takes_the_selection_text() {
     let (mut menus, menu) = menu_with(&[(1, 0, b"A", None), (2, 0, b"B", None)]);
     menus.hilite(menu, 1, true).unwrap();
-    let layout = menus.popup_layout(menu, PopupMetrics { char_width: 8, char_height: 16 }, i32::MAX).unwrap();
+    let layout = menus.popup_layout(menu, &cells(), i32::MAX).unwrap();
     let ops = menus.popup_draw_plan(menu, &layout).unwrap();
     let drawn = texts(&ops);
     assert_eq!(drawn[0].2, SystemColor::MenuText);
@@ -97,7 +102,7 @@ fn a_grayed_item_keeps_the_gray_text_colour_even_while_it_is_highlighted() {
 #[test]
 fn a_separator_draws_one_etched_rule_and_no_text() {
     let (menus, menu) = menu_with(&[(0, MF_SEPARATOR, b"", None), (1, 0, b"X", None)]);
-    let layout = menus.popup_layout(menu, PopupMetrics { char_width: 8, char_height: 16 }, i32::MAX).unwrap();
+    let layout = menus.popup_layout(menu, &cells(), i32::MAX).unwrap();
     let ops = menus.popup_draw_plan(menu, &layout).unwrap();
     let drawn = texts(&ops);
     assert_eq!(drawn.len(), 1);
@@ -110,20 +115,20 @@ fn a_separator_draws_one_etched_rule_and_no_text() {
 #[test]
 fn a_checked_item_draws_a_tick_and_a_submenu_item_draws_an_arrow() {
     let (menus, menu) = menu_with(&[(1, MF_CHECKED, b"Wrap", None), (2, 0, b"More", Some(9))]);
-    let layout = menus.popup_layout(menu, PopupMetrics { char_width: 8, char_height: 16 }, i32::MAX).unwrap();
+    let layout = menus.popup_layout(menu, &cells(), i32::MAX).unwrap();
     let ops = menus.popup_draw_plan(menu, &layout).unwrap();
     let glyphs: Vec<_> = ops.iter().filter_map(|op| match op { MenuDrawOp::Glyph { count, points, .. } => Some((*count, *points)), _ => None }).collect();
     assert_eq!(glyphs.len(), 2);
     assert_eq!(glyphs[0].0, GLYPH_POINTS);
     assert_eq!(glyphs[1].0, 3);
-    assert!(glyphs[0].1.iter().all(|point| point.0 >= layout.items[0].left && point.0 < layout.items[0].left + crate::win32_menu::popup::CHECK_WIDTH));
+    assert!(glyphs[0].1.iter().all(|point| point.0 >= layout.items[0].left && point.0 < layout.items[0].left + layout.check));
     assert!(glyphs[1].1.iter().all(|point| point.0 < layout.items[1].right));
 }
 
 #[test]
 fn an_unchecked_item_without_a_submenu_draws_no_glyph() {
     let (menus, menu) = menu_with(&[(1, 0, b"Plain", None)]);
-    let layout = menus.popup_layout(menu, PopupMetrics { char_width: 8, char_height: 16 }, i32::MAX).unwrap();
+    let layout = menus.popup_layout(menu, &cells(), i32::MAX).unwrap();
     let ops = menus.popup_draw_plan(menu, &layout).unwrap();
     assert!(!ops.iter().any(|op| matches!(op, MenuDrawOp::Glyph { .. })));
 }
@@ -132,8 +137,8 @@ fn an_unchecked_item_without_a_submenu_draws_no_glyph() {
 fn a_bar_fills_its_own_height_and_closes_with_a_face_coloured_line() {
     let (menus, menu) = menu_with(&[(1, 0, b"File", None), (2, 0, b"Edit", None)]);
     let origin = MenuRect { left: 0, top: 0, right: 400, bottom: 300 };
-    let ops = menus.bar_draw_plan(menu, origin, 8, 16, 19).unwrap();
-    let bar = menus.bar_rect(menu, origin, 8, 16, 19).unwrap();
+    let ops = menus.bar_draw_plan(menu, origin, &cells()).unwrap();
+    let bar = menus.bar_rect(menu, origin, &cells()).unwrap();
     let drawn = fills(&ops);
     assert_eq!(drawn[0], (MenuRect { left: 0, top: 0, right: 400, bottom: bar.bottom }, SystemColor::Menu));
     assert_eq!(drawn[1], (MenuRect { left: 0, top: bar.bottom, right: 400, bottom: bar.bottom + 1 }, SystemColor::Face));
@@ -143,11 +148,11 @@ fn a_bar_fills_its_own_height_and_closes_with_a_face_coloured_line() {
 fn every_bar_item_paints_one_centred_text_run_inside_its_own_rectangle() {
     let (menus, menu) = menu_with(&[(1, 0, b"File", None), (2, 0, b"Edit", None), (3, 0, b"Help", None)]);
     let origin = MenuRect { left: 0, top: 0, right: 400, bottom: 300 };
-    let ops = menus.bar_draw_plan(menu, origin, 8, 16, 19).unwrap();
+    let ops = menus.bar_draw_plan(menu, origin, &cells()).unwrap();
     let drawn = texts(&ops);
     assert_eq!(drawn.len(), 3);
     for (index, entry) in drawn.iter().enumerate() {
-        let rect = menus.bar_item_rect(menu, index, origin, 8, 16, 19).unwrap();
+        let rect = menus.bar_item_rect(menu, index, origin, &cells()).unwrap();
         assert_eq!(entry.0, index as u32);
         assert_eq!(entry.1.left, rect.left + 8);
         assert_eq!(entry.1.right, rect.right - 8);
@@ -160,18 +165,18 @@ fn a_highlighted_bar_item_marks_itself_with_a_sunken_edge_rather_than_a_fill() {
     let (mut menus, menu) = menu_with(&[(1, 0, b"File", None), (2, 0, b"Edit", None)]);
     menus.hilite(menu, 0, true).unwrap();
     let origin = MenuRect { left: 0, top: 0, right: 400, bottom: 300 };
-    let ops = menus.bar_draw_plan(menu, origin, 8, 16, 19).unwrap();
-    let rect = menus.bar_item_rect(menu, 0, origin, 8, 16, 19).unwrap();
+    let ops = menus.bar_draw_plan(menu, origin, &cells()).unwrap();
+    let rect = menus.bar_item_rect(menu, 0, origin, &cells()).unwrap();
     assert!(!fills(&ops).contains(&(rect, SystemColor::Menu)));
     assert!(fills(&ops).iter().any(|(drawn, color)| *color == SystemColor::ButtonShadow && drawn.left == rect.left));
-    assert!(fills(&ops).contains(&(menus.bar_item_rect(menu, 1, origin, 8, 16, 19).unwrap(), SystemColor::Menu)));
+    assert!(fills(&ops).contains(&(menus.bar_item_rect(menu, 1, origin, &cells()).unwrap(), SystemColor::Menu)));
 }
 
 #[test]
 fn a_bar_separator_paints_nothing_at_all() {
     let (menus, menu) = menu_with(&[(1, 0, b"File", None), (0, MF_SEPARATOR, b"", None)]);
     let origin = MenuRect { left: 0, top: 0, right: 400, bottom: 300 };
-    let ops = menus.bar_draw_plan(menu, origin, 8, 16, 19).unwrap();
+    let ops = menus.bar_draw_plan(menu, origin, &cells()).unwrap();
     assert_eq!(texts(&ops).len(), 1);
     assert_eq!(vec![0], texts(&ops).iter().map(|entry| entry.0).collect::<Vec<_>>());
 }
@@ -187,31 +192,31 @@ fn runs(ops: &[MenuDrawOp]) -> Vec<(u32, MenuTextHalf, MenuTextAlign, MenuRect)>
 #[test]
 fn a_label_with_a_tab_draws_two_runs_and_the_second_starts_at_the_tab_column() {
     let (menus, menu) = menu_with(&[(1, 0, b"Save\tCtrl+S", None)]);
-    let layout = menus.popup_layout(menu, PopupMetrics { char_width: 8, char_height: 16 }, i32::MAX).unwrap();
+    let layout = menus.popup_layout(menu, &cells(), i32::MAX).unwrap();
     let drawn = runs(&menus.popup_draw_plan(menu, &layout).unwrap());
     assert_eq!(drawn.len(), 2);
     assert_eq!((drawn[0].1, drawn[0].2), (MenuTextHalf::Name, MenuTextAlign::Left));
-    assert_eq!(drawn[0].3.left, POPUP_BORDER + TEXT_GAP + CHECK_WIDTH);
+    assert_eq!(drawn[0].3.left, POPUP_BORDER + layout.text);
     assert_eq!((drawn[1].1, drawn[1].2), (MenuTextHalf::Accelerator, MenuTextAlign::Left));
-    assert_eq!(drawn[1].3.left, POPUP_BORDER + TEXT_GAP + layout.tab);
+    assert_eq!(drawn[1].3.left, POPUP_BORDER + layout.tab);
     assert_eq!(drawn[1].3.right, drawn[0].3.right);
 }
 
 #[test]
 fn a_flush_right_label_draws_its_accelerator_right_aligned_against_the_column() {
     let (menus, menu) = menu_with(&[(1, 0, b"Help\x08F1", None)]);
-    let layout = menus.popup_layout(menu, PopupMetrics { char_width: 8, char_height: 16 }, i32::MAX).unwrap();
+    let layout = menus.popup_layout(menu, &cells(), i32::MAX).unwrap();
     let drawn = runs(&menus.popup_draw_plan(menu, &layout).unwrap());
     assert_eq!(drawn.len(), 2);
     assert_eq!((drawn[1].1, drawn[1].2), (MenuTextHalf::Accelerator, MenuTextAlign::Right));
-    assert_eq!(drawn[1].3.right, POPUP_BORDER + TEXT_GAP + layout.tab);
+    assert_eq!(drawn[1].3.right, POPUP_BORDER + layout.tab);
     assert_eq!(drawn[1].3.left, drawn[0].3.left);
 }
 
 #[test]
 fn every_accelerator_of_a_menu_starts_in_the_same_column() {
     let (menus, menu) = menu_with(&[(1, 0, b"New\tCtrl+N", None), (2, 0, b"Page Setup...\tF5", None), (3, 0, b"About", None)]);
-    let layout = menus.popup_layout(menu, PopupMetrics { char_width: 8, char_height: 16 }, i32::MAX).unwrap();
+    let layout = menus.popup_layout(menu, &cells(), i32::MAX).unwrap();
     let drawn = runs(&menus.popup_draw_plan(menu, &layout).unwrap());
     let accels: Vec<i32> = drawn.iter().filter(|run| run.1 == MenuTextHalf::Accelerator).map(|run| run.3.left).collect();
     assert_eq!(accels.len(), 2);
@@ -223,7 +228,7 @@ fn every_accelerator_of_a_menu_starts_in_the_same_column() {
 #[test]
 fn a_label_with_no_tab_still_draws_one_left_aligned_run() {
     let (menus, menu) = menu_with(&[(1, 0, b"Undo", None)]);
-    let layout = menus.popup_layout(menu, PopupMetrics { char_width: 8, char_height: 16 }, i32::MAX).unwrap();
+    let layout = menus.popup_layout(menu, &cells(), i32::MAX).unwrap();
     let drawn = runs(&menus.popup_draw_plan(menu, &layout).unwrap());
     assert_eq!(drawn.len(), 1);
     assert_eq!((drawn[0].1, drawn[0].2), (MenuTextHalf::Name, MenuTextAlign::Left));

@@ -5,7 +5,7 @@
 //! plan against a device context.
 use alloc::vec::Vec;
 use super::mnemonic::{label_halves, AccelAlign};
-use super::popup::{PopupLayout, ARROW_WIDTH, CHECK_WIDTH};
+use super::popup::{PopupLayout, ARROW_WIDTH};
 use super::{MenuError, MenuId, MenuManager, MenuRect, MF_BYPOSITION, MF_CHECKED, MF_GRAYED, MF_HILITE, MF_SEPARATOR};
 use crate::win32_gdi::SystemColor;
 
@@ -154,7 +154,7 @@ impl MenuManager {
             ops.push(MenuDrawOp::Fill { rect: *rect, color: if hilite { SystemColor::Highlight } else { SystemColor::Menu } });
             let color = item_text_color(item.state, false);
             if item.state & MF_CHECKED != 0 {
-                let side = (rect.bottom - rect.top).min(CHECK_WIDTH);
+                let side = (rect.bottom - rect.top).min(layout.check);
                 let top = rect.top + ((rect.bottom - rect.top) - side) / 2;
                 ops.push(check_glyph(MenuRect { left: rect.left, top, right: rect.left + side, bottom: top + side }, color));
             }
@@ -164,12 +164,12 @@ impl MenuManager {
                 ops.push(arrow_glyph(MenuRect { left: rect.right - side - 1, top, right: rect.right - 1, bottom: top + side }, color));
             }
             let bold = item.state & super::MF_DEFAULT != 0;
-            let text = MenuRect { left: rect.left + TEXT_GAP + CHECK_WIDTH, top: rect.top, right: rect.right - ARROW_WIDTH, bottom: rect.bottom };
+            let text = MenuRect { left: rect.left + layout.text, top: rect.top, right: rect.right - ARROW_WIDTH, bottom: rect.bottom };
             ops.push(MenuDrawOp::Text { rect: text, position: position as u32, half: MenuTextHalf::Name, color, align: MenuTextAlign::Left, bold });
             // The accelerator half is drawn as its own run against the column
             // the whole menu was measured to share.
             if let Some((align, _)) = label_halves(&item.text).accel {
-                let column = rect.left + TEXT_GAP + layout.tab;
+                let column = rect.left + layout.tab;
                 let (accel, align) = match align {
                     AccelAlign::Tab => (MenuRect { left: column, ..text }, MenuTextAlign::Left),
                     AccelAlign::FlushRight => (MenuRect { right: column, ..text }, MenuTextAlign::Right),
@@ -183,21 +183,21 @@ impl MenuManager {
     /// The steps one menu bar paints inside `origin`: its background, the face
     /// line closing it off, then every item. A separator draws nothing on a
     /// bar. # C: O(N_items)
-    pub fn bar_draw_plan(&self, menu: MenuId, origin: MenuRect, char_width: i32, char_height: i32, bar_height: i32) -> Result<Vec<MenuDrawOp>, MenuError> {
+    pub fn bar_draw_plan(&self, menu: MenuId, origin: MenuRect, metrics: &super::MenuMetrics) -> Result<Vec<MenuDrawOp>, MenuError> {
         let count = self.count(menu)?;
         let mut ops = Vec::new();
         ops.try_reserve(count * 3 + 4).map_err(|_| MenuError::NoSuchMenu)?;
-        let bar = self.bar_rect(menu, origin, char_width, char_height, bar_height)?;
+        let bar = self.bar_rect(menu, origin, metrics)?;
         let full = MenuRect { left: origin.left, top: origin.top, right: origin.right, bottom: bar.bottom };
         ops.push(MenuDrawOp::Fill { rect: full, color: SystemColor::Menu });
         ops.push(MenuDrawOp::Fill { rect: MenuRect { top: full.bottom, bottom: full.bottom + 1, ..full }, color: SystemColor::Face });
         for position in 0..count {
             let item = self.item(menu, position as u32, MF_BYPOSITION)?;
             if item.state & MF_SEPARATOR != 0 { continue; }
-            let rect = self.bar_item_rect(menu, position, origin, char_width, char_height, bar_height)?;
+            let rect = self.bar_item_rect(menu, position, origin, metrics)?;
             if item.state & MF_HILITE != 0 { rect_edge(rect, BDR_SUNKENOUTER, BF_RECT, 1, &mut ops); }
             else { ops.push(MenuDrawOp::Fill { rect, color: SystemColor::Menu }); }
-            let text = MenuRect { left: rect.left + char_width, top: rect.top, right: rect.right - char_width, bottom: rect.bottom };
+            let text = MenuRect { left: rect.left + metrics.char_width, top: rect.top, right: rect.right - metrics.char_width, bottom: rect.bottom };
             ops.push(MenuDrawOp::Text { rect: text, position: position as u32, half: MenuTextHalf::Name, color: item_text_color(item.state, true),
                 align: MenuTextAlign::Center, bold: item.state & super::MF_DEFAULT != 0 });
         }

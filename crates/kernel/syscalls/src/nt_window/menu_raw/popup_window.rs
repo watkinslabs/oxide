@@ -4,9 +4,8 @@
 use super::entry::{current_tid, with_entry};
 use super::session::MenuSession;
 use alloc::vec::Vec;
-use ipc::win32_menu::bar_hit::BarMetrics;
 use ipc::win32_menu::chain;
-use ipc::win32_menu::popup::{popup_origin, PopupLayout, PopupMetrics};
+use ipc::win32_menu::popup::{popup_origin, PopupLayout};
 use ipc::win32_menu::{MenuId, MenuRect, MF_BYPOSITION};
 use ipc::win32_window::{WindowId, WindowRect};
 
@@ -16,9 +15,8 @@ pub(crate) const POPUP_MENU_CLASS: [u16; 6] = [b'#' as u16, b'3' as u16, b'2' as
 pub(crate) const POPUP_MENU_EXTRA_OFFSET: i32 = 0;
 const WS_POPUP: u32 = 0x8000_0000;
 
-fn metrics() -> PopupMetrics { PopupMetrics::menu() }
-/// The cell metrics one menu bar is measured, drawn and hit-tested with.
-fn bar_metrics() -> BarMetrics { BarMetrics::menu() }
+/// The cell metrics one menu is measured, drawn and hit-tested with.
+fn metrics() -> ipc::win32_gdi::MenuMetrics { ipc::win32_gdi::menu_bar_metrics() }
 
 /// The rectangle a popup may occupy. # C: O(1)
 #[inline(never)]
@@ -77,7 +75,7 @@ pub(crate) fn show_popup(session: &mut MenuSession, menu: u32, flags: u32, x: i3
     let Some(layout) = with_entry(|entry| {
         let _ = entry.menus.set_focused_item(id, ipc::win32_menu::popup::NO_SELECTED_ITEM);
         let max_height = { let mut info = ipc::win32_menu::MenuInfo::default(); let _ = entry.menus.info(id, ipc::win32_menu::MIM_MAXHEIGHT, &mut info); if info.max_height == 0 { i32::MAX } else { info.max_height as i32 } };
-        entry.menus.popup_layout(id, metrics(), max_height).ok()
+        entry.menus.popup_layout(id, &metrics(), max_height).ok()
     }).flatten() else { return None; };
     let (x, y) = popup_origin(flags, x, y, layout.width, layout.height, work_area(), xanchor, yanchor);
     let rect = WindowRect { left: x, top: y, right: x + layout.width, bottom: y + layout.height };
@@ -100,7 +98,7 @@ pub(crate) fn show_popup(session: &mut MenuSession, menu: u32, flags: u32, x: i3
 #[inline(never)]
 pub(crate) fn layout_of(menu: u32) -> Option<PopupLayout> {
     let id = MenuId::from_raw(menu)?;
-    with_entry(|entry| entry.menus.popup_layout(id, metrics(), i32::MAX).ok()).flatten()
+    with_entry(|entry| entry.menus.popup_layout(id, &metrics(), i32::MAX).ok()).flatten()
 }
 
 /// Screen rectangle of one open popup window. # C: O(N_windows)
@@ -156,8 +154,7 @@ fn parent_item(session: &MenuSession, menu: u32, position: u32) -> Option<(chain
         if entry.menus.is_popup(id).unwrap_or(true) { return None; }
         let rect = entry.state.rect(window)?;
         let bounds = MenuRect { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
-        let metrics = bar_metrics();
-        let item = entry.menus.bar_item_rect(id, position as usize, bounds, metrics.char_width, metrics.char_height, metrics.bar_height).ok()?;
+        let item = entry.menus.bar_item_rect(id, position as usize, bounds, &metrics()).ok()?;
         Some((chain::ParentMenu::Bar, item))
     }).flatten()
 }

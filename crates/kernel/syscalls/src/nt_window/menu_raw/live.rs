@@ -126,8 +126,7 @@ fn menu_item_from_point(hwnd: u64, raw: u64, x: i32, y: i32) -> u64 {
     let found = with_entry(|entry| {
         let rect = entry.state.rect(window)?;
         let origin = MenuRect { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
-        let cells = ipc::win32_gdi::menu_bar_metrics();
-        entry.menus.item_from_point(menu, (x, y), origin, cells.char_width, cells.char_height, cells.bar_height).ok()?
+        entry.menus.item_from_point(menu, (x, y), origin, &ipc::win32_gdi::menu_bar_metrics()).ok()?
     }).flatten();
     found.map_or(NO_ITEM, |position| position as u64)
 }

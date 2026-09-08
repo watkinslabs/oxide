@@ -2,16 +2,24 @@ use alloc::vec::Vec;
 use syscall::nt_native_gdi as abi;
 
 /// Snapshot inputs and preserve the query's DWORD failure domain. # C: O(count)
-pub(crate) fn begin_query(mut request: abi::QueryRequest) -> u64 {
+pub(crate) fn begin_query(request: abi::QueryRequest) -> u64 {
     let failure = request.failure();
-    if !request.valid() { return failure; }
+    begin_query_checked(request).unwrap_or(failure)
+}
+
+/// The same launch, reporting whether a redirect was installed at all. A
+/// caller that sequences its own work needs that apart from the status,
+/// because a successful launch and a refused one can carry one value.
+/// # C: O(count)
+pub(crate) fn begin_query_checked(mut request: abi::QueryRequest) -> Option<u64> {
+    if !request.valid() { return None; }
     let head = core::mem::size_of::<abi::QueryRequest>();
     let input = if request.input == 0 { 0 } else { request.count as usize * 2 };
     let mut bytes = Vec::new();
-    if bytes.try_reserve_exact(head + input).is_err() { return failure; }
+    if bytes.try_reserve_exact(head + input).is_err() { return None; }
     bytes.resize(head + input, 0);
-    if input != 0 && uaccess::copy_from_user(&mut bytes[head..], request.input).is_err() { return failure; }
-    super::context::launch_or(&mut bytes, failure, |payload, bytes| {
+    if input != 0 && uaccess::copy_from_user(&mut bytes[head..], request.input).is_err() { return None; }
+    super::context::launch_checked(&mut bytes, |payload, bytes| {
         if request.input != 0 { request.input = payload + head as u64; }
         // SAFETY: QueryRequest is a fully initialized integer-only repr(C) record without padding.
         bytes[..head].copy_from_slice(unsafe { core::slice::from_raw_parts((&request as *const abi::QueryRequest).cast(), head) });
@@ -37,6 +45,9 @@ pub(super) fn copy_result(task: &sched::Task, request: u64, output: u64) -> u64 
     if bytes.try_reserve_exact(out.length as usize).is_err() { return abi::INVALID; }
     bytes.resize(out.length as usize, 0);
     if out.length != 0 && uaccess::copy_from_user(&mut bytes, out.data).is_err() { return abi::INVALID; }
+    // A kind the kernel itself consumes writes no caller buffer: its answer
+    // is retained here and the completion reports whether it was admitted.
+    if abi::kernel_sunk(req.kind) { return if super::menu_cells::publish(&req, &bytes) { 0 } else { abi::INVALID }; }
     let prefix = abi::aux_prefix(&req) as usize;
     if out.length as usize >= prefix && prefix != 0
         && uaccess::copy_to_user(req.aux, &bytes[..prefix]).is_err() { return abi::INVALID; }

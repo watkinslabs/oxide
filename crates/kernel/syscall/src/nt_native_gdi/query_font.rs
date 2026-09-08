@@ -20,6 +20,24 @@ pub const QUERY_ADD_FONT_RESOURCE: u32 = 19;
 pub const QUERY_REMOVE_FONT_RESOURCE: u32 = 20;
 pub const QUERY_ADD_MEM_FONT: u32 = 21;
 pub const QUERY_REMOVE_MEM_FONT: u32 = 22;
+/// Advances of one face, answered into kernel state rather than a caller's
+/// buffer: the menu layout measures every label from this table because it
+/// cannot re-enter the font backend inside the message that needs the number.
+pub const QUERY_MENU_CELLS: u32 = 23;
+/// First character that table measures: the printable block begins here.
+pub const MENU_CELL_FIRST: u32 = 0x20;
+/// Characters it covers, through the last printable ASCII character.
+pub const MENU_CELL_COUNT: u32 = 0x5f;
+/// Sub-pixel units one stored advance is quoted in, so a run sums before it
+/// rounds once.
+pub const MENU_CELL_SCALE: i32 = 16;
+/// Bytes the answer occupies: the face's cell height, then one word per
+/// character.
+pub const MENU_CELL_BYTES: u32 = 4 + MENU_CELL_COUNT * 2;
+
+/// Kinds the kernel itself consumes: the answer is retained in kernel state
+/// and no caller buffer is written. # C: O(1)
+pub fn kernel_sunk(kind: u32) -> bool { kind == QUERY_MENU_CELLS }
 
 /// Windows record sizes consumed by these kinds.
 pub const ENUM_ENTRY_BYTES: u32 = 452;
@@ -37,7 +55,8 @@ pub const FACE_NAME_WORDS: u32 = 32;
 /// Kinds addressed by realization handle or resource path rather than a device context. # C: O(1)
 pub fn deviceless(kind: u32) -> bool {
     matches!(kind, QUERY_FONT_FILE_DATA | QUERY_FONT_FILE_INFO | QUERY_MAKE_FONT_DIR
-        | QUERY_ADD_FONT_RESOURCE | QUERY_REMOVE_FONT_RESOURCE | QUERY_ADD_MEM_FONT | QUERY_REMOVE_MEM_FONT)
+        | QUERY_ADD_FONT_RESOURCE | QUERY_REMOVE_FONT_RESOURCE | QUERY_ADD_MEM_FONT | QUERY_REMOVE_MEM_FONT
+        | QUERY_MENU_CELLS)
 }
 
 /// Leading result bytes belonging to the secondary destination, not the main buffer.
@@ -109,6 +128,11 @@ pub fn capacity_limit(request: &QueryRequest) -> Option<u32> {
             0
         }
         QUERY_REMOVE_MEM_FONT => { if request.output != 0 { return None; } 0 }
+        QUERY_MENU_CELLS => {
+            if request.output != 0 || request.aux != 0 || request.count != 0 || request.input != 0
+                || request.capacity != MENU_CELL_BYTES { return None; }
+            MENU_CELL_BYTES
+        }
         _ => return None,
     };
     if request.aux.checked_add(aux_prefix(request) as u64).is_none() { return None; }
@@ -142,6 +166,7 @@ pub fn accepts(request: &QueryRequest, out: &QueryOutput) -> bool {
         QUERY_MAKE_FONT_DIR => (out.result != 0 && body == FONT_DIR_BYTES) || (out.result == 0 && body == 0),
         QUERY_ADD_FONT_RESOURCE | QUERY_REMOVE_FONT_RESOURCE | QUERY_REMOVE_MEM_FONT => body == 0,
         QUERY_ADD_MEM_FONT => body == 0 && out.result != 0,
+        QUERY_MENU_CELLS => out.result == 1 && body == MENU_CELL_BYTES,
         _ => false,
     }
 }
@@ -149,7 +174,7 @@ pub fn accepts(request: &QueryRequest, out: &QueryOutput) -> bool {
 /// Kinds whose zero-length answer is a complete, admissible API result. # C: O(1)
 fn empty_result(request: &QueryRequest, out: &QueryOutput) -> bool {
     match request.kind {
-        QUERY_ENUM_FONTS | QUERY_CHAR_WIDTH | QUERY_WIDTH_INFO | QUERY_REALIZATION => false,
+        QUERY_ENUM_FONTS | QUERY_CHAR_WIDTH | QUERY_WIDTH_INFO | QUERY_REALIZATION | QUERY_MENU_CELLS => false,
         QUERY_UNICODE_RANGES => request.output == 0 && out.result >= GLYPHSET_HEADER_BYTES,
         QUERY_GLYPH_OUTLINE => request.aux == 0 && out.result != GDI_ERROR
             && (request.output == 0 || request.capacity == 0 || out.result == 0),

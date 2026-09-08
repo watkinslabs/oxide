@@ -67,7 +67,8 @@ impl QueryRequest {
     /// Validate complete callback output before any destination writes. # C: O(1)
     pub fn accepts(&self, out: &QueryOutput) -> bool {
         if !self.valid() || out.reserved != 0 || out.length > MAX_QUERY_BYTES
-            || out.data.checked_add(out.length as u64).is_none() || (out.length != 0 && (out.data == 0 || self.output == 0)) { return false; }
+            || out.data.checked_add(out.length as u64).is_none()
+            || (out.length != 0 && (out.data == 0 || (self.output == 0 && !font::kernel_sunk(self.kind)))) { return false; }
         match self.kind {
             QUERY_SYSTEM_METRIC => out.result > 0 && out.result <= i32::MAX as u32 && out.length == 0,
             QUERY_NONCLIENT => out.result == 1 && out.length == self.capacity,

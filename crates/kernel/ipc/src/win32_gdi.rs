@@ -19,9 +19,14 @@ pub use dc_lease::{DcLease, DcLeaseRequest, LeaseOwner, dc_lease_flags, DCX_WIND
 #[path = "win32_gdi/nonclient.rs"]
 mod nonclient;
 pub use nonclient::{nonclient_defaults, system_metric_default, menu_font, logfont, NonclientFont, MENU_HEIGHT, NONCLIENT_BYTES, NONCLIENT_LEGACY_BYTES};
+#[path = "win32_gdi/menu_cells.rs"]
+mod menu_cells;
+pub use menu_cells::{cells_from_answer, MenuCells, CELL_ANSWER_BYTES, CELL_FIRST, CELL_COUNT, CELL_SCALE, CELL_TABLE_BYTES};
 #[path = "win32_gdi/menu_metrics.rs"]
 mod menu_metrics;
-pub use menu_metrics::{MenuMetrics, menu_metrics, menu_bar_metrics};
+pub use menu_metrics::{MenuMetrics, menu_metrics, menu_bar_metrics, measured_cells, menu_cells_wanted, publish_measured_cells};
+#[cfg(test)]
+pub use menu_metrics::face_test_lock;
 #[path = "win32_gdi/visibility.rs"]
 mod visibility;
 pub use visibility::rect_visible_in_clip;

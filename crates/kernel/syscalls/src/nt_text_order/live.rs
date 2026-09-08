@@ -3,6 +3,7 @@
 use super::{drive, Next, Owed, Queue, Run};
 use alloc::vec::Vec;
 use sync::{Spinlock, TaskList};
+use ipc::win32_gdi::Font;
 use syscall::nt_native_gdi::TextRequest;
 
 /// One thread's outstanding work. A row exists only while its thread owes a
@@ -42,15 +43,29 @@ fn with_existing<T>(tid: u64, work: impl FnOnce(&mut Queue) -> T) -> Option<T> {
 /// launched redirect is the syscall result its caller must return.
 /// # C: O(N_items + backend redirect)
 fn drain(tid: u64, first: Next) -> Option<u64> {
-    let mut status = None;
+    let status = core::cell::Cell::new(None);
     drive(first,
         |run| match crate::nt_native_gdi::begin_kernel_text(run.request, &run.text) {
-            Some(value) => { status = Some(value); true }
+            Some(value) => { status.set(Some(value)); true }
+            None => false,
+        },
+        |font| match crate::nt_native_gdi::begin_menu_cells(font) {
+            Some(value) => { status.set(Some(value)); true }
             None => false,
         },
         |owed| (owed.finish)(owed.hwnd, owed.dc),
         || with_existing(tid, |queue| queue.advance()).unwrap_or(Next::Idle));
-    status
+    status.get()
+}
+
+/// Measure the menu face before the pass that needs it draws again. The
+/// answer lands in kernel state, so the next bar the thread lays out is
+/// measured on the face's own advances rather than its average.
+/// # C: O(1) plus one backend redirect
+pub(crate) fn submit_cells_for_current(font: Font) -> Option<u64> {
+    let tid = current_tid()?;
+    let first = with_row(tid, |queue| queue.submit_cells(font))?;
+    drain(tid, first)
 }
 
 /// Take one kernel-owned text run of the pass being drawn. The first run of

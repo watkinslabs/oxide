@@ -46,9 +46,9 @@ fn a_named_width_is_the_advance() {
 #[test]
 fn the_band_follows_the_face_it_is_measured_with() {
     let short = menu_metrics(Some(Font { height: -11, width: 0, weight: 400, italic: false }));
-    assert_eq!(short, MenuMetrics { char_width: 5, char_height: 11, bar_height: MENU_HEIGHT + 1 });
+    assert_eq!((short.char_width, short.char_height, short.bar_height), (5, 11, MENU_HEIGHT + 1));
     let tall = menu_metrics(Some(Font { height: -30, width: 0, weight: 400, italic: false }));
-    assert_eq!(tall, MenuMetrics { char_width: 15, char_height: 30, bar_height: 33 });
+    assert_eq!((tall.char_width, tall.char_height, tall.bar_height), (15, 30, 33));
     assert!(tall.bar_height > short.bar_height, "a taller face claims a taller band");
 }
 
@@ -57,6 +57,7 @@ fn the_band_follows_the_face_it_is_measured_with() {
 /// through `GetTextExtentPoint32W` gets the layout's own numbers.
 #[test]
 fn the_measurement_and_the_selected_face_s_extent_are_one_owner() {
+    let _face = crate::win32_gdi::face_test_lock().lock();
     let mut gdi = GdiManager::new();
     let dc = gdi.create_dc(800, 600).unwrap();
     let face = gdi.menu_face().unwrap();
@@ -71,9 +72,37 @@ fn the_measurement_and_the_selected_face_s_extent_are_one_owner() {
 /// deleted one is replaced rather than returned.
 #[test]
 fn the_menu_face_is_created_once_per_process() {
+    let _face = crate::win32_gdi::face_test_lock().lock();
     let mut gdi = GdiManager::new();
     let first = gdi.menu_face().unwrap();
     assert_eq!(gdi.menu_face().unwrap(), first);
     gdi.delete_object(first).unwrap();
     assert_ne!(gdi.menu_face().unwrap(), first);
+}
+
+/// A face written through the nonclient metrics is the face every menu
+/// measurement reads. Storing one and measuring with another leaves a client
+/// that set a menu font with a bar laid out on the face it replaced.
+#[test]
+fn a_written_menu_face_is_the_face_the_measurement_uses() {
+    use crate::win32_sysparams::{parameters, NONCLIENT_FACES, NONCLIENT_MENU_FACE};
+    let _face = crate::win32_gdi::face_test_lock().lock();
+    let stock = menu_font().unwrap();
+    let written = Font { height: -22, width: 0, weight: 700, italic: true };
+    assert_ne!(written, stock);
+    let mut faces = [[0u8; crate::win32_gdi::LOGFONTW_BYTES]; NONCLIENT_FACES];
+    // Every slot keeps the stock description except the menu face, which is
+    // the one this write replaces.
+    for slot in faces.iter_mut() { *slot = crate::win32_gdi::FontRecord::from_font(stock).unwrap().bytes(); }
+    faces[NONCLIENT_MENU_FACE] = crate::win32_gdi::FontRecord::from_font(written).unwrap().bytes();
+    parameters().lock().set_nonclient_fonts(&faces);
+    let read_back = menu_font();
+    let measured = menu_metrics(read_back);
+    // Restore the store before anything is asserted, so one failure does not
+    // leave the session-wide face written for every later reader.
+    let restored = [crate::win32_gdi::FontRecord::from_font(stock).unwrap().bytes(); NONCLIENT_FACES];
+    parameters().lock().set_nonclient_fonts(&restored);
+    assert_eq!(read_back, Some(written), "the written face is what a menu is measured with");
+    assert_eq!(measured.char_height, written.height.abs());
+    assert!(measured.bar_height > menu_metrics(Some(stock)).bar_height, "the written face raises the band");
 }

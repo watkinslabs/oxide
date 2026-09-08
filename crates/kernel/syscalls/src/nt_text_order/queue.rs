@@ -13,6 +13,7 @@
 //! of chaining N deep on the per-thread continuation stack.
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
+use ipc::win32_gdi::Font;
 use syscall::nt_native_gdi::TextRequest;
 
 /// Runs one thread queues before further text of the same pass is dropped
@@ -29,10 +30,10 @@ pub(crate) struct Run { pub request: TextRequest, pub text: Vec<u16> }
 pub(crate) struct Owed { pub hwnd: u64, pub dc: u64, pub finish: fn(u64, u64) }
 
 /// A queued unit of one thread's ordered text work.
-pub(crate) enum Item { Run(Run), End(Owed) }
+pub(crate) enum Item { Run(Run), Cells(Font), End(Owed) }
 
 /// What the caller performs next; `Idle` means the thread owes nothing.
-pub(crate) enum Next { Idle, Launch(Run), End(Owed) }
+pub(crate) enum Next { Idle, Launch(Run), Cells(Font), End(Owed) }
 
 /// Ordered kernel-owned text work of one thread.
 pub(crate) struct Queue { items: VecDeque<Item>, in_flight: bool }
@@ -56,6 +57,15 @@ impl Queue {
         let _ = self.push(Item::Run(run));
         Next::Idle
     }
+
+    /// Take one measurement of the menu face, ahead of the runs of the pass
+    /// that asked for it. It rides the same queue because it enters the same
+    /// backend by the same one-at-a-time redirect. # C: O(1) amortized
+    pub(crate) fn submit_cells(&mut self, font: Font) -> Next {
+        if self.idle() { self.in_flight = true; return Next::Cells(font); }
+        let _ = self.push(Item::Cells(font));
+        Next::Idle
+    }
     /// Take the end of a paint. `Some` is an end the caller performs now: the
     /// pass issued no run that has still to rasterize, or the queue cannot
     /// hold the end and the fills reach the screen without their text rather
@@ -74,6 +84,7 @@ impl Queue {
         self.in_flight = false;
         match self.items.pop_front() {
             Some(Item::Run(run)) => { self.in_flight = true; Next::Launch(run) }
+            Some(Item::Cells(font)) => { self.in_flight = true; Next::Cells(font) }
             Some(Item::End(owed)) => Next::End(owed),
             None => Next::Idle,
         }
@@ -94,13 +105,14 @@ impl Queue {
 /// `launch` reports whether the redirect into the backend was installed: a
 /// run that never leaves does not hold the ends behind it. `next` re-reads
 /// the queue under its owner's lock after every step. # C: O(N_items)
-pub(crate) fn drive(first: Next, mut launch: impl FnMut(Run) -> bool, mut end: impl FnMut(Owed),
-    mut next: impl FnMut() -> Next) {
+pub(crate) fn drive(first: Next, mut launch: impl FnMut(Run) -> bool, mut cells: impl FnMut(Font) -> bool,
+    mut end: impl FnMut(Owed), mut next: impl FnMut() -> Next) {
     let mut step = first;
     loop {
         match step {
             Next::Idle => return,
             Next::Launch(run) => { if launch(run) { return; } }
+            Next::Cells(font) => { if cells(font) { return; } }
             Next::End(owed) => end(owed),
         }
         step = next();

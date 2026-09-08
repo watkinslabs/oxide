@@ -2,7 +2,7 @@
 //! inside the item rectangle, and the record the font backend is entered
 //! with. Ungated, so the placement and the record are checked without the
 //! Task binding the run itself needs (`53§2`).
-use ipc::win32_gdi::{Font, TextState};
+use ipc::win32_gdi::{Font, MenuCells, TextState};
 use ipc::win32_menu::draw::MenuTextAlign;
 use ipc::win32_menu::MenuRect;
 use syscall::nt_native_gdi::{TextRequest, TRANSPARENT, VERSION};
@@ -12,17 +12,17 @@ pub(crate) const UNDERLINE_RULE: i32 = 1;
 /// Rows between the run's baseline and the rule under it.
 const UNDERLINE_DROP: i32 = 1;
 
-/// Width one run of `units` characters covers at `advance` per character.
-/// The advance is the selected menu face's own, the same one the layout that
-/// produced the item rectangles measured with. # C: O(1)
-pub(crate) fn run_width(units: usize, advance: i32) -> i32 { (units as i32).saturating_mul(advance) }
+/// Width one run covers under the menu face's own advances, which is the same
+/// extent the layout that produced the item rectangles measured the label
+/// with. # C: O(N_units)
+pub(crate) fn run_width(units: &[u16], cells: &MenuCells) -> i32 { cells.extent(units) }
 
 /// Where one run's glyphs start inside `rect`: a bar item centres its text, a
 /// popup name starts at the left edge, an accelerator half flushed right ends
 /// at the right edge, and every run is centred vertically on the glyph height
 /// the device context reports. # C: O(1)
-pub(crate) fn origin(rect: MenuRect, units: usize, align: MenuTextAlign, advance: i32, glyph_height: i32) -> (i32, i32) {
-    let width = run_width(units, advance);
+pub(crate) fn origin(rect: MenuRect, units: &[u16], align: MenuTextAlign, cells: &MenuCells, glyph_height: i32) -> (i32, i32) {
+    let width = run_width(units, cells);
     let x = match align {
         MenuTextAlign::Left => rect.left,
         MenuTextAlign::Center => rect.left + ((rect.right - rect.left) - width).max(0) / 2,
@@ -33,13 +33,16 @@ pub(crate) fn origin(rect: MenuRect, units: usize, align: MenuTextAlign, advance
 }
 
 /// The rule drawn under the mnemonic character of one run: it spans that
-/// character's own cell less its last pixel column, one row below the
-/// baseline the ascent names. # C: O(1)
-pub(crate) fn underline(rect: MenuRect, units: usize, mnemonic: usize, align: MenuTextAlign, advance: i32, glyph_height: i32, ascent: i32) -> MenuRect {
-    let (x, y) = origin(rect, units, align, advance, glyph_height);
-    let left = x.saturating_add(run_width(mnemonic, advance));
+/// character's own advance less its last pixel column, one row below the
+/// baseline the ascent names. The characters ahead of it are measured by their
+/// own advances, so the rule sits under the marked glyph and not under
+/// whatever a fixed cell would place there. # C: O(N_units)
+pub(crate) fn underline(rect: MenuRect, units: &[u16], mnemonic: usize, align: MenuTextAlign, cells: &MenuCells, glyph_height: i32, ascent: i32) -> MenuRect {
+    let (x, y) = origin(rect, units, align, cells, glyph_height);
+    let left = x.saturating_add(run_width(units.get(..mnemonic).unwrap_or(units), cells));
+    let width = run_width(units.get(mnemonic..mnemonic + 1).unwrap_or(&[]), cells);
     let top = y.saturating_add(ascent).saturating_add(UNDERLINE_DROP);
-    MenuRect { left, top, right: left.saturating_add(advance).saturating_sub(1), bottom: top.saturating_add(UNDERLINE_RULE) }
+    MenuRect { left, top, right: left.saturating_add(width).saturating_sub(1), bottom: top.saturating_add(UNDERLINE_RULE) }
 }
 
 /// The face one run is rasterized in: the device context's selected font, or
@@ -56,12 +59,12 @@ fn face(font: Option<Font>, glyph_height: i32) -> (i32, i32, i32, u32) {
 /// callback payload, which is placed after the record is built, so this
 /// record is admitted by `kernel_payload_bytes` and not by the user-facing
 /// `valid`. # C: O(1)
-pub(crate) fn request(dc: u64, rect: MenuRect, units: usize, align: MenuTextAlign, advance: i32, foreground: u32,
+pub(crate) fn request(dc: u64, rect: MenuRect, units: &[u16], align: MenuTextAlign, cells: &MenuCells, foreground: u32,
     state: &TextState, glyph_height: i32) -> TextRequest {
     let (height, width, weight, italic) = face(state.font, glyph_height);
-    let (x, y) = origin(rect, units, align, advance, glyph_height);
+    let (x, y) = origin(rect, units, align, cells, glyph_height);
     TextRequest { version: VERSION, size: core::mem::size_of::<TextRequest>() as u32,
-        dc, x, y, flags: 0, count: units as u32, text: 0, advances: 0, rect: [0; 4],
+        dc, x, y, flags: 0, count: units.len() as u32, text: 0, advances: 0, rect: [0; 4],
         height, width, weight, italic, foreground, background: state.attributes.background,
         has_rect: 0, reserved: 0, background_mode: TRANSPARENT, alignment: state.attributes.alignment,
         current_x: state.attributes.current_position.0, current_y: state.attributes.current_position.1,

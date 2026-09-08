@@ -14,11 +14,8 @@ const TPM_LEFTALIGN_LEFTBUTTON: u32 = 0;
 use ipc::win32_menu::popup::{TF_ENDMENU, TPM_BUTTONDOWN};
 
 /// Cell metrics one bar is measured and drawn with: the profile's menu font,
-/// which the drawing selects into its device context. # C: O(1)
-fn metrics() -> (i32, i32, i32) {
-    let metrics = ipc::win32_gdi::menu_bar_metrics();
-    (metrics.char_width, metrics.char_height, metrics.bar_height)
-}
+/// which the drawing selects into its device context. # C: O(N_cells)
+fn metrics() -> ipc::win32_gdi::MenuMetrics { ipc::win32_gdi::menu_bar_metrics() }
 
 /// The menu one window shows on its bar, and the window's own rectangle.
 /// # C: O(N_windows)
@@ -43,9 +40,9 @@ fn bar_of(hwnd: u64) -> Option<(MenuId, MenuRect)> {
 #[inline(never)]
 pub(crate) fn height_for_current(hwnd: u64, width: i32) -> i32 {
     let Some((menu, rect)) = bar_of(hwnd) else { return 0; };
-    let (char_width, char_height, bar_height) = metrics();
+    let metrics = metrics();
     let origin = MenuRect { left: 0, top: 0, right: width, bottom: rect.bottom - rect.top };
-    with_entry(|entry| entry.menus.bar_rect(menu, origin, char_width, char_height, bar_height).map(|bar| bar.bottom - bar.top).unwrap_or(0)).unwrap_or(0)
+    with_entry(|entry| entry.menus.bar_rect(menu, origin, &metrics).map(|bar| bar.bottom - bar.top).unwrap_or(0)).unwrap_or(0)
 }
 
 /// Draw one window's menu bar into `dc`, whose origin is `origin` in the
@@ -54,11 +51,20 @@ pub(crate) fn height_for_current(hwnd: u64, width: i32) -> i32 {
 #[inline(never)]
 pub(crate) fn draw_into(hwnd: u64, dc: u64, origin: MenuRect) -> (i32, Option<u64>) {
     let Some((menu, _)) = bar_of(hwnd) else { return (0, None); };
-    let (char_width, char_height, bar_height) = metrics();
-    let Some(plan) = with_entry(|entry| entry.menus.bar_draw_plan(menu, origin, char_width, char_height, bar_height).ok()).flatten() else { return (0, None); };
-    let Some(bar) = with_entry(|entry| entry.menus.bar_rect(menu, origin, char_width, char_height, bar_height).ok()).flatten() else { return (0, None); };
+    // A face nothing has measured is laid out on its published average
+    // advance, which a proportional label overruns. Measuring it enters the
+    // font backend the same one-at-a-time way this pass's own runs do, ahead
+    // of them in the thread's queue, so the bar drawn after this one is laid
+    // out on the face's own advances.
+    let measuring = ipc::win32_gdi::menu_cells_wanted().and_then(|font| {
+        crate::nt_native_gdi::note_asked(hwnd);
+        crate::nt_text_order::submit_cells_for_current(font)
+    });
+    let metrics = metrics();
+    let Some(plan) = with_entry(|entry| entry.menus.bar_draw_plan(menu, origin, &metrics).ok()).flatten() else { return (0, None); };
+    let Some(bar) = with_entry(|entry| entry.menus.bar_rect(menu, origin, &metrics).ok()).flatten() else { return (0, None); };
     let launched = crate::nt_window::menu_draw::run(dc, menu, &plan, (0, 0));
-    (bar.bottom - bar.top, launched)
+    (bar.bottom - bar.top, measuring.or(launched))
 }
 
 /// Paint the bar of one window into its own window-wide device context, the

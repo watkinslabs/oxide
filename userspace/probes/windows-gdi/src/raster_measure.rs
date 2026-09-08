@@ -17,6 +17,16 @@ impl RasterFont {
         let height = if glyphs.is_empty() { 0 } else { self.cell_height()? };
         Ok(FontMeasurement { width: cumulative.last().copied().unwrap_or(0), height, fit, cumulative })
     }
+    /// One character's own advance, in the sub-pixel units a caller quotes
+    /// them in. It is the very advance `measure_utf16` accumulates, so a run
+    /// summed from these and the run measured whole agree to the one rounding
+    /// the sum applies at the end.
+    pub fn scaled_advance(&self, character: char, scale: i32) -> u16 {
+        let advance = self.font.metrics(character, self.size).advance_width * self.width_scale * scale as f32;
+        if !advance.is_finite() || advance < 0.0 { return 0; }
+        advance.round().min(u16::MAX as f32) as u16
+    }
+
     /// Measure exactly the unkerned glyph advances consumed by this renderer.
     pub fn measure_utf16(&self, text: &[u16], max_extent: i32) -> Result<FontMeasurement, RasterError> {
         let mut cumulative = Vec::with_capacity(text.len());
