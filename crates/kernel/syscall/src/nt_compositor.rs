@@ -2,6 +2,7 @@
 extern crate alloc;
 use alloc::vec::Vec;
 pub mod caret;
+pub mod managed;
 
 pub const MAGIC: u32 = 0x4342584f;
 pub const VERSION: u16 = 1;

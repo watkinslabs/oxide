@@ -68,12 +68,10 @@ pub(crate) fn begin_with(hwnd:u32,dc:u32,destination:u64,kernel:bool,nc_region:u
 /// Coverage one paint admitted, before any window procedure can draw into it.
 /// An empty region clips every glyph away while the erase and the paint
 /// message still run, which reads exactly like a control that drew nothing.
-/// Bounded so a running desktop stays quiet.
+/// Bounded per window, so a dialog created into a session that has already
+/// traced its budget still reports its own first paints.
 fn trace_region(hwnd:u32,dc:u32,region:Option<&ipc::win32_window::PaintRegion>){
-    use core::sync::atomic::{AtomicU32,Ordering};
-    const BUDGET:u32=48;
-    static SPENT:AtomicU32=AtomicU32::new(0);
-    if SPENT.fetch_add(1,Ordering::Relaxed)>=BUDGET{return;}
+    if !crate::nt_window::paint_trace::take(hwnd){return;}
     klog::write_raw(b"[WINDOWS-PAINT-REGION] hwnd=");klog::write_hex_u64(hwnd as u64);
     klog::write_raw(b" dc=");klog::write_hex_u64(dc as u64);
     let Some(region)=region else{klog::write_raw(b" open=0\n");return;};

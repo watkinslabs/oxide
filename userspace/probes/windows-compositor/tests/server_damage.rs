@@ -88,3 +88,41 @@ fn an_exposure_the_retained_surface_answers_repaints_from_it_and_asks_the_window
     client.expose(xid,0,0,8,6);
     assert_eq!(wait_damage(&mut backend),BridgeEvent::Damage{hwnd:7,rect:Rect{left:0,top:0,right:8,bottom:6}});
 }
+
+/// A surface holds only what has been presented into it. Storage for the
+/// window exists from the moment the surface is allocated, but the pixels a
+/// frame has never covered are the window's own: putting the colour of empty
+/// storage over them on an exposure paints away content this backend never
+/// saw, and leaves the display holding a picture the surface disagrees with.
+/// So an exposure reaching past what the surface holds is the window's paint,
+/// exactly as it is for a window that has never presented at all.
+#[test]
+fn an_exposure_past_what_a_partial_frame_covered_is_the_windows_paint(){
+    let server=Server::start();let mut backend=Backend::connect(Some(&server.display)).unwrap();
+    let client=xcb::Client::connect(&server.display);
+    create(&mut backend,7);let xid=backend.xid_for(7).unwrap();
+    // One frame covering the left half of a four-by-three window.
+    backend.handle_command(BridgeCommand::Frame{hwnd:7,frame:Frame::new(4,3,2,vec![0x112233;6],Rect{left:0,top:0,right:2,bottom:3}).unwrap()}).unwrap();
+    drain(&mut backend);
+    // Inside the covered half the surface answers, and the window owes nothing.
+    client.clear(xid,4,3);
+    client.expose(xid,0,0,2,3);
+    let deadline=Instant::now()+Duration::from_secs(3);
+    loop{
+        while let Some(event)=backend.poll_event(){
+            assert!(!matches!(event,BridgeEvent::Damage{..}),"the surface holds these pixels and owes the window no paint");
+        }
+        if client.pixels(xid,2,3)==vec![0x112233;6]{break;}
+        assert!(Instant::now()<deadline,"the retained surface never restored the pixels it holds");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    drain(&mut backend);
+    // The half no frame ever covered is the window's, and travels as damage.
+    client.expose(xid,2,0,2,3);
+    assert_eq!(wait_damage(&mut backend),BridgeEvent::Damage{hwnd:7,rect:Rect{left:2,top:0,right:4,bottom:3}});
+    // An exposure straddling both is the window's too: half of it cannot be
+    // answered, and a window repainting a superset of its damage is normal.
+    drain(&mut backend);
+    client.expose(xid,0,0,4,3);
+    assert_eq!(wait_damage(&mut backend),BridgeEvent::Damage{hwnd:7,rect:Rect{left:0,top:0,right:4,bottom:3}});
+}

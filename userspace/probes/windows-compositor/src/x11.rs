@@ -41,6 +41,8 @@ impl Backend {
     #[cfg(test)]
     pub(crate) fn map_input_for_test(&mut self, input: InputEvent) -> Option<BridgeEvent> { self.map_input(input) }
     #[cfg(test)]
+    pub(crate) fn retained_for_test(&self, hwnd: u32) -> Option<(Vec<u32>, Option<Rect>)> { self.windows.get(&hwnd)?.surface.as_ref().map(|s| (s.pixels_for_test(), s.held_for_test())) }
+    #[cfg(test)]
     pub(crate) fn pending_event_for_test(&mut self) -> Option<BridgeEvent> { self.pending.pop_front() }
     /// The X connection's socket, so a caller can block on it instead of
     /// asking for events that have not arrived. Events already decoded and
@@ -338,6 +340,13 @@ impl Backend {
         let surface = window.surface.as_ref().ok_or(BackendError::InvalidCommand)?;
         if surface.width != window.width || surface.height != window.height { return Err(BackendError::InvalidCommand); }
         if !damage.is_inside(surface.width, surface.height) { return Err(BackendError::InvalidCommand); }
+        // A surface holds only what has been presented into it. Its storage
+        // covers the window from the moment it is allocated, and reading a
+        // never-presented part of it back onto the display puts the colour of
+        // empty storage over pixels the window owns and this backend has
+        // never seen. Those pixels are the window's to state, so an exposure
+        // reaching past what the surface holds belongs to the window.
+        if !surface.holds(damage) { return Err(BackendError::InvalidCommand); }
         // The overlay is applied while the damaged pixels are assembled, so
         // the retained surface keeps what the application drew and no second
         // copy of the window exists to hold a composite.

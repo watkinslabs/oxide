@@ -434,6 +434,13 @@ pub(crate) mod caption;
 #[path = "nt_window/sys_colors.rs"]
 pub(crate) mod sys_colors;
 
+#[path = "nt_window/paint_trace.rs"]
+pub(crate) mod paint_trace;
+
+#[cfg(target_os = "oxide-kernel")]
+#[path = "nt_window/nonclient_frame.rs"]
+pub(crate) mod nonclient_frame;
+
 #[path = "nt_window/menu_raw.rs"]
 pub(crate) mod menu_raw;
 

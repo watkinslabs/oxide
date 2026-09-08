@@ -17,6 +17,7 @@ pub const BDR_RAISEDINNER: u32 = 0x0004;
 pub const BDR_SUNKENINNER: u32 = 0x0008;
 pub const EDGE_RAISED: u32 = BDR_RAISEDOUTER | BDR_RAISEDINNER;
 pub const EDGE_ETCHED: u32 = BDR_SUNKENOUTER | BDR_RAISEDINNER;
+pub const EDGE_SUNKEN: u32 = BDR_SUNKENOUTER | BDR_SUNKENINNER;
 const EDGE_MASK: u32 = 0x000f;
 
 pub const BF_LEFT: u32 = 0x0001;
@@ -67,9 +68,20 @@ const fn edge_colors(edge: u32) -> (Option<SystemColor>, Option<SystemColor>, Op
         BDR_SUNKENINNER => (Some(SystemColor::DarkShadow), None, Some(SystemColor::Light), None),
         EDGE_RAISED => (Some(SystemColor::ButtonHighlight), Some(SystemColor::Light), Some(SystemColor::ButtonShadow), Some(SystemColor::DarkShadow)),
         EDGE_ETCHED => (Some(SystemColor::ButtonHighlight), Some(SystemColor::ButtonShadow), Some(SystemColor::ButtonShadow), Some(SystemColor::ButtonHighlight)),
+        EDGE_SUNKEN => (Some(SystemColor::DarkShadow), Some(SystemColor::ButtonShadow), Some(SystemColor::Light), Some(SystemColor::ButtonHighlight)),
         _ => (None, None, None, None),
     };
     (lt_inner, lt_outer, rb_inner, rb_outer)
+}
+
+/// How far inside its rectangle one edge drawn at `width` reaches: an edge
+/// with an inner line is drawn in the second band and so reaches twice as
+/// far. A caller that draws an edge and then keeps drawing inside it takes
+/// this off the rectangle, and a caller that reserves room for one reserves
+/// this much. # C: O(1)
+pub const fn edge_extent(edge: u32, width: i32) -> i32 {
+    let (lt_inner, lt_outer, _, _) = edge_colors(edge);
+    if lt_inner.is_some() { width * 2 } else if lt_outer.is_some() { width } else { 0 }
 }
 
 /// Append the fills one edge of `rect` draws: the outer edge on every named
