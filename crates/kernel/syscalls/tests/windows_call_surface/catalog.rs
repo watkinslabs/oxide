@@ -19,10 +19,22 @@ pub const RUNTIME_MODULE: &str = "ntdll.dll";
 pub const RUNTIME_LOADED: [(&str, &[&str]); 1] =
     [("user32.dll", &["imm32.dll", "uxtheme.dll", "comctl32.dll"])];
 
+/// Environment key by which the gate declares that it audits a catalog. A
+/// plain workspace test run does not set it and skips; the gate sets it, and
+/// then an absent catalog is a failure rather than a silent pass, because a
+/// green that audited nothing is indistinguishable from a green that audited
+/// the surface.
+pub const DECLARED: &str = "OXIDE_WINDOWS_SURFACE_GATE";
+
 /// # C: O(1)
 pub fn root() -> Option<PathBuf> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..").join(CATALOG);
-    if root.join(ROOT_MODULE).is_file() { Some(root) } else { None }
+    if root.join(ROOT_MODULE).is_file() { return Some(root); }
+    assert!(std::env::var_os(DECLARED).is_none(),
+        "{DECLARED} declares this run audits the shipped catalog, and {} carries no {ROOT_MODULE}: \
+         stage it with tools/build-wine-runtime.sh, or link a lane's target/artifacts at the tree that has it",
+        root.display());
+    None
 }
 
 /// # C: O(module bytes)
