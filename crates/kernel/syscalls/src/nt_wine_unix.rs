@@ -814,11 +814,16 @@ fn write_unix_debug(args: u64) -> u64 {
 #[cfg(not(target_os = "oxide-kernel"))]
 fn write_unix_debug(_args: u64) -> u64 { STATUS_INVALID_PARAMETER }
 
+/// The builtin-ELF unwind slot. Its caller falls back to the runtime's own PE
+/// unwinder for exactly one status and propagates every other one out of the
+/// frame walk, so a malformed request refuses through the same answer rather
+/// than aborting the exception dispatch that asked.
 #[cfg(target_os = "oxide-kernel")]
 fn validate_builtin_unwind(args: u64) -> u64 {
-    if args == 0 { return STATUS_INVALID_PARAMETER; }
-    let Ok(unwind_type) = uaccess::get_user_u32(args) else { return STATUS_INVALID_PARAMETER; };
-    if !valid_unwind_type(unwind_type) { return STATUS_INVALID_PARAMETER; }
+    use crate::nt_wine_unwind::{unwind_status, UnwindRefusal};
+    if args == 0 { return unwind_status(Err(UnwindRefusal::MalformedRequest)); }
+    let Ok(unwind_type) = uaccess::get_user_u32(args) else { return unwind_status(Err(UnwindRefusal::MalformedRequest)); };
+    if !valid_unwind_type(unwind_type) { return unwind_status(Err(UnwindRefusal::MalformedRequest)); }
     crate::nt_wine_unwind::dispatch(args)
 }
 
@@ -842,8 +847,13 @@ fn load_so_dll(_args: u64) -> u64 { STATUS_NOT_IMPLEMENTED }
 
 #[cfg(not(target_os = "oxide-kernel"))]
 fn validate_builtin_unwind(args: u64) -> u64 {
-    if args == 0 { STATUS_INVALID_PARAMETER } else { STATUS_NOT_IMPLEMENTED }
+    use crate::nt_wine_unwind::{unwind_status, UnwindRefusal};
+    let _ = args;
+    unwind_status(Err(UnwindRefusal::UnsupportedMachine))
 }
+
+#[path = "nt_wine_unix/runtime_table.rs"]
+pub mod runtime_table;
 
 /// Wine's `unixlib_handle_t` is a table identity. Only the native table may
 /// consume it; arbitrary user pointers are rejected before dispatch.
@@ -855,11 +865,19 @@ fn dispatch_for_address_space(root: u64, call: NtCall) -> u64 {
     // compatibility. Loaded Unixlibs carry their own table address as the
     // Wine handle, which lets several modules coexist in one process.
     let table_address = if call.args.a0 == syscall::nt::WINE_UNIXLIB_HANDLE {
-        let Some(descriptor) = elf_load::elf_modules::unixlib_descriptor(root) else {
+        if !runtime_table::runtime_index_valid(call.args.a1) {
+            log_unix_failure(b"runtime-table-index", STATUS_INVALID_PARAMETER);
+            return STATUS_INVALID_PARAMETER;
+        }
+        let named = elf_load::elf_modules::unixlib_descriptor_for_name(root, runtime_table::RUNTIME_UNIXLIB_NAME);
+        let first = elf_load::elf_modules::unixlib_descriptor(root);
+        let Some(table_address) = runtime_table::runtime_table(
+            named.map(|descriptor| descriptor.table_address),
+            first.map(|descriptor| descriptor.table_address)) else {
             log_unix_failure(b"native-table-missing", STATUS_INVALID_PARAMETER);
             return STATUS_INVALID_PARAMETER;
         };
-        descriptor.table_address
+        table_address
     } else {
         call.args.a0
     };
@@ -1088,8 +1106,14 @@ mod tests {
         assert_eq!(dispatch_for_address_space(root, call), STATUS_NOT_IMPLEMENTED);
         let module_call = NtCall { args: syscall::SyscallArgs { a0: image.base + 0x200, ..call.args }, ..call };
         assert_eq!(dispatch_for_address_space(root, module_call), STATUS_NOT_IMPLEMENTED);
-        let bad = NtCall { args: syscall::SyscallArgs { a1: 8, ..call.args }, ..call };
-        assert_eq!(dispatch_for_address_space(root, bad), STATUS_ACCESS_VIOLATION);
+        // The runtime's own handle names the kernel-served table, whose size
+        // is the reference function count; an index outside it names no
+        // function rather than reaching past some module's table extent.
+        let bad = NtCall { args: syscall::SyscallArgs { a1: runtime_table::RUNTIME_FUNCTION_COUNT, ..call.args }, ..call };
+        assert_eq!(dispatch_for_address_space(root, bad), STATUS_INVALID_PARAMETER);
+        // A module handle still names that module's own table extent.
+        let bad_module = NtCall { args: syscall::SyscallArgs { a0: image.base + 0x200, a1: 8, ..call.args }, ..call };
+        assert_eq!(dispatch_for_address_space(root, bad_module), STATUS_ACCESS_VIOLATION);
         elf_load::elf_modules::clear(root);
     }
 
