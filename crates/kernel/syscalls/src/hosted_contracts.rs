@@ -28,6 +28,8 @@ pub(crate) mod nt_window_timer_contract;
 pub(crate) mod nt_window_update_region_contract;
 #[path = "nt_window/caption/raw.rs"]
 pub(crate) mod nt_window_caption_contract;
+#[path = "nt_window/paint_trace.rs"]
+pub(crate) mod nt_window_paint_trace_contract;
 #[path = "nt_window/sys_colors/raw.rs"]
 pub(crate) mod nt_window_sys_colors_contract;
 #[path = "nt_window/scroll/bar_raw.rs"]

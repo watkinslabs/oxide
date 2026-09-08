@@ -11,9 +11,7 @@ where F: Fn(NtService, SyscallArgs) -> u64, G: Fn(NtService, SyscallArgs) -> u64
 /// that opens nothing draws nothing, and the step that refused is the whole
 /// diagnosis; bounded so a running system stays quiet.
 fn trace_open_failure(hwnd: u64, step: &'static [u8]) {
-    use core::sync::atomic::{AtomicU32, Ordering};
-    static BUDGET: AtomicU32 = AtomicU32::new(0);
-    if BUDGET.fetch_add(1, Ordering::Relaxed) >= 32 { return; }
+    if !u32::try_from(hwnd).is_ok_and(crate::nt_window::paint_trace::take) { return; }
     klog::write_raw(b"[WINDOWS-PAINT-OPEN-FAIL] hwnd="); klog::write_hex_u64(hwnd);
     klog::write_raw(b" step="); klog::write_raw(step); klog::write_raw(b"\n");
 }
@@ -21,13 +19,12 @@ fn trace_open_failure(hwnd: u64, step: &'static [u8]) {
 /// What one paint end did with the pixels the window procedure drew. A paint
 /// whose region was empty submits nothing, and a submitted region that the
 /// canonical owner refuses reaches no screen: both leave the last presented
-/// pixels standing, which reads as a control that never drew. Bounded so a
-/// running desktop stays quiet.
+/// pixels standing, which reads as a control that never drew. Bounded per
+/// window: a budget spent by whichever windows painted first goes silent
+/// exactly when a new dialog appears, and that silence reads as a window
+/// that never painted at all.
 fn trace_end(hwnd: u64, hdc: u64, submitted: bool, present: u64, status: u64) {
-    use core::sync::atomic::{AtomicU32, Ordering};
-    const BUDGET: u32 = 48;
-    static SPENT: AtomicU32 = AtomicU32::new(0);
-    if SPENT.fetch_add(1, Ordering::Relaxed) >= BUDGET { return; }
+    if !u32::try_from(hwnd).is_ok_and(crate::nt_window::paint_trace::take) { return; }
     klog::write_raw(b"[WINDOWS-PAINT-END] hwnd="); klog::write_hex_u64(hwnd);
     klog::write_raw(b" dc="); klog::write_hex_u64(hdc);
     klog::write_raw(b" submitted="); klog::write_hex_u64(submitted as u64);
