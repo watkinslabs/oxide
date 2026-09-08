@@ -12,6 +12,9 @@ pub type Xid = u32;
 mod caret;
 #[path = "visibility.rs"]
 mod visibility;
+#[path = "x11/decode.rs"]
+mod decode;
+pub use decode::decode_event;
 
 #[derive(Debug)]
 pub enum BackendError { DisplayUnavailable, X11, InvalidCommand, Transport(TransportError), Wait(std::io::Error) }
@@ -363,7 +366,39 @@ impl Backend {
         unsafe { ffi::xcb_flush(self.conn); } Ok(())
     }
 
-    fn destroy(&mut self, hwnd: u32) -> Result<(), BackendError> { let window = self.windows.remove(&hwnd).ok_or(BackendError::InvalidCommand)?; self.xid_to_hwnd.remove(&window.xid); unsafe { ffi::xcb_destroy_window(self.conn, window.xid); ffi::xcb_flush(self.conn); } Ok(()) }
+    /// Every window this backend holds below one X window, deepest first. The
+    /// server destroys a window's whole subtree with it, so these records
+    /// describe windows that no longer exist the moment their root is gone.
+    /// # C: O(N_windows^2)
+    fn subtree(&self, root: Xid) -> Vec<u32> {
+        let mut generation = vec![root];
+        let mut found = Vec::new();
+        // The window tree is finite and acyclic; the bound answers rather than
+        // spinning if a parent link is ever wrong.
+        for _ in 0..self.windows.len() {
+            let next: Vec<(u32, Xid)> = self.windows.iter().filter(|(_, window)| generation.contains(&window.parent)).map(|(hwnd, window)| (*hwnd, window.xid)).collect();
+            if next.is_empty() { break; }
+            generation = next.iter().map(|(_, xid)| *xid).collect();
+            found.extend(next.into_iter().map(|(hwnd, _)| hwnd));
+        }
+        found.reverse();
+        found
+    }
+
+    /// Destroy one window. One request destroys its descendants in the server
+    /// too, so their records go with it: a record left behind names a window
+    /// that no longer exists, refuses every frame for the rest of its life,
+    /// and refuses the next creation that draws the same handle.
+    /// # C: O(N_windows^2)
+    fn destroy(&mut self, hwnd: u32) -> Result<(), BackendError> {
+        let window = self.windows.remove(&hwnd).ok_or(BackendError::InvalidCommand)?;
+        self.xid_to_hwnd.remove(&window.xid);
+        for descendant in self.subtree(window.xid) {
+            if let Some(gone) = self.windows.remove(&descendant) { self.xid_to_hwnd.remove(&gone.xid); }
+        }
+        unsafe { ffi::xcb_destroy_window(self.conn, window.xid); ffi::xcb_flush(self.conn); }
+        Ok(())
+    }
     fn snapshot_event(&self) -> Option<BridgeEvent> { self.monitor_snapshot().map(BridgeEvent::WorkArea) }
     fn property_u32(&self, window: Xid, atom: ffi::Atom) -> Option<u32> { let values = self.property_u32s(window, atom)?; crate::geometry::decode_cardinals(&values) }
     fn property_u32s(&self, window: Xid, atom: ffi::Atom) -> Option<Vec<u32>> { self.property_u32s_typed(window, atom, ffi::ATOM_CARDINAL) }
@@ -448,26 +483,3 @@ impl Backend {
 
 fn intern(conn: *mut ffi::Connection, name: &str) -> Result<ffi::Atom, BackendError> { let name = CString::new(name).map_err(|_| BackendError::X11)?; let cookie = unsafe { ffi::xcb_intern_atom(conn, 0, name.as_bytes().len() as u16, name.as_ptr()) }; let mut error = ptr::null_mut(); let reply = unsafe { ffi::xcb_intern_atom_reply(conn, cookie, &mut error) }; if reply.is_null() { return Err(BackendError::X11); } let atom = unsafe { (*reply).atom }; unsafe { libc::free(reply as *mut _); } Ok(atom) }
 
-pub fn decode_event(raw: &[u8]) -> Option<BridgeEvent> {
-    if raw.len() < 32 { return None; }
-    let kind = raw[0] & 0x7f;
-    let xid = |offset| u32::from_ne_bytes(raw[offset..offset + 4].try_into().ok().unwrap());
-    match kind {
-        ffi::CLIENT_MESSAGE => Some(BridgeEvent::Close { hwnd: xid(4) }),
-        ffi::CONFIGURE_NOTIFY => Some(BridgeEvent::Configure { hwnd: xid(8), rect: Rect { left: i16::from_ne_bytes([raw[16], raw[17]]) as i32, top: i16::from_ne_bytes([raw[18], raw[19]]) as i32, right: i16::from_ne_bytes([raw[16], raw[17]]) as i32 + u16::from_ne_bytes([raw[20], raw[21]]) as i32, bottom: i16::from_ne_bytes([raw[18], raw[19]]) as i32 + u16::from_ne_bytes([raw[22], raw[23]]) as i32 } }),
-        ffi::KEY_PRESS | ffi::KEY_RELEASE => Some(BridgeEvent::Input(InputEvent::Key { hwnd: xid(12), press: kind == ffi::KEY_PRESS, virtual_key: 0, scan_code: raw[1], modifiers: u16::from_ne_bytes([raw[28], raw[29]]) as u32 })),
-        ffi::BUTTON_PRESS | ffi::BUTTON_RELEASE => Some(BridgeEvent::Input(InputEvent::Button { hwnd: xid(12), press: kind == ffi::BUTTON_PRESS, button: raw[1], x: i16::from_ne_bytes([raw[24], raw[25]]), y: i16::from_ne_bytes([raw[26], raw[27]]), state: u16::from_ne_bytes([raw[28], raw[29]]) })),
-        ffi::MOTION_NOTIFY => Some(BridgeEvent::Input(InputEvent::Motion { hwnd: xid(12), x: i16::from_ne_bytes([raw[24], raw[25]]), y: i16::from_ne_bytes([raw[26], raw[27]]), state: u16::from_ne_bytes([raw[28], raw[29]]) })),
-        // A pointer-boundary focus event reports where the pointer is, not who
-        // owns the keyboard, and a grab's focus event reports the grab. Taking
-        // either as an activation change deactivates a window whenever the
-        // desktop grabs the keyboard, and reactivates it on release.
-        ffi::FOCUS_IN | ffi::FOCUS_OUT => { if raw[1] == ffi::NOTIFY_POINTER || raw[8] == ffi::NOTIFY_GRAB || raw[8] == ffi::NOTIFY_UNGRAB { return None; } Some(BridgeEvent::Input(InputEvent::Focus { hwnd: xid(4), focused: kind == ffi::FOCUS_IN })) }
-        ffi::PROPERTY_NOTIFY => Some(BridgeEvent::WorkArea(MonitorSnapshot { desktop: 0, monitor: Rect { left: 0, top: 0, right: 0, bottom: 0 }, work_area: Rect { left: 0, top: 0, right: 0, bottom: 0 } })),
-        ffi::EXPOSE => Some(BridgeEvent::Damage { hwnd: xid(4), rect: Rect {
-            left: u16::from_ne_bytes([raw[8], raw[9]]) as i32, top: u16::from_ne_bytes([raw[10], raw[11]]) as i32,
-            right: u16::from_ne_bytes([raw[8], raw[9]]) as i32 + u16::from_ne_bytes([raw[12], raw[13]]) as i32,
-            bottom: u16::from_ne_bytes([raw[10], raw[11]]) as i32 + u16::from_ne_bytes([raw[14], raw[15]]) as i32 } }),
-        _ => None,
-    }
-}

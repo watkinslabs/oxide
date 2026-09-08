@@ -12,10 +12,13 @@ const WS_EX_NOPARENTNOTIFY: u32 = 0x0000_0004;
 const CLASS_LONG_WIDTH: usize = 4;
 
 /// Screen origin of one window's client area, which a client hit's point is
-/// reported relative to. A window that ran no nonclient size calculation has
-/// a client area at its own origin. # C: O(N_windows)
+/// reported relative to. A child's own client rectangle is stated in its
+/// parent's client space, so reading it alone hands a control the offset
+/// inside its parent instead of its place on the screen, and every client
+/// point the retrieval reports is then short of the whole ancestor chain.
+/// The canonical mapping owner accumulates it. # C: O(N_windows)
 pub(super) fn client_origin(state: &WindowManager, window: WindowId) -> (i32, i32) {
-    state.client_rect_raw(window).map_or((0, 0), |rect| (rect.left, rect.top))
+    state.client_origin(window).unwrap_or((0, 0))
 }
 
 /// The hit-test code the window procedure answered, as the reference reads an

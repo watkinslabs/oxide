@@ -1,6 +1,6 @@
 # Known issues
 
-**Live issue count: 601** — 599 `OPEN`, 2 `IN-PROGRESS`.
+**Live issue count: 605** — 603 `OPEN`, 2 `IN-PROGRESS`.
 **Live issue count: 602** — 600 `OPEN`, 2 `IN-PROGRESS`.
 **Live issue count: 603** — 601 `OPEN`, 2 `IN-PROGRESS`.
 **Live issue count: 598** — 596 `OPEN`, 2 `IN-PROGRESS`.

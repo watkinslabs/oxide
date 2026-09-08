@@ -122,5 +122,11 @@ mod tests {
 }
 
 #[cfg(test)]
+#[path = "tests/xvfb_harness.rs"]
+mod xvfb_harness;
+#[cfg(test)]
 #[path = "tests/xvfb_integration.rs"]
 mod xvfb_integration;
+#[cfg(test)]
+#[path = "tests/xvfb_windows.rs"]
+mod xvfb_windows;

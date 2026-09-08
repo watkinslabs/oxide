@@ -109,3 +109,45 @@ fn malformed_pointer_and_stale_source_leave_canonical_state_unchanged() {
     state.destroy(id).unwrap();
     assert_eq!(state.post_compositor_pointer(id, 0, 0, 0, 0, 0), Err(WindowError::NoSuchWindow));
 }
+
+/// A control's own X window reports a press in the control's coordinates, and
+/// the control's canonical rectangle is stated in its parent's client space.
+/// Adding one to the other names a point inside the parent, not on the screen:
+/// every hit test the retrieval then runs answers for somewhere else and the
+/// control is dead to the pointer.
+#[test]
+fn a_press_on_a_child_control_carries_the_screen_point_not_the_parent_relative_one() {
+    let mut state = WindowManager::new();
+    let parent = state.create(11, None, 0).unwrap();
+    state.set_rect(parent, WindowRect { left: 100, top: 200, right: 400, bottom: 500 }).unwrap();
+    state.set_client_rect(parent, WindowRect { left: 105, top: 230, right: 395, bottom: 495 }).unwrap();
+    let child = state.create(11, Some(parent), 0).unwrap();
+    state.set_rect(child, WindowRect { left: 10, top: 20, right: 60, bottom: 40 }).unwrap();
+    state.post_compositor_pointer(child, 5, 7, MK_LBUTTON as u32, 0, 0).unwrap();
+    let messages = drain(&mut state, 11);
+    assert!(messages.iter().all(|message| message.hwnd == Some(child)));
+    assert_eq!(messages.iter().map(|message| (message.message, message.lparam)).collect::<Vec<_>>(), alloc::vec![
+        (WM_MOUSEMOVE, mouse_lparam(120, 257)),
+        (WM_LBUTTONDOWN, mouse_lparam(120, 257))]);
+    assert_eq!(state.cursor, (120, 257));
+}
+
+/// Every ancestor between the control and the screen contributes its own
+/// client origin, so a control nested inside a group box inside a dialog is
+/// found at the sum and not at its immediate parent's offset.
+#[test]
+fn a_press_on_a_nested_control_accumulates_every_ancestor_client_origin() {
+    let mut state = WindowManager::new();
+    let dialog = state.create(11, None, 0).unwrap();
+    state.set_rect(dialog, WindowRect { left: 145, top: 161, right: 891, bottom: 641 }).unwrap();
+    state.set_client_rect(dialog, WindowRect { left: 148, top: 190, right: 888, bottom: 638 }).unwrap();
+    let group = state.create(11, Some(dialog), 0).unwrap();
+    state.set_rect(group, WindowRect { left: 12, top: 30, right: 300, bottom: 200 }).unwrap();
+    let button = state.create(11, Some(group), 0).unwrap();
+    state.set_rect(button, WindowRect { left: 20, top: 40, right: 100, bottom: 64 }).unwrap();
+    state.post_compositor_pointer(button, 3, 4, 0, 0, 0).unwrap();
+    let messages = drain(&mut state, 11);
+    // 148+12+20+3 across, 190+30+40+4 down.
+    assert_eq!(messages.iter().map(|message| (message.message, message.lparam)).collect::<Vec<_>>(),
+        alloc::vec![(WM_MOUSEMOVE, mouse_lparam(183, 264))]);
+}
