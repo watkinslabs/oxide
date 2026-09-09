@@ -3,7 +3,7 @@
 First command: `cat target/B3630-click-preview-debug/live.json`
 
 Worktree /home/nd/oxide/kernel-B3630; branch B3630-paint-region-collapse.
-Main read-only. Read CLAUDE.md. Draft PR7680; last pushed6e5ece2fd; local implementationc39326127.
+Main read-only. Read CLAUDE.md. Draft PR7680; last pushed/verifieda66384dcb; implementationc39326127.
 Goal: defect-free Notepad borders/buttons/Open/Save/dropdowns/About, with
 actual visible acceptance. User requests boot when ready and VM left running.
 Consult pinned local sources first; Wine11.16, never host Wine fallback.
@@ -119,8 +119,15 @@ Consult pinned local sources first; Wine11.16, never host Wine fallback.
   then passes HTTRANSPARENT through decide instead of continuing z-order walk.
   Log100.520+ asks static100028, returns-1, then SETCURSOR; no retarget walk.
   This is a concrete missing dispatcher mechanism; exact cause of the controlled
-  click is not yet proven. Claim KI0682 before implementation, add actual path
+  click is not yet proven. KI0682 now claimed on this branch; add actual path
   coverage including capture, disabled candidates and transparent siblings.
-- Current implementation has passed final builds; finalize push before next claim.
+- Push a66384dcb verified. KI0682 claim committed before implementation.
   Keep PR draft and preserve all failed preview evidence. Do not restart VM
   just because it exited. No complete Notepad or dispatcher correctness claim.
+
+- Candidate enumeration itself needs coordinate audit before wiring:
+  tree/hit.rs::windows_from_point compares child parent-relative rects with
+  unchanged screen points; rect_in_parent subtracts parent coordinates again.
+  Existing tree hit fixture uses screen-style child rectangles and masks the
+  mismatch. Use canonical parent-client coordinates and client clipping in
+  candidate tests; check shape/visible bounds and DPI semantics as well.
