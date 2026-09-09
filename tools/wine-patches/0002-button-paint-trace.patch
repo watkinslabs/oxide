@@ -1,0 +1,92 @@
+--- a/dlls/user32/button.c
++++ b/dlls/user32/button.c
+@@ -45,6 +45,14 @@
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(button);
+ 
++/* Bounded control-paint diagnostics, including paths that submit no glyphs. */
++#define BUTTON_TRACE_LIMIT 256
++static BOOL button_trace_ready(void)
++{
++    static LONG count;
++    return InterlockedIncrement( &count ) <= BUTTON_TRACE_LIMIT;
++}
++
+ /* GetWindowLong offsets for window extra information */
+ #define STATE_GWL_OFFSET  0
+ #define HFONT_GWL_OFFSET  (sizeof(LONG))
+@@ -161,7 +169,10 @@
+ {
+     static const INT len = 512;
+     WCHAR *buffer = HeapAlloc( GetProcessHeap(), 0, (len + 1) * sizeof(WCHAR) );
+-    if (buffer) NtUserInternalGetWindowText( hwnd, buffer, len + 1 );
++    INT copied = buffer ? NtUserInternalGetWindowText( hwnd, buffer, len + 1 ) : -1;
++    if (button_trace_ready())
++        WINE_MESSAGE("[WINDOWS-BUTTON] hwnd=%p step=caption buffer=%p copied=%d text=%s\n",
++                     hwnd, buffer, copied, debugstr_wn(buffer, copied > 0 && copied <= len ? copied : 0));
+     return buffer;
+ }
+ 
+@@ -580,7 +591,10 @@
+           }
+ 
+           if ((hFont = get_button_font( hwnd ))) hPrevFont = SelectObject( hdc, hFont );
+-          DrawTextW(hdc, text, -1, &r, dtStyle | DT_CALCRECT);
++          n = DrawTextW(hdc, text, -1, &r, dtStyle | DT_CALCRECT);
++          if (button_trace_ready())
++              WINE_MESSAGE("[WINDOWS-BUTTON] hwnd=%p dc=%p step=measure result=%d flags=%x rect=%s\n",
++                           hwnd, hdc, n, dtStyle, wine_dbgstr_rect(&r));
+           if (hPrevFont) SelectObject( hdc, hPrevFont );
+           HeapFree( GetProcessHeap(), 0, text );
+           break;
+@@ -609,6 +623,8 @@
+ 
+       default:
+       empty_rect:
++         if (button_trace_ready())
++             WINE_MESSAGE("[WINDOWS-BUTTON] hwnd=%p dc=%p step=empty-label style=%lx\n", hwnd, hdc, style);
+          rc->right = r.left;
+          rc->bottom = r.top;
+          return (UINT)-1;
+@@ -678,6 +694,7 @@
+    LONG state = get_button_state( hwnd );
+    LONG style = GetWindowLongW( hwnd, GWL_STYLE );
+    WCHAR *text = NULL;
++   BOOL drawn;
+ 
+    /* FIXME: To draw disabled label in Win31 look-and-feel, we probably
+     * must use DSS_MONO flag and COLOR_GRAYTEXT brush (or maybe DSS_UNION).
+@@ -714,8 +731,11 @@
+          return;
+    }
+ 
+-   DrawStateW(hdc, hbr, lpOutputProc, lp, wp, rc->left, rc->top,
+-              rc->right - rc->left, rc->bottom - rc->top, flags);
++   drawn = DrawStateW(hdc, hbr, lpOutputProc, lp, wp, rc->left, rc->top,
++                      rc->right - rc->left, rc->bottom - rc->top, flags);
++   if (button_trace_ready())
++       WINE_MESSAGE("[WINDOWS-BUTTON] hwnd=%p dc=%p step=draw result=%d flags=%x rect=%s\n",
++                    hwnd, hdc, drawn, flags, wine_dbgstr_rect(rc));
+    HeapFree( GetProcessHeap(), 0, text );
+ }
+ 
+@@ -738,6 +758,9 @@
+     HRGN hrgn;
+ 
+     GetClientRect( hwnd, &rc );
++    if (button_trace_ready())
++        WINE_MESSAGE("[WINDOWS-BUTTON] hwnd=%p dc=%p step=paint action=%x style=%lx state=%lx client=%s\n",
++                     hwnd, hDC, action, style, state, wine_dbgstr_rect(&rc));
+ 
+     /* Send WM_CTLCOLOR to allow changing the font (the colors are fixed) */
+     if ((hFont = get_button_font( hwnd ))) SelectObject( hDC, hFont );
+@@ -781,6 +804,9 @@
+     /* draw button label */
+     r = rc;
+     dtFlags = BUTTON_CalcLabelRect(hwnd, hDC, &r);
++    if (button_trace_ready())
++        WINE_MESSAGE("[WINDOWS-BUTTON] hwnd=%p dc=%p step=label flags=%x rect=%s\n",
++                     hwnd, hDC, dtFlags, wine_dbgstr_rect(&r));
+ 
+     if (dtFlags == (UINT)-1L)
+        goto cleanup;
