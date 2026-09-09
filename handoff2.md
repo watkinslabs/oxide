@@ -44,12 +44,13 @@ Consult local pinned primary sources first; Wine11.16 release/debug explicit.
   Final ELFs target/B3630-display-final-{x86,arm}.elf and compositor-release
   binaries saved; hashes in teardown/Show evidence. Push180 hosted/both
   features PASS; only documented KI0019 baseline exceptions used.
-- KI0900 fixed0314a2e42, validated/closed; push pending. All image
+- KI0900 fixed0314a2e42, validated/closed; f9b73e77e remote-verified. All image
   tiles submit checked X11 requests before batch completion. Every result
   checked before ACK; errors log HWND/X11 sequence/resource/code/opcodes.
   Actual protocol regression fails before fix (ACK0 instead of1). Checking
   only last cookie fails earlier-error regression.103 compositor tests PASS,
   both compositor release builds PASS. Kernel unchanged since teardown.
+  Push180 hosted/both features PASS with documented KI0019 exceptions.
   scratch/B3630-checked-frame-validation.md; /tmp/B3630-draw-*.log.
   Latest artifacts target/B3630-compositor-checked-release-{x86,arm}; use
   these instead of prior compositor-release snapshots on next staging.

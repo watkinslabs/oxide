@@ -8,3 +8,4 @@
 - No boot or visual Notepad acceptance in this repair. Successful request completion establishes server acceptance, not compositor scanout or screenshot correctness.
 - x86 release artifact target/B3630-compositor-checked-release-x86: SHA256 9d2d07c8452d9035c73f44edf9dab9fc00caa54de5aa8c2310b8c04e884f6a3e.
 - arm release artifact target/B3630-compositor-checked-release-arm: SHA256 6d902f38162b1b4ecb7c84f1e073117b257869bc7aa390603946de18ae2abf63.
+- Runtime0314a2e42 pushed in f9b73e77e; remote SHA verified. Push180 isolated hosted checks and both feature checks PASS; only documented KI0019 lint/test-build/stack baseline exceptions.
