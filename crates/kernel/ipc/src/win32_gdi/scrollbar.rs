@@ -1,6 +1,6 @@
 //! Snapshot-only nonclient scrollbar raster; 31fl§2.
 use super::{GdiError, GdiManager, Rect};
-use crate::win32_window::ScrollState;
+use crate::win32_window::{ScrollState, ESB_DISABLE_BOTH, ESB_DISABLE_LTUP, ESB_DISABLE_RTDN};
 
 const MIN_TRACK: i64 = 4;
 const MIN_THUMB: i64 = 17;
@@ -42,7 +42,7 @@ pub fn scrollbar_layout(length: i32, state: ScrollState, metrics: ScrollMetrics)
     let thumb = if state.page == 0 { arrow } else {
         muldiv(track, i64::from(state.page), span).max(muldiv(MIN_THUMB, i64::from(metrics.dpi), BASE_DPI))
     };
-    if thumb > track || state.disabled { return Ok(ScrollLayout { arrow_size: arrow as i32, thumb_pos: 0, thumb_size: 0 }); }
+    if thumb > track || state.flags == ESB_DISABLE_BOTH { return Ok(ScrollLayout { arrow_size: arrow as i32, thumb_pos: 0, thumb_size: 0 }); }
     let upper = i64::from(state.max) - i64::from((state.page - 1).max(0));
     let min = i64::from(state.min);
     let pos = i64::from(if state.tracking { state.track_pos } else { state.pos }).clamp(min, upper.max(min));
@@ -54,6 +54,12 @@ impl GdiManager {
     /// Paint copied scrollbar state without changing DC attributes or window state. # C: O(DCs + clipped pixels)
     pub fn draw_nonclient_scrollbar(&mut self, dc: u32, bounds: Rect, vertical: bool, state: ScrollState,
         metrics: ScrollMetrics, colors: ScrollColors, pressed: ScrollPart) -> Result<ScrollDrawOutcome, GdiError> {
+        self.draw_nonclient_scrollbar_parts(dc, bounds, vertical, state, metrics, colors, pressed, true)
+    }
+
+    /// Draw arrows, optionally retaining the previous track and thumb. # C: O(DCs + clipped pixels)
+    pub fn draw_nonclient_scrollbar_parts(&mut self, dc: u32, bounds: Rect, vertical: bool, state: ScrollState,
+        metrics: ScrollMetrics, colors: ScrollColors, pressed: ScrollPart, interior: bool) -> Result<ScrollDrawOutcome, GdiError> {
         let mut target = self.raster_dc(dc)?;
         let width = bounds.right.checked_sub(bounds.left).filter(|v| *v >= 0).ok_or(GdiError::InvalidDimensions)?;
         let height = bounds.bottom.checked_sub(bounds.top).filter(|v| *v >= 0).ok_or(GdiError::InvalidDimensions)?;
@@ -71,7 +77,8 @@ impl GdiManager {
         for y in drawn.top..drawn.bottom { for x in drawn.left..drawn.right {
             let (axis, cross) = if vertical { (i64::from(y) - i64::from(bounds.top), i64::from(x) - i64::from(bounds.left)) }
                 else { (i64::from(x) - i64::from(bounds.left), i64::from(y) - i64::from(bounds.top)) };
-            let color = raster(axis, cross, length, breadth, vertical, layout, colors, state.disabled, pressed, x, y);
+            if !interior && axis >= i64::from(layout.arrow_size) && axis < length - i64::from(layout.arrow_size) { continue; }
+            let color = raster(axis, cross, length, breadth, vertical, layout, colors, state.flags, pressed, x, y);
             if !target.update(x, y, |_| color) { continue; }
             painted = Some(match painted { None => Rect { left: x, top: y, right: x + 1, bottom: y + 1 },
                 Some(r) => Rect { left: r.left.min(x), top: r.top.min(y), right: r.right.max(x + 1), bottom: r.bottom.max(y + 1) } });
@@ -83,10 +90,11 @@ impl GdiManager {
 fn muldiv(value: i64, numerator: i64, denominator: i64) -> i64 { (value * numerator + denominator / 2) / denominator }
 
 fn raster(axis: i64, cross: i64, length: i64, breadth: i64, vertical: bool, layout: ScrollLayout,
-    colors: ScrollColors, disabled: bool, pressed: ScrollPart, x: i32, y: i32) -> u32 {
+    colors: ScrollColors, flags: u32, pressed: ScrollPart, x: i32, y: i32) -> u32 {
     let arrow = i64::from(layout.arrow_size);
     let first = axis < arrow;
     if first || axis >= length - arrow {
+        let disabled = flags & if first { ESB_DISABLE_LTUP } else { ESB_DISABLE_RTDN } != 0;
         let local = if first { axis } else { axis - (length - arrow) };
         let pushed = !disabled && pressed == if first { ScrollPart::FirstArrow } else { ScrollPart::LastArrow };
         let (px, py, w, h) = if vertical { (cross, local, breadth, arrow) } else { (local, cross, arrow, breadth) };
@@ -117,7 +125,7 @@ fn raster(axis: i64, cross: i64, length: i64, breadth: i64, vertical: bool, layo
     let color = if colors.highlight == colors.window {
         if (x ^ y) & 1 == 0 { colors.highlight } else { colors.face }
     } else { colors.track };
-    let selected = size > 0 && !disabled && ((axis < thumb && pressed == ScrollPart::FirstPage)
+    let selected = size > 0 && flags != ESB_DISABLE_BOTH && ((axis < thumb && pressed == ScrollPart::FirstPage)
         || (axis >= thumb + size && pressed == ScrollPart::LastPage));
     if selected { color ^ RGB_MASK } else { color }
 }

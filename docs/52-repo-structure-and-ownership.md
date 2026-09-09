@@ -36,6 +36,8 @@ drift between `kernel/src`, ad-hoc `crates/*`, and one-off folders.
    scroll continuations consume the existing position and Send owners.
    Window `scroll/control` owns optional scrollbar-control state on the HWND;
    its lifetime is distinct from the same HWND’s standard nonclient bars.
+   Syscalls `scroll/actions` consumes canonical scroll actions; hosted boundary
+   fixtures import that module and the worktree’s live adapters directly.
    Window `dc_lease` snapshots canonical visibility; GDI `dc_lease` retains
    HDC attributes and maps raster operations to existing backing storage.
    GDI `pen` owns selected pen lifetime. Paint preparation resources remain

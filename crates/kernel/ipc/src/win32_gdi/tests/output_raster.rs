@@ -35,7 +35,7 @@ fn patblt_and_pen_line_rectangle_use_tracked_lease_raster(){
 #[test]
 fn nonclient_scroll_raster_marks_real_lease_backing(){
     let(mut g,backing,dc)=fixture();
-    let state=ScrollState{min:0,max:99,page:20,pos:40,track_pos:0,tracking:false,visible:true,disabled:false,flags:0};
+    let state=ScrollState{min:0,max:99,page:20,pos:40,track_pos:0,tracking:false,visible:true,flags:0};
     let colors=ScrollColors{face:0xc0c0c0,highlight:0xffffff,light:0xdfdfdf,shadow:0x808080,
         dark_shadow:0x404040,text:0x010101,window:0xfefefe,track:0xaabbcc};
     assert!(matches!(g.draw_nonclient_scrollbar(dc,Rect{left:2,top:2,right:19,bottom:202},true,state,

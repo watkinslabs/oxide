@@ -137,6 +137,6 @@ pub(crate) fn complete_pending_for_current(token: u64, outcome: Outcome, hooks: 
         entries[index].scroll_pending.complete(tid, token, outcome)
     }) else { return 0; };
     if outcome == Outcome::Failed { return 0; }
-    if pending.should_repaint() && !hooks.repaint_scrollbar(pending.root, pending.bar) { return 0; }
+    if pending.should_repaint() && !hooks.repaint_scrollbar(pending.root, pending.bar, true) { return 0; }
     pending.result as i64 as u64
 }

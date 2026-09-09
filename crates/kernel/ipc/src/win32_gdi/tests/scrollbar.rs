@@ -5,7 +5,7 @@ const COLORS: ScrollColors = ScrollColors { face: 0xc0c0c0, highlight: 0xffffff,
     shadow: 0x808080, dark_shadow: 0x404040, text: 0x010101, window: 0xfefefe, track: 0xaabbcc };
 const BAR: Rect = Rect { left: 2, top: 2, right: 19, bottom: 202 };
 fn state() -> ScrollState { ScrollState { min: 0, max: 99, page: 20, pos: 40, track_pos: 0,
-    tracking: false, visible: true, disabled: false, flags: 0 } }
+    tracking: false, visible: true, flags: 0 } }
 fn draw(g: &mut GdiManager, dc: u32, s: ScrollState, part: ScrollPart) -> ScrollDrawOutcome {
     g.draw_nonclient_scrollbar(dc, BAR, true, s, METRICS, COLORS, part).unwrap()
 }
@@ -22,7 +22,7 @@ fn proportional_geometry_rounding_dpi_short_and_tracking() {
     assert_eq!(scrollbar_layout(4, s, METRICS).unwrap().arrow_size, 0);
     s.tracking = true; s.track_pos = 99;
     assert_eq!(scrollbar_layout(200, s, METRICS).unwrap().thumb_pos, 166);
-    s.disabled = true;
+    s.flags = ESB_DISABLE_BOTH;
     assert_eq!(scrollbar_layout(200, s, METRICS).unwrap().thumb_size, 0);
 }
 
@@ -56,7 +56,7 @@ fn horizontal_raster_has_both_arrows_and_proportional_thumb() {
 #[test]
 fn disabled_and_pressed_change_actual_pixels_without_owner_mutation() {
     let mut g = GdiManager::new(); let dc = g.create_dc(24, 208).unwrap();
-    let mut s = state(); s.disabled = true;
+    let mut s = state(); s.flags = ESB_DISABLE_BOTH;
     draw(&mut g, dc, s, ScrollPart::FirstArrow);
     assert_eq!(pixel(&g, dc, 10, 95), COLORS.track);
     assert_eq!(pixel(&g, dc, 10, 10), COLORS.shadow);
@@ -69,7 +69,7 @@ fn disabled_and_pressed_change_actual_pixels_without_owner_mutation() {
     assert_eq!(pixel(&g, dc, 2, 2), COLORS.shadow);
     draw(&mut g, dc, state(), ScrollPart::None);
     assert_eq!(pixel(&g, dc, 2, 2), COLORS.light);
-    assert!(s.disabled);
+    assert_eq!(s.flags, ESB_DISABLE_BOTH);
 }
 
 #[test]
@@ -125,4 +125,21 @@ fn invalid_inputs_fail_before_pixel_mutation() {
     assert!(g.pixels(dc).unwrap().iter().all(|p| *p == 0));
     assert!(scrollbar_layout(200, state(), ScrollMetrics { dpi: 0, ..METRICS }).is_err());
     assert!(scrollbar_layout(200, ScrollState { min: 100, ..state() }, METRICS).is_err());
+}
+
+#[test]
+fn arrow_only_refresh_keeps_old_thumb_pixels_and_honors_each_disable_bit() {
+    let mut g = GdiManager::new(); let dc = g.create_dc(24, 208).unwrap();
+    draw(&mut g, dc, state(), ScrollPart::None);
+    let before = g.pixels(dc).unwrap().to_vec();
+    let mut changed = state(); changed.pos = 0; changed.flags = ESB_DISABLE_LTUP;
+    g.draw_nonclient_scrollbar_parts(dc, BAR, true, changed, METRICS, COLORS, ScrollPart::None, false).unwrap();
+    assert_eq!(pixel(&g, dc, 10, 10), COLORS.shadow);
+    assert_eq!(pixel(&g, dc, 10, 195), COLORS.text);
+    for y in 19..185 { for x in 0..24 { assert_eq!(pixel(&g, dc, x, y), before[y * 24 + x]); } }
+    changed.flags = ESB_DISABLE_RTDN;
+    g.draw_nonclient_scrollbar_parts(dc, BAR, true, changed, METRICS, COLORS, ScrollPart::None, false).unwrap();
+    assert_eq!(pixel(&g, dc, 10, 10), COLORS.text);
+    assert_eq!(pixel(&g, dc, 10, 195), COLORS.shadow);
+    assert_eq!(scrollbar_layout(200, changed, METRICS).unwrap().thumb_size, 33);
 }

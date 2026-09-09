@@ -59,8 +59,10 @@ state.
   ranges become (0,0); position clamps to min..max-max(page-1,0).
 - SetScrollInfo returns current position, or previous position for
   SIF_RETURNPREV. No-scroll ranges hide the nonclient scrollbar unless
-  SIF_DISABLENOSCROLL requests disabled arrows. Page-only changes do not force
-  visibility. Redraw flags retain their drawing effect in the canonical owner.
+  SIF_DISABLENOSCROLL requests disabled arrows. Page-only updates can hide
+  a bar when scrolling becomes impossible; they never show or re-enable it.
+  Arrow flags are the sole disabled-state authority. Redraw requests repaint
+  even unchanged values; without redraw, flag changes paint arrows only.
   SB_CTL uses synchronous scrollbar-window messages, not another nonclient bar.
 - Raw SetScrollInfo ordinal 0x1581 has four arguments. GetScrollInfo uses
   NtUserCallHwndParam method 7 and a 16-byte bar/pointer descriptor. All input

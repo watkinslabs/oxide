@@ -23,7 +23,7 @@ pub struct ScrollInfo { pub cb_size: u32, pub mask: u32, pub min: i32, pub max: 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct ScrollState {
     pub min: i32, pub max: i32, pub page: i32, pub pos: i32, pub track_pos: i32,
-    pub tracking: bool, pub visible: bool, pub disabled: bool,
+    pub tracking: bool, pub visible: bool,
     /// `ESB_*` arrow-disable flags this bar carries.
     pub flags: u32,
 }
@@ -49,7 +49,7 @@ impl ScrollInfo {
 impl Default for ScrollState { fn default() -> Self { Self::new() } }
 
 impl ScrollState {
-    pub const fn new() -> Self { Self { min: 0, max: 0, page: 0, pos: 0, track_pos: 0, tracking: false, visible: false, disabled: false, flags: ESB_ENABLE_BOTH } }
+    pub const fn new() -> Self { Self { min: 0, max: 0, page: 0, pos: 0, track_pos: 0, tracking: false, visible: false, flags: ESB_ENABLE_BOTH } }
 
     pub fn apply(&mut self, info: ScrollInfo) -> Result<i32, ScrollError> {
         Ok(self.apply_for_bar(SB_VERT, info, false)?.result)
@@ -60,34 +60,41 @@ impl ScrollState {
         if !valid_bar(bar) { return Err(ScrollError::InvalidBar); }
         let previous = self.pos;
         let old = *self;
+        let invalid_range = info.min > info.max || i64::from(info.max) - i64::from(info.min) >= 0x8000_0000;
+        let refresh = info.mask & SIF_PAGE != 0 && self.page as u32 != info.page
+            || info.mask & SIF_POS != 0 && self.pos != info.pos
+            || info.mask & SIF_RANGE != 0 && (invalid_range || self.min != info.min || self.max != info.max);
         if info.mask & SIF_PAGE != 0 { self.page = (info.page as i32).max(0); }
         if info.mask & SIF_POS != 0 { self.pos = info.pos; }
         if info.mask & SIF_RANGE != 0 {
-            if info.min > info.max || (i64::from(info.max) - i64::from(info.min)) >= 0x8000_0000 {
+            if invalid_range {
                 self.min = 0; self.max = 0;
             } else { self.min = info.min; self.max = info.max; }
         }
         let span = i64::from(self.max) - i64::from(self.min) + 1;
         self.page = self.page.min(span.max(0).min(i64::from(i32::MAX)) as i32);
-        let upper = i64::from(self.max) - i64::from(self.page.saturating_sub(1));
-        self.pos = self.pos.max(self.min).min(upper as i32);
+        let upper = i64::from(self.max) - i64::from(self.page.saturating_sub(1).max(0));
+        if self.pos < self.min { self.pos = self.min; }
+        else if i64::from(self.pos) > upper { self.pos = upper as i32; }
 
         let mut action = ScrollAction { redraw, ..ScrollAction::default() };
-        let no_scroll = self.min >= self.max - self.page.saturating_sub(1);
-        let page_only = info.mask == SIF_PAGE;
+        let no_scroll = i64::from(self.min) >= upper;
+        let mut hide_requested = false;
         if bar == SB_CTL { action.control_message = true; }
-        if info.mask & (SIF_RANGE | SIF_PAGE | SIF_DISABLENOSCROLL) != 0 && !page_only {
+        if info.mask & SIF_ALL != 0 && info.mask & (SIF_RANGE | SIF_PAGE | SIF_DISABLENOSCROLL) != 0 {
+            let mut flags = self.flags;
             if no_scroll {
-                self.disabled = info.mask & SIF_DISABLENOSCROLL != 0;
-                action.disable_arrows = self.disabled && !old.disabled;
-                if bar != SB_CTL { self.visible = false; action.hide = old.visible; }
-            } else {
-                self.disabled = false;
-                action.enable_arrows = old.disabled;
-                if bar != SB_CTL { self.visible = true; action.show = !old.visible; }
+                if info.mask & SIF_DISABLENOSCROLL != 0 { flags = ESB_DISABLE_BOTH; }
+                else if bar != SB_CTL && refresh { hide_requested = true; self.visible = false; action.hide = old.visible; }
+            } else if info.mask != SIF_PAGE {
+                flags = ESB_ENABLE_BOTH;
+                if bar != SB_CTL && refresh { self.visible = true; action.show = !old.visible; }
             }
+            self.flags = flags;
+            action.disable_arrows = flags == ESB_DISABLE_BOTH && flags != old.flags;
+            action.enable_arrows = flags == ESB_ENABLE_BOTH && flags != old.flags;
         }
-        action.repaint = old != *self;
+        action.repaint = !hide_requested && (redraw || self.flags != old.flags);
         Ok(ScrollOutcome { result: if info.mask & SIF_RETURNPREV != 0 { previous } else { self.pos }, action })
     }
 
@@ -114,3 +121,7 @@ pub mod owner;
 #[cfg(test)]
 #[path = "scroll/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "scroll/tests/transitions.rs"]
+mod transition_tests;

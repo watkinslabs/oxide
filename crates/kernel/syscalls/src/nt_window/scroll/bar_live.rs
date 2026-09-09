@@ -86,7 +86,7 @@ fn enable(hwnd: u64, bar: i32, flags: u32) -> u64 {
     let other_matched = if bar == ipc::win32_window::SB_BOTH {
         let matched = stored_flags(hwnd, SB_VERT) == Some(flags);
         if !store_flags(hwnd, SB_VERT, flags) { return 0; }
-        if !matched { let mut sink = production(); sink.repaint_scrollbar(hwnd, SB_VERT); }
+        if !matched { let mut sink = production(); sink.repaint_scrollbar(hwnd, SB_VERT, true); }
         matched
     } else { false };
     let target = enable_target(bar);
@@ -95,7 +95,7 @@ fn enable(hwnd: u64, bar: i32, flags: u32) -> u64 {
     if enable_unchanged(bar, other_matched, previous == flags) { return 0; }
     if let Some(enabled) = control_window_enabled(target, flags) { show_window(hwnd, enabled); }
     let mut sink = production();
-    sink.repaint_scrollbar(hwnd, target);
+    sink.repaint_scrollbar(hwnd, target, true);
     1
 }
 

@@ -50,15 +50,22 @@ pub(crate) fn bounds(context: NonclientScrollContext, bar: i32) -> Result<Option
 
 /// The existing window DC must retain the latest composed client/frame pixels.
 /// No creation, resize, attribute reset or fallback surface occurs here. # C: O(DCs + clipped pixels)
+#[cfg(test)]
 pub(crate) fn render(state: &mut GdiManager, hwnd: u32, bar: i32, scroll: ScrollState,
     context: NonclientScrollContext) -> Result<(u32, ScrollDrawOutcome), GdiError> {
+    render_parts(state, hwnd, bar, scroll, context, true)
+}
+
+/// Arrow-only refresh retains every existing track and thumb pixel. # C: O(DCs + clipped pixels)
+pub(crate) fn render_parts(state: &mut GdiManager, hwnd: u32, bar: i32, scroll: ScrollState,
+    context: NonclientScrollContext, interior: bool) -> Result<(u32, ScrollDrawOutcome), GdiError> {
     let dc = state.window_dc(hwnd).ok_or(GdiError::NoSuchObject)?;
     let width = context.window.right.checked_sub(context.window.left).filter(|v| *v > 0).ok_or(GdiError::InvalidDimensions)?;
     let height = context.window.bottom.checked_sub(context.window.top).filter(|v| *v > 0).ok_or(GdiError::InvalidDimensions)?;
     let (surface_width, surface_height, _) = state.surface(dc).ok_or(GdiError::NoSuchObject)?;
     if (surface_width, surface_height) != (width, height) { return Err(GdiError::InvalidDimensions); }
     let Some(bounds) = bounds(context, bar)? else { return Ok((dc, ScrollDrawOutcome::Hidden)); };
-    state.draw_nonclient_scrollbar(dc, bounds, bar == SB_VERT, scroll, context.metrics, context.colors, context.pressed)
+    state.draw_nonclient_scrollbar_parts(dc, bounds, bar == SB_VERT, scroll, context.metrics, context.colors, context.pressed, interior)
         .map(|outcome| (dc, outcome))
 }
 

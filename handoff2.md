@@ -107,3 +107,14 @@ Durable evidence: scratch/B3630-notepad-verification.md.
  Read source again before implementation; no WM_PAINT-only success stub.
 - Both release kernels build after721f8120d; stack reports exactly match
  the preceding dispatcher repair on both arches. No new/increased row.
+
+- KI0888/0889 repair now tested: sole arrow flags, zero-page clamp, masked
+ visibility transitions, unchanged redraw and arrow-only refresh. Real action
+ consumer extracted; joined fixture no longer loads main or copied actions.
+ IPC1522/syscall3262 and both boundary suites pass; both feature checks pass.
+ Restored action predicate/raster behavior each fail targeted tests.
+ Release/stack gates for this change have not run yet; do before push.
+- Next KI0885 paint prerequisite: extend existing begin_user_callback with
+ typed User/Record input and checked stack layout, keeping its existing root
+ re-export. Only current caller is builtin_classes/kernel.rs. Avoid adding
+ a duplicate callback entry path. Draw callback index8,104-byte argument record.

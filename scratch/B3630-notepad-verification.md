@@ -333,3 +333,15 @@ page-only/no-fields transitions need correction before the control consumes it.
 Control-state foundation721f8120d builds both release kernels. Stack reports
 match53cf05cdf exactly on both architectures:358/299 reported rows, no
 new/increased path; existing336/277 failures and7664/6368 exception bytes.
+
+KI-0888: canonical scroll flags replace the redundant disabled boolean;
+zero-page position clamping, page-only hiding, disable-without-hide and
+unchanged redraw follow the state contract. Without redraw, changed flags
+request arrows only and retain every thumb/track pixel. Five initial policy
+regressions fail old behavior; restored action predicate and full-bar raster
+each fail their boundary test. Final IPC suite1522, syscall suite3262,
+nonclient raster boundary and joined scrollbar boundary pass; both feature
+architectures pass. Full release/stack verification for this change pending.
+KI-0889: scrollbar fixture imports the production action module and current
+worktree adapters, replacing duplicate logic and absolute main-tree paths.
+Position completion and raster observation remain explicit fixture seams.
