@@ -141,3 +141,29 @@ Logs /tmp/B3630-selector-{asm,descriptor-red,ptrace-red}.log and
 /tmp/B3630-selectors-{red,green,syscalls,feature,stack}.log.
 No new boot; KI-0866 also includes missing process-memory files, malformed
 vDSO metadata and incomplete debugger detach, which this change does not fix.
+
+KI-0870: vDSO publication now retains the complete ELF image, including
+section headers/names beyond PT_LOAD, with the full page-rounded reservation.
+The shared ELF parser validates a single RX segment at offset/vaddr0 with
+filesz==memsz. `exec::vdso::map_into` owns publication; the existing syscall
+adapter supplies mm/image/machine/vvar. Both exec entry paths still call it.
+Five syscall boundary tests inspect the real destination VMA backings for
+both generated images, second-page metadata, refused layouts and absent data
+page. The original mapper fails both image tests; restoring truncation in
+the final owner fails all three metadata tests. Admission/size controls also
+fail their respective tests.241 ELF-loader tests pass (one pre-existing
+ignored ordinal report);3261 syscall tests pass. Both feature gates pass.
+x86 stack failure lists are identical to the pre-vDSO-repair branch:336 task
+paths and the7664 B exception path; no new/worsened failure.
+Evidence: /tmp/B3630-vdso-{mapping-red,controls-red,boundary-red,full-tests,
+feature,stack}.log. ARM release build succeeds;277 failing paths and the
+6368 B exception path are identical to an exact pre-change source build.
+No new/worsened failure. ARM reports /tmp/B3630-vdso-stack-arm{,-baseline}.log;
+candidate ELF retained at target/B3630-vdso-fixed-arm.elf. Default ARM ELF
+currently contains the comparison baseline; rebuild/stage candidate for boot.
+Runtime remains unverified.
+
+Debugger source check: failed /proc/self/mem open makes native memory access
+fall back to ptrace on a stopped thread. Missing process-memory files are
+still a defect, but that warning alone does not prove the backtrace blocker.
+No new GNOME cause established; KI-0865/KI-0866 remain open.

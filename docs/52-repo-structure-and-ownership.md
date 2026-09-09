@@ -329,6 +329,10 @@ must use grouped paths from day one.
     the backend that maps reservations onto the NT virtual-memory owner. No
     other crate keeps heap block state.
 
+26. `exec::vdso` owns complete auxiliary ELF image publication through `vmm`;
+    `syscalls::vdso` supplies the current address space, native image and data
+    page. `elf` owns parsing; syscall tests inspect both shipped image backings.
+
 ## 6
 
 1. Prefer explicit names over compressed abbreviations.

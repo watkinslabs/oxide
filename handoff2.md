@@ -63,9 +63,24 @@ new/worsened path vs prior branch report; exception7664 B unchanged.
 Selector repair published in draft PR7680; verify latest local/remote SHA.
 Hosted gate180 crates and both feature gates pass. No new boot.
 
-KI-0870 claimed: vDSO copies PT_LOAD bytes only, dropping ELF section metadata
-advertised in the mapped header. x86 image LOAD filesz1065, shoff1504,
-shnum11/shstrndx10. Both images need mapped-image tests and complete image
-publication. Source was inspected: whole stripped vDSO image is page-rounded
-and published. Review current vdso.rs, vdso_elf.rs and vdso/build.sh.
-Missing /proc/pid/mem and failed debugger detach also remain underKI-0866.
+KI-0870 implemented locally; publication pending. Complete image publication
+is now in exec::vdso::map_into, reached by syscalls::vdso::map_into_current
+from both exec paths. ELF parsing uses the existing shared parser. The full
+image and page-rounded extent survive, including non-PT_LOAD section metadata.
+Five boundary tests in syscalls/src/vdso/tests.rs inspect real VMA backings
+for both generated images, second-page metadata, rejected layout and missing
+data page. Original truncation reproduces three failures in final owner.
+241 ELF-loader tests pass (one existing ignored report);3261 syscall tests
+pass. Both feature gates pass. x86 stack336 failures unchanged. ARM release
+build passes;277 failing stack paths and6368 B exception path exactly match
+an exact pre-change source build. Candidate sources restored and verified.
+ARM logs /tmp/B3630-vdso-stack-arm{,-baseline}.log; candidate ELF retained at
+target/B3630-vdso-fixed-arm.elf. Default ARM ELF is the baseline comparison:
+rebuild/stage the candidate for any verification boot.
+Other logs /tmp/B3630-vdso-{boundary-red,full-tests,feature,stack}.log.
+No new boot. Keep draft until runtime acceptance succeeds.
+
+GDB17.1 source check: missing /proc/self/mem causes a ptrace memory fallback
+on a stopped thread; the warning alone is not proof of a backtrace blocker.
+The composed GNOME root RPM database confirms gdb-headless17.1-1.fc42 and
+gnome-shell48.8-1.fc42. Desktop mutex cause remains unknown.
