@@ -2,6 +2,7 @@
 use super::*;
 use ipc::win32_window::{WinMessage, WM_LBUTTONDOWN, hardware::make_point};
 static PREPARED: Mutex<Option<(u64, WinMessage)>> = Mutex::new(None);
+static EXPECTED_COPY: Mutex<Option<WinMessage>> = Mutex::new(None);
 static COPIED: Mutex<Option<WinMessage>> = Mutex::new(None);
 static COPY_FAIL: Mutex<bool> = Mutex::new(false);
 pub(super) fn stage() -> nt_window::hardware::Stage {
@@ -11,6 +12,9 @@ pub(super) fn stage() -> nt_window::hardware::Stage {
     }
 }
 pub(super) fn copy(message: WinMessage) -> Result<(), syscall::Errno> {
+    let expected = EXPECTED_COPY.lock().unwrap().take().expect("unexpected queued message copy");
+    assert_eq!(message, expected);
+    assert!(nt_window::GUI.unlocked(), "hardware usercopy holds GUI ownership");
     *COPIED.lock().unwrap() = Some(message);
     if *COPY_FAIL.lock().unwrap() { Err(syscall::Errno::Efault) } else { Ok(()) }
 }
@@ -26,6 +30,7 @@ fn fixture() -> (u64, WinMessage, WinMessage) {
     let (id, raw, _) = state.inspect_for_thread(41, filter()).unwrap();
     let view = WinMessage { lparam: make_point(20, 10), ..raw };
     *PREPARED.lock().unwrap() = Some((id, view));
+    *EXPECTED_COPY.lock().unwrap() = Some(view);
     (id, raw, view)
 }
 fn request(service: nt::NtService, remove: bool) -> NtCall {
