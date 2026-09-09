@@ -75,6 +75,7 @@ mod rlimit_prio;
 mod selinux_label;
 mod session;
 mod send_signal;
+mod ptrace_attach;
 mod sigpending;
 mod signals;
 mod task;

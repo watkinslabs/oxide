@@ -333,6 +333,10 @@ must use grouped paths from day one.
     `syscalls::vdso` supplies the current address space, native image and data
     page. `elf` owns parsing; syscall tests inspect both shipped image backings.
 
+27. `sched::live::ptrace_attach` owns authorized trace relationship publication
+    and initial attach signal routing through the canonical signal sender;
+    syscall adapters validate credentials, target eligibility and options.
+
 ## 6
 
 1. Prefer explicit names over compressed abbreviations.

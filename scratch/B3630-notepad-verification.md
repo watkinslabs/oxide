@@ -167,3 +167,15 @@ Debugger source check: failed /proc/self/mem open makes native memory access
 fall back to ptrace on a stopped thread. Missing process-memory files are
 still a defect, but that warning alone does not prove the backtrace blocker.
 No new GNOME cause established; KI-0865/KI-0866 remain open.
+
+KI-0871: authorized attachment publication moved to
+`sched::live::ptrace_attach::attach`, called after syscall permission checks.
+ATTACH sends SI_KERNEL SIGSTOP through the canonical private thread queue;
+SEIZE preserves options without generating a signal. A real thread-group test
+with a ptrace-stopped leader reproduces the shared-queue defect, then passes
+with thread routing. Both focused tests and all2019 scheduler tests pass;
+both architecture feature gates pass. Logs /tmp/B3630-attach-{red,green,sched,
+feature}.log. Release/stack verification pending at this note.
+KI-0872 records incorrect INTERRUPT publication and absent jobctl trap handling;
+KI-0873 records missing group-stopped attachment transition. Neither is fixed
+by changing ATTACH signal routing. No runtime verification or new GNOME cause.
