@@ -34,7 +34,7 @@ fn zombie_candidate(t: &Task) -> Candidate {
         parent_tgid: tgid_of(parent_tid),
         tracer_tid,
         tracer_tgid: tgid_of(tracer_tid),
-        vpid: crate::registry::leader_tgid_nr_in(t, &crate::registry::reader_pid_ns())
+        vpid: crate::registry::vnr_in(t, &crate::registry::reader_pid_ns())
             .unwrap_or(0),
         pgid:        t.pgrp().tid,
         exit_signal: t.exit_signal.load(Ordering::Acquire),
@@ -93,7 +93,7 @@ pub fn reap_one(parent: u32, parent_tgid: u32, pid: i32, parent_pgid: u32, optio
     // spawned the process an ECHILD the moment anything straced it.
     let reparented_tracee = {
         let c = zombie_candidate(&q[pos]);
-        crate::wait_select::ptrace_scope_matches(c, waiter, options)
+        q[pos].pid.is_group_leader() && crate::wait_select::ptrace_scope_matches(c, waiter, options)
             && c.parent_tgid != c.tracer_tgid
     };
     if reparented_tracee {
@@ -111,9 +111,7 @@ pub fn reap_one(parent: u32, parent_tgid: u32, pid: i32, parent_pgid: u32, optio
         return Some((child, code));
     }
     let t = q.remove(pos);
-    // Return the child's vpid (vtgid) — the PID userspace waited on — NOT the
-    // opaque internal tid. Single pid identity (Linux): waitpid returns the
-    // same value fork() returned.
+    // Return the selected task's identity in the waiter's PID namespace.
     let child = WaitChildSnapshot::from_task(&t);
     let code = crate::exit::wait_status(&t);
     let is_leader = t.pid.is_group_leader();

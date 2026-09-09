@@ -101,6 +101,14 @@ pub const fn exit_notify(
     ExitNotify { signal, autoreap: true, wake_parent: true }
 }
 
+/// Traced exits remain waitable even when the tracer ignores child signals.
+/// Only an empty group traced by its real-parent group retains exit_signal.
+/// # C: O(1)
+pub const fn traced_exit_notify(group_empty: bool, exit_signal: Option<u32>, reparented: bool) -> ExitNotify {
+    let signal = if group_empty && !reparented { exit_signal } else { Some(Signum::Sigchld as u32) };
+    ExitNotify { signal, autoreap: false, wake_parent: signal.is_some() }
+}
+
 /// Why a child is notifying its parent outside exit — Linux `si_code`.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Cldstop {

@@ -84,4 +84,5 @@ mod ucounts;
 mod umask;
 mod wait_events;
 mod wait_pidns;
+pub(crate) mod wait_thread_identity;
 mod wake_list;

@@ -40,7 +40,9 @@ impl ThreadGroup {
                 ExitDisposition::WaitableLeader(task)
             } else { ExitDisposition::DeferredLeader }
         } else {
-            crate::registry::mark_reaped(&task);
+            if task.traced_by.load(core::sync::atomic::Ordering::Acquire) == 0 {
+                crate::registry::mark_reaped(&task);
+            }
             let pending_leader = {
                 let mut state = self.state.lock();
                 state.live -= 1;

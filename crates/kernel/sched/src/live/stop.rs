@@ -221,6 +221,8 @@ fn notify_continued(cur: &crate::Task, why: Cldstop) {
 /// # Ctx: dispatch tail, process context, preempt-off.
 /// # C: O(N_waiters)
 fn notify_parent_cldstop(cur: &crate::Task, why: Cldstop, status_sig: u32, to: NotifyTarget) {
+    let leader = match to { NotifyTarget::RealParent => group_leader(cur), NotifyTarget::Tracer => None };
+    let cur = leader.as_deref().unwrap_or(cur);
     let tracer = match to {
         NotifyTarget::Tracer => {
             let tid = cur.traced_by.load(Ordering::Acquire);
@@ -237,7 +239,7 @@ fn notify_parent_cldstop(cur: &crate::Task, why: Cldstop, status_sig: u32, to: N
         signo: crate::Signum::Sigchld as u32,
         code:  n.si_code,
         // Read by the parent, so numbered in the PARENT's pid namespace.
-        pid:   crate::registry::tgid_nr_seen_by(cur, &parent),
+        pid:   crate::registry::tid_nr_seen_by(cur, &parent),
         uid:   cur.security.creds.ruid.load(Ordering::Acquire),
         value: status_sig as u64,
         sys:   None, fault: None, poll: None
@@ -257,6 +259,9 @@ fn notify_parent_cldstop(cur: &crate::Task, why: Cldstop, status_sig: u32, to: N
     }
     if n.wake_parent { crate::live::zombies::wake_wait4_parent(parent.tid); }
 }
+
+#[cfg(test)]
+#[path = "stop/tests/identity.rs"] mod identity_tests;
 
 #[cfg(test)]
 mod tests {

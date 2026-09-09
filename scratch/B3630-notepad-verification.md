@@ -182,3 +182,28 @@ exception paths. No new or worsened entry; no allowance changed. Reports:
 KI-0872 records incorrect INTERRUPT publication and absent jobctl trap handling;
 KI-0873 records missing group-stopped attachment transition. Neither is fixed
 by changing ATTACH signal routing. No runtime verification or new GNOME cause.
+
+KI-0874/0875: tracer stop/exit SIGCHLD now carries the worker TID in the
+receiver namespace; real-parent group-stop notification uses the group leader.
+Wait candidates/snapshots use the task-number helper. Mapped worker selection
+already passed before this change: registry insertion configures PID mappings;
+the original broad wait-identity hypothesis was disproved. The old unmapped
+snapshot fallback did use TGID and now has a failing positive control.
+
+Actual live::mark_done now preserves and publishes traced worker exits.
+ThreadGroup retirement no longer marks a traced worker reaped. Exit publication
+uses the traced disposition even when the tracer ignores SIGCHLD, and a
+separate tracer consumes worker zombies without the leader-only handback.
+A final traced worker and its deferred leader both remain waitable. The
+retained leader still makes a non-leader exit a SIGCHLD notification even
+after the live counter reaches zero. Leader wait eligibility remains delayed
+while siblings survive; that is not evidence of a wait-selection defect.
+
+Ten new scheduler tests use real tasks, groups, PID namespaces, queued records
+and the actual retirement entry. All2029 scheduler tests pass. Six controls
+restore the wrong fallback, stop/exit identity, premature retirement, missing
+exit publication hook or erroneous worker handback; each fails its regression.
+The original retirement path independently failed four tests. Logs:
+/tmp/B3630-wait-{identity-red,retirement-red,final-worker-red,controls,
+controls-green,feature}.log. Release/stack checks pending at this note.
+No new boot; no GNOME startup cause established.

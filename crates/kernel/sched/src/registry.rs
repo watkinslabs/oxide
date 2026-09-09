@@ -51,7 +51,7 @@ pub use vpid::caller_pid_ns;
 pub use vpid::{
     display_vpid, display_vtid, lookup_by_vpid, lookup_in_namespace, live_vpids,
     leader_tgid_nr_in, nr_chain_in, parent_vpid, reader_pid_ns, resolve_user_pid, tgid_nr_in, tgid_nr_seen_by,
-    vnr_in,
+    vnr_in, tid_nr_seen_by,
 };
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub(crate) use wait::wait_candidate_matches;
