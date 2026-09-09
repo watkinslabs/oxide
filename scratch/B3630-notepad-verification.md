@@ -28,3 +28,8 @@ backing events do not rewrite logical extents; configure events older than
 the pending request are rejected using the expanded XCB sequence number.
 Compositor suite: 90 passed, including actual one-row windows and serial wrap.
 Notepad runtime consequences remain to be verified.
+
+Pre-push hosted gate: 180 crates pass. Test-build gate fails in unchanged
+ipc/syscalls test targets (unused settings helpers; missing paint_trace test
+module; unused mark_exiting). No branch change touches those crates. KI-0019;
+SKIP_TEST_BUILD_GATE is the only additional bypass for this pre-existing gate.
