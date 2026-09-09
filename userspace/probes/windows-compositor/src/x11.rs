@@ -16,6 +16,8 @@ mod visibility;
 mod decode;
 #[path = "x11/position.rs"]
 mod position;
+#[path = "x11/requests.rs"]
+pub(crate) mod requests;
 pub use decode::decode_event;
 
 #[derive(Debug)]
@@ -318,6 +320,7 @@ impl Backend {
         let payload_limit = self.max_request_bytes.saturating_sub(32).max(4);
         let tile_width = damage_width.min(payload_limit / 4).max(1);
         let tile_height = (payload_limit / tile_width.saturating_mul(4)).max(1);
+        let mut cookies = Vec::new();
         for y in (damage.top as usize..damage.bottom as usize).step_by(tile_height) { for x in (damage.left as usize..damage.right as usize).step_by(tile_width) {
             let w = tile_width.min(damage.right as usize - x); let h = tile_height.min(damage.bottom as usize - y); let mut damaged = Vec::with_capacity(w.saturating_mul(h).saturating_mul(4));
             for row in y..y + h {
@@ -326,16 +329,12 @@ impl Backend {
                 if touched { for (index, pixel) in line.iter().enumerate() { damaged.extend_from_slice(&(pixel ^ window.caret.xor_at((x + index) as i32, row as i32)).to_le_bytes()); } }
                 else { for pixel in line { damaged.extend_from_slice(&pixel.to_le_bytes()); } }
             }
-            // An image put is a one-way request. Waiting for its reply costs a
-            // full server round trip per tile, and one window's line of text
-            // is tens of tiles: the client's own paint blocks for all of them
-            // while the server has nothing to say. Errors from a drawing
-            // request arrive on the event queue like any other.
+            // Submit every tile before checking the batch, retaining each error cookie.
             // SAFETY: connection, window and graphics context are live for the backend, and the tile buffer covers data_len bytes.
-            unsafe { ffi::xcb_put_image(self.conn, ffi::IMAGE_FORMAT_Z_PIXMAP, window.xid, window.gc, w as u16, h as u16, x as i16, y as i16, 0, self.depth, damaged.len() as u32, damaged.as_ptr()); }
+            cookies.push(unsafe { ffi::xcb_put_image_checked(self.conn, ffi::IMAGE_FORMAT_Z_PIXMAP, window.xid, window.gc, w as u16, h as u16, x as i16, y as i16, 0, self.depth, damaged.len() as u32, damaged.as_ptr()) });
         }
         }
-        unsafe { ffi::xcb_flush(self.conn); } Ok(())
+        requests::finish(self.conn, hwnd, cookies)
     }
 
     /// Every window this backend holds below one X window, deepest first. The

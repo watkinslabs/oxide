@@ -130,6 +130,11 @@ dependents first. A parent display Destroy removes its remaining X subtree.
 Show replays each exact retained coverage area before acknowledgement; gaps
 remain application-owned and exposure requests still reach the paint owner.
 Partial coverage alone never turns successful mapping into a refusal.
+Image tiles use checked X11 requests submitted as one batch before completion.
+Every tile result is consumed before Frame acknowledgement; an earlier error
+cannot be hidden by a later success. A rejected draw returns failure with
+HWND/X11 sequence/resource/error/opcode diagnostics. Connection loss also
+fails completion. No per-tile submission wait or persistent request registry.
 
 ## Verification
 

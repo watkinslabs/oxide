@@ -26,3 +26,31 @@ fn show_replays_partial_frames_and_preserves_unpainted_background() {
         assert_eq!(displayed[(y as u32 * W + x as u32) as usize] & 0x00ff_ffff, expected, "pixel at {x},{y}");
     } }
 }
+
+#[test]
+fn rejected_x11_frame_receives_failure_ack_on_the_bridge() {
+    let mut f = Fixture::open(W, H);
+    unsafe {
+        let cookie = ffi::xcb_query_tree(f.conn, f.xid);
+        let mut error = ptr::null_mut();
+        let reply = ffi::xcb_query_tree_reply(f.conn, cookie, &mut error);
+        assert!(!reply.is_null()); let root = (*reply).root; libc::free(reply.cast());
+        ffi::xcb_destroy_window(f.conn, f.xid);
+        crate::xvfb_harness::child_order(f.conn, root);
+    }
+    f.sequence += 1;
+    send(&mut f.peer, Opcode::Frame, f.sequence, 0xb1,
+        frame(W, H, Rect { left: 0, top: 0, right: W as i32, bottom: H as i32 }, FIRST));
+    crate::xvfb_harness::ack_status(&mut f.peer, &mut f.backend, &mut f.transport, f.sequence, 1);
+}
+
+#[test]
+fn earlier_batch_error_is_not_hidden_by_a_successful_last_request() {
+    let f = Fixture::open(W, H);
+    let cookies = unsafe {
+        let absent = ffi::xcb_generate_id(f.conn);
+        vec![ffi::xcb_configure_window_checked(f.conn, absent, 0, ptr::null()),
+            ffi::xcb_configure_window_checked(f.conn, f.xid, 0, ptr::null())]
+    };
+    assert!(matches!(crate::x11::requests::finish(f.conn, 0xb1, cookies), Err(crate::BackendError::X11)));
+}

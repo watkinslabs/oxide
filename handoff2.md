@@ -1,4 +1,4 @@
-# Handoff — display stacking, teardown and partial Show repaired; acceptance open
+# Handoff — input/display fixes plus checked frame ACKs; visual acceptance open
 
 First command: `git status --short`
 Worktree /home/nd/oxide/kernel-B3630; branch B3630-paint-region-collapse.
@@ -20,7 +20,7 @@ Consult local pinned primary sources first; Wine11.16 release/debug explicit.
   Both compositor/kernel release builds passed. Push180 hosted + both features
   passed with only documented KI0019 lint/test-build/stack exceptions.
 - Runtime0d529870e fixes KI0898/0899; both closed after validation.
-  Latest fixes awaiting push; stackingc11e7ea62 already remote-verified.
+  Teardown/Showa79f4d8e8 pushed and remote-verified; stackingc11e7ea62 too.
 - KI-0898: destruction_order is callback preorder. Ordinary Destroy/default
   Close and raw lifecycle cleanup now reverse only publication cleanup, so
   parent X Destroy cannot invalidate later descendant requests. Callback
@@ -42,11 +42,17 @@ Consult local pinned primary sources first; Wine11.16 release/debug explicit.
   /tmp/B3630-teardown-show-build.log, teardown-feature.log,
   teardown-{stack,frame}-{x86,arm}.log, teardown-stack-compare.log.
   Final ELFs target/B3630-display-final-{x86,arm}.elf and compositor-release
-  binaries saved; hashes in teardown/Show evidence. Need push/remote verify.
-- KI0900 discovered: unchecked PutImage errors arrive as X11 response0;
-  poll_event/decode_event silently discard them after ACK. Need actual server
-  rejection regression and sequence/resource/error propagation before trusting
-  drawing success. Checked stacking refusal logging does not cover this.
+  binaries saved; hashes in teardown/Show evidence. Push180 hosted/both
+  features PASS; only documented KI0019 baseline exceptions used.
+- KI0900 implementation validated, awaiting commit/close/push: all image
+  tiles submit checked X11 requests before batch completion. Every result
+  checked before ACK; errors log HWND/X11 sequence/resource/code/opcodes.
+  Actual protocol regression fails before fix (ACK0 instead of1). Checking
+  only last cookie fails earlier-error regression.103 compositor tests PASS,
+  both compositor release builds PASS. Kernel unchanged since teardown.
+  scratch/B3630-checked-frame-validation.md; /tmp/B3630-draw-*.log.
+  Latest artifacts target/B3630-compositor-checked-release-{x86,arm}; use
+  these instead of prior compositor-release snapshots on next staging.
 - Next runtime acceptance must distinguish repaired refusal classes from
   unexplained residual visual defects. Prior UART alone does not attribute
   all29 refusals. Full scrollbar KI0885 and activation/cursor policies open.
