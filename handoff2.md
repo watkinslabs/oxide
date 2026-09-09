@@ -44,7 +44,7 @@ Consult local pinned primary sources first; Wine11.16 release/debug explicit.
   Final ELFs target/B3630-display-final-{x86,arm}.elf and compositor-release
   binaries saved; hashes in teardown/Show evidence. Push180 hosted/both
   features PASS; only documented KI0019 baseline exceptions used.
-- KI0900 implementation validated, awaiting commit/close/push: all image
+- KI0900 fixed0314a2e42, validated/closed; push pending. All image
   tiles submit checked X11 requests before batch completion. Every result
   checked before ACK; errors log HWND/X11 sequence/resource/code/opcodes.
   Actual protocol regression fails before fix (ACK0 instead of1). Checking
