@@ -144,3 +144,21 @@ also use bounded TEXTMEASURE-DROP. Both feature gates pass, log
 empty measured label and successful button caption lookup remain hypotheses.
 The ntdll procedure addresses are forwarding functions, not evidence of a
 DLL relocation defect. Still missing direct button/client/label tracing.
+
+Button diagnostics bb5af288e adds owned patch0002 with bounded unconditional
+WINDOWS-BUTTON messages: actual caption query result/text, paint client rect,
+measurement return/rect, empty-label branch, final label and draw-state result.
+Patch applies with fuzz0 to the pinned source; actual button translation unit
+compiles warning-free for x86_64-windows and aarch64-windows (ARM excludes the
+x86-only mcx16/long-double flags). Artifacts /tmp/B3630-button-trace. This is
+NOT a rebuilt/staged guest DLL and provides NO runtime caption evidence yet.
+
+KI-0876 fixedeb1322715: runtime builder fingerprints source tarball, headers,
+recipe and patch set. Changed inputs discard prepared source, configured
+objects and extracted headers. Failed patch cannot publish a preparation key.
+Three end-to-end builder tests use a tiny archive and fake compiler/install
+fixtures. Original builder fails changed-patch and changed-header checks;
+premature-key control fails failed-patch check; all restored tests pass.
+Logs /tmp/B3630-wine-cache-{red,green,control}.log. Next: build/package the
+instrumented runtime and finish dialog geometry instrumentation before final
+acceptance. No new boot. KI-0859 remains IN-PROGRESS; cause unconfirmed.
