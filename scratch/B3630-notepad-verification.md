@@ -345,3 +345,9 @@ architectures pass. Full release/stack verification for this change pending.
 KI-0889: scrollbar fixture imports the production action module and current
 worktree adapters, replacing duplicate logic and absolute main-tree paths.
 Position completion and raster observation remain explicit fixture seams.
+Both release kernels now build afterbedf35f86. Stack reports exactly match
+721f8120d:358/299 reported rows, existing336/277 failures and7664/6368
+exception reservations; no new or increased path. KI0888/0889 archived
+withbedf35f86. KI0890 records missing default mouse-activation parent handling.
+Paint callback ABI independently compiled against pinned headers: index8,
+104-byte record, tracking@24, rectangle@64, vertical@96 on x86 and ARM.

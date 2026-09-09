@@ -94,9 +94,8 @@ Durable evidence: scratch/B3630-notepad-verification.md.
  scroll/control owns initialization, info/range/flags with3 targeted tests.
  Removing initialization fails all3; full IPC suite1515 passes restored.
  No production raw scrollbar-procedure arm yet; do not claim it implemented.
-- KI0888 claimed: shared ScrollState::apply_for_bar does not maintain flags,
- skips page-only hiding and mishandles DISABLENOSCROLL-only. Correct this
- canonical policy before consuming it; new control helper currently reuses it.
+- KI0888/0889 fixedbedf35f86; canonical scroll flags and action consumption
+ corrected. Control helper reuses the repaired policy. No raw handler yet.
 - Remaining scrollbar work: all selector029a messages, canonical state and
  tracking, paint Begin/Draw callback/End lifecycle, focus/caret, sizegrip
  resize commands and cursor, scroll info/accessibility; actual dispatch tests.
@@ -113,8 +112,16 @@ Durable evidence: scratch/B3630-notepad-verification.md.
  consumer extracted; joined fixture no longer loads main or copied actions.
  IPC1522/syscall3262 and both boundary suites pass; both feature checks pass.
  Restored action predicate/raster behavior each fail targeted tests.
- Release/stack gates for this change have not run yet; do before push.
+ Both release builds pass; stack reports match prior358/299 rows exactly.
 - Next KI0885 paint prerequisite: extend existing begin_user_callback with
  typed User/Record input and checked stack layout, keeping its existing root
  re-export. Only current caller is builtin_classes/kernel.rs. Avoid adding
  a duplicate callback entry path. Draw callback index8,104-byte argument record.
+
+- Current codebedf35f86; ledgerd38447d6b. KI0890 OPEN: default mouse activation
+ skips parent handling and caption behavior. Ordinary0 still activates in
+ retrieval, but parent veto/eat semantics absent. KI0462 also tracks missing
+ parent-first default cursor handling. Do not claim dispatcher fully correct.
+- Pinned-header C assertions passed on x86 and ARM: DrawScrollBar callback8;
+ record104 bytes, tracking@24, rect@64, vertical@96. Probe lives at
+ /tmp/B3630-scroll-callback-layout.c. ARM needs fc42 sysroot and stdarg include.
