@@ -125,7 +125,7 @@ fn a_press_on_a_child_control_carries_the_screen_point_not_the_parent_relative_o
     state.set_rect(child, WindowRect { left: 10, top: 20, right: 60, bottom: 40 }).unwrap();
     state.post_compositor_pointer(child, 5, 7, MK_LBUTTON as u32, 0, 0).unwrap();
     let messages = drain(&mut state, 11);
-    assert!(messages.iter().all(|message| message.hwnd == Some(child)));
+    assert!(messages.iter().all(|message| message.hwnd == Some(parent)));
     assert_eq!(messages.iter().map(|message| (message.message, message.lparam)).collect::<Vec<_>>(), alloc::vec![
         (WM_MOUSEMOVE, mouse_lparam(120, 257)),
         (WM_LBUTTONDOWN, mouse_lparam(120, 257))]);
@@ -163,4 +163,31 @@ fn pointer_message_position_is_the_event_point_even_after_later_motion() {
         assert_eq!(message.lparam as u32, msg_pos::pack_pos(expected.0, expected.1));
         assert_eq!(state.message_pos(11), msg_pos::pack_pos(expected.0, expected.1));
     }
+}
+
+#[test]
+fn root_surface_input_queues_to_the_child_thread_without_narrowing_scope() {
+    let (mut state, root) = setup();
+    state.set_style_bits(root, styles::WS_VISIBLE, 0).unwrap();
+    let child = state.create(22, Some(root), 0).unwrap();
+    state.set_style_bits(child, styles::WS_VISIBLE | styles::WS_CHILD, 0).unwrap();
+    state.set_rect(child, WindowRect { left: 10, top: 20, right: 80, bottom: 60 }).unwrap();
+    state.post_compositor_pointer(root, 15, 25, MK_LBUTTON as u32, 0, 0).unwrap();
+    assert!(drain(&mut state, 11).is_empty());
+    let messages = drain(&mut state, 22);
+    assert_eq!(messages.len(), 2);
+    assert!(messages.iter().all(|message| message.hwnd == Some(root)));
+    assert_eq!(messages[1].lparam, mouse_lparam(115, 225));
+}
+
+#[test]
+fn queue_thread_lookup_precedes_the_disabled_scopes_hit_test() {
+    let (mut state, root) = setup();
+    state.set_style_bits(root, styles::WS_VISIBLE | styles::WS_DISABLED, 0).unwrap();
+    let child = state.create(22, Some(root), 0).unwrap();
+    state.set_style_bits(child, styles::WS_VISIBLE | styles::WS_CHILD, 0).unwrap();
+    state.set_rect(child, WindowRect { left: 10, top: 20, right: 80, bottom: 60 }).unwrap();
+    state.post_compositor_pointer(root, 15, 25, MK_LBUTTON as u32, 0, 0).unwrap();
+    assert!(drain(&mut state, 11).is_empty());
+    assert_eq!(drain(&mut state, 22).len(), 2);
 }

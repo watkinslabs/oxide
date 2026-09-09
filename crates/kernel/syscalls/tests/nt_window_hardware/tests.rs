@@ -263,3 +263,83 @@ fn removing_filtered_peek_keeps_raw_event_and_click_history() {
     assert!(nt_window::GUI.lock()[0].last_click.is_none());
     assert_eq!(CALLS.lock().unwrap().len(), 1, "excluded click ran activation/cursor ladder");
 }
+
+#[test]
+fn transparent_native_child_surface_does_not_confine_the_hit_walk() {
+    let _serial = SERIAL.lock().unwrap_or_else(|error| error.into_inner()); setup();
+    let parent = window(None, (280, 200, 740, 540), HTCLIENT);
+    let button = window(Some(parent), (30, 40, 130, 68), HTCLIENT);
+    let label = window(Some(parent), (30, 40, 130, 68), HTTRANSPARENT);
+    nt_window::GUI.lock()[0].state.post_compositor_pointer(label, 20, 10, 1, 0, 0).unwrap();
+    let original = queued_button();
+    let view = selected(peek_mouse(false));
+    assert_eq!(view.message.hwnd, Some(button));
+    assert_eq!(ipc::win32_window::hardware::split_point(view.message.lparam), (20, 10));
+    assert_eq!(original.hwnd, Some(parent));
+    assert_eq!(queued_button(), original);
+    let hits: Vec<_> = CALLS.lock().unwrap().iter().map(|call| call.hwnd).collect();
+    assert_eq!(hits, [label.raw(), button.raw()]);
+}
+
+#[test]
+fn transparent_popup_can_yield_to_its_immediately_following_owner() {
+    let _serial = SERIAL.lock().unwrap_or_else(|error| error.into_inner()); setup();
+    let owner = window(None, (280, 200, 740, 540), HTCLIENT);
+    let popup = window(None, (280, 200, 740, 540), HTTRANSPARENT);
+    nt_window::GUI.lock()[0].state.set_popup_owner(popup, Some(owner)).unwrap();
+    raw_button(popup, 330, 250);
+    assert_eq!(selected(peek_mouse(false)).message.hwnd, Some(owner));
+    let hits: Vec<_> = CALLS.lock().unwrap().iter().map(|call| call.hwnd).collect();
+    assert_eq!(hits, [popup.raw(), owner.raw()]);
+}
+
+#[test]
+fn suspended_transparent_popup_walk_resumes_in_its_owner() {
+    let _serial = SERIAL.lock().unwrap_or_else(|error| error.into_inner()); setup();
+    let owner = window(None, (280, 200, 740, 540), HTCLIENT);
+    let popup = window(None, (280, 200, 740, 540), HTTRANSPARENT);
+    nt_window::GUI.lock()[0].state.set_popup_owner(popup, Some(owner)).unwrap();
+    raw_button(popup, 330, 250);
+    *SUSPEND.lock().unwrap() = true;
+    assert_eq!(peek_mouse(false), nt_window::hardware::Stage::Pending(nt_window::STATUS_PENDING));
+    assert_eq!(complete_callback(), nt_window::hardware::Stage::Pending(nt_window::STATUS_PENDING));
+    assert_eq!(selected(complete_callback()).message.hwnd, Some(owner));
+}
+
+#[test]
+fn transparent_popup_does_not_jump_over_an_unrelated_sibling_to_its_owner() {
+    let _serial = SERIAL.lock().unwrap_or_else(|error| error.into_inner()); setup();
+    let owner = window(None, (280, 200, 740, 540), HTCLIENT);
+    let _middle = window(None, (280, 200, 740, 540), HTCLIENT);
+    let popup = window(None, (280, 200, 740, 540), HTTRANSPARENT);
+    nt_window::GUI.lock()[0].state.set_popup_owner(popup, Some(owner)).unwrap();
+    raw_button(popup, 330, 250);
+    assert_eq!(peek_mouse(false), nt_window::hardware::Stage::Again);
+    assert_eq!(CALLS.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn transparent_popup_does_not_call_an_owner_on_another_thread() {
+    let _serial = SERIAL.lock().unwrap_or_else(|error| error.into_inner()); setup();
+    let owner = window_for_thread(42, None, (280, 200, 740, 540), HTCLIENT);
+    let popup = window(None, (280, 200, 740, 540), HTTRANSPARENT);
+    nt_window::GUI.lock()[0].state.set_popup_owner(popup, Some(owner)).unwrap();
+    raw_button(popup, 330, 250);
+    assert_eq!(peek_mouse(false), nt_window::hardware::Stage::Again);
+    assert_eq!(CALLS.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn root_surface_click_reaches_the_child_threads_hardware_driver() {
+    let _serial = SERIAL.lock().unwrap_or_else(|error| error.into_inner()); setup();
+    let root = window(None, (280, 200, 740, 540), HTCLIENT);
+    let button = window_for_thread(42, Some(root), (30, 40, 130, 68), HTCLIENT);
+    nt_window::GUI.lock()[0].state.post_compositor_pointer(root, 50, 50, 1, 0, 0).unwrap();
+    let group = live::current().unwrap().thread_group.clone();
+    CURRENT.with(|current| *current.borrow_mut() = Some(Arc::new(Task { tid: 42, thread_group: group })));
+    let view = selected(peek_mouse(false));
+    assert_eq!(view.message.hwnd, Some(button));
+    assert_eq!(ipc::win32_window::hardware::split_point(view.message.lparam), (20, 10));
+    assert_eq!(CALLS.lock().unwrap().len(), 1);
+    assert_eq!(CALLS.lock().unwrap()[0].hwnd, button.raw());
+}

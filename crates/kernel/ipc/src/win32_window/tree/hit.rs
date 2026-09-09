@@ -62,6 +62,25 @@ impl WindowManager {
         found
     }
 
+    /// Queue-thread lookup descends the first point candidate, without invoking
+    /// the scope's hit test or collecting alternate candidates. # C: O(N_windows³)
+    pub fn input_window_from_point(&self, scope: WindowId, x: i32, y: i32) -> Option<WindowId> {
+        let (dx, dy) = self.client_origin(scope)?;
+        let (mut x, mut y) = x.checked_sub(dx).zip(y.checked_sub(dy))?;
+        let mut current = scope;
+        for _ in 0..self.windows.len() {
+            let child = self.windows.iter().rev().find_map(|(id, record)|
+                (record.parent == Some(current) && self.point_reaches(*id, x, y)).then_some(*id));
+            let Some(child) = child else { return Some(current); };
+            let record = self.get(child)?;
+            let client = self.client_rect_raw(child)?;
+            if record.style & (WS_MINIMIZE | WS_DISABLED) != 0 || !point_in_rect(client, x, y) { return Some(child); }
+            (x, y) = x.checked_sub(client.left).zip(y.checked_sub(client.top))?;
+            current = child;
+        }
+        Some(current)
+    }
+
     /// Candidates inside one scope, including the scope after its descendants.
     /// The input point is in screen coordinates. # C: O(N_windows²)
     pub fn windows_in_scope(&self, scope: WindowId, x: i32, y: i32) -> Vec<WindowId> {

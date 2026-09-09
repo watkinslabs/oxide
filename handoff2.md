@@ -1,9 +1,9 @@
-# Handoff — filtered hardware retrieval repaired, Notepad still unfinished
+# Handoff — native pointer scope repair under verification
 
 First command: `git status --short`
 Worktree /home/nd/oxide/kernel-B3630; branch B3630-paint-region-collapse.
 Main read-only. Read CLAUDE.md. Draft PR7680; filter runtimeee58ef0b7.
-Final filter validation passed; full Notepad visual acceptance remains open.
+Native scope/owner repair now under final validation; visual acceptance remains open.
 Goal remains defect-free Notepad buttons/borders/Open/Save/menus/About.
 User requests visible boot when ready and VM left running. Do not call done.
 Wine11.16 release/debug profiles explicit; consult pinned local sources first.
@@ -16,6 +16,14 @@ Wine11.16 release/debug profiles explicit; consult pinned local sources first.
   after HTTRANSPARENT across synchronous/suspended calls, handles disabled
   scopes, skips destroyed candidates and rejects destroyed/foreign targets.
   Capture is resolved again at retrieval. Scope includes its own window last.
+  Native child surfaces now queue the top-level input scope, preserving screen
+  coordinates; allocation-free first-child point walk selects receiver thread.
+  Exhausted transparent scope may try its immediately following owner on the
+  same thread, once, including after suspended callbacks. Existing claim valid.
+  Scope runtime changes not yet committed; final builds/stack checks pending.
+  RED controls: /tmp/B3630-scope-{driver,owner,popup}-red.log. Current1529 IPC,
+  3270 syscall-library,24 actual-driver and121 dispatcher-fixture tests PASS.
+  /tmp/B3630-scope-{ipc,syscalls-lib,boundary}.log.
 - KI-0893 raw queued message survives Peek unchanged; Stage::Prepared returns
   translated view to actual Peek/Get dispatcher. Canonical queue assigns a
   stable selection ID so retirement cannot remove an identical successor.
@@ -32,9 +40,9 @@ Wine11.16 release/debug profiles explicit; consult pinned local sources first.
   wakes retrieval, retained filtered input does not. No parallel queue/state.
   debug-winpump WINDOWS-HARDWARE-FILTER records target/message and filter.
   Claimdce01b596; runtimeee58ef0b7; ledger closed after final validation.
-- KI-0682 still IN-PROGRESS: compositor events can name a child as scope;
-  real child-surface routing needs audit. Scoped walk cannot search siblings
-  outside that scope. Owner-next fallback not implemented. No full claim.
+- KI-0682 IN-PROGRESS pending final validation of native scope/owner repair.
+  Query-thread selection remains distinct from retrieval hit testing; disabled
+  root still permits the separate thread walk before its own hit test.
 - Current filter validation:18 hardware-driver +121 dispatcher-fixture tests
   PASS;1527 IPC +3270 syscall library tests PASS. Initial nonclient-only and
   retained-filter scan tests RED. Removed fallback/wait/target-filter hooks

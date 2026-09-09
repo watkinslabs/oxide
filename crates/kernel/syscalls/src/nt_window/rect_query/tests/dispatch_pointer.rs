@@ -24,7 +24,8 @@ fn child_click_survives_default_hit_test_and_retrieval_after_ancestor_moves() {
         for (buttons, expected) in [(1, WM_LBUTTONDOWN), (0, WM_LBUTTONUP)] {
             state.post_compositor_pointer(button, 50, 10, buttons, 0, 0).unwrap();
             let filter = MessageFilter { hwnd: Some(button), first: expected, last: expected };
-            let queued = state.peek_for_thread(7, filter, true).unwrap();
+            let queued = state.peek_for_thread(7, MessageFilter { hwnd: None, ..filter }, true).unwrap();
+            assert_eq!(queued.hwnd, Some(dialog));
             let DefaultWindowResult::Return(hit) = default_proc_state(&state, button.raw(), WM_NCHITTEST, queued.lparam)
                 else { panic!("hit test must return a code") };
             assert_eq!(hit, HTCLIENT as i64, "screen click must hit a child after ancestor movement");
@@ -32,7 +33,7 @@ fn child_click_survives_default_hit_test_and_retrieval_after_ancestor_moves() {
                 menu_mode: false, captured: false, modal: false, class_dbl_clks: false,
                 double_click_ms: 500, double_click_width: 4, double_click_height: 4,
                 time_ms: 1000, remove: true, filter };
-            let prepared = hardware::prepare_mouse(queued, None, &context);
+            let prepared = hardware::prepare_mouse(ipc::win32_window::WinMessage { hwnd: Some(button), ..queued }, None, &context);
             assert_eq!(prepared.outcome, MouseOutcome::Ladder);
             assert_eq!(prepared.message.hwnd, Some(button));
             assert_eq!(prepared.message.message, expected);

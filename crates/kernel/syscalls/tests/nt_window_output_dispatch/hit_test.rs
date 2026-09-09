@@ -17,7 +17,8 @@ fn actual_default_dispatch_keeps_a_click_inside_a_displaced_dialog_button() {
         state.set_rect(button, WindowRect { left: 306, top: 226, right: 436, bottom: 254 }).unwrap();
         state.post_compositor_pointer(button, 65, 13, 1, 0, 0).unwrap();
         let queued = state.peek_for_thread(41,
-            MessageFilter { hwnd: Some(button), first: WM_LBUTTONDOWN, last: WM_LBUTTONDOWN }, true).unwrap();
+            MessageFilter { hwnd: Some(dialog), first: WM_LBUTTONDOWN, last: WM_LBUTTONDOWN }, true).unwrap();
+        assert_eq!(queued.hwnd, Some(dialog));
         (button, queued)
     };
     let request = NtCall { service: nt::NtService::DefaultWindowProc,

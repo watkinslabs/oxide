@@ -97,10 +97,13 @@ fn setup() {
     *RESUMED.lock().unwrap() = None;
 }
 fn window(parent: Option<WindowId>, rect: (i32, i32, i32, i32), hit: i32) -> WindowId {
+    window_for_thread(41, parent, rect, hit)
+}
+fn window_for_thread(tid: u64, parent: Option<WindowId>, rect: (i32, i32, i32, i32), hit: i32) -> WindowId {
     use ipc::win32_window::{WindowRect, styles::{WS_CHILD, WS_VISIBLE}};
     let mut entries = nt_window::GUI.lock();
     let state = &mut entries[0].state;
-    let id = state.create(41, parent, 1).unwrap();
+    let id = state.create(tid, parent, 1).unwrap();
     state.set_style_bits(id, WS_VISIBLE | if parent.is_some() { WS_CHILD } else { 0 }, 0).unwrap();
     state.set_rect(id, WindowRect { left: rect.0, top: rect.1, right: rect.2, bottom: rect.3 }).unwrap();
     HITS.lock().unwrap().push((id.raw(), hit));

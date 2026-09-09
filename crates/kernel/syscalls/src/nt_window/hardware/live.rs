@@ -26,7 +26,7 @@ pub(crate) struct PendingLadder { id: u64, ladder: Ladder, prepared: WinMessage,
 /// the answer picks the nonclient renumbering, the client translation, the
 /// double-click eligibility and the filter the message is tested against.
 pub(crate) struct HitProbe { id: u64, queued: WinMessage, window: WindowId, remove: bool, filter: MessageFilter,
-    modal: bool, menu_mode: bool, time_ms: u32, double_click_ms: u32, candidates: IntoIter<WindowId>, answer: Option<Result<u64, ()>> }
+    modal: bool, menu_mode: bool, owner_tried: bool, time_ms: u32, double_click_ms: u32, candidates: IntoIter<WindowId>, answer: Option<Result<u64, ()>> }
 
 /// What one thread has parked in the retrieval-time hardware stage.
 pub(crate) enum PendingHardware {
@@ -173,7 +173,7 @@ fn pointer(entry: &mut super::super::GuiEntry, tid: u64, id: u64, window: Window
     let captured = entry.state.capture_window();
     let candidates = if captured.is_some() { alloc::vec::Vec::new() } else { entry.state.windows_in_scope(window, x, y) };
     let mut probe = HitProbe { id, queued, window, remove, filter, modal, menu_mode, time_ms, double_click_ms,
-        candidates: candidates.into_iter(), answer: None };
+        owner_tried: false, candidates: candidates.into_iter(), answer: None };
     if let Some(capture) = captured {
         probe.window = capture;
         return decide(entry, tid, probe, ipc::win32_window::HTCLIENT);
@@ -184,7 +184,21 @@ fn pointer(entry: &mut super::super::GuiEntry, tid: u64, id: u64, window: Window
 /// Continue the snapshot in z-order after a transparent or destroyed candidate.
 /// # C: O(N_candidates * N_windows)
 fn next_candidate(entry: &mut super::super::GuiEntry, tid: u64, mut probe: HitProbe) -> (Stage, Option<PendingHardware>) {
-    while let Some(window) = probe.candidates.next() {
+    loop {
+        let window = match probe.candidates.next() {
+            Some(window) => window,
+            None if !probe.owner_tried => {
+                probe.owner_tried = true;
+                let Some(scope) = probe.queued.hwnd else { break; };
+                let Some(owner) = entry.state.window_relative(scope, ipc::win32_window::styles::GW_OWNER) else { break; };
+                if entry.state.window_relative(scope, ipc::win32_window::styles::GW_HWNDNEXT) != Some(owner)
+                    || entry.state.get(owner).is_none_or(|record| record.owner_tid != tid) { break; }
+                let (x, y) = hardware::split_point(probe.queued.lparam);
+                probe.candidates = entry.state.windows_in_scope(owner, x, y).into_iter();
+                continue;
+            }
+            None => break,
+        };
         let Some(record) = entry.state.get(window) else { continue; };
         probe.window = window;
         probe.answer = None;
