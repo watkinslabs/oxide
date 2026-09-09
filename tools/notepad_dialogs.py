@@ -2,7 +2,7 @@
 import re
 import time
 from pathlib import Path
-from notepad_evidence import _tsv_words, frame_extent, crop_image
+from notepad_evidence import _tsv_words, frame_extent, crop_image, menu_bar_word
 
 PAINT_SECONDS = 30
 
@@ -85,7 +85,10 @@ class DialogChecks:
             # Exclude the title and menu: a filename containing the token is
             # not evidence that the edit control loaded the saved contents.
             left, top, right, bottom = rect
-            client = (left, top + 65, right, bottom)
+            menu = menu_bar_word(path, rect, "File")
+            if menu is None:
+                return False
+            client = (left, menu[1] + menu[3], right, bottom)
             if client[1] >= bottom:
                 return False
             crop = Path(f"{self.runner.SCREEN}-{label}-document.png")

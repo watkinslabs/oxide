@@ -12,7 +12,8 @@
 Harness: `tools/notepad_dialogs.py`, called by `run_desktop_checks` before closing.
 Offline: 23 Notepad tests pass. Positive controls: removing dialog call,
 accepting title text as document content, accepting title as button caption
-all turn the new tests red; restored green. No new boot yet.
+all turn the new tests red; restored green. First-line document fixture also
+reproduced a crop false negative; crop now starts below measured File menu text.
 
 KI-0861: UART ShowWindow result is client geometry, already 750x1, before
 paint clipping. Client geometry/layout is the next boundary to investigate.
@@ -48,3 +49,13 @@ Acceptance run 76178: fresh branch kernel and staged runtime, one QEMU boot.
 GNOME reports running but QMP still displays boot console. Notepad has not
 launched. SSH on this VM (localhost port 22363 added through QMP) confirms
 active VT2/session and open DRM descriptors. Do not claim dialog verification.
+
+Desktop diagnosis on the same VM: session-bus ListNames responds and lists
+org.gnome.Mutter.DisplayConfig, but GetCurrentState times out. Main GNOME
+thread 394 stays in syscall 202, op 0x80, expected 2, no timeout, at user
+address 0x5625e5a088c8. This is a private futex wait, not proof of its cause.
+Thread snapshot: /tmp/B3630-guest-threads.txt. GDB could not produce a backtrace
+(KI-0866); owned tracer 1111 killed after its timeout failed to detach;
+GNOME restored to State S / TracerPid 0. Do not attribute later timeout
+duration entirely to the original stall: debugger briefly stopped GNOME.
+Draft PR: #7680. Runtime acceptance still unverified.

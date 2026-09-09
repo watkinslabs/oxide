@@ -32,13 +32,14 @@ class DialogEvidenceTests(unittest.TestCase):
             image = Image.new("RGB", (600, 350), "white")
             draw = ImageDraw.Draw(image)
             draw.text((30, 10), "oxide-proof - Notepad", font=font, fill="black")
+            draw.text((30, 36), "File  Edit  Format  View  Help", font=font, fill="black")
             image.save(path)
             runner = SimpleNamespace(SCREEN=Path(tmp) / "evidence", ocr=ocr_text,
                                      locate_notepad_window=lambda _: (0, 0, 600, 350))
             check = dialogs.DialogChecks(runner, None, 0)
             check.wait = lambda label, predicate: predicate(path)
             self.assertFalse(check.document("title-only", "oxide-proof"))
-            draw.text((30, 120), "oxide-proof", font=font, fill="black")
+            draw.text((30, 60), "oxide-proof", font=font, fill="black")
             image.save(path)
             self.assertTrue(check.document("loaded", "oxide-proof"))
 
