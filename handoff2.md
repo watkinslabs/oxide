@@ -57,3 +57,10 @@ both-architecture runtime verification. Evidence/plan:
 Final acceptance result: exit 1, "GNOME session marker appeared without a
 rendered desktop frame". Runner76178 and QEMU79681 both exited; no live VM
 remains. UART audit passes with no Windows calls, since Notepad never launched.
+
+KI-0867 fixed03758d7e3: refused compositor resize no longer partially commits
+outer geometry. Real regression red then529 window-manager tests green.
+KI-0641 remains the next resize implementation gap: route incoming Configure
+through owner-thread NCCALCSIZE using existing bounded remote_positions and
+position callback chain. Preserve compositor-origin semantics to avoid echoes.
+No new boot verified this kernel change. See scratch/B3630-notepad-verification.md.

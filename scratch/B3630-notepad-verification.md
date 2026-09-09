@@ -76,3 +76,16 @@ at72.785. File-dialog initialization explicitly resizes the custom template
 to the parent's current client size after arranging controls. Neither the
 parent's requested dimensions nor NCCALCSIZE's returned rectangle are logged
 at that boundary. No additional cause is established by this inspection.
+
+KI-0867 fixed03758d7e3: invalid retained client geometry is checked before
+set_rect. Regression reproduced the partially committed outer rectangle on
+refusal, then passed after validation moved ahead of mutation. All529
+win32_window tests pass with the branch IPC lib (no lint suppression).
+Logs /tmp/B3630-refused-resize-red.log and /tmp/B3630-window-suite.log.
+KI-0641 remains open: incoming compositor Configure bypasses the existing
+owner-thread NCCALCSIZE transaction and retains constant insets. A wrapping
+menu or size-dependent border needs the actual callback; rejecting invalid
+insets atomically does not implement that calculation. Existing bounded
+remote_positions queue and position/live.rs callback chain are the integration
+boundary to use; avoid a second geometry owner or a clamped-client workaround.
+No new boot: runtime verification remains outstanding for this kernel change.
