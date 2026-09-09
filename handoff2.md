@@ -1,9 +1,9 @@
-# Handoff — hardware retrieval repair, verification in progress
+# Handoff — filtered hardware retrieval repaired, Notepad still unfinished
 
 First command: `git status --short`
 Worktree /home/nd/oxide/kernel-B3630; branch B3630-paint-region-collapse.
-Main read-only. Read CLAUDE.md. Draft PR7680; runtime fixes pushed0c9a8101c.
-Final hardware/position validation passed. Remote0c9a8101c verified after push.
+Main read-only. Read CLAUDE.md. Draft PR7680; filter runtimeee58ef0b7.
+Final filter validation passed; full Notepad visual acceptance remains open.
 Goal remains defect-free Notepad buttons/borders/Open/Save/menus/About.
 User requests visible boot when ready and VM left running. Do not call done.
 Wine11.16 release/debug profiles explicit; consult pinned local sources first.
@@ -25,13 +25,13 @@ Wine11.16 release/debug profiles explicit; consult pinned local sources first.
   no longer enter hit testing. No parallel queue or HWND registry introduced.
 - debug-winpump adds WINDOWS-HARDWARE-HIT and WINDOWS-HARDWARE-VIEW with
   selection ID, source/target HWND, raw screen point, hit and translated view.
-- KI-0894 implementation under verification: possible-number mouse prefilter,
+- KI-0894 FIXED ee58ef0b7: possible-number mouse prefilter,
   final target/descendant filter, raw-preserving scan after stable identity.
   Suspended callbacks resume scanning. Posted/quit/paint fallback excludes raw
   hardware; completed scan watermark drives GetMessage readiness. New input
   wakes retrieval, retained filtered input does not. No parallel queue/state.
   debug-winpump WINDOWS-HARDWARE-FILTER records target/message and filter.
-  Claimdce01b596; runtime commit/publication pending final stack checks.
+  Claimdce01b596; runtimeee58ef0b7; ledger closed after final validation.
 - KI-0682 still IN-PROGRESS: compositor events can name a child as scope;
   real child-surface routing needs audit. Scoped walk cannot search siblings
   outside that scope. Owner-next fallback not implemented. No full claim.
@@ -40,7 +40,13 @@ Wine11.16 release/debug profiles explicit; consult pinned local sources first.
   retained-filter scan tests RED. Removed fallback/wait/target-filter hooks
   each fail assertions; restored PASS. /tmp/B3630-filter-*-red.log,
   /tmp/B3630-filter-restored.log. Both feature checks PASS.
-  Final builds /tmp/B3630-filter-final-build.log in progress; no new boot.
+  Final builds /tmp/B3630-filter-final-build.log PASS on both architectures.
+  Both frame-size gates PASS. Final primary stack tables336x86/278ARM include
+  exception row, no new/increased reported path vs prior337x86/278ARM.
+  Existing KI-0019 failures remain; exception reservations7664/6368 unchanged.
+  /tmp/B3630-filter-final-stack-{x86,arm}.log; evidence
+  scratch/B3630-hardware-filter-validation.md. No new boot.
+  Final ELFs target/B3630-filter-final-{x86,arm}.elf, hashes in evidence.
 - Actual hardware fixture mocks task/clock/Send boundary but imports production
   driver/context; tests synchronous and suspended callback completion.
   Actual dispatcher fixture separately tests Stage::Prepared consumption.
@@ -80,7 +86,7 @@ Wine11.16 release/debug profiles explicit; consult pinned local sources first.
   x86 SHA6fdb203e7d2df7fe4c2c3bce54c41bc66d46c7cd5ee8dfe242f2434f4741d5c1;
   ARM SHA0c9955f3afd6551fad9240c04ea6f2ad69fa10f96fb4ff0e3ab6a99c480fe2c3.
 - KI-0892/0893/0896 closed via829dc62d5/8fedf4646/3e69d8755. KI-0682 remains
-  open for child-surface scope/owner fallback; KI-0894 verification ongoing.
+  open for child-surface scope/owner fallback; KI-0894 now closed.
 - Earlier initial/refactor stack failures remain evidence, not current results.
   Do not use the abandoned dispatch helper or claim initial stack was baseline.
 - KI-0895 was a FALSE hypothesis: bridge::window only parses HWND, does not
