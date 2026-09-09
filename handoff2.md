@@ -52,3 +52,7 @@ Do not treat the X11 fixes as proof these Notepad symptoms are resolved.
 Open: real dialog result, all menu dispatch, border/move/resize/occlusion,
 both-architecture runtime verification. Evidence/plan:
 `scratch/B3630-notepad-verification.md`. Do not merge or mark goal complete.
+
+Final acceptance result: exit 1, "GNOME session marker appeared without a
+rendered desktop frame". Runner76178 and QEMU79681 both exited; no live VM
+remains. UART audit passes with no Windows calls, since Notepad never launched.

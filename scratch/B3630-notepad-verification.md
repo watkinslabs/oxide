@@ -59,3 +59,7 @@ Thread snapshot: /tmp/B3630-guest-threads.txt. GDB could not produce a backtrace
 GNOME restored to State S / TracerPid 0. Do not attribute later timeout
 duration entirely to the original stall: debugger briefly stopped GNOME.
 Draft PR: #7680. Runtime acceptance still unverified.
+
+Final acceptance result: exit 1, "GNOME session marker appeared without a
+rendered desktop frame". Runner76178 and QEMU79681 both exited; no live VM
+remains. UART audit passes with no Windows calls, since Notepad never launched.
