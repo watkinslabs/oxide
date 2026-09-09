@@ -133,7 +133,7 @@ class QmpTests(unittest.TestCase):
                 return self.server.connect()
             return wait_socket(path, deadline, label)
 
-        def launch(serial, reader, transport, deadline):
+        def launch(serial, reader, transport, deadline, guest=None):
             # main constructs the production transport; no QMP session is opened
             # until this command. Keep the actual parent qmp and UART wait paths.
             self.assertEqual(self.server.commands, [])

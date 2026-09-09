@@ -19,6 +19,7 @@ import guest_powerdown
 from uart_reader import UartReader
 from notepad_fault_drain import drain as drain_fault
 import notepad_cadence
+from notepad_dialogs import DialogChecks
 from screenshot_evidence import screenshot_completed, record_screenshot
 from notepad_evidence import token_in_notepad_window, locate_notepad_window, image_size, crop_image, menu_bar_word
 from gnome_overview import overview_showing, pill_stats, window_activated
@@ -551,16 +552,7 @@ def run_desktop_checks(uart, reader, qmp_sock, deadline, guest=None):
     print("windows-notepad-acceptance: A1/A2/A3 PASS (PE, window, present, token)")
     drive_menu(qmp_sock)
     report_cadence(reader)
-    # This fixture is an untitled scratch document. Delete our own token
-    # through real input before testing close. Notepad's DoCloseFile prompts
-    # to save a nonempty modified buffer; waiting for exit at that prompt
-    # would test the wrong state and eventually time out.
-    keys(qmp_sock, "ctrl", "a")
-    keys(qmp_sock, "backspace")
-    time.sleep(1)
-    cleared_path, cleared = screenshot(qmp_sock, "cleared-token")
-    if cleared == after or TOKEN in ocr(cleared_path):
-        die("scratch token did not clear before close")
+    DialogChecks(sys.modules[__name__], qmp_sock, deadline, guest).run()
     keys(qmp_sock, "alt", "f4")
     wait_marker(reader, "[WINDOWS-NOTEPAD] runtime-exit status=", deadline, guest)
     if "[WINDOWS-NOTEPAD] runtime-exit status=0" not in reader.text():

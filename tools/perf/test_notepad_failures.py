@@ -99,7 +99,7 @@ class FailureTests(unittest.TestCase):
         for status in (0, 7, 127):
             with self.subTest(status=status):
                 result = subprocess.run(
-                    ["sh", "-c", f"set -e\nmock_runtime() {{ return {status}; }}\n" + tail],
+                    ["sh", "-c", f"set -e\noxide_log=/dev/null\nfollower=\nmock_runtime() {{ return {status}; }}\n" + tail],
                     capture_output=True, text=True, timeout=2)
                 self.assertEqual(result.returncode, status)
                 self.assertEqual(result.stdout,
