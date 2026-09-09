@@ -49,10 +49,14 @@ Wine11.16 release/debug profiles explicit; consult pinned local sources first.
 - Queue-thread selection remains distinct from retrieval hit testing; disabled
   root still permits the separate thread walk before its own hit test.
   Broader focus/capture thread-input ownership KI-0504 remains open.
-- Next: tools/issues.sh --show KI-0861. Saved Open-dialog client750x1 is
-  canonical state before paint, not only a collapsed update region. Audit
-  layout/SetWindowPos/NCCALCSIZE against the pinned source. RenderingKI-0887
-  still open; prior X11 parent-DC repair did not complete visual acceptance.
+- Next: tools/issues.sh --show KI-0897. Backend insertion currently places
+  HWND above its preceding sibling; canonical publication walks top-to-bottom.
+  Reproduce reversed order and reparented top-level requests with real Xvfb.
+- KI-0861 old750x1 trace is superseded by actual Open run in
+  target/boot-logs/x86_64-20260909-143112.log: parent100005/custom10001c
+  retain750x484. Do not restart from old one-pixel hypothesis. Its toolbar
+  invalid geometry predates control traversal fix322669c2a; lookup failures
+  leave layout RECTs unwritten. Full visual acceptance remains outstanding.
 - Current filter validation:18 hardware-driver +121 dispatcher-fixture tests
   PASS;1527 IPC +3270 syscall library tests PASS. Initial nonclient-only and
   retained-filter scan tests RED. Removed fallback/wait/target-filter hooks

@@ -15,8 +15,9 @@ accepting title text as document content, accepting title as button caption
 all turn the new tests red; restored green. First-line document fixture also
 reproduced a crop false negative; crop now starts below measured File menu text.
 
-KI-0861: UART ShowWindow result is client geometry, already 750x1, before
-paint clipping. Client geometry/layout is the next boundary to investigate.
+KI-0861: historical UART shows client750x1 before paint. Later actual Open
+run143112 retains parent/custom750x484 (details below); do not treat the old
+collapse as a current reproduction. Full layout acceptance remains open.
 KI-0859 remains unproven: last instrumented run never opened About.
 
 Pre-push lint-ratchet: same 4723 findings / 46 regressed keys reproduced on
