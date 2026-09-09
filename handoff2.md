@@ -36,8 +36,8 @@ Durable evidence: scratch/B3630-notepad-verification.md.
 - packages commit6830f27d0530148550646cfa95c582ea67826383 and images commit
   553217b1bd369f34a9e41e24ad81870ec967e0ad on B3630-wine-profiles; neither repo
   has a remote. Preserve images/.dist-old-layout (pre-existing untracked).
-- Kernel profile changes need commit/publication status checked. KI-0878 claimed.
-  Finish ledger fix with literal implementing SHA and update draft PR.
+- Kernel profiles implemented in d4043445d; KI-0878 archived fixed with that SHA.
+  Publication status and draft PR update still need verification.
 
 ## Earlier repairs and remaining evidence
 
