@@ -175,7 +175,10 @@ SEIZE preserves options without generating a signal. A real thread-group test
 with a ptrace-stopped leader reproduces the shared-queue defect, then passes
 with thread routing. Both focused tests and all2019 scheduler tests pass;
 both architecture feature gates pass. Logs /tmp/B3630-attach-{red,green,sched,
-feature}.log. Release/stack verification pending at this note.
+feature}.log. Both release builds pass. Complete stack failure lists are
+identical to pre-change branch reports: x86336, ARM277, with7664/6368 B
+exception paths. No new or worsened entry; no allowance changed. Reports:
+/tmp/B3630-attach-stack-{x86,arm}.log. Default ARM ELF is now the candidate.
 KI-0872 records incorrect INTERRUPT publication and absent jobctl trap handling;
 KI-0873 records missing group-stopped attachment transition. Neither is fixed
 by changing ATTACH signal routing. No runtime verification or new GNOME cause.

@@ -1,4 +1,4 @@
-# Handoff — Debugger image fixes; thread attach stop next
+# Handoff — Private attach stop fixed; job-control traps next
 
 First command: `git -C /home/nd/oxide/kernel-B3630 status --short`
 Branch B3630-paint-region-collapse; draft PR #7680. Verify local/remote SHAs
@@ -85,13 +85,28 @@ on a stopped thread; the warning alone is not proof of a backtrace blocker.
 The composed GNOME root RPM database confirms gdb-headless17.1-1.fc42 and
 gnome-shell48.8-1.fc42. Desktop mutex cause remains unknown.
 
-Next: KI-0871 claimed. PTRACE_ATTACH currently sends process SIGSTOP.
-The shared-queue publisher wakes the leader first, even if already stopped,
-so attaching to a worker need not wake that worker. Required stop targets the
-worker private queue. PTRACE_INTERRUPT also posts process SIGSTOP; inspect
-its trap/event-stop protocol before editing. The already-group-stopped attach
-transition also needs audit. Current attach/signal code is in
-syscalls/src/101_ptrace.rs and101_ptrace/sig.rs. Scheduler live/send.rs
-has send_signal with SigSource::Kernel/SigTarget::Thread, and real Task/
-ThreadGroup tests in sched/src/tests/send_signal.rs. Use those owners; avoid
-a separate queue. Re-read primary ptrace/signal paths before implementing.
+KI-0871 fixed0fe94a760: syscall attach calls sched::live::ptrace_attach::attach
+after validation. Metadata publication and the initial signal live there;
+ATTACH routes SI_KERNEL SIGSTOP to the target private queue. Real group with
+ptrace-stopped leader reproduces old shared-queue failure. SEIZE preserves
+options and sends no signal. Both focused tests and all2019 scheduler tests
+pass; both feature gates pass. /tmp/B3630-attach-{red,green,sched,feature}.log.
+Both release builds pass; complete stack reports match pre-change baselines:
+x86336 paths/7664 B exception, ARM277 paths/6368 B exception, none new/worse.
+Logs /tmp/B3630-attach-stack-{x86,arm}.log. Default ARM ELF now contains this
+candidate, replacing the earlier comparison baseline. No new boot or runtime
+cause established. Verify publication state before assuming push finished.
+
+Next: KI-0872 INTERRUPT and KI-0873 already-group-stopped attachment.
+INTERRUPT wrongly publishes stop_pending/code/siginfo from the tracer before
+posting process SIGSTOP. Required mechanism arms jobctl TRAP_STOP, wakes an
+interruptible target (or LISTENING stop) and reports on the tracee when parked.
+sched/task/sigwake.rs and syscalls/exit_to_user.rs currently do not consider
+jobctl traps; exit_to_user/signal.rs dequeues real signals only. Existing
+live/stop.rs retrap branch reuses the original code AND StopKind, while
+jobctl::wake_retraps excludes PtraceResume despite resume_clears retaining the
+trap latch. Already-group-stopped attachment also lacks TRAPPING/wait for
+STOPPED-to-TRACED transition, including SEIZE. Do not repair these by changing
+INTERRUPT to private SIGSTOP; it must not alter signal queues. Use canonical
+jobctl/stop state, preserve FPU snapshot/restore through ptrace stop owner,
+and reread complete primary ptrace/signal implementations before editing.
