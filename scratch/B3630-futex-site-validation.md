@@ -2,7 +2,7 @@
 
 | Status | Branch | Item |
 |---|---|---|
-| IN-PROGRESS | B3630-paint-region-collapse | KI-0901 |
+| FIXED9afaf5491 | B3630-paint-region-collapse | KI-0901 |
 
 Latest visible verification: Sept9 22:32:39–22:36:26UTC. User closed QEMU
 because desktop startup remained stalled. Launcher status0 is not an

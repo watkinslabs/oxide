@@ -12,7 +12,7 @@ Artifacts target/B3630-display-verification-debug; UART
  target/boot-logs/x86_64-20260909-223239.log. Kernel10b1ae09f staging, explicit
 Wine11.16-debug; compositor SHA9d2d07c8452d9035c73f44edf9dab9fc00caa54de5aa8c2310b8c04e884f6a3e.
 GNOME387 snapshot /tmp/B3630-display-guest-threads.json: syscall202 private
-wait expected2; poll wchan stale. KI0901 claimed: futex wait paths never
+wait expected2; poll wchan stale. KI0901 fixed9afaf5491: futex wait paths previously failed to
 refresh park_site. Repair records all five sleep publications;68 core,
 102 PI and1529 IPC library tests pass. Both builds/features/frame gates pass;
 static336x86/278ARM primary rows unchanged; KI0019 failures remain.
