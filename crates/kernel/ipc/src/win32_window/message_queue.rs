@@ -12,6 +12,7 @@ impl MessageQueue {
         self.messages.push_back(QueuedMessage { id: 0, message, key: None, bits: queue_status::hardware_bit(message.message), time, pos });
         Ok(())
     }
+    /// # C: O(1)
     pub fn post(&mut self, message: WinMessage, pos: u32) -> Result<(), QueueError> {
         self.post_with_bits(message, queue_status::QS_POSTED, pos)
     }
@@ -26,6 +27,7 @@ impl MessageQueue {
         self.messages.push_back(QueuedMessage { id: 0, message, key: None, bits, time, pos });
         Ok(())
     }
+    /// # C: O(N_queued)
     pub fn peek(&mut self, filter: MessageFilter, remove: bool) -> Option<WinMessage> {
         let index = self.messages.iter().position(|entry| filter.matches(entry.message))?;
         self.read_entry(index, remove)
@@ -35,6 +37,7 @@ impl MessageQueue {
         let index = self.messages.iter().position(|entry| matches(entry.message))?;
         self.read_entry(index, remove)
     }
+    /// # C: O(1)
     pub fn len(&self) -> usize { self.messages.len() }
     pub(super) fn cleanup_window(&mut self, id: WindowId) {
         self.messages.retain(|entry| entry.message.hwnd != Some(id));
@@ -47,6 +50,7 @@ impl MessageQueue {
             right: self.caret.x.saturating_add(self.caret.width),
             bottom: self.caret.y.saturating_add(self.caret.height) }))
     }
+    /// # C: O(1)
     pub fn post_quit(&mut self, code: i32) { self.quit = Some(code); }
     pub(super) fn quit_pending(&self) -> bool { self.quit.is_some() }
     pub(super) fn quit_message(&mut self, filter: MessageFilter, remove: bool, pos: u32) -> Option<WinMessage> {

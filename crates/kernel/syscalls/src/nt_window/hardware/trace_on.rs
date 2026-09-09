@@ -1,5 +1,7 @@
 //! Retrieval target and coordinate evidence for pointer dispatch.
+#![cfg(feature = "debug-winpump")]
 use ipc::win32_window::{WinMessage, WindowId};
+/// # C: O(1)
 pub(super) fn hit(id: u64, raw: WinMessage, target: WindowId, hit: i32, remove: bool) {
     klog::write_raw(b"[WINDOWS-HARDWARE-HIT] id="); klog::write_hex_u64(id);
     klog::write_raw(b" source="); klog::write_hex_u64(raw.hwnd.map_or(0, |window| window.raw() as u64));
@@ -9,6 +11,7 @@ pub(super) fn hit(id: u64, raw: WinMessage, target: WindowId, hit: i32, remove: 
     klog::write_raw(b" hit="); klog::write_hex_u64(hit as i64 as u64);
     klog::write_raw(b" remove="); klog::write_hex_u64(u64::from(remove)); klog::write_raw(b"\n");
 }
+/// # C: O(1)
 pub(super) fn prepared(id: u64, message: WinMessage) {
     klog::write_raw(b"[WINDOWS-HARDWARE-VIEW] id="); klog::write_hex_u64(id);
     klog::write_raw(b" target="); klog::write_hex_u64(message.hwnd.map_or(0, |window| window.raw() as u64));
