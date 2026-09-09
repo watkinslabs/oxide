@@ -18,6 +18,18 @@ fn creation_initializes_control_identity_and_disabled_flags() {
 }
 
 #[test]
+fn creation_record_controls_initial_flags_without_overwriting_window_style() {
+    for (style, creation, flags) in [(0, WS_DISABLED, ESB_DISABLE_BOTH), (WS_DISABLED, 0, 0)] {
+        let mut manager = WindowManager::new();
+        let window = manager.create(7, None, 0).unwrap();
+        manager.set_style_bits(window, style, 0).unwrap();
+        manager.initialize_scroll_control_style(window, creation).unwrap();
+        assert_eq!(manager.scroll_control_state(window).unwrap().flags, flags);
+        assert_eq!(manager.get(window).unwrap().style & WS_DISABLED, style);
+    }
+}
+
+#[test]
 fn control_info_clamps_without_sending_another_control_message() {
     let mut manager = WindowManager::new();
     let window = manager.create(7, None, 0).unwrap();

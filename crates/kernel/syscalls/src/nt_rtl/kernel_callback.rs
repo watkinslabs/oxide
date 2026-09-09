@@ -2,6 +2,7 @@
 //! The Windows client ABI passes the argument block and its length; the
 //! callback answers through NtCallbackReturn, which restores this frame.
 use super::*;
+use crate::nt_user_callback::Input;
 #[cfg(target_arch = "x86_64")]
 use crate::nt_user_callback::{entry_pointer, peb_pointer, table_pointer};
 
@@ -20,9 +21,7 @@ pub(crate) fn routine_for_current(index: u32) -> Option<u64> {
 /// Transfer the active NT syscall frame into one callback-table routine.
 /// # C: O(1) plus bounded usercopy
 #[cfg(target_arch = "x86_64")]
-pub(crate) fn begin(index: u32, args: u64, length: u32, completion: sched::nt_callback::Completion) -> u64 {
-    const SHADOW_SLOTS: u64 = 4;
-    const FRAME_BYTES: u64 = 48;
+pub(crate) fn begin(index: u32, input: Input<'_>, completion: sched::nt_callback::Completion) -> u64 {
     let Some(routine) = routine_for_current(index) else {
         klog::write_raw(b"[WINDOWS-USER-CALLBACK-REJECT] reason=no-routine index=");
         klog::write_hex_u64(index as u64); klog::write_raw(b"\n");
@@ -36,16 +35,14 @@ pub(crate) fn begin(index: u32, args: u64, length: u32, completion: sched::nt_ca
     // SAFETY: the live NT syscall frame of the calling thread, retargeted at
     // the callback routine before returning to user mode.
     let frame = unsafe { &mut *regs };
-    let callback_rsp = frame.rsp.checked_sub(FRAME_BYTES).unwrap_or(0);
-    if callback_rsp == 0 || callback_rsp & 0xf != 8 { return STATUS_INVALID_PARAMETER; }
-    for slot in 0..SHADOW_SLOTS { if uaccess::put_user_u64(callback_rsp + 8 + slot * 8, 0).is_err() { return STATUS_INVALID_PARAMETER; } }
-    if uaccess::put_user_u64(callback_rsp, continuation).is_err() { return STATUS_INVALID_PARAMETER; }
+    let Some(prepared) = crate::nt_user_callback::prepare(&mut UserMemory, frame.rsp, input, continuation)
+        else { return STATUS_INVALID_PARAMETER; };
     let saved = crate::nt_callback_frame::capture(frame, task, completion);
     if !task.nt_callback_stack.lock().push(saved) { return STATUS_INVALID_PARAMETER; }
     frame.rip = routine;
-    frame.rsp = callback_rsp;
-    frame.rcx = args;
-    frame.rdx = length as u64;
+    frame.rsp = prepared.stack;
+    frame.rcx = prepared.argument;
+    frame.rdx = prepared.length as u64;
     klog::write_raw(b"[WINDOWS-USER-CALLBACK-ENTER] index=");
     klog::write_hex_u64(index as u64); klog::write_raw(b" routine=");
     klog::write_hex_u64(routine); klog::write_raw(b"\n");
@@ -55,4 +52,23 @@ pub(crate) fn begin(index: u32, args: u64, length: u32, completion: sched::nt_ca
 /// The callback continuation has an AMD64 instruction ABI; never branch an
 /// ARM user frame into it.
 #[cfg(not(target_arch = "x86_64"))]
-pub(crate) fn begin(_: u32, _: u64, _: u32, _: sched::nt_callback::Completion) -> u64 { STATUS_NOT_SUPPORTED }
+pub(crate) fn begin(index: u32, input: Input<'_>, _: sched::nt_callback::Completion) -> u64 {
+    klog::write_raw(b"[WINDOWS-USER-CALLBACK-REJECT] reason=unsupported-continuation index=");
+    klog::write_hex_u64(index as u64);
+    match input {
+        Input::User { address, length } => {
+            klog::write_raw(b" user="); klog::write_hex_u64(address);
+            klog::write_raw(b" bytes="); klog::write_hex_u64(length as u64);
+        }
+        Input::Record(bytes) => { klog::write_raw(b" record-bytes="); klog::write_hex_u64(bytes.len() as u64); }
+    }
+    klog::write_raw(b"\n");
+    STATUS_NOT_SUPPORTED
+}
+
+#[cfg(target_arch = "x86_64")]
+struct UserMemory;
+#[cfg(target_arch = "x86_64")]
+impl crate::nt_user_callback::Memory for UserMemory {
+    fn write(&mut self, address: u64, bytes: &[u8]) -> bool { uaccess::copy_to_user(address, bytes).is_ok() }
+}

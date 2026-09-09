@@ -40,6 +40,10 @@ WIN32U_IMAGE_PATH = "/usr/local/lib/oxide/windows/x86_64-windows/win32u.dll"
 
 # (kind, human label, compiled pattern, detail template using named groups)
 _FINDING_SPECS = [
+    ("scroll-proc-unhandled", "scrollbar procedure message unhandled",
+     re.compile(r"\[WINDOWS-SCROLL-PROC-UNHANDLED\](?P<rest>[^\r\n]*)")),
+    ("scroll-paint-fail", "scrollbar drawing callback failed",
+     re.compile(r"\[WINDOWS-SCROLL-PAINT-FAIL\](?P<rest>[^\r\n]*)")),
     ("window-create-fail", "window creation failed",
      re.compile(r"\[WINDOWS-WINDOW-CREATE-FAIL\](?P<rest>[^\r\n]*)")),
     ("bridge-refused", "compositor bridge operation refused",

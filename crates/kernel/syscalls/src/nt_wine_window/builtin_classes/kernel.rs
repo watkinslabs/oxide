@@ -43,7 +43,7 @@ pub(crate) fn get_desktop_window() -> u64 {
     let desktop = crate::nt_window::desktop::window_for_current();
     ensure_registered();
     if !crate::nt_window::claim_init_builtin_classes_callback_for_current() { return desktop; }
-    let status = crate::nt_rtl::begin_user_callback(crate::nt_user_callback::NT_USER_INIT_BUILTIN_CLASSES, 0, 0,
+    let status = crate::nt_rtl::begin_user_callback(crate::nt_user_callback::NT_USER_INIT_BUILTIN_CLASSES, crate::nt_user_callback::Input::User { address: 0, length: 0 },
         sched::nt_callback::Completion { kind: crate::nt_window::CALLBACK_INIT_BUILTIN_CLASSES, argument: desktop });
     // A callback that could not be entered leaves the classes registered and
     // answers the desktop window directly; only an armed callback suspends.

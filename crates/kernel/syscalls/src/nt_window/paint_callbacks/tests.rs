@@ -27,3 +27,40 @@ fn callback_failure_nested_ownership_and_bounded_admission() {
     for _ in 1..MAX_PREPARATIONS { q.admit(7,resources(),completion()).unwrap(); }
     assert!(q.admit(7,resources(),completion()).is_none()); while q.take_thread(7).is_some(){} assert!(q.pending.is_empty());
 }
+
+#[test]
+fn drawing_lease_survives_window_cancellation_until_its_own_return() {
+    let mut q = Queue::new();
+    let token = q.hold(7, resources(), completion()).unwrap();
+    q.cancel_window(1);
+    assert!(q.take_window(1).is_none());
+    assert!(q.step(7, token, 0).is_none());
+    assert!(q.release_held(8, token).is_none());
+    assert!(q.release_held(7, token + 1).is_none());
+    assert!(matches!(q.release_held(7, token), Some((_, true))));
+    assert!(q.release_held(7, token).is_none());
+}
+
+#[test]
+fn ordinary_preparation_cannot_be_consumed_as_a_drawing_return() {
+    let mut q = Queue::new();
+    let preparing = q.admit(7, resources(), completion()).unwrap();
+    let drawing = q.hold(7, resources(), completion()).unwrap();
+    assert!(q.release_held(7, preparing).is_none());
+    assert!(matches!(q.release_held(7, drawing), Some((_, false))));
+    assert!(matches!(q.step(7, preparing, 0), Some(Step::Send { message: WM_NCPAINT, .. })));
+}
+
+#[test]
+fn control_paint_dc_remains_leased_until_callback_release() {
+    let prepared = crate::nt_window::paint_prepare::Prepared {
+        hwnd: 1, dc: 2, destination: 0, nc_region: 0, tid: 7, kernel: true,
+    };
+    let mut q = Queue::new();
+    let token = q.hold(7, resources(), Completion::ControlPaint(prepared)).unwrap();
+    assert!(q.holds_dc(2)); assert!(!q.holds_dc(3));
+    q.cancel_window(1);
+    assert!(q.holds_dc(2)); assert!(q.take_window(1).is_none());
+    assert!(matches!(q.release_held(7, token), Some((Completion::ControlPaint(_), true))));
+    assert!(!q.holds_dc(2));
+}

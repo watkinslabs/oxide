@@ -39,3 +39,12 @@ pub(crate) mod live;
 pub(crate) mod sink;
 #[path = "scroll/pending.rs"]
 pub(crate) mod pending;
+
+#[path = "scroll/proc_abi.rs"]
+pub(crate) mod proc_abi;
+#[cfg(target_os = "oxide-kernel")]
+#[path = "scroll/control_paint.rs"]
+pub(crate) mod control_paint;
+#[cfg(target_os = "oxide-kernel")]
+#[path = "scroll/control_proc.rs"]
+pub(crate) mod control_proc;

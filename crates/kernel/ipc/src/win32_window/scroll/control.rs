@@ -11,10 +11,17 @@ impl WindowManager {
     /// WM_CREATE initializes control storage and reserves its builtin extra area.
     /// # C: O(N_windows)
     pub fn initialize_scroll_control(&mut self, window: WindowId) -> Result<(), ScrollError> {
+        let style = self.get(window).ok_or(ScrollError::InvalidWindow)?.style;
+        self.initialize_scroll_control_style(window, style)
+    }
+
+    /// The creation record supplies initial disabled state even if earlier callbacks changed style.
+    /// # C: O(N_windows)
+    pub fn initialize_scroll_control_style(&mut self, window: WindowId, style: u32) -> Result<(), ScrollError> {
         self.set_window_fnid(window, make_fnid(PROC_SCROLLBAR)).map_err(|_| ScrollError::InvalidWindow)?;
         let (_, owned) = self.windows.iter_mut().find(|(id, _)| *id == window).ok_or(ScrollError::InvalidWindow)?;
         let mut state = ScrollState::new();
-        if owned.record.style & WS_DISABLED != 0 { state.flags = ESB_DISABLE_BOTH; }
+        if style & WS_DISABLED != 0 { state.flags = ESB_DISABLE_BOTH; }
         owned.scroll_control = Some(state);
         Ok(())
     }

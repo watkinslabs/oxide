@@ -12,6 +12,7 @@ pub(crate) enum Completion {
     Paint(super::super::paint_prepare::Prepared),
     /// Default WM_PAINT: the kernel ends the paint itself once preparation completes.
     DefaultPaint(super::super::paint_prepare::Prepared),
+    ControlPaint(super::super::paint_prepare::Prepared),
     Erase(super::super::redraw::erase::ErasePrepared),
 }
 #[derive(Clone, Copy)]
@@ -20,7 +21,7 @@ pub(crate) struct Resources {
     pub erase: bool, pub delayed: bool, pub empty_clip: bool,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Phase { Nonclient, Erase, Done }
+enum Phase { Nonclient, Erase, Done, External }
 #[derive(Clone, Copy)]
 struct Pending { token: u64, tid: u64, resources: Resources, phase: Phase, needed: bool, completion: Completion, in_flight:bool, cancelled:bool, retired:bool }
 pub(crate) struct Queue { next: u64, pending: Vec<Pending> }
@@ -36,8 +37,21 @@ impl Queue {
         self.pending.push(Pending { token, tid, resources, phase: Phase::Nonclient, needed: resources.delayed, completion, in_flight:false, cancelled:false, retired:false });
         Some(token)
     }
+    /// A drawing callback retains its paint resources until its own return.
+    pub(crate) fn hold(&mut self, tid: u64, resources: Resources, completion: Completion) -> Option<u64> {
+        let token = self.admit(tid, resources, completion)?;
+        let pending = self.pending.last_mut()?;
+        pending.phase = Phase::External; pending.in_flight = true;
+        Some(token)
+    }
+    pub(crate) fn release_held(&mut self, tid: u64, token: u64) -> Option<(Completion, bool)> {
+        let index = self.pending.iter().position(|p| p.tid == tid && p.token == token && p.phase == Phase::External)?;
+        let pending = self.pending.remove(index);
+        Some((pending.completion, pending.cancelled))
+    }
     pub(crate) fn step(&mut self, tid: u64, token: u64, result: u64) -> Option<Step> {
         let index = self.pending.iter().position(|p| p.tid == tid && p.token == token)?;
+        if self.pending[index].phase == Phase::External { return None; }
         if self.pending[index].cancelled{return Some(Step::Failed(self.pending.remove(index).completion));}
         let p = &mut self.pending[index];
         p.in_flight=false;
@@ -75,7 +89,7 @@ impl Queue {
     pub(crate) fn cancel_window(&mut self,hwnd:u64){for p in &mut self.pending{if p.resources.hwnd==hwnd{p.cancelled=true;}}}
     /// Destruction keeps a leased fresh paint HDC alive until its active callback returns.
     pub(crate) fn holds_dc(&self,dc:u32)->bool{self.pending.iter().any(|p|p.in_flight&&match p.completion{
-        Completion::Paint(prepared)|Completion::DefaultPaint(prepared)=>prepared.dc==dc,Completion::Erase(prepared)=>prepared.dc==dc,Completion::Callback{..}=>false,
+        Completion::Paint(prepared)|Completion::DefaultPaint(prepared)|Completion::ControlPaint(prepared)=>prepared.dc==dc,Completion::Erase(prepared)=>prepared.dc==dc,Completion::Callback{..}=>false,
     })}
     /// Only quiescent entries may release HDC/HRGN before a callback return.
     pub(crate) fn take_window(&mut self,hwnd:u64)->Option<Completion>{

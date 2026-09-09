@@ -20,6 +20,9 @@ pub(crate) fn prepare_for_current(hwnd:u32,dc:u32,destination:u64)->u64{ prepare
 /// Default WM_PAINT: same preparation, PAINTSTRUCT kept in the kernel, EndPaint chained on completion.
 /// # C: as prepare_for_current
 pub(crate) fn prepare_default_for_current(hwnd:u32,dc:u32)->u64{ prepare_with(hwnd,dc,0,true,run_default) }
+/// A control's drawing callback runs after nonclient and erase preparation.
+/// # C: as prepare_for_current
+pub(crate) fn prepare_control_for_current(hwnd:u32,dc:u32)->u64{ prepare_with(hwnd,dc,0,true,run_control) }
 fn prepare_with(hwnd:u32,dc:u32,destination:u64,kernel:bool,run:fn(paint_callbacks::Resources,Prepared)->u64)->u64{
     let tid=sched::live::current().map_or(0,|c|c.tid as u64);
     let mut prepared=Prepared{hwnd,dc,destination,nc_region:0,tid,kernel};
@@ -49,4 +52,8 @@ fn run(resources:paint_callbacks::Resources,prepared:Prepared)->u64{
 }
 fn run_default(resources:paint_callbacks::Resources,prepared:Prepared)->u64{
     paint_callbacks::for_current(resources,paint_callbacks::Completion::DefaultPaint(prepared))
+}
+
+fn run_control(resources:paint_callbacks::Resources,prepared:Prepared)->u64{
+    paint_callbacks::for_current(resources,paint_callbacks::Completion::ControlPaint(prepared))
 }

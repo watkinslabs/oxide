@@ -41,6 +41,16 @@ def test_clean_log_passes():
     assert "PASS" in audit_mod.render_table(result)
 
 
+def test_scrollbar_failures_preserve_message_and_callback_status():
+    text = ("[12.001] [WINDOWS-SCROLL-PROC-UNHANDLED] hwnd=10001b msg=201\n"
+            "[12.002] [WINDOWS-SCROLL-PAINT-FAIL] hwnd=10001b status=c000000d\n")
+    result = audit_mod.audit(text)
+    assert not result.passed
+    assert [finding.kind for finding in result.findings] == ["scroll-proc-unhandled", "scroll-paint-fail"]
+    assert "msg=201" in result.findings[0].detail
+    assert "status=c000000d" in result.findings[1].detail
+
+
 def test_dialog_creation_and_bridge_refusals_fail_with_original_context():
     text = ("[116.482] [WINDOWS-WINDOW-CREATE-FAIL] stage=publish hwnd=000000000010001a transport=0000000000000003\n"
             "[116.488] [WINDOWS-BRIDGE-REFUSED] op=0000000000000002 hwnd=000000000010001a seq=00000000000000aa status=0000000000000001\n")

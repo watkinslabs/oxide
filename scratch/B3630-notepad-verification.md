@@ -356,3 +356,26 @@ Paint callback ABI independently compiled against pinned headers: index8,
 on the host. Serial ends mid-task-dump1608.292s; QEMU log has no terminal
 status. KI0891 records missing post-acceptance exit provenance. Cause unknown;
 no termination command was issued during this verification turn.
+
+
+KI0885 callback/paint work:3270 syscall tests,116 dispatcher fixture tests,
+1523 IPC tests and33 dialog/QMP/audit tests pass. Positive controls fail on
+removed record copy/DC lease, wrong callback offset and creation style.
+Both final release/feature builds pass; stack matches358/299 previous rows,
+no new/increased paths. Initial paint cleanup called the entire dispatcher
+and added15184-byte path; direct existing paint-session removal resolves it.
+Control procedure remains incomplete; tracking and input messages still open.
+
+Preview1055195 booted16:39:27UTC with Wine11.16-debug and refreshed kernel.
+Notepad activated; screenshots show blank dialog text, pointer trails and stale
+surfaces. Controlled QMP click713,397 not verified as button-down/up delivery.
+QEMU1055258/launcher1055198 exited16:41:20UTC; launcher status0, no shutdown
+or quit command sent here. Exit reason unknown; user clarification pending.
+Evidence target/B3630-click-preview-debug/live.json, manual-commands.jsonl,
+notepad-ready.png, after-dialog-button.png, audit-live.md; serial163927.
+Audit FAIL with29 bridge-refusal records. File→Open acceptance not completed.
+KI0682 confirmed by code/source inspection: one queued HWND hit test, no
+continuation to the next z-order candidate after HTTRANSPARENT. Log100.520+
+records static100028 returning-1 followed by cursor handling; relation to the
+controlled click requires an actual-boundary fixture, not an inference from
+absence of one button marker. Full visual and dispatcher acceptance remain open.
