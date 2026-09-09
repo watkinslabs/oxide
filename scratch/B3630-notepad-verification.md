@@ -89,3 +89,16 @@ insets atomically does not implement that calculation. Existing bounded
 remote_positions queue and position/live.rs callback chain are the integration
 boundary to use; avoid a second geometry owner or a clamped-client workaround.
 No new boot: runtime verification remains outstanding for this kernel change.
+
+KI-0641 fixedb6447279e: bridge apply_event now sends procedure-bearing HWND
+Configure packets to the canonical remote_positions queue. Its owner consumes
+work through the production position callback chain; callback-free windows
+keep direct delivery. Relative move/size flags are decided at consumption so
+a queued return to the original size survives the preceding resize. Accepted
+display geometry does not echo; application-adjusted geometry does publish.
+New tests cross the packet-to-queue and queue-to-callback boundaries, adopt a
+size-dependent client rectangle, enforce owner-thread execution and resume
+retrieval once. Positive controls bypass the queue, drop a queued original-size
+return, or suppress application corrections; each fails its regression.
+Restored:3255 syscalls lib tests and28 production position-boundary tests pass;
+both kernel feature gates pass. Runtime verification still outstanding.

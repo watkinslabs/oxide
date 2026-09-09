@@ -60,7 +60,9 @@ remains. UART audit passes with no Windows calls, since Notepad never launched.
 
 KI-0867 fixed03758d7e3: refused compositor resize no longer partially commits
 outer geometry. Real regression red then529 window-manager tests green.
-KI-0641 remains the next resize implementation gap: route incoming Configure
-through owner-thread NCCALCSIZE using existing bounded remote_positions and
-position callback chain. Preserve compositor-origin semantics to avoid echoes.
+KI-0641 fixedb6447279e: incoming Configure now queues owner-thread position
+callbacks; unchanged display geometry is not echoed, application corrections
+are published.3255 syscalls lib tests and28 callback-boundary tests pass;
+positive controls cover packet wiring, client recalculation, queue order and
+geometry correction. Both kernel feature gates pass.
 No new boot verified this kernel change. See scratch/B3630-notepad-verification.md.
