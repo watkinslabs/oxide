@@ -21,4 +21,4 @@ mod trace;
 #[path = "hardware/delivery.rs"]
 mod delivery;
 #[cfg(target_os = "oxide-kernel")]
-pub(crate) use delivery::{deliver_for_current, note_get};
+pub(crate) use delivery::{dispatch_for_current, DispatchStage, note_get};

@@ -2,7 +2,8 @@
 use super::super::{GUI, STATUS_SUCCESS, STATUS_INVALID_PARAMETER, copy_message};
 use alloc::sync::Arc;
 use ipc::win32_window::WinMessage;
-use syscall::nt::NtWindowCall;
+use syscall::nt::{NtCall, NtWindowCall};
+use super::Stage;
 
 /// Usercopy runs outside GUI ownership; retirement names only the selected ID.
 /// # C: O(N_process_gui_states + N_queued)
@@ -39,4 +40,22 @@ klog::write_hex_u64(found.hwnd.map(|w| w.raw() as u64).unwrap_or(0));
 klog::write_raw(b" msg=");
 klog::write_hex_u64(found.message as u64);
 klog::write_raw(b"\n");
+}
+
+/// The general dispatcher carries no raw or translated message payload.
+pub(crate) enum DispatchStage { Ready, Again, Complete(u64) }
+
+/// Keep retrieval scratch below the general dispatcher's lifetime.
+/// # C: O(N_process_gui_states + N_windows + N_queued)
+#[inline(never)]
+pub(crate) fn dispatch_for_current(call: NtCall, raw: bool, operation: NtWindowCall) -> DispatchStage {
+    match super::process_for_current(call, raw, operation) {
+        Stage::Ready => DispatchStage::Ready,
+        Stage::Again => DispatchStage::Again,
+        Stage::Pending(status) => DispatchStage::Complete(status),
+        Stage::Prepared { id, message } => match deliver_for_current(operation, id, message) {
+            Some(status) => DispatchStage::Complete(status),
+            None => DispatchStage::Again,
+        },
+    }
 }
