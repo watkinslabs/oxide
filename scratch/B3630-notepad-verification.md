@@ -322,3 +322,11 @@ are not yet attributed to this defect.
 Both compositor release targets build. ARM uses the existing completed
 Fedora sysroot at target/B3630-arm-sysroot; default system sysroot still lacks
 the previously recorded XCB/XKB/libgcc link inputs (KI-0421/KI-0691).
+
+KI-0885 control-state foundation: optional storage on the canonical HWND,
+creation identity/disabled flags, SCROLLINFO result consumption, raw range
+message behavior and teardown/isolation tests. No raw procedure wiring yet.
+Three targeted tests fail when initialization is removed; restored code passes
+all1515 IPC tests. This is not a completed scrollbar implementation.
+KI-0888 claimed before changing shared scroll-info policy: disabled flags and
+page-only/no-fields transitions need correction before the control consumes it.

@@ -37,8 +37,8 @@ Durable evidence: scratch/B3630-notepad-verification.md.
   with4 findings.43 relevant harness/audit tests pass;5 restored-defect
   controls fail. Implemented322669c2a; ledger archived with that SHA.
 - Claims committed1a7214aa5 and6124d97; prior claimKI0882 b5fcd305f.
-- Last verified remote ca548c4f5; hosted180 and both feature gates pass.
-- KI-0885 remains OPEN: scrollbar procedure selector029a has no dispatch arm,
+- Last verified remote940591edd; hosted180 and both feature gates pass.
+- KI-0885 claimed940591edd; still unimplemented: scrollbar procedure selector029a has no dispatch arm,
   returns STATUS_NOT_IMPLEMENTED for WM_CREATE/WM_PAINT. Actual debug DLL
   disassembly identifies the repeated callback as ScrollBarWndProc_W.
 - Current LIVE QEMU832847 (launcher832789), named debug namespace
@@ -84,3 +84,24 @@ Durable evidence: scratch/B3630-notepad-verification.md.
   SKIP_TEST_BUILD_GATE, SKIP_STACK_GATE after baseline proof. No new increase.
 - Earlier selectors/vDSO/ptrace fixes remain; earlier GNOME stall cause unknown.
 - Open remainingKI0859/0860/0861/0862/0863; do not close on kernel test counts.
+
+## Immediate implementation work
+
+-0190b0530 commits parent-DC presentation repair;940591edd claimsKI0885.
+ PR body updated for click repair and retained VM. Screenshot
+ target/B3630-debug-dialogs/dispatcher-current.png still shows corrupted About.
+- KI0885 control-state foundation now adds optional storage to OwnedWindow;
+ scroll/control owns initialization, info/range/flags with3 targeted tests.
+ Removing initialization fails all3; full IPC suite1515 passes restored.
+ No production raw scrollbar-procedure arm yet; do not claim it implemented.
+- KI0888 claimed: shared ScrollState::apply_for_bar does not maintain flags,
+ skips page-only disabling and mishandles DISABLENOSCROLL-only. Correct this
+ canonical policy before consuming it; new control helper currently reuses it.
+- Remaining scrollbar work: all selector029a messages, canonical state and
+ tracking, paint Begin/Draw callback/End lifecycle, focus/caret, sizegrip
+ resize commands and cursor, scroll info/accessibility; actual dispatch tests.
+- Pinned source draw uses user callback with a draw parameter record; existing
+ nt_rtl::begin_user_callback only accepts a user pointer, no record-copy helper.
+ Paint preparation already retains Prepared in paint_callbacks::Completion;
+ extend that lifecycle for control painting so callbacks cannot lose HDCs.
+ Read source again before implementation; no WM_PAINT-only success stub.

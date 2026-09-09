@@ -34,6 +34,8 @@ drift between `kernel/src`, ad-hoc `crates/*`, and one-off folders.
    GDI `backing` owns paint seeding/retention; `nt_gdi/paint_frame` serializes
    that retained surface. Queue-owned caret deadlines feed message waits;
    scroll continuations consume the existing position and Send owners.
+   Window `scroll/control` owns optional scrollbar-control state on the HWND;
+   its lifetime is distinct from the same HWND’s standard nonclient bars.
    Window `dc_lease` snapshots canonical visibility; GDI `dc_lease` retains
    HDC attributes and maps raster operations to existing backing storage.
    GDI `pen` owns selected pen lifetime. Paint preparation resources remain

@@ -105,6 +105,9 @@ impl ScrollState {
 
 pub const fn valid_bar(bar: i32) -> bool { matches!(bar, SB_HORZ | SB_VERT | SB_CTL) }
 
+#[path = "scroll/control.rs"]
+pub mod control;
+
 #[path = "scroll/owner.rs"]
 pub mod owner;
 
