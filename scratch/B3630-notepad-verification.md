@@ -124,3 +124,20 @@ reports retained in scratch/archive/B3630-KI0868-stack-{baseline,fixed}.log.
 No stack allowance changed. Only pre-existing KI-0019 failures remain.
 3255 syscall lib tests and30 callback-boundary tests pass. Positive control
 that replaced failed preparation with success fails the new outcome test.
+
+KI-0869: native user CS/SS now0x33/0x2b; kernel CS/DS moved to0x10/0x18
+so the user selector slots hold actual user descriptors. Reload assembly,
+MSR_STAR, initial task frames and saved syscall frames share GDT constants.
+Ptrace conversion is unchanged and reports those actual frames. Native
+debugger architecture selection now receives its64-bit discriminator.
+230 HAL tests and3256 syscall tests pass. Positive controls restore the old
+selector or populate the descriptor in its old slot: selector, descriptor and
+task-frame-to-ptrace checks fail, then pass after restoration. The NT startup
+context check requires the new pair and rejects the former pair.
+Built ELF disassembly: GDT reload loadsDS0x18/CS0x10; syscall entry pushes
+SS0x2b/CS0x33. Both feature gates pass. Stack comparison with the preceding
+branch ELF:336 failing entries, none new or worsened; exception7664 B unchanged.
+Logs /tmp/B3630-selector-{asm,descriptor-red,ptrace-red}.log and
+/tmp/B3630-selectors-{red,green,syscalls,feature,stack}.log.
+No new boot; KI-0866 also includes missing process-memory files, malformed
+vDSO metadata and incomplete debugger detach, which this change does not fix.

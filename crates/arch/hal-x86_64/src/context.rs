@@ -239,8 +239,8 @@ impl Context for ContextX86_64 {
         entry: extern "C" fn(usize) -> !,
         arg: usize,
     ) -> Self {
-        // Selectors per the kernel GDT layout: code = 0x28 (64-bit kernel
-        // CS), data = 0x30 (64-bit kernel DS/SS).
+        // Selectors per the kernel GDT layout: code = 0x10 (64-bit kernel
+        // CS), data = 0x18 (64-bit kernel DS/SS).
         let regs = PtRegs {
             r12:    entry as *const () as usize as u64,
             r13:    arg as u64,
@@ -399,8 +399,7 @@ impl ContextX86_64 {
     /// # C: O(1)
     #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn new_user_with_irq_frame_and_arg(stack_top: *mut u8, user_ip: u64, user_sp: u64, arg0: u64) -> Self {
-        // USER CS/SS per `36-bootloader-handoff` GDT (P1-93): USER_CS =
-        // 0x4B (DPL=3 64-bit code), USER_DS = 0x43 (DPL=3 data).
+        // User entry uses the same selectors as syscall and IRQ returns.
         let regs = PtRegs {
             rip:    user_ip,
             rcx:    arg0,

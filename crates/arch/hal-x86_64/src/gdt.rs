@@ -2,16 +2,8 @@
 //
 // Replaces the boot trampoline's temporary GDT with one we own, in
 // BSS, before any code path requires user descriptors or a TSS.
-// Selector offsets are fixed by the kernel ABI so `KERNEL_CS = 0x28` /
-// `KERNEL_DS = 0x30` callers (`idt.rs`, `context.rs`) stay valid:
-//
-//   sel 0x00       null
-//   sel 0x08..0x20 reserved (zero — kept for selector-offset stability)
-//   sel 0x28       kernel CS64 (DPL=0, L=1)
-//   sel 0x30       kernel DS   (DPL=0)
-//   sel 0x38       user   CS64 (DPL=3, L=1)
-//   sel 0x40       user   DS   (DPL=3)
-//   sel 0x48       TSS    (16-byte system descriptor, type=0x9)
+// User selectors are externally visible through entry frames and debugger
+// register access. Keep descriptor indexes and entry/return operands aligned.
 //
 // Descriptor layout per Intel SDM Vol. 3 §3.4.5:
 //   bits  0..15  limit_lo
@@ -27,19 +19,20 @@ use core::cell::UnsafeCell;
 /// Layout (P2-02 sysretq-compatible):
 ///
 ///   sel 0x00       null
-///   sel 0x08..0x20 reserved
-///   sel 0x28       kernel CS64 (DPL=0, L=1)        — `idt::KERNEL_CS`
-///   sel 0x30       kernel DS   (DPL=0)             — kernel SS too
-///   sel 0x38       user CS32   (DPL=3, L=0, D=1)   — STAR[63:48] base
-///   sel 0x40       user DS     (DPL=3)             — sysret SS = base+8
-///   sel 0x48       user CS64   (DPL=3, L=1)        — sysret CS = base+16
+///   sel 0x08       reserved
+///   sel 0x10       kernel CS64 (DPL=0, L=1)        — `idt::KERNEL_CS`
+///   sel 0x18       kernel DS   (DPL=0)             — kernel SS too
+///   sel 0x20       user CS32   (DPL=3, L=0, D=1)   — STAR[63:48] base
+///   sel 0x28       user DS     (DPL=3)             — sysret SS = base+8
+///   sel 0x30       user CS64   (DPL=3, L=1)        — sysret CS = base+16
+///   sel 0x38..0x48 reserved
 ///   sel 0x50 + cpu*0x10  per-CPU TSS (16-byte system descriptor) —
 ///                        CPU `i` ltr's `TSS_SEL + i*0x10` (`tss::NR_TSS`
 ///                        slots) so each AP scheduling user tasks has its
 ///                        own RSP0 in its own TSS.
 ///
-/// MSR_STAR with STAR[63:48] = 0x38 satisfies the sysretq selector
-/// triple. STAR[47:32] = 0x28 keeps kernel CS for syscall entry.
+/// MSR_STAR with STAR[63:48] = 0x23 satisfies the sysretq selector
+/// triple. STAR[47:32] = 0x10 keeps kernel CS for syscall entry.
 ///   sel 0x50 + NR_TSS*0x10 + cpu*0x10  per-CPU LDT descriptor (16-byte
 ///                        system descriptor, type=0x2). One slot per CPU
 ///                        because this port keeps ONE shared GDT: the
@@ -77,28 +70,18 @@ pub(crate) unsafe fn write_system_descriptor(index: usize, lo: u64, hi: u64) {
 
 /// User CS64 selector (DPL=3, L=1). Used by `iretq` to ring 3 and
 /// returned by `sysretq` (CS = STAR[63:48]+16 with RPL forced 3).
-pub const USER_CS: u16 = 0x48 | 3;
+pub const USER_CS: u16 = 0x30 | 3;
 /// User DS selector (DPL=3). `sysretq` SS = STAR[63:48]+8 with RPL 3.
-pub const USER_DS: u16 = 0x40 | 3;
-/// User CS32 selector (DPL=3, L=0, D=1) — STAR[63:48] base. Not
-/// used at runtime in v1 (no compat-mode userspace) but the
-/// descriptor must be present and well-formed for sysretq's
-/// internal validation.
-// Read only when building STAR in `install_syscall_msrs` (kernel target), plus
-// the descriptor-shape tests below.
-#[cfg(any(test, all(target_arch = "x86_64", target_os = "oxide-kernel")))]
-pub const USER_CS32: u16 = 0x38 | 3;
+pub const USER_DS: u16 = 0x28 | 3;
+/// User CS32 selector (DPL=3, L=0, D=1), the STAR return-selector base.
+pub const USER_CS32: u16 = 0x20 | 3;
 
-/// Kernel data selector (sel 0x30, DPL=0) — the kernel SS too. Named so
-/// the first-run kthread scaffold stops spelling it `0x30` inline.
-pub const KERNEL_DS: u16 = 0x30;
+/// Kernel code selector, paired with the following data slot for SYSCALL.
+pub const KERNEL_CS: u16 = 0x10;
+/// Kernel data and stack selector.
+pub const KERNEL_DS: u16 = 0x18;
 
-/// The ring-3 selector pair as `pt_regs.cs` / `pt_regs.ss` quadwords — the
-/// ONE definition shared by `oxide_syscall_entry` (which synthesizes the
-/// IRETQ image `syscall` does not push) and the signal-frame builder (Linux
-/// `x64_setup_rt_frame`'s `regs->cs = __USER_CS`). Two copies of these
-/// numbers is how `sigcontext.cs` ended up reporting Linux's 0x33/0x2b while
-/// the hardware ran on oxide's 0x4b/0x43.
+/// The actual ring-3 selectors shared by saved frames and hardware returns.
 pub const USER_CS_SELECTOR: u64 = USER_CS as u64;
 pub const USER_SS_SELECTOR: u64 = USER_DS as u64;
 
@@ -213,19 +196,21 @@ core::arch::global_asm!(
     // retf) to force a 64-bit pop of (RIP, CS).
     "oxide_gdt_load_and_reload:",
     "    lgdt [rdi]",
-    "    mov  ax, 0x30",
+    "    mov  ax, {kernel_ds}",
     "    mov  ds, ax",
     "    mov  es, ax",
     "    mov  ss, ax",
     "    mov  fs, ax",
     "    mov  gs, ax",
-    "    push 0x28",                       // CS selector (qword)
+    "    push {kernel_cs}",                 // CS selector (qword)
     "    lea  rax, [rip + 1f]",
     "    push rax",                         // target RIP
     "    .byte 0x48, 0xcb",                 // lretq (REX.W + retf)
     "1:",
     "    ret",
     ".size oxide_gdt_load_and_reload, . - oxide_gdt_load_and_reload",
+    kernel_cs = const KERNEL_CS,
+    kernel_ds = const KERNEL_DS,
 );
 
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
@@ -249,16 +234,12 @@ pub unsafe fn install_kernel_gdt() {
     // SAFETY: single-CPU boot; we own the GDT static during install.
     // `06§11` + `07§5` ban `static mut`, so write through UnsafeCell.
     let gdt = unsafe { &mut *GDT.0.get() };
-    gdt[0] = 0;
-    gdt[1] = 0;
-    gdt[2] = 0;
-    gdt[3] = 0;
-    gdt[4] = 0;
-    gdt[5] = segment(ACCESS_KERNEL_CS, FLAGS_CODE64); // 0x28
-    gdt[6] = segment(ACCESS_KERNEL_DS, FLAGS_DATA);   // 0x30
-    gdt[7] = segment(ACCESS_USER_CS,   FLAGS_CODE32); // 0x38 (user CS32)
-    gdt[8] = segment(ACCESS_USER_DS,   FLAGS_DATA);   // 0x40
-    gdt[9] = segment(ACCESS_USER_CS,   FLAGS_CODE64); // 0x48 (user CS64)
+    gdt[..10].fill(0);
+    gdt[(KERNEL_CS >> 3) as usize] = segment(ACCESS_KERNEL_CS, FLAGS_CODE64);
+    gdt[(KERNEL_DS >> 3) as usize] = segment(ACCESS_KERNEL_DS, FLAGS_DATA);
+    gdt[(USER_CS32 >> 3) as usize] = segment(ACCESS_USER_CS, FLAGS_CODE32);
+    gdt[(USER_DS >> 3) as usize] = segment(ACCESS_USER_DS, FLAGS_DATA);
+    gdt[(USER_CS >> 3) as usize] = segment(ACCESS_USER_CS, FLAGS_CODE64);
     // Per-CPU TSS descriptors: CPU `i` at GDT[10 + i*2] (selector
     // 0x50 + i*0x10). Each points at that CPU's own TSS so `set_rsp0`
     // (indexed by current_cpu) never clobbers another CPU's RSP0.
@@ -292,7 +273,7 @@ pub unsafe fn install_kernel_gdt() {
 /// registers to the kernel selectors. The BSP ran `install_kernel_gdt`
 /// (which both builds AND loads); an AP comes out of the SIPI trampoline on
 /// the trampoline's minimal 4-entry GDT (CS=0x18), so it must `lgdt` the
-/// shared kernel GDT before it can use kernel CS/DS (0x28/0x30) or load its
+/// shared kernel GDT before it can use kernel CS/DS (0x10/0x18) or load its
 /// per-CPU TSS selector (`TSS_SEL + cpu*0x10`). Reads the GDT static
 /// read-only (already built by the BSP).
 /// # SAFETY: caller is an AP at CPL=0, long mode, kernel master CR3 active,
@@ -372,9 +353,9 @@ mod tests {
 
     #[test]
     fn user_selectors_have_dpl_3() {
-        assert_eq!(USER_CS,   0x48 | 3, "user CS64 = sel 0x48 | DPL=3");
-        assert_eq!(USER_DS,   0x40 | 3, "user DS   = sel 0x40 | DPL=3");
-        assert_eq!(USER_CS32, 0x38 | 3, "user CS32 = sel 0x38 | DPL=3 (sysret base)");
+        assert_eq!(USER_CS, 0x33);
+        assert_eq!(USER_DS, 0x2b);
+        assert_eq!(USER_CS32, 0x23);
         assert_eq!(USER_CS   & 3, 3);
         assert_eq!(USER_DS   & 3, 3);
         assert_eq!(USER_CS32 & 3, 3);
@@ -443,5 +424,18 @@ mod tests {
         // SAFETY: hosted test; the asm path is cfg'd out, so install
         // exercises only the static-array writes and pointer build.
         unsafe { install_kernel_gdt() };
+        // SAFETY: this is the only hosted test accessing the GDT static;
+        // install_kernel_gdt above completed its descriptor publication.
+        let gdt = unsafe { &*GDT.0.get() };
+        for (selector, access, flags) in [
+            (0x10, ACCESS_KERNEL_CS, FLAGS_CODE64),
+            (0x18, ACCESS_KERNEL_DS, FLAGS_DATA),
+            (0x23, ACCESS_USER_CS, FLAGS_CODE32),
+            (0x2b, ACCESS_USER_DS, FLAGS_DATA),
+            (0x33, ACCESS_USER_CS, FLAGS_CODE64),
+        ] {
+            assert_eq!(gdt[selector >> 3], segment(access, flags));
+        }
+        assert_eq!(&gdt[7..10], &[0, 0, 0]);
     }
 }

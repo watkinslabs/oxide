@@ -10,6 +10,22 @@ mod x86_tests {
                         fs_base: 0x7f00_0000_0000, gs_base: 0 }
     }
 
+    #[test]
+    fn native_task_frame_remains_64_bit_through_ptrace() {
+        let mut stack = [0u128; 256];
+        let top = stack.as_mut_ptr_range().end.cast::<u8>();
+        let context = hal_x86_64::ContextX86_64::new_user_with_irq_frame(top, 0x40001000, 0x7fff0000);
+        let frame_address = top as usize - core::mem::size_of::<PtRegs>();
+        assert_eq!(context.rsp as usize + core::mem::size_of::<u64>(), frame_address);
+        // SAFETY: new_user_with_irq_frame initialized this aligned frame
+        // inside the live stack buffer; no other thread accesses the buffer.
+        let frame = unsafe { &*(frame_address as *const PtRegs) };
+        let regs = x86::to_user_regs(frame, 0, &seg());
+        assert_eq!((regs[x86::U_CS], regs[x86::U_SS]), (0x33, 0x2b));
+        assert_eq!(regs[x86::U_DS], 0, "native LP64 register view");
+        assert_eq!((regs[x86::U_CS], regs[x86::U_SS]), (frame.cs, frame.ss));
+    }
+
     /// Every field holds a distinct value so a wrong mapping shows as a wrong
     /// value rather than a coincidence. `vector` tags a `syscall` entry.
     fn frame() -> PtRegs {

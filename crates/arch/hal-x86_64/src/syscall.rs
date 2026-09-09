@@ -1,6 +1,6 @@
 // Syscall entry + sysretq return path per `20§7`. P2-01 landed the
 // MSR setup + entry stub (halting dispatcher); P2-02 wires the
-// sysretq epilogue and the GDT descriptors at sel 0x38/0x40/0x48
+// sysretq epilogue and the GDT descriptors at sel 0x20/0x28/0x30
 // that sysretq's selector arithmetic requires.
 //
 // `syscall` semantics (Intel SDM Vol. 2 + AMD APM Vol. 3):
@@ -473,7 +473,7 @@ pub unsafe fn init_percpu_syscall_kstack(top: u64) {
 /// Rebuild IA32_STAR/LSTAR/CSTAR/FMASK + EFER.SCE for `syscall` entry.
 /// Called at boot, on AP bring-up, and after S3 resume, always after the
 /// kernel-owned GDT is in place (STAR's selector pair is keyed to
-/// KERNEL_CS=0x28 / KERNEL_DS=0x30). Values come from the running kernel,
+/// KERNEL_CS=0x10 / KERNEL_DS=0x18). Values come from the running kernel,
 /// never from firmware or the pre-suspend MSR image.
 ///
 /// # SAFETY: caller runs at CPL0 with IRQs masked after loading the

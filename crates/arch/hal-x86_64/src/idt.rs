@@ -15,10 +15,7 @@ use core::cell::UnsafeCell;
 /// 256 hardware vectors per Intel SDM Vol. 3 §6.10.
 pub const IDT_LEN: usize = 256;
 
-/// Kernel code selector. Filled in once GDT bring-up exists; until
-/// then the trampoline-provided CS works (it sets up flat 64-bit
-/// segments at offset 0x28).
-pub const KERNEL_CS: u16 = 0x28;
+pub use crate::gdt::KERNEL_CS;
 
 /// IDT entry per Intel SDM Vol. 3 Fig. 6-7. 16 bytes; field order
 /// asm-coupled with the CPU's hardware decoder.
