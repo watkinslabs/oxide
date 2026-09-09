@@ -1,8 +1,9 @@
 # Handoff — hardware retrieval repair, verification in progress
 
-First command: `git status --short`
+First command: `tail -15 /tmp/B3630-hardware-dispatch-build.log`
 Worktree /home/nd/oxide/kernel-B3630; branch B3630-paint-region-collapse.
 Main read-only. Read CLAUDE.md. Draft PR7680; last verified remote843f82ed4.
+Local HEADc9834ba26; current hardware commits NOT pushed (stack regression).
 Goal remains defect-free Notepad buttons/borders/Open/Save/menus/About.
 User requests visible boot when ready and VM left running. Do not call done.
 Wine11.16 release/debug profiles explicit; consult pinned local sources first.
@@ -38,17 +39,31 @@ Wine11.16 release/debug profiles explicit; consult pinned local sources first.
 ## Current verification
 
 -11 hardware-driver tests and119 production-dispatch fixture tests pass.
--1526 IPC and3270 syscall library tests passed before final unused-API cleanup
-  and target-destruction check. Rerun final libraries.
+-1526 IPC and3270 syscall library tests pass after API cleanup and target
+  lifetime check; /tmp/B3630-hardware-final-{ipc,syscalls}.log.
 - Positive controls raw overwrite, transparent-walk bypass, and ignored
   Stage::Prepared dispatch hook each fail assertions, restored afterward.
   Logs /tmp/B3630-hardware-{raw-view,transparent,view-hook}-red.log.
 - /tmp/B3630-hardware-boundary-final.log current tests.
 - Both feature checks passed initial implementation; final tracing/checks
   require repeat. /tmp/B3630-hardware-feature.log is INITIAL pass only.
-- /tmp/B3630-hardware-build.log build53277 started before final target check,
-  API cleanup and tracing. NOT final-build proof. Poll, then rebuild both.
-- No final stack comparison yet. Previous baseline358x86/299ARM report rows,
+- Initial build53277 passed both; follow-up47613/73320 passed both builds and
+  features after target-lifetime fix. Then stack regression found on x86.
+- x86 stack358 rows but dispatch15088→15232; initial hardware live drive
+  13952→13968. Do NOT call this baseline-only or bypass it.
+-249d43553 extracts delivery/usercopy and shared Get tracing from dispatcher.
+  Tests pass; x86 stack improves to15168 but still80 above old dispatch path.
+  Usercopy fixture now asserts GUI unlocked and rejects unexpected copies.
+- c9834ba26 adds small DispatchStage and noninlined dispatch_for_current helper
+  so general dispatcher no longer carries full message result payload.
+  11 driver/119 dispatcher tests pass in /tmp/B3630-hardware-dispatch-tests.log.
+- Current build85677: /tmp/B3630-hardware-dispatch-build.log, both arches.
+  Prior build45257 and feature10998 may still finish; poll authoritative exits.
+  Their logs /tmp/B3630-hardware-delivery-{build,feature}.log.
+- After85677, rerun both stack reports with label hardware-dispatch. Do not
+  push until no new/increased numeric rows (normalize annotation changes when
+  interpreting identities but preserve full reports). No boot launched.
+- Previous baseline358x86/299ARM report rows,
   336/277 existing overbudget paths,7664/6368 exception bytes (KI-0019).
   Compare /tmp/B3630-scroll-procedure-stack-{x86,arm}.log against final ELF
   reports, no new/increased path allowed. ARM has NO stack-switch-map option.
@@ -104,7 +119,8 @@ Wine11.16 release/debug profiles explicit; consult pinned local sources first.
 - images B3630-wine-profiles553217b, no remote; preserve .dist-old-layout/.
 - Wine named source/build/artifact/catalog/RPM paths and stamps documented39§13;
   OXIDE_WINE_PROFILE=release|debug independent of kernel PROFILE.
-- PR7680 body /tmp/B3630-pr-body.md stale for current driver changes.
+- PR7680 body /tmp/B3630-pr-body.md now describes local follow-ups explicitly
+  as unpushed, pending stack repair. Update after actual push/remote SHA check.
 - Push policy only known KI-0019 exceptions after actual baseline proof:
   SKIP_LINT_RATCHET, SKIP_TEST_BUILD_GATE, SKIP_STACK_GATE. Never skip hosted
   or feature checks; no new/increased stack path. Verify remote SHA after push.
