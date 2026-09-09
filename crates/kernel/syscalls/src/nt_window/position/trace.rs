@@ -9,14 +9,14 @@ static LINES:AtomicU32=AtomicU32::new(0);
 
 /// Correlate requested and returned geometry without retaining window state. # C: O(1)
 #[inline(never)]
-pub(super) fn position(step:&'static [u8],request:&Request,token:u64,client:WindowRect,result:u64){
+pub(super) fn position(step:&'static [u8],request:&Request,token:u64,client:&WindowRect,result:u64){
     if LINES.fetch_add(1,Ordering::Relaxed)>=LIMIT{return;}
     klog::write_raw(b"[WINDOWS-POSITION] hwnd=");klog::write_hex_u64(request.hwnd);
     klog::write_raw(b" token=");klog::write_hex_u64(token);
     klog::write_raw(b" step=");klog::write_raw(step);
     klog::write_raw(b" flags=");klog::write_hex_u64(request.flags as u64);
     klog::write_raw(b" outer=");rect(request.rect);
-    klog::write_raw(b" client=");rect(client);
+    klog::write_raw(b" client=");rect(*client);
     klog::write_raw(b" result=");klog::write_hex_u64(result);
     klog::write_raw(b"\n");
 }
