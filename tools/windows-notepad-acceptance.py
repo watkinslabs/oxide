@@ -29,7 +29,7 @@ from notepad_uart_audit import audit as uart_audit, render_table as uart_audit_t
 ROOT = Path(__file__).resolve().parents[1]
 IMAGES = ROOT.parent / "images"
 RUN = str(os.getpid())
-BUILD_ID = os.environ.get("OXIDE_NOTEPAD_BUILD_ID", f"notepad-{RUN}")
+BUILD_ID = os.environ.get("OXIDE_NOTEPAD_BUILD_ID", f"notepad-{os.environ.get('OXIDE_WINE_PROFILE', 'release')}-{RUN}")
 OUT = Path(os.environ.get("OXIDE_NOTEPAD_ACCEPTANCE_DIR", ROOT / "target/windows-notepad-acceptance"))
 OUT.mkdir(parents=True, exist_ok=True)
 UART = OUT / f"uart-{RUN}.sock"
@@ -393,7 +393,19 @@ def image_build_env(base=None):
                      OXIDE_SERIAL_SHELL="1")
     # The Windows runtime reaches the guest through the oxide-wine package the
     # compose installs. There is no host adapter path to point staging at.
+    profile = build_env.get("OXIDE_WINE_PROFILE", "release")
+    if profile not in ("release", "debug"):
+        raise ValueError("OXIDE_WINE_PROFILE must be release or debug")
+    build_env["OXIDE_WINE_PROFILE"] = profile
     return build_env
+
+
+def verify_image_wine_profile(image, profile):
+    result = subprocess.run(["python3", str(ROOT / "tools/windows-rootfs-payload-check.py"),
+                             "--image", str(image), "--expected-wine-version", (ROOT / "tools/wine-version").read_text().strip(),
+                             "--expected-wine-profile", profile, "--profile-only"], cwd=ROOT)
+    if result.returncode:
+        die(f"Wine profile {profile} does not match {image}")
 
 
 def prepare_image():
@@ -401,6 +413,7 @@ def prepare_image():
     build_env = image_build_env()
     cached_root = ROOT / "target" / "builds" / BUILD_ID / "root-x86_64.img"
     if cached_root.is_file() and os.environ.get("OXIDE_REBUILD_ROOTFS", "0") != "1":
+        verify_image_wine_profile(cached_root, build_env["OXIDE_WINE_PROFILE"])
         build_env["OXIDE_SKIP_ROOTFS"] = "1"
     if os.environ.get("OXIDE_REBUILD_SOURCE_IMAGE", "0") == "1":
         with QEMU_LOG.open("wb") as log:
@@ -413,6 +426,7 @@ def prepare_image():
     source = IMAGES / "output/gnome-x86_64-root.img"
     if not source.is_file():
         die(f"missing composed Oxide source image {source}")
+    verify_image_wine_profile(source, build_env["OXIDE_WINE_PROFILE"])
     repo_meta = ROOT.parent / "packages/repo/x86_64/repodata/repomd.xml"
     if repo_meta.is_file() and source.stat().st_mtime < repo_meta.stat().st_mtime:
         die(f"composed source image {source} predates Oxide RPM metadata; rebuild with OXIDE_REBUILD_SOURCE_IMAGE=1")
@@ -435,6 +449,7 @@ def prepare_image():
                                 stdout=log, stderr=subprocess.STDOUT)
     if result.returncode:
         die(f"kernel image preparation failed; see {QEMU_LOG}")
+    verify_image_wine_profile(cached_root, build_env["OXIDE_WINE_PROFILE"])
 
 
 def run_uart_audit():

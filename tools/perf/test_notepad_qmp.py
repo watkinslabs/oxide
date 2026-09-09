@@ -179,6 +179,10 @@ class QmpTests(unittest.TestCase):
             spec.loader.exec_module(runner)
         env = runner.image_build_env({})
         self.assertEqual(env["OXIDE_WINDOWS_NOTEPAD_SMOKE"], "1")
+        self.assertEqual(env["OXIDE_WINE_PROFILE"], "release")
+        self.assertEqual(runner.image_build_env({"OXIDE_WINE_PROFILE": "debug"})["OXIDE_WINE_PROFILE"], "debug")
+        with self.assertRaises(ValueError):
+            runner.image_build_env({"OXIDE_WINE_PROFILE": "deubg"})
         for name in ("OXIDE_WINE_NTDLL", "OXIDE_WINE_WIN32U", "OXIDE_WINE_NLS", "OXIDE_WINE_RUNTIME_ROOT"):
             self.assertNotIn(name, env)
 

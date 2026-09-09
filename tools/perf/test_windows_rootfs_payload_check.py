@@ -1,4 +1,5 @@
 import importlib.util
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -12,7 +13,7 @@ SPEC.loader.exec_module(MODULE)
 
 # The packaged Windows runtime this tree builds; the fixture is made from it,
 # never from a Wine the build host happens to have installed.
-WINE_TREE = ROOT.parent / "target/artifacts/wine/x86_64"
+WINE_TREE = ROOT.parent / "target/artifacts/wine/x86_64-release"
 WINE_VERSION = (ROOT / "wine-version").read_text().strip()
 
 
@@ -55,16 +56,21 @@ class Ext4ValidatorTests(unittest.TestCase):
                        capture_output=True, text=True)
         for directory in (
                 "/usr", "/usr/local", "/usr/local/bin", "/usr/local/lib",
-                "/usr/local/lib/oxide", "/usr/local/lib/oxide/windows",
-                "/usr/local/lib/oxide/windows/x86_64-windows",
-                "/usr/local/lib/oxide/windows/x86_64-unix", "/usr/local/share",
-                "/usr/local/share/oxide", "/usr/local/share/oxide/windows",
-                "/usr/local/share/oxide/windows/nls", "/usr/share",
+                "/usr/local/lib/oxide", "/usr/local/lib/oxide/windows-release",
+                "/usr/local/lib/oxide/windows-release/x86_64-windows",
+                "/usr/local/lib/oxide/windows-release/x86_64-unix", "/usr/local/share",
+                "/usr/local/share/oxide", "/usr/local/share/oxide/windows-release",
+                "/usr/local/share/oxide/windows-release/nls", "/usr/share",
                 "/usr/share/applications", "/etc", "/etc/oxide", "/etc/xdg",
                 "/var", "/var/lib", "/var/lib/oxide", "/usr/lib",
                 "/usr/lib/wine", "/usr/lib64", "/usr/lib64/wine",
                 "/windows", "/windows/c", "/windows/c/windows"):
             self.debugfs(f"mkdir {directory}")
+        self.debugfs("symlink /usr/local/lib/oxide/windows windows-release")
+        self.debugfs("symlink /usr/local/share/oxide/windows windows-release")
+        self.write("/etc/oxide/wine-profile", b"release\n")
+        self.write("/usr/local/lib/oxide/windows-release/wine-profile", b"release\n")
+        self.write("/usr/local/lib/oxide/windows-release/wine-build-id", (WINE_TREE / "wine-build-id").read_bytes())
         self.write("/usr/local/bin/windows-runtime", b"runtime")
         self.write("/usr/local/bin/windows-compositor", b"compositor")
         self.write("/usr/local/bin/registryd", b"registry")
@@ -76,12 +82,12 @@ class Ext4ValidatorTests(unittest.TestCase):
         for name in MODULE.VERSIONED_MODULES:
             self.write(f"/usr/local/lib/oxide/windows/x86_64-windows/{name}",
                        (WINE_TREE / "x86_64-windows" / name).read_bytes())
-        self.write("/usr/local/lib/oxide/windows/wine-version", f"{WINE_VERSION}\n".encode())
+        self.write("/usr/local/lib/oxide/windows-release/wine-version", f"{WINE_VERSION}\n".encode())
         self.write("/usr/local/lib/oxide/windows/x86_64-windows/ntdll.dll", b"dll")
         self.write("/usr/local/lib/oxide/windows/x86_64-windows/imm32.dll", b"dll")
         self.write("/usr/local/lib/oxide/windows/x86_64-unix/kernel32.so", b"so")
         self.write("/usr/local/share/oxide/windows/nls/locale.nls", b"nls")
-        self.write("/etc/oxide/windows-runtime.conf", b"OXIDE_WINDOWS_RUNTIME=/usr/local/lib/oxide/windows\n")
+        self.write("/etc/oxide/windows-runtime.conf", b"OXIDE_WINE_PROFILE=release\nOXIDE_WINDOWS_RUNTIME=/usr/local/lib/oxide/windows\n")
         self.write("/usr/share/applications/oxide-notepad.desktop",
                    b"Exec=/usr/local/bin/windows-notepad-smoke\n")
         self.write("/etc/xdg/mimeapps.list",
@@ -109,11 +115,48 @@ class Ext4ValidatorTests(unittest.TestCase):
         self.assertTrue(source.is_file(), source)
         self.debugfs(f"write {source} {guest}")
 
-    def run_validator(self, expected_version=WINE_VERSION):
-        return MODULE.check_image(self.image, expected_version)
+    def run_validator(self, expected_version=WINE_VERSION, expected_profile="release"):
+        return MODULE.check_image(self.image, expected_version, expected_profile)
+
+    def test_requested_debug_rejects_release_image(self):
+        with self.assertRaises(MODULE.Failure):
+            self.run_validator(expected_profile="debug")
+
+    def test_package_profile_stamp_must_match_selection(self):
+        self.debugfs("rm /usr/local/lib/oxide/windows-release/wine-profile")
+        self.write("/usr/local/lib/oxide/windows-release/wine-profile", b"debug\n")
+        with self.assertRaisesRegex(MODULE.Failure, "profile mismatch"):
+            self.run_validator()
+
+    def test_nls_alias_must_select_same_profile(self):
+        self.debugfs("rm /usr/local/share/oxide/windows")
+        self.debugfs("symlink /usr/local/share/oxide/windows windows-debug")
+        with self.assertRaises(MODULE.Failure):
+            self.run_validator()
 
     def test_real_ext4_fixture_passes_complete_validator(self):
         self.assertEqual(self.run_validator(), "payload: PASS")
+
+    def test_cached_launchers_validate_profile_before_build_or_boot(self):
+        subprocess.run(["cargo", "build", "--quiet", "-p", "xtask"], cwd=ROOT.parent, check=True)
+        binary = ROOT.parent / "target/debug/xtask"
+        (self.root / "tools/xtask").mkdir(parents=True)
+        (self.root / "tools/windows-rootfs-payload-check.py").symlink_to(ROOT / "windows-rootfs-payload-check.py")
+        disks = self.root / "target/builds/check"
+        disks.mkdir(parents=True)
+        (disks / "root-x86_64.img").symlink_to(self.image)
+        env = dict(os.environ, CARGO_MANIFEST_DIR=str(self.root / "tools/xtask"),
+                   OXIDE_WINE_PROFILE="debug", OXIDE_SKIP_ROOTFS="1")
+        commands = [("image", "--arch", "x86_64", "--id", "check"),
+                    ("grub", "--arch", "x86_64", "--id", "check", "--run-existing")]
+        for args in commands:
+            result = subprocess.run([str(binary), *args], cwd=self.root, env=env, capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("expected windows-debug", result.stdout + result.stderr)
+        env["OXIDE_WINE_PROFILE"] = "release"
+        result = subprocess.run([str(binary), *commands[1]], cwd=self.root, env=env, capture_output=True, text=True, timeout=30)
+        self.assertIn("payload: PASS", result.stdout)
+        self.assertIn("prebuilt ISO not found", result.stderr)
 
     def test_real_ext4_fixture_rejects_a_wine_the_tree_does_not_build(self):
         with self.assertRaisesRegex(MODULE.Failure, "expected"):

@@ -21,7 +21,7 @@ const VERSIONED: [&str; 6] = ["user32.dll", "gdi32.dll", "kernel32.dll", "comctl
 /// Every sampled module must agree; a set blended from two builds cannot.
 const MIN_AGREEING: usize = 4;
 
-pub(super) struct Catalog { pub(super) version: String, pub(super) modules: usize, pub(super) unixlibs: usize }
+pub(super) struct Catalog { pub(super) version: String, pub(super) profile: String, pub(super) build_id: String, pub(super) modules: usize, pub(super) unixlibs: usize }
 
 /// # C: O(sampled modules * module bytes)
 pub(super) fn verify(image: &Path) -> Result<Catalog, u8> {
@@ -35,6 +35,9 @@ pub(super) fn verify(image: &Path) -> Result<Catalog, u8> {
         eprintln!("xtask rootfs: the image carries Wine {version}, this tree builds against Wine {expected} — rebuild oxide-wine from tools/build-wine-runtime.sh");
         return Err(2);
     }
+    let profile=std::env::var("OXIDE_WINE_PROFILE").unwrap_or_else(|_|"release".into());
+    super::payload::verify_profile(image,&version,&profile)?;
+    let build_id=read_image_file(image,&format!("{}/wine-build-id",WINDOWS_DIR.trim_end_matches("/x86_64-windows"))).ok_or(2u8)?.trim().to_string();
     let modules = entries(image, WINDOWS_DIR, ".dll", ".exe")?;
     let unixlibs = entries(image, UNIXLIB_DIR, ".so", ".so")?;
     let mut agreeing = 0usize;
@@ -51,7 +54,7 @@ pub(super) fn verify(image: &Path) -> Result<Catalog, u8> {
         eprintln!("xtask rootfs: only {agreeing} staged modules name a Wine version; {MIN_AGREEING} must, or the stamp is unbacked");
         return Err(2);
     }
-    Ok(Catalog { version, modules, unixlibs })
+    Ok(Catalog { version, profile, build_id, modules, unixlibs })
 }
 
 /// The stamp is one version line and nothing else. # C: O(stamp bytes)

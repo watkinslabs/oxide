@@ -211,3 +211,42 @@ paths/7664 B exception and ARM277/6368 B. No new/worsened entry. Logs:
 /tmp/B3630-wait-stack-{x86,arm}.log. Lint4723 findings/46 regressed keys match
 clean main exactly in this invocation (/tmp/B3630-wait-{lint,main-lint}.log).
 No new boot; no GNOME startup cause established.
+
+
+## Wine profile selection and visible run, 2026-09-09
+
+| Status | Branch | Evidence |
+|---|---|---|
+| Implemented | B3630-paint-region-collapse | KI-0878: release/debug build, artifact, package and physical guest catalog identities; explicit selection through composition, staging, cached launch and wrapper |
+| Committed locally | packages:B3630-wine-profiles | 6830f27d0530148550646cfa95c582ea67826383; no remote configured |
+| Committed locally | images:B3630-wine-profiles | 553217b1bd369f34a9e41e24ad81870ec967e0ad; no remote configured; pre-existing .dist-old-layout untouched |
+| Running, not acceptance-complete | B3630-paint-region-collapse | User-requested GTK QEMU PID708994; namespace notepad-debug-696997; kernel built from current worktree; Wine11.16-debug |
+
+Both full Wine builds completed:729 PE modules/30 Unix libraries. Release
+user32 has no button diagnostic string; debug does. Named RPMs built through
+packagectl, metadata refreshed, source image composed with OXIDE_WINE_PROFILE=debug.
+Actual RPM database selects oxide-wine-debug-11.16-1.fc42; release absent.
+Image user32 SHA256 bab3fe3426d20eaa2696af28aa84058fcde96fe7c1d9c43c4e33c6234c9a86db
+matches debug artifact. Debug input ID000982e8e976863f0a29925ab7426d09808a3e61c125c18decc4cf77f27af5da;
+release input IDa39c76acd7d7a95a6d0fba693301630ebbadd2ff756b353ffdcb9e56c4091046.
+Profile-only source validation and full staged payload validation pass;
+requesting release against the debug source fails. Both actual xtask cached
+entry points reject wrong profile before kernel build or QEMU.
+
+Verification:95 xtask tests pass/1 existing ignored,19 payload tests pass,
+28 Notepad harness tests pass,5 builder cache tests pass,17 package tests pass,
+2 image helper tests pass. Positive controls remove package/profile/image
+stamp checks and cached verification hooks: corresponding tests fail.
+Logs /tmp/B3630-profile-{cache-green,payload-cached,notepad-tests-final,
+packages-final,images-final,existing-red,existing-green}.log.
+
+Visible run log target/boot-logs/x86_64-20260909-140413.log; QMP/UART endpoints
+under target/B3630-user-debug. Early console frame advanced to a rendered
+GNOME desktop and Notepad with user-entered text. Do not interfere with user
+input. User exercised an OK button: trace reports caption OK, measurement22,
+label rectangle(56,3)-(73,25), draw result1. These observations do not prove
+all dialog/dropdown/redraw requirements; acceptance remains incomplete.
+
+Geometry tracing174ef9636 removes ab216dba9 stack regression: complete final
+x86/ARM reports exactly match prior caption-trace baselines (336/277 failed
+static paths, exception7664/6368 B). KI-0877 archived fixed with literal SHA.

@@ -42,6 +42,7 @@ mod hardware_audit;
 // - windows_notepad: x86_64 PE handoff runtime using the host Wine fixture;
 //   the standard x86 Make targets enable it by default.
 mod windows_notepad;
+pub(crate) use windows_notepad::verify_cached_windows;
 // - probe_artifact: Cargo-owned build/output directory resolution.
 mod probe_artifact;
 // - windows_ui: opt-in native window/message/GDI service smoke.

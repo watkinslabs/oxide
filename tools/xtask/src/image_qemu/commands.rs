@@ -52,22 +52,26 @@ pub(crate) fn cmd_grub(rest: &[String]) -> Result<(), u8> {
 
 /// Stage the rootfs disk before an image build, unless a cached one is reused.
 fn prepare_rootfs(rest: &[String], arch: &str) -> Result<std::path::PathBuf, u8> {
-    let _ = arch;
     let repo = repo_root();
     let skip = std::env::var("OXIDE_SKIP_ROOTFS").is_ok();
-    prepare_rootfs_in(skip, || crate::cmd_rootfs(rest))?;
+    let id = parse_arg(rest, "--id");
+    if let Some(ref id) = id { crate::buildns::validate(id)?; }
+    let root = crate::buildns::blobs_dir(&repo, id.as_deref()).join(format!("root-{arch}.img"));
+    prepare_rootfs_in(skip, || crate::cmd_rootfs(rest), || crate::rootfs_disks::verify_cached_windows(&root))?;
     Ok(repo)
 }
 
-fn prepare_rootfs_in<F>(skip: bool, stage: F) -> Result<(), u8>
+fn prepare_rootfs_in<F, V>(skip: bool, stage: F, verify: V) -> Result<(), u8>
 where
     F: FnOnce() -> Result<(), u8>,
+    V: FnOnce() -> Result<(), u8>,
 {
     // OXIDE_SKIP_ROOTFS=1 reuses the cached rootfs disk instead of restaging
     // the guest userspace + rebuilding the ext4 image every boot. Kernel-only
     // changes don't touch the rootfs, so this turns a multi-minute rebuild
     // into a no-op. Unset (default) = always rebuild, for correctness/CI.
     if skip {
+        verify()?;
         eprintln!("xtask grub: OXIDE_SKIP_ROOTFS set — reusing cached rootfs (no restage)");
     } else {
         stage()?;
@@ -118,6 +122,8 @@ fn cmd_run_existing(rest: &[String], arch: &str) -> Result<(), u8> {
     crate::buildns::validate(&id)?;
     let smp: u32 = parse_arg(rest, "--smp").and_then(|s| s.parse().ok()).unwrap_or(1);
     let repo = repo_root();
+    let root = crate::buildns::blobs_dir(&repo, Some(&id)).join(format!("root-{arch}.img"));
+    crate::rootfs_disks::verify_cached_windows(&root)?;
     let iso = crate::buildns::iso_path(&repo, Some(&id), arch);
     if !iso.is_file() {
         eprintln!("xtask grub: prebuilt ISO not found at {}; run xtask image first", iso.display());
@@ -142,16 +148,23 @@ mod tests {
     #[test]
     fn skip_reuses_the_cached_rootfs_and_clear_stages_it() {
         let staged = Cell::new(false);
-        prepare_rootfs_in(true, || { staged.set(true); Ok(()) }).unwrap();
+        let verified = Cell::new(false);
+        prepare_rootfs_in(true, || { staged.set(true); Ok(()) }, || { verified.set(true); Ok(()) }).unwrap();
         assert!(!staged.get(), "OXIDE_SKIP_ROOTFS must not restage");
+        assert!(verified.get(), "cached runtime must be checked");
 
         let staged = Cell::new(false);
-        prepare_rootfs_in(false, || { staged.set(true); Ok(()) }).unwrap();
+        prepare_rootfs_in(false, || { staged.set(true); Ok(()) }, || Err(9)).unwrap();
         assert!(staged.get(), "default must restage the rootfs");
     }
 
     #[test]
     fn a_staging_failure_is_propagated() {
-        assert_eq!(prepare_rootfs_in(false, || Err(7)), Err(7));
+        assert_eq!(prepare_rootfs_in(false, || Err(7), || Ok(())), Err(7));
+    }
+
+    #[test]
+    fn cached_profile_failure_stops_before_staging() {
+        assert_eq!(prepare_rootfs_in(true, || panic!("must not restage a rejected cache"), || Err(9)), Err(9));
     }
 }

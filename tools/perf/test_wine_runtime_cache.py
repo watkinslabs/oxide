@@ -20,7 +20,7 @@ class RuntimeCacheTests(unittest.TestCase):
         self.write('headers.rpm', 'headers-v1')
         self.write('upstream/wine-11.16/VERSION', 'Wine version 11.16\n')
         self.write('upstream/wine-11.16/value', 'original\n')
-        self.write('upstream/wine-11.16/configure', '#!/bin/sh\nprintf configured > Makefile\n', executable=True)
+        self.write('upstream/wine-11.16/configure', '#!/bin/sh\nprintf configured > Makefile\nprintf \'%s\\n\' "$CFLAGS" "$x86_64_CFLAGS" > profile-flags\n', executable=True)
         self.archive()
         self.write('bin/clang', '#!/bin/sh\nexit 0\n', executable=True)
         self.write('bin/rpm2cpio', '#!/bin/sh\ncat "$1"\n', executable=True)
@@ -32,7 +32,7 @@ from pathlib import Path
 args = sys.argv[1:]
 if 'install' in args:
     dest = Path(next(a.split('=', 1)[1] for a in args if a.startswith('DESTDIR='))) / 'usr/local'
-    value = (Path(os.environ['OXIDE_WINE_WORK']) / 'wine-11.16/value').read_text()
+    value = (Path(os.environ['OXIDE_WINE_WORK']) / ('wine-11.16-' + os.environ.get('OXIDE_WINE_PROFILE', 'release')) / 'value').read_text()
     for name in ('lib/wine/x86_64-windows/notepad.exe', 'lib/wine/x86_64-windows/ntdll.dll',
                  'lib/wine/x86_64-unix/ntdll.so', 'lib/wine/x86_64-unix/win32u.so', 'share/wine/nls/test.nls'):
         p = dest / name
@@ -41,7 +41,7 @@ if 'install' in args:
 ''', executable=True)
         (self.root / 'patches').mkdir()
         self.env = dict(os.environ, PATH=str(self.root / 'bin') + os.pathsep + os.environ['PATH'],
-                        OXIDE_WINE_WORK=str(self.root / 'work'), OXIDE_WINE_OUT=str(self.root / 'out'),
+                        OXIDE_WINE_WORK=str(self.root / 'work'), OXIDE_WINE_OUT=str(self.root / 'out-release'), OXIDE_WINE_PROFILE='release',
                         OXIDE_WINE_TARBALL=str(self.root / 'source.tar.xz'),
                         OXIDE_MINGW_HEADERS_RPM=str(self.root / 'headers.rpm'),
                         OXIDE_WINE_PATCH_DIR=str(self.root / 'patches'), OXIDE_WINE_JOBS='1')
@@ -67,12 +67,12 @@ if 'install' in args:
                              env=self.env, text=True, capture_output=True)
         self.assertEqual(run.returncode, expected, run.stdout + run.stderr)
         if not expected:
-            return (self.root / 'out/x86_64-windows/notepad.exe').read_text()
+            return (Path(self.env['OXIDE_WINE_OUT']) / 'x86_64-windows/notepad.exe').read_text()
 
     def test_patch_edit_removal_and_unchanged_build(self):
         self.patch('first')
         self.assertEqual(self.run_builder(), 'first\n')
-        marker = self.write('work/build-11.16/keep', 'unchanged')
+        marker = self.write('work/build-11.16-release/keep', 'unchanged')
         self.assertEqual(self.run_builder(), 'first\n')
         self.assertTrue(marker.exists(), 'unchanged inputs discarded the configured build')
         self.patch('second')
@@ -85,20 +85,42 @@ if 'install' in args:
         self.assertEqual(self.run_builder(), 'original\n')
         self.write('headers.rpm', 'headers-v2')
         self.run_builder()
-        self.assertEqual((self.root / 'work/mingw64-headers/usr/header-input').read_text(), 'headers-v2')
+        self.assertEqual((self.root / 'work/mingw64-headers-release/usr/header-input').read_text(), 'headers-v2')
         self.write('upstream/wine-11.16/value', 'new-source\n')
         self.archive()
         self.assertEqual(self.run_builder(), 'new-source\n')
-        marker = self.write('work/build-11.16/keep', 'stale')
+        marker = self.write('work/build-11.16-release/keep', 'stale')
         script = self.root / 'tools/build-wine-runtime.sh'
         script.write_text(script.read_text() + '\n# changed build recipe\n')
         self.assertEqual(self.run_builder(), 'new-source\n')
         self.assertFalse(marker.exists())
 
+    def test_profiles_have_isolated_outputs_flags_and_stamps(self):
+        self.assertEqual(self.run_builder(), 'original\n')
+        release = self.root / 'out-release'
+        self.assertEqual((release / 'wine-profile').read_text(), 'release\n')
+        flags = (self.root / 'work/build-11.16-release/profile-flags').read_text()
+        self.assertIn('-O2', flags)
+        self.assertNotIn('OXIDE_WINE_DIAGNOSTICS', flags)
+        self.env['OXIDE_WINE_PROFILE'] = 'debug'
+        self.env['OXIDE_WINE_OUT'] = str(self.root / 'out-debug')
+        self.assertEqual(self.run_builder(), 'original\n')
+        debug = self.root / 'out-debug'
+        self.assertEqual((debug / 'wine-profile').read_text(), 'debug\n')
+        flags = (self.root / 'work/build-11.16-debug/profile-flags').read_text()
+        self.assertIn('-O0 -g -DOXIDE_WINE_DIAGNOSTICS=1', flags)
+        self.assertEqual((release / 'wine-profile').read_text(), 'release\n')
+        self.assertNotEqual((release / 'wine-build-id').read_text(), (debug / 'wine-build-id').read_text())
+
+    def test_invalid_profile_fails_before_preparing_sources(self):
+        self.env['OXIDE_WINE_PROFILE'] = 'deubg'
+        self.run_builder(expected=1)
+        self.assertFalse((self.root / 'work').exists())
+
     def test_failed_patch_is_not_cached(self):
         self.write('patches/0001-value.patch', '--- a/value\n+++ b/value\n@@ -1 +1 @@\n-absent\n+bad\n')
         self.run_builder(expected=1)
-        self.assertFalse((self.root / 'work/wine-11.16/.oxide-prepared').exists())
+        self.assertFalse((self.root / 'work/wine-11.16-release/.oxide-prepared').exists())
         self.patch('repaired')
         self.assertEqual(self.run_builder(), 'repaired\n')
 
