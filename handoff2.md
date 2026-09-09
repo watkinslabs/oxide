@@ -19,8 +19,8 @@ Consult local pinned primary sources first; Wine11.16 release/debug explicit.
   scratch/B3630-display-stacking-validation.md;100 compositor tests passed.
   Both compositor/kernel release builds passed. Push180 hosted + both features
   passed with only documented KI0019 lint/test-build/stack exceptions.
-- HEAD bbaff0a46 claims KI-0899. KI-0898 claimed in a7d181ac3. Both have
-  implementation/tests validated, awaiting runtime commit and push.
+- Runtime0d529870e fixes KI0898/0899; both closed after validation.
+  Latest fixes awaiting push; stackingc11e7ea62 already remote-verified.
 - KI-0898: destruction_order is callback preorder. Ordinary Destroy/default
   Close and raw lifecycle cleanup now reverse only publication cleanup, so
   parent X Destroy cannot invalidate later descendant requests. Callback
@@ -42,7 +42,7 @@ Consult local pinned primary sources first; Wine11.16 release/debug explicit.
   /tmp/B3630-teardown-show-build.log, teardown-feature.log,
   teardown-{stack,frame}-{x86,arm}.log, teardown-stack-compare.log.
   Final ELFs target/B3630-display-final-{x86,arm}.elf and compositor-release
-  binaries saved; hashes in teardown/Show evidence. Need commit/close/push.
+  binaries saved; hashes in teardown/Show evidence. Need push/remote verify.
 - KI0900 discovered: unchecked PutImage errors arrive as X11 response0;
   poll_event/decode_event silently discard them after ACK. Need actual server
   rejection regression and sequence/resource/error propagation before trusting
