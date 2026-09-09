@@ -63,7 +63,7 @@ new/worsened path vs prior branch report; exception7664 B unchanged.
 Selector repair published in draft PR7680; verify latest local/remote SHA.
 Hosted gate180 crates and both feature gates pass. No new boot.
 
-KI-0870 implemented locally; publication pending. Complete image publication
+KI-0870 fixed05071e0f1; publication pending. Complete image publication
 is now in exec::vdso::map_into, reached by syscalls::vdso::map_into_current
 from both exec paths. ELF parsing uses the existing shared parser. The full
 image and page-rounded extent survive, including non-PT_LOAD section metadata.
@@ -84,3 +84,14 @@ GDB17.1 source check: missing /proc/self/mem causes a ptrace memory fallback
 on a stopped thread; the warning alone is not proof of a backtrace blocker.
 The composed GNOME root RPM database confirms gdb-headless17.1-1.fc42 and
 gnome-shell48.8-1.fc42. Desktop mutex cause remains unknown.
+
+Next: KI-0871 claimed. PTRACE_ATTACH currently sends process SIGSTOP.
+The shared-queue publisher wakes the leader first, even if already stopped,
+so attaching to a worker need not wake that worker. Required stop targets the
+worker private queue. PTRACE_INTERRUPT also posts process SIGSTOP; inspect
+its trap/event-stop protocol before editing. The already-group-stopped attach
+transition also needs audit. Current attach/signal code is in
+syscalls/src/101_ptrace.rs and101_ptrace/sig.rs. Scheduler live/send.rs
+has send_signal with SigSource::Kernel/SigTarget::Thread, and real Task/
+ThreadGroup tests in sched/src/tests/send_signal.rs. Use those owners; avoid
+a separate queue. Re-read primary ptrace/signal paths before implementing.
