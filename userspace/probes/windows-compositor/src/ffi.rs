@@ -19,7 +19,7 @@ pub struct Screen { pub root: Window, pub default_colormap: u32, pub white_pixel
 #[repr(C)] pub struct InternAtomReply { pub response_type: u8, pub pad0: u8, pub sequence: u16, pub length: u32, pub atom: Atom }
 #[repr(C)] pub struct GetPropertyReply { pub response_type: u8, pub format: u8, pub sequence: u16, pub length: u32, pub type_: Atom, pub bytes_after: u32, pub value_len: u32, pub pad0: [u8; 12] }
 
-#[repr(C)] pub struct GenericEvent { pub response_type: u8, pub pad0: u8, pub sequence: u16, pub pad: [u8; 28] }
+#[repr(C)] pub struct GenericEvent { pub response_type: u8, pub pad0: u8, pub sequence: u16, pub pad: [u8; 28], pub full_sequence: u32 }
 #[repr(C)] pub struct GetImageCookie { pub sequence: c_uint }
 #[repr(C)] pub struct GetImageReply { pub response_type: u8, pub depth: u8, pub sequence: u16, pub length: u32, pub visual: Visualid, pub pad0: [u8; 20] }
 #[repr(C)] pub struct VoidCookie { pub sequence: c_uint }
@@ -55,7 +55,7 @@ extern "C" {
     pub fn xcb_setup_roots_iterator(r: *const Setup) -> ScreenIterator;
     pub fn xcb_screen_next(i: *mut ScreenIterator);
     pub fn xcb_generate_id(c: *mut Connection) -> u32;
-    pub fn xcb_create_window(c: *mut Connection, depth: u8, wid: Window, parent: Window, x: i16, y: i16, width: u16, height: u16, border_width: u16, class: u16, visual: Visualid, value_mask: u32, value_list: *const u32) -> u32;
+    pub fn xcb_create_window(c: *mut Connection, depth: u8, wid: Window, parent: Window, x: i16, y: i16, width: u16, height: u16, border_width: u16, class: u16, visual: Visualid, value_mask: u32, value_list: *const u32) -> VoidCookie;
     pub fn xcb_create_gc(c: *mut Connection, cid: Gcontext, drawable: Window, value_mask: u32, value_list: *const u32) -> u32;
     pub fn xcb_change_window_attributes(c: *mut Connection, window: Window, value_mask: u32, value_list: *const u32) -> u32;
     pub fn xcb_get_window_attributes(c: *mut Connection, window: Window) -> GetWindowAttributesCookie;
@@ -64,7 +64,7 @@ extern "C" {
     pub fn xcb_map_window(c: *mut Connection, window: Window) -> u32;
     pub fn xcb_map_window_checked(c: *mut Connection, window: Window) -> VoidCookie;
     pub fn xcb_unmap_window(c: *mut Connection, window: Window) -> u32;
-    pub fn xcb_configure_window(c: *mut Connection, window: Window, value_mask: u16, value_list: *const u32) -> u32;
+    pub fn xcb_configure_window(c: *mut Connection, window: Window, value_mask: u16, value_list: *const u32) -> VoidCookie;
     pub fn xcb_configure_window_checked(c: *mut Connection, window: Window, value_mask: u16, value_list: *const u32) -> VoidCookie;
     pub fn xcb_send_event(c: *mut Connection, propagate: u8, destination: Window, event_mask: u32, event: *const c_char) -> VoidCookie;
     pub fn xcb_destroy_window(c: *mut Connection, window: Window) -> u32;

@@ -19,7 +19,7 @@ pub use decode::decode_event;
 #[derive(Debug)]
 pub enum BackendError { DisplayUnavailable, X11, InvalidCommand, Transport(TransportError), Wait(std::io::Error) }
 
-struct Window { xid: Xid, parent: Xid, gc: ffi::Gcontext, rect: Rect, width: u32, height: u32, requested_visible: bool, suppress_backing_configure: bool, surface: Option<crate::retained::Retained>, caret: crate::caret::Surface }
+struct Window { xid: Xid, parent: Xid, gc: ffi::Gcontext, rect: Rect, width: u32, height: u32, requested_visible: bool, configure_sequence: Option<u32>, surface: Option<crate::retained::Retained>, caret: crate::caret::Surface }
 
 pub struct Backend { conn: *mut ffi::Connection, keymap: *mut ffi::XkbKeymap, state: *mut ffi::XkbState, context: *mut ffi::XkbContext, max_request_bytes: usize, root: Xid, visual: ffi::Visualid, depth: u8, screen: Rect, atoms: Atoms, windows: BTreeMap<u32, Window>, xid_to_hwnd: BTreeMap<Xid, u32>, down_keys: BTreeMap<u8, bool>, extra_buttons: u32, pending: VecDeque<BridgeEvent> }
 
@@ -133,7 +133,7 @@ impl Backend {
             BridgeCommand::Show { hwnd } => { self.show(hwnd)?; Ok(Vec::new()) }
             BridgeCommand::Hide { hwnd } => { let window = self.windows.get_mut(&hwnd).ok_or(BackendError::InvalidCommand)?; window.requested_visible = false; unsafe { ffi::xcb_unmap_window(self.conn, window.xid); ffi::xcb_flush(self.conn); } Ok(Vec::new()) }
             BridgeCommand::SetTitle { hwnd, title } => { validate_title(&title).map_err(BackendError::Transport)?; let xid = self.windows.get(&hwnd).ok_or(BackendError::InvalidCommand)?.xid; self.publish_title(xid, &title); Ok(Vec::new()) }
-            BridgeCommand::Configure { hwnd, rect } => { let window = self.windows.get_mut(&hwnd).ok_or(BackendError::InvalidCommand)?; let width = u32::try_from(rect.right - rect.left).map_err(|_| BackendError::InvalidCommand)?; let height = u32::try_from(rect.bottom - rect.top).map_err(|_| BackendError::InvalidCommand)?; let x_width = width.max(1); let x_height = height.max(1); let values = [rect.left as u32, rect.top as u32, x_width, x_height]; unsafe { ffi::xcb_configure_window(self.conn, window.xid, ffi::CONFIGURE_X | ffi::CONFIGURE_Y | ffi::CONFIGURE_WIDTH | ffi::CONFIGURE_HEIGHT, values.as_ptr()); if width == 0 || height == 0 || !window.requested_visible { ffi::xcb_unmap_window(self.conn, window.xid); } else { ffi::xcb_map_window(self.conn, window.xid); } ffi::xcb_flush(self.conn); } window.rect = rect; window.width = width; window.height = height; window.suppress_backing_configure = width == 0 || height == 0; Ok(Vec::new()) }
+            BridgeCommand::Configure { hwnd, rect } => { let window = self.windows.get_mut(&hwnd).ok_or(BackendError::InvalidCommand)?; let width = u32::try_from(rect.right - rect.left).map_err(|_| BackendError::InvalidCommand)?; let height = u32::try_from(rect.bottom - rect.top).map_err(|_| BackendError::InvalidCommand)?; let (x_width, x_height) = crate::extent::backing((width, height)); let values = [rect.left as u32, rect.top as u32, x_width, x_height]; unsafe { window.configure_sequence = Some(ffi::xcb_configure_window(self.conn, window.xid, ffi::CONFIGURE_X | ffi::CONFIGURE_Y | ffi::CONFIGURE_WIDTH | ffi::CONFIGURE_HEIGHT, values.as_ptr()).sequence); if width == 0 || height == 0 || !window.requested_visible { ffi::xcb_unmap_window(self.conn, window.xid); } else { ffi::xcb_map_window(self.conn, window.xid); } ffi::xcb_flush(self.conn); } window.rect = rect; window.width = width; window.height = height; Ok(Vec::new()) }
             BridgeCommand::Frame { hwnd, frame } => { self.present(hwnd, &frame)?; Ok(Vec::new()) }
             BridgeCommand::Position { hwnd, insertion, activate } => { self.position(hwnd, insertion, activate)?; Ok(Vec::new()) }
             BridgeCommand::Caret { hwnd, snapshot } => { self.update_caret(hwnd, snapshot)?; Ok(Vec::new()) }
@@ -212,6 +212,7 @@ impl Backend {
         if raw.is_null() { return None; }
         let bytes = unsafe { std::slice::from_raw_parts(raw as *const u8, 32) };
         let synthetic = bytes[0] & 0x80 != 0;
+        let sequence = unsafe { (*raw).full_sequence };
         let event = if bytes[0] & 0x7f == ffi::CLIENT_MESSAGE {
             let type_atom = u32::from_ne_bytes(bytes[8..12].try_into().ok()?);
             let protocol = u32::from_ne_bytes(bytes[12..16].try_into().ok()?);
@@ -236,7 +237,9 @@ impl Backend {
             Some(BridgeEvent::Configure { hwnd: xid, rect }) => {
                 let hwnd = self.xid_to_hwnd.get(&xid).copied()?;
                 let window = self.windows.get_mut(&hwnd)?;
-                if window.suppress_backing_configure && rect.right - rect.left <= 1 && rect.bottom - rect.top <= 1 { window.suppress_backing_configure = false; return None; }
+                if window.configure_sequence.is_some_and(|expected| crate::extent::obsolete_configure(sequence, expected)) { return None; }
+                window.configure_sequence = None;
+                if crate::extent::is_empty_backing((window.width, window.height), (rect.right - rect.left, rect.bottom - rect.top)) { return None; }
                 let xid = window.xid;
                 // The server has just stated the window's real extent. The
                 // canonical owner sizes its next frame from the same
@@ -308,7 +311,9 @@ impl Backend {
         // reads it when the map request arrives. The value list is ordered by
         // its mask bit, override-redirect before the event mask.
         let values = [u32::from(!crate::managed::at_creation(style, ex_style)), ffi::EVENT_KEY_PRESS | ffi::EVENT_KEY_RELEASE | ffi::EVENT_BUTTON_PRESS | ffi::EVENT_BUTTON_RELEASE | ffi::EVENT_POINTER_MOTION | ffi::EVENT_EXPOSURE | ffi::EVENT_STRUCTURE_NOTIFY | ffi::EVENT_FOCUS_CHANGE];
-        unsafe { ffi::xcb_create_window(self.conn, self.depth, xid, x_parent, x as i16, y as i16, width.max(1) as u16, height.max(1) as u16, 0, ffi::WINDOW_CLASS_INPUT_OUTPUT, self.visual, ffi::CW_OVERRIDE_REDIRECT | ffi::CW_EVENT_MASK, values.as_ptr()); ffi::xcb_create_gc(self.conn, gc, xid, 0, ptr::null()); }
+        let (x_width, x_height) = crate::extent::backing((width, height));
+        let configure_sequence;
+        unsafe { configure_sequence = Some(ffi::xcb_create_window(self.conn, self.depth, xid, x_parent, x as i16, y as i16, x_width as u16, x_height as u16, 0, ffi::WINDOW_CLASS_INPUT_OUTPUT, self.visual, ffi::CW_OVERRIDE_REDIRECT | ffi::CW_EVENT_MASK, values.as_ptr()).sequence); ffi::xcb_create_gc(self.conn, gc, xid, 0, ptr::null()); }
         self.publish_title(xid, title);
         unsafe { ffi::xcb_change_property(self.conn, ffi::PROP_MODE_REPLACE, xid, self.atoms.wm_protocols, ffi::ATOM_ATOM, 32, 1, &self.atoms.wm_delete as *const _ as *const _); ffi::xcb_flush(self.conn); }
         // The owner travels in the parent field for a window that is not an X
@@ -318,7 +323,7 @@ impl Backend {
         if width == 0 || height == 0 { unsafe { ffi::xcb_unmap_window(self.conn, xid); } }
         let requested_visible = style & WS_VISIBLE != 0;
         if requested_visible && width != 0 && height != 0 { unsafe { ffi::xcb_map_window(self.conn, xid); } }
-        self.windows.insert(hwnd, Window { xid, parent: x_parent, gc, rect, width, height, requested_visible, suppress_backing_configure: width == 0 || height == 0, surface: None, caret: crate::caret::Surface::default() }); self.xid_to_hwnd.insert(xid, hwnd); Ok(())
+        self.windows.insert(hwnd, Window { xid, parent: x_parent, gc, rect, width, height, requested_visible, configure_sequence, surface: None, caret: crate::caret::Surface::default() }); self.xid_to_hwnd.insert(xid, hwnd); Ok(())
     }
 
     /// Apply one frame's sub-rectangle to the surface this backend retains for

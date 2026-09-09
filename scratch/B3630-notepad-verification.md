@@ -20,3 +20,11 @@ KI-0859 remains unproven: last instrumented run never opened About.
 
 Pre-push lint-ratchet: same 4723 findings / 46 regressed keys reproduced on
 clean main afa38ce09. KI-0019; only SKIP_LINT_RATCHET used for initial note push.
+
+KI-0864 reproduced using the real Xvfb backend: 750x0 became 750x1;
+an obsolete empty-backing event also undid a later 60x30 resize. Both tests
+red before their respective fixes. Empty logical windows now use 1x1 backing;
+backing events do not rewrite logical extents; configure events older than
+the pending request are rejected using the expanded XCB sequence number.
+Compositor suite: 90 passed, including actual one-row windows and serial wrap.
+Notepad runtime consequences remain to be verified.
