@@ -9,6 +9,7 @@ use super::context;
 use super::super::{GUI, STATUS_PENDING};
 use super::super::send::{self, Continuation, SendOutcome};
 use alloc::sync::Arc;
+use alloc::boxed::Box;
 use alloc::vec::IntoIter;
 use ipc::win32_window::hardware::{self, ClickUpdate, Ladder, LadderStep, MouseOutcome, ProcCall};
 use ipc::win32_window::{MessageFilter, WinMessage, WindowId};
@@ -41,13 +42,17 @@ impl PendingHardware {
     fn tid(&self) -> u64 { match self { Self::HitTest { tid, .. } | Self::Ladder { tid, .. } => *tid } }
 }
 
-/// What the retrieval does once the stage has had its turn.
+/// The transient handoff owns its payload below the general dispatcher frame.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct Selected { pub id: u64, pub message: WinMessage }
+
+/// What the retrieval does once the stage has had its turn.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Stage {
     /// Nothing to process, or the message is ready: carry on into the queue.
     Ready,
     /// A translated retrieval view; the queue retains the raw event.
-    Prepared { id: u64, message: WinMessage },
+    Prepared(Box<Selected>),
     /// The message was consumed here; retrieve again.
     Again,
     /// The stage suspended in a window procedure; report this status.
@@ -227,7 +232,7 @@ fn sent_extra(tid: u64, id: u64, prepared: WinMessage, call: ProcCall, dropped: 
 fn prepared_view(entry: &mut super::super::GuiEntry, tid: u64, id: u64, message: WinMessage) -> Stage {
     if entry.state.read_selected_for_thread(tid, id, false).is_none() { return Stage::Again; }
     super::trace::prepared(id, message);
-    Stage::Prepared { id, message }
+    Stage::Prepared(Box::new(Selected { id, message }))
 }
 
 /// # C: O(N_queued)

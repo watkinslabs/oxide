@@ -8,11 +8,11 @@ fn nonremoving_hardware_peek_preserves_the_raw_screen_point() {
     let button = window(Some(parent), (30, 40, 130, 68), HTCLIENT);
     nt_window::GUI.lock()[0].state.post_compositor_pointer(button, 20, 10, 1, 0, 0).unwrap();
     let original = queued_button();
-    let nt_window::hardware::Stage::Prepared { message, .. } = peek_mouse(false) else { panic!("missing prepared message"); };
+    let nt_window::hardware::Selected { message, .. } = selected(peek_mouse(false));
     assert_eq!(ipc::win32_window::hardware::split_point(message.lparam), (20, 10));
     assert_eq!(queued_button(), original, "PM_NOREMOVE changed the canonical raw event");
     for _ in 0..3 {
-        let nt_window::hardware::Stage::Prepared { message: again, .. } = peek_mouse(false) else { panic!("missing repeat view"); };
+        let nt_window::hardware::Selected { message: again, .. } = selected(peek_mouse(false));
         assert_eq!(again, message);
         assert_eq!(queued_button(), original);
     }
@@ -41,7 +41,7 @@ fn suspended_transparent_walk_resumes_at_the_next_candidate() {
     *SUSPEND.lock().unwrap() = true;
     assert_eq!(peek_mouse(false), nt_window::hardware::Stage::Pending(nt_window::STATUS_PENDING));
     assert_eq!(complete_callback(), nt_window::hardware::Stage::Pending(nt_window::STATUS_PENDING));
-    let nt_window::hardware::Stage::Prepared { message, .. } = complete_callback() else { panic!("missing translated result"); };
+    let nt_window::hardware::Selected { message, .. } = selected(complete_callback());
     assert_eq!(message.hwnd, Some(button));
     assert_eq!(ipc::win32_window::hardware::split_point(message.lparam), (20, 10));
     assert_eq!(queued_button(), original);
@@ -56,7 +56,7 @@ fn retrieval_uses_capture_changed_after_the_event_was_queued() {
     let button = window(Some(parent), (30, 40, 130, 68), HTCLIENT);
     nt_window::GUI.lock()[0].state.post_compositor_pointer(parent, 50, 50, 1, 0, 0).unwrap();
     nt_window::GUI.lock()[0].state.set_capture_window(41, Some(button), 0).unwrap();
-    let nt_window::hardware::Stage::Prepared { message, .. } = peek_mouse(false) else { panic!("missing captured result"); };
+    let nt_window::hardware::Selected { message, .. } = selected(peek_mouse(false));
     assert_eq!(message.hwnd, Some(button));
     assert_eq!(ipc::win32_window::hardware::split_point(message.lparam), (20, 10));
     assert!(CALLS.lock().unwrap().is_empty());
@@ -68,7 +68,7 @@ fn retired_selection_never_removes_an_identical_successor() {
     let parent = window(None, (280, 200, 740, 540), HTCLIENT);
     nt_window::GUI.lock()[0].state.post_compositor_pointer(parent, 50, 50, 1, 0, 0).unwrap();
     let original = queued_button();
-    let nt_window::hardware::Stage::Prepared { id, .. } = peek_mouse(false) else { panic!("missing selected result"); };
+    let nt_window::hardware::Selected { id, .. } = selected(peek_mouse(false));
     let mut entries = nt_window::GUI.lock();
     let state = &mut entries[0].state;
     assert_eq!(state.read_selected_for_thread(41, id, true), Some(original));
@@ -97,8 +97,7 @@ fn repeated_nonclient_peeks_do_not_renumber_the_raw_event() {
     raw_button(parent, 330, 250);
     let original = queued_button();
     for _ in 0..3 {
-        let nt_window::hardware::Stage::Prepared { message, .. } = peek_range(false, WM_NCLBUTTONDOWN, original.message)
-            else { panic!("missing nonclient view"); };
+        let nt_window::hardware::Selected { message, .. } = selected(peek_range(false, WM_NCLBUTTONDOWN, original.message));
         assert_eq!(message.message, WM_NCLBUTTONDOWN);
         assert_eq!(message.wparam, HTCAPTION as u64);
         assert_eq!(message.lparam, original.lparam);
@@ -142,7 +141,7 @@ fn destroyed_next_candidate_is_skipped_after_callback_return() {
     assert_eq!(peek_mouse(false), nt_window::hardware::Stage::Pending(nt_window::STATUS_PENDING));
     nt_window::GUI.lock()[0].state.destroy(button).unwrap();
     assert_eq!(complete_callback(), nt_window::hardware::Stage::Pending(nt_window::STATUS_PENDING));
-    let nt_window::hardware::Stage::Prepared { message, .. } = complete_callback() else { panic!("missing surviving target"); };
+    let nt_window::hardware::Selected { message, .. } = selected(complete_callback());
     assert_eq!(message.hwnd, Some(parent));
     let hits: Vec<_> = CALLS.lock().unwrap().iter().filter(|call| call.message == WM_NCHITTEST).map(|call| call.hwnd).collect();
     assert_eq!(hits, [label.raw(), parent.raw()]);

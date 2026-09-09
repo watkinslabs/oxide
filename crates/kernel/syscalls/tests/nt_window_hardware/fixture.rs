@@ -80,7 +80,7 @@ mod nt_window {
         mod context;
         #[path = "live.rs"]
         mod live;
-        pub(crate) use live::{process_for_current, PendingHardware, Stage};
+        pub(crate) use live::{process_for_current, PendingHardware, Selected, Stage};
     }
 }
 fn setup() {
@@ -131,4 +131,8 @@ fn raw_button(window: WindowId, x: i32, y: i32) {
     let message = WinMessage { hwnd: Some(window), message: ipc::win32_window::WM_LBUTTONDOWN,
         wparam: 1, lparam: ipc::win32_window::hardware::make_point(x, y) };
     nt_window::GUI.lock()[0].state.post_input_to_window(window, message).unwrap();
+}
+
+fn selected(stage: nt_window::hardware::Stage) -> nt_window::hardware::Selected {
+    match stage { nt_window::hardware::Stage::Prepared(value) => *value, other => panic!("missing view: {other:?}") }
 }

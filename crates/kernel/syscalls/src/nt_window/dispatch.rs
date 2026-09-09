@@ -61,7 +61,8 @@ pub(super) fn dispatch_mode(call: NtCall, raw: bool) -> Option<u64> {
                 hardware::Stage::Pending(status) => return Some(status),
                 hardware::Stage::Again => continue,
                 hardware::Stage::Ready => {}
-                hardware::Stage::Prepared { id, message } => {
+                hardware::Stage::Prepared(selected) => {
+                    let hardware::Selected { id, message } = *selected;
                     if let Some(status) = hardware::deliver_for_current(operation, id, message) { return Some(status); }
                     continue;
                 }

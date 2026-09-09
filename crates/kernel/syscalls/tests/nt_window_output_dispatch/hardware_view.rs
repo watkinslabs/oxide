@@ -7,7 +7,7 @@ static COPIED: Mutex<Option<WinMessage>> = Mutex::new(None);
 static COPY_FAIL: Mutex<bool> = Mutex::new(false);
 pub(super) fn stage() -> nt_window::hardware::Stage {
     match PREPARED.lock().unwrap().take() {
-        Some((id, message)) => nt_window::hardware::Stage::Prepared { id, message },
+        Some((id, message)) => nt_window::hardware::Stage::Prepared(Box::new(nt_window::hardware::Selected { id, message })),
         None => nt_window::hardware::Stage::Ready,
     }
 }

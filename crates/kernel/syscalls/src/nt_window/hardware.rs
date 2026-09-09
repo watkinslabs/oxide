@@ -8,7 +8,7 @@ mod context;
 #[path = "hardware/live.rs"]
 mod live;
 #[cfg(target_os = "oxide-kernel")]
-pub(crate) use live::{cancel_thread, process_for_current, PendingHardware, Stage};
+pub(crate) use live::{cancel_thread, process_for_current, PendingHardware, Selected, Stage};
 
 #[cfg(all(target_os = "oxide-kernel", feature = "debug-winpump"))]
 #[path = "hardware/trace_on.rs"]
