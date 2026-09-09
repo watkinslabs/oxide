@@ -302,3 +302,11 @@ fails. No later boot or successful final acceptance is claimed.
 
 -322669c2a implements KI0882/0883/0884; remote ca548c4f5 verified. Both release builds pass; complete stack rows match prior x86/ARM reports exactly (358/299 rows). Hosted gate180 and both feature gates pass on push; only previously documented KI0019 skips used.
 -KI0885: raw_callback::message_call lacks scrollbar selector029a. Selected debug DLL disassembly identifies17006aa30 as ScrollBarWndProc_W forwarding to the scrollbar procedure, whose WM_CREATE/WM_PAINT path uses that selector. Unhandled selector returns STATUS_NOT_IMPLEMENTED; no paint completion. Open, not repaired by traversal change.
+
+## Dialog click dispatcher, KI-0886
+
+- Live832847 controlled click655,463 at202.179s targets About button100007; each WM_NCHITTEST returns0 and only WM_SETCURSOR follows. dispatch-actions.jsonl records injected pointer/down/up; no VM termination.
+- DefaultProc compared screen lParam against parent-client-relative state.rect. It now calls default_proc_state, which reuses canonical rect_query Window mapping. No new coordinate registry or forced HTCLIENT fallback.
+- Actual compositor-pointer enqueue→hit-test→retrieval test covers nested ancestors, client inset, parent movement, negative screen positions, down/up identity/client coordinates, and excluded right/bottom/outside points. Original default hit returns0 instead of1; repaired path passes.
+- Actual production dispatch.rs fixture confirms its call site consumes the screen query. Restoring old call site fails Some(0) vs Some(1); restoration passes116 integration tests. Fixture source dependencies updated to actual key latch/compositor position admission; untested nonclient frame seams fail loudly if called. KI0604 wider hardware/menu coverage remains open.
+- All3262 syscall lib tests pass; both feature gates and release builds pass. Stack comparison has no increased/new reported path:13 x86 rows decrease, ARM unchanged; existing exception reservations unchanged. Running inspection VM still has earlier kernel.

@@ -53,7 +53,12 @@ Durable evidence: scratch/B3630-notepad-verification.md.
   returns0 and is discarded (only WM_SETCURSOR afterward). DefaultProc uses
   parent-relative state.rect against screen lParam. Reuse rect_query Window
   mapping at default-procedure boundary; source confirms screen rect test.
-  Test actual compositor enqueue→hit-test→mouse decision with nonzero ancestors.
+  Repair now wired through default_proc_state to canonical screen query.
+ 3262 syscall lib/116 actual-dispatch fixture tests pass; old hook fails0vs1.
+ Both release/feature targets pass; no increased/new stack row. Not live yet.
+- Rendering suspect: CS_PARENTDC paints parent backing, but X11 GC defaults
+ to ClipByChildren. Pinned driver uses IncludeInferiors for window drawables.
+ Verify actual parent-frame/child-window pixels in Xvfb before changing GC.
   PR must remain draft: complete visual acceptance not achieved.
 
 ## Wine profiles

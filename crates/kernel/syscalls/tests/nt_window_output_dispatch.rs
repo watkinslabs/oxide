@@ -11,6 +11,12 @@ mod nt_gdi_frame_trace;
 mod output;
 #[path="../src/nt_window_policy.rs"]
 mod nt_window_policy;
+#[path="../src/nt_window/rect_query/policy.rs"]
+mod rect_query;
+#[path="nt_window_output_dispatch/hit_test.rs"]
+mod hit_test_fixture;
+#[path="nt_window_output_dispatch/position.rs"]
+pub(crate) mod position_fixture;
 #[path="nt_window_output_dispatch/presentation.rs"]
 mod presentation_fixture;
 #[path="nt_window_output_dispatch/protocol.rs"]

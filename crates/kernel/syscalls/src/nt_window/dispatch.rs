@@ -75,8 +75,7 @@ pub(super) fn dispatch_mode(call: NtCall, raw: bool) -> Option<u64> {
             let outcome = match operation {
                 NtWindowCall::DefaultProc { hwnd, message, wparam: _, lparam } => {
                     if hwnd > u32::MAX as u64 { return Some(STATUS_INVALID_HANDLE); }
-                    let rect = ipc::win32_window::WindowId::from_raw(hwnd as u32).and_then(|window| state.rect(window));
-                    let result = match rect.map_or_else(|| ipc::win32_window::default_window_proc(message), |rect| ipc::win32_window::default_window_proc_for_rect(message, rect, lparam)) {
+                    let result = match rect_query::default_proc_state(state, hwnd as u32, message, lparam) {
                         ipc::win32_window::DefaultWindowResult::Return(value) => value as u64,
                         // WM_PAINT is answered before this lock by the real
                         // BeginPaint/EndPaint sequence (default_paint).
