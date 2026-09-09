@@ -1,4 +1,4 @@
-# Handoff — actual Notepad Open failure
+# Handoff — scrollbar procedure still missing
 
 First command: `git -C /home/nd/oxide/kernel-B3630 status --short`
 
@@ -41,8 +41,9 @@ Durable evidence: scratch/B3630-notepad-verification.md.
 - KI-0885 claimed940591edd; still unimplemented: scrollbar procedure selector029a has no dispatch arm,
   returns STATUS_NOT_IMPLEMENTED for WM_CREATE/WM_PAINT. Actual debug DLL
   disassembly identifies the repeated callback as ScrollBarWndProc_W.
-- Current LIVE QEMU832847 (launcher832789), named debug namespace
-  B3630-debug-dialogs. Do not kill. QMP target/B3630-debug-dialogs/qmp-831735.sock,
+- Run831735 QEMU832847/launcher832789 are now ABSENT (verified16:03 UTC).
+  Exit cause unknown; KI0891 records missing durable exit status. Old QMP
+  target/B3630-debug-dialogs/qmp-831735.sock,
   UART uart-831735.sock; serial x86_64-20260909-145749.log.
   Acceptance831735 failed Open-item visibility while About was on screen;
   automatic input stopped and VM/sockets retained as designed.
@@ -125,3 +126,7 @@ Durable evidence: scratch/B3630-notepad-verification.md.
 - Pinned-header C assertions passed on x86 and ARM: DrawScrollBar callback8;
  record104 bytes, tracking@24, rect@64, vertical@96. Probe lives at
  /tmp/B3630-scroll-callback-layout.c. ARM needs fc42 sysroot and stdarg include.
+
+- Remote9bed95a3b verified after scrollbar-policy push. No live QEMU now.
+ Preserved qemu/serial logs have no exit reason; last screenshot remains
+ dispatcher-current.png. Do not treat socket files as evidence of liveness.

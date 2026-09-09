@@ -351,3 +351,8 @@ exception reservations; no new or increased path. KI0888/0889 archived
 withbedf35f86. KI0890 records missing default mouse-activation parent handling.
 Paint callback ABI independently compiled against pinned headers: index8,
 104-byte record, tracking@24, rectangle@64, vertical@96 on x86 and ARM.
+
+16:03 UTC: retained QEMU832847 and launcher832789 absent; no QEMU process
+on the host. Serial ends mid-task-dump1608.292s; QEMU log has no terminal
+status. KI0891 records missing post-acceptance exit provenance. Cause unknown;
+no termination command was issued during this verification turn.
