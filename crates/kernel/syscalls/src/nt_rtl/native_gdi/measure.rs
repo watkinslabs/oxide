@@ -6,7 +6,7 @@ pub(crate) fn begin_measure(mut request: abi::MeasureRequest) -> u64 {
     let Some(bytes) = request.payload_bytes() else { super::measure_trace::refused(request.dc, request.kind, b"admit"); return 0; };
     let head = core::mem::size_of::<abi::MeasureRequest>();
     let mut copy = Vec::new();
-    if copy.try_reserve_exact(bytes).is_err() { return 0; }
+    if copy.try_reserve_exact(bytes).is_err() { super::measure_trace::refused(request.dc, request.kind, b"allocate"); return 0; }
     copy.resize(bytes, 0);
     if request.count != 0 && uaccess::copy_from_user(&mut copy[head..], request.text).is_err() {
         super::measure_trace::refused(request.dc, request.kind, b"text"); return 0; }
@@ -36,7 +36,8 @@ pub(super) fn copy_result(task: &sched::Task, request: u64, output: u64) -> u64 
         || output.width < 0 || output.height < 0 { super::measure_trace::refused(request.dc, request.kind, b"answer"); return abi::INVALID; }
     super::measure_trace::answered(&request, &output);
     if request.kind == abi::MEASURE_METRICS {
-        return if uaccess::copy_to_user(request.metrics, &output.metrics).is_ok() { 0 } else { abi::INVALID };
+        return if uaccess::copy_to_user(request.metrics, &output.metrics).is_ok() { 0 } else {
+            super::measure_trace::refused(request.dc, request.kind, b"metrics-copyout"); abi::INVALID };
     }
     let count = request.count as usize;
     if output.cumulative.checked_add(count as u64 * 4).is_none() { return abi::INVALID; }
@@ -50,5 +51,6 @@ pub(super) fn copy_result(task: &sched::Task, request: u64, output: u64) -> u64 
     if request.fit != 0 && uaccess::put_user_u32(request.fit, output.fit).is_err() { return abi::INVALID; }
     let mut extent = [0u8; 8];
     extent[..4].copy_from_slice(&output.width.to_le_bytes()); extent[4..].copy_from_slice(&output.height.to_le_bytes());
-    if uaccess::copy_to_user(request.extent, &extent).is_ok() { 0 } else { abi::INVALID }
+    if uaccess::copy_to_user(request.extent, &extent).is_ok() { 0 } else {
+        super::measure_trace::refused(request.dc, request.kind, b"extent-copyout"); abi::INVALID }
 }

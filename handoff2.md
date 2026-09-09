@@ -136,3 +136,11 @@ STOPPED-to-TRACED transition, including SEIZE. Do not repair these by changing
 INTERRUPT to private SIGSTOP; it must not alter signal queues. Use canonical
 jobctl/stop state, preserve FPU snapshot/restore through ptrace stop owner,
 and reread complete primary ptrace/signal implementations before editing.
+
+Caption trace follow-up: raw measurement now records count, DC snapshot and
+stock-metrics refusals; callback allocation and metrics/extent copyout failures
+also use bounded TEXTMEASURE-DROP. Both feature gates pass, log
+/tmp/B3630-caption-trace-feature.log. KI-0859 claimed by B3630 and corrected:
+empty measured label and successful button caption lookup remain hypotheses.
+The ntdll procedure addresses are forwarding functions, not evidence of a
+DLL relocation defect. Still missing direct button/client/label tracing.

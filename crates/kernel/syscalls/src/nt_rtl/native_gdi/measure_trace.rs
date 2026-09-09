@@ -19,7 +19,7 @@ fn spend(cell: &AtomicU32) -> bool { cell.fetch_add(1, Ordering::Relaxed) < BUDG
 
 /// The step that refused a measurement before any answer reached the caller.
 /// # C: O(1)
-pub(super) fn refused(dc: u64, kind: u32, step: &'static [u8]) {
+pub(crate) fn refused(dc: u64, kind: u32, step: &'static [u8]) {
     if !spend(&REFUSED) { return; }
     klog::write_raw(b"[WINDOWS-TEXTMEASURE-DROP] dc="); klog::write_hex_u64(dc);
     klog::write_raw(b" kind="); klog::write_hex_u64(kind as u64);
