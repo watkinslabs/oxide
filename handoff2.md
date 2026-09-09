@@ -1,9 +1,9 @@
 # Handoff — hardware retrieval repair, verification in progress
 
-First command: `tail -15 /tmp/B3630-hardware-dispatch-build.log`
+First command: `tail -15 /tmp/B3630-pointer-position-build.log`
 Worktree /home/nd/oxide/kernel-B3630; branch B3630-paint-region-collapse.
 Main read-only. Read CLAUDE.md. Draft PR7680; last verified remote843f82ed4.
-Local HEADc9834ba26; current hardware commits NOT pushed (stack regression).
+Local HEAD3e69d8755; hardware commits NOT pushed (final position build running).
 Goal remains defect-free Notepad buttons/borders/Open/Save/menus/About.
 User requests visible boot when ready and VM left running. Do not call done.
 Wine11.16 release/debug profiles explicit; consult pinned local sources first.
@@ -38,38 +38,42 @@ Wine11.16 release/debug profiles explicit; consult pinned local sources first.
 
 ## Current verification
 
--11 hardware-driver tests and119 production-dispatch fixture tests pass.
--1526 IPC and3270 syscall library tests pass after API cleanup and target
-  lifetime check; /tmp/B3630-hardware-final-{ipc,syscalls}.log.
-- Positive controls raw overwrite, transparent-walk bypass, and ignored
-  Stage::Prepared dispatch hook each fail assertions, restored afterward.
-  Logs /tmp/B3630-hardware-{raw-view,transparent,view-hook}-red.log.
-- /tmp/B3630-hardware-boundary-final.log current tests.
-- Both feature checks passed initial implementation; final tracing/checks
-  require repeat. /tmp/B3630-hardware-feature.log is INITIAL pass only.
-- Initial build53277 passed both; follow-up47613/73320 passed both builds and
-  features after target-lifetime fix. Then stack regression found on x86.
-- x86 stack358 rows but dispatch15088→15232; initial hardware live drive
-  13952→13968. Do NOT call this baseline-only or bypass it.
--249d43553 extracts delivery/usercopy and shared Get tracing from dispatcher.
-  Tests pass; x86 stack improves to15168 but still80 above old dispatch path.
-  Usercopy fixture now asserts GUI unlocked and rejects unexpected copies.
-- c9834ba26 adds small DispatchStage and noninlined dispatch_for_current helper
-  so general dispatcher no longer carries full message result payload.
-  11 driver/119 dispatcher tests pass in /tmp/B3630-hardware-dispatch-tests.log.
-- Current build85677: /tmp/B3630-hardware-dispatch-build.log, both arches.
-  Prior build45257 and feature10998 may still finish; poll authoritative exits.
-  Their logs /tmp/B3630-hardware-delivery-{build,feature}.log.
-- After85677, rerun both stack reports with label hardware-dispatch. Do not
-  push until no new/increased numeric rows (normalize annotation changes when
-  interpreting identities but preserve full reports). No boot launched.
-- Previous baseline358x86/299ARM report rows,
-  336/277 existing overbudget paths,7664/6368 exception bytes (KI-0019).
-  Compare /tmp/B3630-scroll-procedure-stack-{x86,arm}.log against final ELF
-  reports, no new/increased path allowed. ARM has NO stack-switch-map option.
-- Worktree refreshed by fetch origin main + ff-only merge (already up to date),
-  then reconciliation timestamp refreshed; worktree guard passed.
-- No stash, formatters, main edits or new bypasses. Explicit stage paths.
+- Local runtime changes:8fedf4646 +249d43553 +276390dfd +3e69d8755.
+  c9834ba26 helper experiment reverted06dcd177c after measured stack growth.
+  Latest HEAD3e69d8755; remote still843f82ed4. Never overwrite main.
+- Prepared message now Box<Selected>, a temporary handoff, not a queue copy.
+  General Stage return fits the old small result; actual delivery helper
+  performs usercopy outside GUI ownership. Snapshot lifetime ends at delivery.
+-11 hardware-driver and119 dispatcher-fixture tests pass, including callback
+  suspend/resume, target destruction, capture changes, repeated client and
+  nonclient peeks, stable queue identity, posted-message origin, actual usercopy.
+- KI-0896 repaired3e69d8755: pointer post stamped previous self.cursor; now
+  the canonical queue receives the event's own screen point. New real IPC test
+  fails0vs14418030 before fix;1527 IPC tests and both boundary fixtures pass.
+  /tmp/B3630-pointer-position-{red,green,boundary}.log.
+-3270 syscall library tests pass. /tmp/B3630-hardware-final-syscalls.log.
+- Positive controls raw overwrite, transparent-walk bypass, ignored view hook
+  fail assertions; restored. /tmp/B3630-hardware-{raw-view,transparent,view-hook}-red.log.
+- Box implementation BOTH builds and feature checks pass (28532/92516).
+  /tmp/B3630-hardware-box-{build,feature}.log.
+- Box stack reports BOTH architectures have no new/increased primary numeric
+  paths vs /tmp/B3630-scroll-procedure-stack-{x86,arm}.log. Primary tables:
+  337x86/278ARM entries including exception row (336/277 existing task failures).
+  Exception reservations remain7664/6368. Top20 membership changed as Windows
+  paths shrank; an execve summary row appearing is NOT a new primary path.
+  /tmp/B3630-hardware-box-stack-{x86,arm}.log. Keep full reports, don't hide flags.
+- CURRENT final build after position stamp:58475, log
+  /tmp/B3630-pointer-position-build.log; feature85075, log
+  /tmp/B3630-pointer-position-feature.log. Poll authoritative exit statuses.
+  Re-run final stack reports against produced ELFs before push.
+- Earlier initial/refactor stack failures remain evidence, not current results.
+  Do not use the abandoned dispatch helper or claim initial stack was baseline.
+- KI-0895 was a FALSE hypothesis: bridge::window only parses HWND, does not
+  query WindowManager. Destroy publishing already proceeds after teardown.
+  No destruction code changed. Closed via7f400aa52/51601b1ec; proof in
+  scratch/B3630-destroy-publication-audit.md. Do not revive that diagnosis.
+- Worktree refreshed with origin main (already up to date), then reconciliation
+  timestamp refreshed; guard passed. No stash, main edits or formatters.
 
 ## Last preview — FAILED, no live VM
 
