@@ -125,7 +125,7 @@ pub(super) fn is_key_repeat(state: &WindowManager, record: &Record) -> bool {
 }
 
 pub(super) fn apply_event(
-    state: &mut WindowManager, keys: &mut SysKeyLatch, record: &Record,
+    state: &mut WindowManager, keys: &mut SysKeyLatch, positions: &mut Vec<crate::nt_window::position::RemotePosition>, record: &Record,
     pointer: impl FnOnce(&mut WindowManager, WindowId, i32, i32, u32, i32, i32) -> bool,
 ) -> bool {
     if record.validate().is_err() { return false; }
@@ -137,7 +137,7 @@ pub(super) fn apply_event(
             let Ok(rect) = wire::Rect::decode_window(p) else { return false; };
             let next = WindowRect { left: rect.x, top: rect.y,
                 right: rect.x + rect.width as i32, bottom: rect.y + rect.height as i32 };
-            state.configure_compositor_window(id, next).is_ok()
+            crate::nt_window::position::queue_compositor(state, positions, id, next)
         }
         // The display has lost pixels it cannot restore from what it retains.
         // The rectangle is stated in the window's own coordinates and becomes
@@ -303,7 +303,7 @@ mod live {
             // A held key that repeats is a repeat only while the session wants
             // repeats; the first press and every release are never dropped.
             if is_key_repeat(&entry.state, record) && !super::super::keyboard_auto_repeat() { return false; }
-            let accepted = apply_event(&mut entry.state, &mut entry.sys_key, record, |state, id, x, y, buttons, wheel, hwheel| {
+            let accepted = apply_event(&mut entry.state, &mut entry.sys_key, &mut entry.remote_positions, record, |state, id, x, y, buttons, wheel, hwheel| {
                 state.post_compositor_pointer(id, x, y, buttons, wheel, hwheel).is_ok()
             });
             if accepted && record.header.opcode == Opcode::Focus { entry.foreground = entry.state.active_window().is_some(); }

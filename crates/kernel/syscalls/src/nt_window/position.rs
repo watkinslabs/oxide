@@ -15,3 +15,6 @@ pub(crate) use live::{PendingPosition,position_context_for_current,position_appl
 pub(crate) use layout::handles_callback;
 #[cfg(target_arch = "x86_64")]
 pub(crate) use live::complete_position_callback;
+
+#[path="position/compositor.rs"] mod compositor;
+pub(crate) use compositor::queue_compositor;

@@ -10,6 +10,7 @@ pub mod live {pub fn current()->Option<super::Task>{super::ENV.with(|e|e.borrow(
 #[derive(Default)]pub struct Env {
     pub task:Option<Task>,pub callbacks:Vec<Callback>,pub fail_install:bool,pub fail_publish:bool,
     pub fail_copy:bool,pub publications:usize,pub resumes:Vec<(u64,Outcome,usize,usize)>,
+    pub allow_retrieval_resume:bool,pub retrieval_resumes:usize,
     pub dimensions:Vec<(u32,i32,i32)>,
     pub preservation:Vec<(u32,ipc::win32_window::WindowRect,ipc::win32_window::WindowRect,Option<[ipc::win32_window::WindowRect;2]>)>,
 }

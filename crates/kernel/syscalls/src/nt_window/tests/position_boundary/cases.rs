@@ -5,6 +5,7 @@ use crate::nt_wine_window::position::Request;
 use ipc::win32_window::{WindowId,WindowRect};
 const FRAME_FLAGS:u32=0x0437;
 #[path="resize.rs"]mod resize;
+#[path="compositor.rs"]mod compositor;
 fn setup(wndproc:u64)->Request {
     let group=Arc::new(crate::thread_group::ThreadGroup);
     ENV.with(|e|*e.borrow_mut()=env::Env{task:Some(env::Task{tid:1,thread_group:group.clone()}),..Default::default()});

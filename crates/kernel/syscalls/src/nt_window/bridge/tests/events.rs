@@ -4,7 +4,7 @@ use alloc::vec;
 
 pub(crate) fn state() -> (WindowManager, WindowId) {
     let mut state = WindowManager::new();
-    let id = state.create(17, None, 42).unwrap();
+    let id = state.create(17, None, 0).unwrap();
     state.set_rect(id, WindowRect { left: 20, top: 30, right: 220, bottom: 130 }).unwrap();
     state.set_visible(id, true).unwrap();
     (state, id)
@@ -14,15 +14,25 @@ pub(crate) fn event(opcode: Opcode, id: WindowId, payload: Vec<u8>) -> Record {
 }
 pub(crate) fn words(values: &[u32]) -> Vec<u8> { values.iter().flat_map(|word| word.to_le_bytes()).collect() }
 pub(crate) fn deliver(state: &mut WindowManager, event: &Record) -> bool {
-    apply_event(state, &mut SysKeyLatch::default(), event, |_, _, _, _, _, _, _| panic!("unexpected pointer"))
+    apply_event(state, &mut SysKeyLatch::default(), &mut Vec::new(), event, |_, _, _, _, _, _, _| panic!("unexpected pointer"))
 }
 /// Deliver against a latch the caller keeps, so a run of key transitions is
 /// decided against the state the ones before it left.
 pub(crate) fn deliver_keys(state: &mut WindowManager, keys: &mut SysKeyLatch, event: &Record) -> bool {
-    apply_event(state, keys, event, |_, _, _, _, _, _, _| panic!("unexpected pointer"))
+    apply_event(state, keys, &mut Vec::new(), event, |_, _, _, _, _, _, _| panic!("unexpected pointer"))
 }
 pub(crate) fn next(state: &mut WindowManager) -> Option<WinMessage> {
     state.peek_for_thread(17, gui::MessageFilter { hwnd: None, first: 0, last: 0 }, true)
+}
+
+#[test]
+fn configure_packet_queues_owner_callbacks_before_geometry_changes(){
+    let mut state=WindowManager::new();let id=state.create(17,None,42).unwrap();
+    let old=WindowRect{left:0,top:0,right:300,bottom:200};state.set_rect(id,old).unwrap();
+    let record=event(Opcode::Configure,id,words(&[10,20,400,250]));let mut positions=Vec::new();
+    assert!(apply_event(&mut state,&mut SysKeyLatch::default(),&mut positions,&record,|_,_,_,_,_,_,_|false));
+    assert_eq!(state.rect(id),Some(old));assert_eq!(positions.len(),1);assert!(positions[0].targets(17));
+    assert!(next(&mut state).is_none(),"WM_SIZE must follow the nonclient callback, not packet arrival");
 }
 
 #[test]
@@ -147,7 +157,7 @@ fn pointer_forwards_absolute_signed_client_coordinates_and_win32_buttons_once() 
     let (mut state, id) = state();
     let record = event(Opcode::Pointer, id, words(&[-4i32 as u32, 12, gui::MK_LBUTTON as u32, -120i32 as u32, 120]));
     let mut calls = 0;
-    assert!(apply_event(&mut state, &mut SysKeyLatch::default(), &record, |owner, target, x, y, buttons, wheel, hwheel| {
+    assert!(apply_event(&mut state, &mut SysKeyLatch::default(), &mut Vec::new(), &record, |owner, target, x, y, buttons, wheel, hwheel| {
         calls += 1;
         assert!(owner.get(target).is_some());
         assert_eq!((target, x, y, buttons, wheel, hwheel), (id, -4, 12, 1, -120, 120)); true
@@ -195,7 +205,7 @@ fn bridge_pointer_reaches_canonical_capture_queue() {
     state.set_rect(capture, WindowRect { left: 100, top: 200, right: 300, bottom: 400 }).unwrap();
     state.set_capture(17, capture).unwrap();
     let record = event(Opcode::Pointer, id, words(&[1, 2, gui::MK_LBUTTON as u32, 120, -120i32 as u32]));
-    assert!(apply_event(&mut state, &mut SysKeyLatch::default(), &record, |state, id, x, y, buttons, wheel, hwheel| {
+    assert!(apply_event(&mut state, &mut SysKeyLatch::default(), &mut Vec::new(), &record, |state, id, x, y, buttons, wheel, hwheel| {
         state.post_compositor_pointer(id, x, y, buttons, wheel, hwheel).is_ok()
     }));
     let motion = next(&mut state).unwrap();
@@ -222,7 +232,7 @@ fn notepad_visible_statusbar_child_keeps_zero_geometry_and_main_parent() {
     let edit_snapshot = snapshot(&state, edit.raw() as u64).unwrap();
     assert_eq!(edit_snapshot.parent, main.raw() as u64);
     assert_eq!((edit_snapshot.rect.width, edit_snapshot.rect.height), (200, 100));
-    let statusbar = state.create(17, Some(main), 43).unwrap();
+    let statusbar = state.create(17, Some(main), 0).unwrap();
     state.show(17, statusbar, true).unwrap();
     let initial = snapshot(&state, statusbar.raw() as u64).unwrap();
     assert!(initial.visible);
@@ -246,7 +256,7 @@ fn configure_to_zero_updates_size_without_empty_region_paint_or_backing_size_ech
     let (mut state, main) = state();
     state.show(17, main, true).unwrap();
     state.begin_paint(main).unwrap(); state.end_paint(main).unwrap();
-    let statusbar = state.create(17, Some(main), 43).unwrap();
+    let statusbar = state.create(17, Some(main), 0).unwrap();
     state.show(17, statusbar, true).unwrap();
     state.set_rect(statusbar, WindowRect { left: 0, top: 0, right: 200, bottom: 20 }).unwrap();
     assert!(deliver(&mut state, &event(Opcode::Configure, statusbar, words(&[0, 0, 0, 0]))));
@@ -430,7 +440,7 @@ fn a_desktop_click_becomes_a_button_down_and_up_on_the_window_queue() {
     let (mut state, id) = state();
     let deliver_pointer = |state: &mut WindowManager, buttons: u32| {
         let record = event(Opcode::Pointer, id, words(&[9, 11, buttons, 0, 0]));
-        apply_event(state, &mut SysKeyLatch::default(), &record, |state, id, x, y, buttons, wheel, hwheel| state.post_compositor_pointer(id, x, y, buttons, wheel, hwheel).is_ok())
+        apply_event(state, &mut SysKeyLatch::default(), &mut Vec::new(), &record, |state, id, x, y, buttons, wheel, hwheel| state.post_compositor_pointer(id, x, y, buttons, wheel, hwheel).is_ok())
     };
     assert!(deliver_pointer(&mut state, gui::MK_LBUTTON as u32));
     assert!(deliver_pointer(&mut state, 0));

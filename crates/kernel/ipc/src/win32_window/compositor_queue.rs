@@ -68,7 +68,7 @@ impl WindowManager {
     /// coordinates; the compositor reports one in the parent's window
     /// coordinates, which is what an X child's position is relative to.
     /// # C: O(N_windows)
-    fn compositor_parent_space(&self, id: WindowId, next: WindowRect) -> Result<WindowRect, WindowError> {
+    pub fn compositor_parent_space(&self, id: WindowId, next: WindowRect) -> Result<WindowRect, WindowError> {
         let Some(parent) = self.get(id).ok_or(WindowError::NoSuchWindow)?.parent else { return Ok(next); };
         let (Some(window), Some(client)) = (self.rect(parent), self.client_rect_raw(parent)) else { return Ok(next); };
         let (dx, dy) = nonclient_create::client_origin(window, client);

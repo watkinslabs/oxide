@@ -22,7 +22,7 @@ pub(crate) struct PendingPosition {
     pub(super) token:u64,pub(super) tid:u64,pub(super) request:Request,pub(super) remote:bool,pub(super) cancelled:bool,wndproc:u64,pointer:u64,
     old:WindowRect,old_client:WindowRect,client:Option<WindowRect>,class_style:u32,valid:Option<[WindowRect;2]>,
     pub(super) reply:Option<Arc<super::work::Reply>>,resume_send:Option<Arc<super::work::Reply>>,
-    caller:Option<Continuation>,
+    caller:Option<Continuation>,compositor:Option<WindowRect>,
 }
 /// Canonical process and HWND validation before a transient snapshot. # C: O(processes + windows)
 pub(crate) fn position_context_for_current(hwnd:u64)->Option<Context> {
@@ -67,12 +67,12 @@ pub(crate) fn position_apply_for_current(request:Request)->u64 {
 /// Immediate outcomes return directly; a suspended chain resumes its original owner-thread caller.
 /// # C: O(processes + windows); # Sleeps: yes
 pub(crate) fn position_apply_resumable_for_current(request:Request,caller:Option<Continuation>)->Outcome{
-    continuation::outcome(start_inner(request,false,None,None,caller))
+    continuation::outcome(start_inner(request,false,None,None,caller,None))
 }
 pub(super) fn start(request:Request,remote:bool,reply:Option<Arc<super::work::Reply>>,resume_send:Option<Arc<super::work::Reply>>)->u64 {
-    start_inner(request,remote,reply,resume_send,None)
+    start_inner(request,remote,reply,resume_send,None,None)
 }
-fn start_inner(request:Request,remote:bool,reply:Option<Arc<super::work::Reply>>,resume_send:Option<Arc<super::work::Reply>>,caller:Option<Continuation>)->u64 {
+fn start_inner(request:Request,remote:bool,reply:Option<Arc<super::work::Reply>>,resume_send:Option<Arc<super::work::Reply>>,caller:Option<Continuation>,compositor:Option<WindowRect>)->u64 {
     let Some(cur)=sched::live::current() else{return 0;};if !cur.is_nt_personality(){return 0;}
     let Some(id)=u32::try_from(request.hwnd).ok().and_then(WindowId::from_raw) else{return 0;};
     let p={
@@ -81,7 +81,7 @@ fn start_inner(request:Request,remote:bool,reply:Option<Arc<super::work::Reply>>
         if record.owner_tid!=cur.tid as u64{return 0;}
         let Some(old)=entry.state.rect(id) else{return 0;};
         let token=entry.next_create;let Some(next)=token.checked_add(1) else{return 0;};entry.next_create=next;
-        PendingPosition {token,tid:cur.tid as u64,request,remote,cancelled:false,wndproc:record.wndproc,pointer:0,old,old_client:record.client_rect.unwrap_or(old),client:None,class_style:0,valid:None,reply,resume_send,caller}
+        PendingPosition {token,tid:cur.tid as u64,request,remote,cancelled:false,wndproc:record.wndproc,pointer:0,old,old_client:record.client_rect.unwrap_or(old),client:None,class_style:0,valid:None,reply,resume_send,caller,compositor}
     };
     if p.wndproc!=0&&request.flags&NOSENDCHANGING==0 {callback(p,CHANGING,WM_WINDOWPOSCHANGING,0,&encode(request))}
     else {after_changing(p)}
@@ -141,7 +141,7 @@ fn commit(mut p:PendingPosition)->u64 {
     };
     wait.wake_all();
     if crate::nt_gdi::position_preserve_for_current(id.raw(),p.old,p.request.rect,p.valid,p.request.flags).is_err(){return 0;}
-    if bridge::publish_geometry_current(p.request.hwnd).is_err(){return 0;}
+    if p.compositor!=Some(p.request.rect)&&bridge::publish_geometry_current(p.request.hwnd).is_err(){return 0;}
     if p.request.visible.is_some()&&bridge::publish_visibility_current(p.request.hwnd).is_err(){return 0;}
     for (hwnd,insertion) in stack {if bridge::publish_position_current(hwnd,Some(insertion),false).is_err(){return 0;}}
     if activate&&bridge::publish_position_current(p.request.hwnd,None,true).is_err(){return 0;}
@@ -174,4 +174,8 @@ pub(crate) fn complete_position_callback(completion:sched::nt_callback::Completi
     if let Some(result)=continuation::finish(caller,result){return result;}
     if let Some(reply)=resume_send {super::remote::wait_reply(reply)}
     else if remote {super::super::resume_position_message_current()}else{result}
+}
+
+pub(super) fn start_compositor(request:Request,rect:WindowRect,resume_send:Option<Arc<super::work::Reply>>)->u64 {
+    start_inner(request,true,None,resume_send,None,Some(rect))
 }

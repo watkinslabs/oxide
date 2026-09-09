@@ -41,8 +41,12 @@ fn pump(resume_send:Option<Arc<work::Reply>>)->Option<u64> {
         work::take(&mut e.remote_positions,cur.tid as u64)?
     };
     let reply=work.reply.clone();
-    let result=match crate::nt_wine_window::position::plan_current(&work.args){
-        Err(())=>0,Ok(None)=>1,Ok(Some(request))=>super::live::start(request,true,reply.clone(),resume_send)
+    let args=if let Some(next)=work.compositor {
+        let Some(context)=super::live::position_context_for_current(work.args[0])else{return Some(0);};
+        let Some(args)=super::compositor::plan(work.args,context.rect,next)else{return Some(1);};args
+    }else{work.args};
+    let result=match crate::nt_wine_window::position::plan_current(&args){
+        Err(())=>0,Ok(None)=>1,Ok(Some(request))=>match work.compositor{Some(rect)=>super::live::start_compositor(request,rect,resume_send),None=>super::live::start(request,true,reply.clone(),resume_send)}
     };
     if result!=super::super::STATUS_PENDING{finish_reply(reply.as_ref(),result);}
     Some(result)
