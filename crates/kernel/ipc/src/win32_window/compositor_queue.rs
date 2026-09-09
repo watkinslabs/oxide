@@ -22,9 +22,9 @@ impl WindowManager {
         let repaint = resized && width != 0 && height != 0;
         self.check_message_capacity(id, usize::from(moved) + usize::from(resized))?;
         let insets = self.get(id).ok_or(WindowError::NoSuchWindow)?.client_rect.map(|client| nonclient_create::insets(old, client));
+        let client = insets.map(|insets| nonclient_create::inset_client(next, insets).ok_or(WindowError::InvalidParent)).transpose()?;
         self.set_rect(id, next)?;
-        if let Some(insets) = insets {
-            let client = nonclient_create::inset_client(next, insets).ok_or(WindowError::InvalidParent)?;
+        if let Some(client) = client {
             let record = self.windows.iter_mut().find(|(window, _)| *window == id).ok_or(WindowError::NoSuchWindow)?;
             record.1.client_rect = Some(client);
         }
