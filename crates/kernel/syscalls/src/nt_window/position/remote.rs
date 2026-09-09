@@ -36,17 +36,14 @@ pub(crate) fn pump_position_current()->Option<u64> {
 pub(crate) fn pump_for_reply(reply:Arc<work::Reply>)->Option<u64>{pump(Some(reply))}
 fn pump(resume_send:Option<Arc<work::Reply>>)->Option<u64> {
     let cur=sched::live::current()?;
-    let work={
+    let mut work={
         let mut entries=GUI.lock();let e=entries.iter_mut().find(|e|e.group.ptr_eq(&Arc::downgrade(&cur.thread_group)))?;
         work::take(&mut e.remote_positions,cur.tid as u64)?
     };
     let reply=work.reply.clone();
-    let args=if let Some(next)=work.compositor {
-        let Some(context)=super::live::position_context_for_current(work.args[0])else{return Some(0);};
-        let Some(args)=super::compositor::plan(work.args,context.rect,next)else{return Some(1);};args
-    }else{work.args};
-    let result=match crate::nt_wine_window::position::plan_current(&args){
-        Err(())=>0,Ok(None)=>1,Ok(Some(request))=>match work.compositor{Some(rect)=>super::live::start_compositor(request,rect,resume_send),None=>super::live::start(request,true,reply.clone(),resume_send)}
+    if work.compositor {match prepare_compositor(&mut work.args){Some(true)=>{},Some(false)=>return Some(1),None=>return Some(0)}}
+    let result=match crate::nt_wine_window::position::plan_current(&work.args){
+        Err(())=>0,Ok(None)=>1,Ok(Some(request))=>super::live::start_queued(request,work.compositor,reply.clone(),resume_send)
     };
     if result!=super::super::STATUS_PENDING{finish_reply(reply.as_ref(),result);}
     Some(result)
@@ -79,4 +76,11 @@ pub(crate) fn cancel_position_window(group:&Arc<sched::thread_group::ThreadGroup
         work::cancel_window(&mut e.remote_positions,hwnd);
         let wait=Arc::clone(&e.wait);drop(entries);wait.wake_all();
     }
+}
+
+// Keep the context snapshot off the long-lived stack that enters window callbacks.
+#[inline(never)]
+fn prepare_compositor(args:&mut [u64;7])->Option<bool>{
+    let context=super::live::position_context_for_current(args[0])?;
+    Some(super::compositor::plan(args,context.rect))
 }

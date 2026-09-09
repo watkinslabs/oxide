@@ -71,3 +71,22 @@ fn application_adjustment_of_display_resize_publishes_corrected_geometry(){
     assert_eq!(GUI.lock()[0].state.rect(id),Some(WindowRect{right:150,..request.rect}));
     ENV.with(|e|assert_eq!(e.borrow().publications,1,"application-adjusted geometry must reach the compositor"));
 }
+
+#[test]
+fn nested_application_position_requires_display_correction_when_outer_callback_commits(){
+    let _serial=SERIAL.lock().unwrap();let request=setup(5);
+    let id=WindowId::from_raw(request.hwnd as u32).unwrap();
+    {
+        let mut entries=GUI.lock();let e=&mut entries[0];e.state.set_rect(id,request.rect).unwrap();
+        assert!(position::queue_compositor(&mut e.state,&mut e.remote_positions,id,WindowRect{right:200,..request.rect}));
+    }
+    ENV.with(|e|e.borrow_mut().allow_retrieval_resume=true);
+    assert_eq!(position::pump_position_current(),Some(STATUS_PENDING));
+    let mut nested=request;nested.rect.right=150;
+    assert_eq!(apply(nested,caller(99)),Outcome::Pending);
+    assert_eq!(complete(cb(1),0),STATUS_PENDING);assert_eq!(complete(cb(2),0),99);
+    assert_eq!(complete(cb(0),0),STATUS_PENDING);
+    assert_eq!(complete(cb(3),0),STATUS_PENDING);assert_eq!(complete(cb(4),0),1);
+    assert_eq!(GUI.lock()[0].state.rect(id),Some(WindowRect{right:200,..request.rect}));
+    ENV.with(|e|assert_eq!(e.borrow().publications,2,"outer commit must correct the geometry published by its nested callback"));
+}

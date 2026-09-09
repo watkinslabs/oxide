@@ -22,7 +22,7 @@ pub(crate) struct PendingPosition {
     pub(super) token:u64,pub(super) tid:u64,pub(super) request:Request,pub(super) remote:bool,pub(super) cancelled:bool,wndproc:u64,pointer:u64,
     old:WindowRect,old_client:WindowRect,client:Option<WindowRect>,class_style:u32,valid:Option<[WindowRect;2]>,
     pub(super) reply:Option<Arc<super::work::Reply>>,resume_send:Option<Arc<super::work::Reply>>,
-    caller:Option<Continuation>,compositor:Option<WindowRect>,
+    caller:Option<Continuation>,compositor:bool,
 }
 /// Canonical process and HWND validation before a transient snapshot. # C: O(processes + windows)
 pub(crate) fn position_context_for_current(hwnd:u64)->Option<Context> {
@@ -67,12 +67,12 @@ pub(crate) fn position_apply_for_current(request:Request)->u64 {
 /// Immediate outcomes return directly; a suspended chain resumes its original owner-thread caller.
 /// # C: O(processes + windows); # Sleeps: yes
 pub(crate) fn position_apply_resumable_for_current(request:Request,caller:Option<Continuation>)->Outcome{
-    continuation::outcome(start_inner(request,false,None,None,caller,None))
+    continuation::outcome(start_inner(request,false,None,None,caller,false))
 }
 pub(super) fn start(request:Request,remote:bool,reply:Option<Arc<super::work::Reply>>,resume_send:Option<Arc<super::work::Reply>>)->u64 {
-    start_inner(request,remote,reply,resume_send,None,None)
+    start_inner(request,remote,reply,resume_send,None,false)
 }
-fn start_inner(request:Request,remote:bool,reply:Option<Arc<super::work::Reply>>,resume_send:Option<Arc<super::work::Reply>>,caller:Option<Continuation>,compositor:Option<WindowRect>)->u64 {
+fn start_inner(request:Request,remote:bool,reply:Option<Arc<super::work::Reply>>,resume_send:Option<Arc<super::work::Reply>>,caller:Option<Continuation>,compositor:bool)->u64 {
     let Some(cur)=sched::live::current() else{return 0;};if !cur.is_nt_personality(){return 0;}
     let Some(id)=u32::try_from(request.hwnd).ok().and_then(WindowId::from_raw) else{return 0;};
     let p={
@@ -80,6 +80,7 @@ fn start_inner(request:Request,remote:bool,reply:Option<Arc<super::work::Reply>>
         let Some(record)=entry.state.get(id) else{return 0;};
         if record.owner_tid!=cur.tid as u64{return 0;}
         let Some(old)=entry.state.rect(id) else{return 0;};
+        for pending in &mut entry.pending_positions{if pending.request.hwnd==request.hwnd{pending.compositor=false;}}
         let token=entry.next_create;let Some(next)=token.checked_add(1) else{return 0;};entry.next_create=next;
         PendingPosition {token,tid:cur.tid as u64,request,remote,cancelled:false,wndproc:record.wndproc,pointer:0,old,old_client:record.client_rect.unwrap_or(old),client:None,class_style:0,valid:None,reply,resume_send,caller,compositor}
     };
@@ -141,7 +142,7 @@ fn commit(mut p:PendingPosition)->u64 {
     };
     wait.wake_all();
     if crate::nt_gdi::position_preserve_for_current(id.raw(),p.old,p.request.rect,p.valid,p.request.flags).is_err(){return 0;}
-    if p.compositor!=Some(p.request.rect)&&bridge::publish_geometry_current(p.request.hwnd).is_err(){return 0;}
+    if !p.compositor&&bridge::publish_geometry_current(p.request.hwnd).is_err(){return 0;}
     if p.request.visible.is_some()&&bridge::publish_visibility_current(p.request.hwnd).is_err(){return 0;}
     for (hwnd,insertion) in stack {if bridge::publish_position_current(hwnd,Some(insertion),false).is_err(){return 0;}}
     if activate&&bridge::publish_position_current(p.request.hwnd,None,true).is_err(){return 0;}
@@ -157,7 +158,7 @@ pub(crate) fn complete_position_callback(completion:sched::nt_callback::Completi
         CHANGING=>{
             let mut bytes=[0;WINDOWPOS_BYTES];if uaccess::copy_from_user(&mut bytes,p.pointer).is_err(){return 0;}
             let Some(args)=decode(&bytes,p.request.hwnd) else{return 0;};
-            match plan_current(&args) {Err(())=>0,Ok(None)=>1,Ok(Some(request))=>{p.request=request;after_changing(p)}}
+            match plan_current(&args) {Err(())=>0,Ok(None)=>1,Ok(Some(request))=>{p.compositor &= request.rect==p.request.rect;p.request=request;after_changing(p)}}
         }
         NCCALC=>{
             let mut bytes=[0;48];if uaccess::copy_from_user(&mut bytes,p.pointer).is_err(){return 0;}
@@ -176,6 +177,7 @@ pub(crate) fn complete_position_callback(completion:sched::nt_callback::Completi
     else if remote {super::super::resume_position_message_current()}else{result}
 }
 
-pub(super) fn start_compositor(request:Request,rect:WindowRect,resume_send:Option<Arc<super::work::Reply>>)->u64 {
-    start_inner(request,true,None,resume_send,None,Some(rect))
+/// Apply queued geometry through owner callbacks. # C: O(processes + windows + publication)
+pub(super) fn start_queued(request:Request,compositor:bool,reply:Option<Arc<super::work::Reply>>,resume_send:Option<Arc<super::work::Reply>>)->u64 {
+    start_inner(request,true,reply,resume_send,None,compositor)
 }
