@@ -1,9 +1,9 @@
-# Handoff — native pointer scope repair under verification
+# Handoff — native pointer scope repaired; dialog rendering remains open
 
 First command: `git status --short`
 Worktree /home/nd/oxide/kernel-B3630; branch B3630-paint-region-collapse.
 Main read-only. Read CLAUDE.md. Draft PR7680; filter runtimeee58ef0b7.
-Native scope/owner repair now under final validation; visual acceptance remains open.
+Scope runtimea165b0c85 validated on both architectures; visual acceptance remains open.
 Goal remains defect-free Notepad buttons/borders/Open/Save/menus/About.
 User requests visible boot when ready and VM left running. Do not call done.
 Wine11.16 release/debug profiles explicit; consult pinned local sources first.
@@ -12,7 +12,7 @@ Wine11.16 release/debug profiles explicit; consult pinned local sources first.
 
 -829dc62d5 repairs point candidate parent-client coordinates, client clipping
   and window regions (KI-0892);1526 IPC tests, both builds/features passed.
-- KI-0682 hardware driver now snapshots canonical scoped candidates, continues
+- KI-0682 FIXED a165b0c85: hardware driver snapshots canonical scoped candidates, continues
   after HTTRANSPARENT across synchronous/suspended calls, handles disabled
   scopes, skips destroyed candidates and rejects destroyed/foreign targets.
   Capture is resolved again at retrieval. Scope includes its own window last.
@@ -20,10 +20,16 @@ Wine11.16 release/debug profiles explicit; consult pinned local sources first.
   coordinates; allocation-free first-child point walk selects receiver thread.
   Exhausted transparent scope may try its immediately following owner on the
   same thread, once, including after suspended callbacks. Existing claim valid.
-  Scope runtime changes not yet committed; final builds/stack checks pending.
+  Scope runtimea165b0c85; both release builds/features and frame-size gates PASS.
+  Final primary stack tables336x86/278ARM unchanged; no new/increased path.
+  Existing KI-0019 failures and7664/6368 exception reservations remain.
+  /tmp/B3630-scope-final-build.log, scope-feature.log, scope-stack-{x86,arm}.log.
+  Evidence scratch/B3630-native-pointer-scope-validation.md; final ELFs saved.
   RED controls: /tmp/B3630-scope-{driver,owner,popup}-red.log. Current1529 IPC,
   3270 syscall-library,24 actual-driver and121 dispatcher-fixture tests PASS.
-  /tmp/B3630-scope-{ipc,syscalls-lib,boundary}.log.
+  /tmp/B3630-scope-ipc-restored.log, scope-syscalls-lib-final.log,
+  scope-boundary-restored.log. Replacing direct thread lookup with scope hit
+  selection fails scope-thread-walk-red.log; restored1529 IPC tests PASS.
 - KI-0893 raw queued message survives Peek unchanged; Stage::Prepared returns
   translated view to actual Peek/Get dispatcher. Canonical queue assigns a
   stable selection ID so retirement cannot remove an identical successor.
@@ -40,9 +46,13 @@ Wine11.16 release/debug profiles explicit; consult pinned local sources first.
   wakes retrieval, retained filtered input does not. No parallel queue/state.
   debug-winpump WINDOWS-HARDWARE-FILTER records target/message and filter.
   Claimdce01b596; runtimeee58ef0b7; ledger closed after final validation.
-- KI-0682 IN-PROGRESS pending final validation of native scope/owner repair.
-  Query-thread selection remains distinct from retrieval hit testing; disabled
+- Queue-thread selection remains distinct from retrieval hit testing; disabled
   root still permits the separate thread walk before its own hit test.
+  Broader focus/capture thread-input ownership KI-0504 remains open.
+- Next: tools/issues.sh --show KI-0861. Saved Open-dialog client750x1 is
+  canonical state before paint, not only a collapsed update region. Audit
+  layout/SetWindowPos/NCCALCSIZE against the pinned source. RenderingKI-0887
+  still open; prior X11 parent-DC repair did not complete visual acceptance.
 - Current filter validation:18 hardware-driver +121 dispatcher-fixture tests
   PASS;1527 IPC +3270 syscall library tests PASS. Initial nonclient-only and
   retained-filter scan tests RED. Removed fallback/wait/target-filter hooks
@@ -93,8 +103,8 @@ Wine11.16 release/debug profiles explicit; consult pinned local sources first.
 - Exact release ELFs preserved target/B3630-hardware-final-{x86,arm}.elf.
   x86 SHA6fdb203e7d2df7fe4c2c3bce54c41bc66d46c7cd5ee8dfe242f2434f4741d5c1;
   ARM SHA0c9955f3afd6551fad9240c04ea6f2ad69fa10f96fb4ff0e3ab6a99c480fe2c3.
-- KI-0892/0893/0896 closed via829dc62d5/8fedf4646/3e69d8755. KI-0682 remains
-  open for child-surface scope/owner fallback; KI-0894 now closed.
+- KI-0892/0893/0896 closed via829dc62d5/8fedf4646/3e69d8755.
+  KI-0682/0894 now closed after actual-driver and dispatcher validation.
 - Earlier initial/refactor stack failures remain evidence, not current results.
   Do not use the abandoned dispatch helper or claim initial stack was baseline.
 - KI-0895 was a FALSE hypothesis: bridge::window only parses HWND, does not
