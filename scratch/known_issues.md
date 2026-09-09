@@ -1,6 +1,6 @@
 # Known issues
 
-**Live issue count: 626** — 622 `OPEN`, 4 `IN-PROGRESS`.
+**Live issue count: 627** — 622 `OPEN`, 5 `IN-PROGRESS`.
 **Live issue count: 602** — 600 `OPEN`, 2 `IN-PROGRESS`.
 **Live issue count: 603** — 601 `OPEN`, 2 `IN-PROGRESS`.
 **Live issue count: 598** — 596 `OPEN`, 2 `IN-PROGRESS`.
@@ -1080,3 +1080,4 @@ representation, including every subauthority.
 | KI-0863 | IN-PROGRESS B3630-paint-region-collapse | COVERAGE | high | [CLAIMED B3630-paint-region-collapse 2026-09-09] Notepad acceptance never opens About or verifies a save/load round trip and dialog controls | tools/windows-notepad-acceptance.py::run_desktop_checks types a token and checks the File dropdown, then clears and closes; no About, Save As, file-type dropdown, or reopened document check. | B3630-paint-region-collapse |
 | KI-0865 | OPEN | DEFECT | high | GNOME reaches running state but the acceptance framebuffer stays on the boot console before Notepad launches | B3630 acceptance boot, target/B3630-acceptance/uart-76178.log: gnome-session running at 21.114, gnome-shell opens Bochs DRM card0, SSH confirms session 1 active on tty2 with three card0 fds. At guest 300s QMP screendump still holds console ending at 13.670. No BOCHS-RESOURCE or BOCHS-PRESENT lines; no Notepad launch. Kernel sources unchanged from main afa38ce09. Monitor-state D-Bus query pending. Cause unresolved; bridge changes cannot cause a failure before bridge launch. | B3630-paint-region-collapse |
 | KI-0866 | OPEN | DEFECT | med | Guest GDB cannot obtain a GNOME thread backtrace and fails to detach on its timeout | B3630 live acceptance VM: gdb attach 394 reports missing /proc/PID/mem and /proc/self/mem, rejected i386 target description for x86-64, and corrupt vDSO string-table index; no backtrace returned. After timeout, tracer 1111 still held GNOME stopped. Killing that owned tracer and SIGCONT restored State S, TracerPid 0. Log /tmp/B3630-guest-backtrace.txt; individual causes unconfirmed. | B3630-paint-region-collapse |
+| KI-0867 | IN-PROGRESS B3630-paint-region-collapse | DEFECT | high | [CLAIMED B3630-paint-region-collapse 2026-09-09] Rejected compositor resize changes outer geometry before validating the retained client insets | configure_compositor_window calls set_rect before inset_client; a new extent smaller than existing nonclient insets returns InvalidParent after changing rect and shifting the old client. Rejection must retain both rectangles. Independent of KI-0641, which requires callback-driven nonclient recalculation. | B3630-paint-region-collapse |
