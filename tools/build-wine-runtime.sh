@@ -45,8 +45,18 @@ HEADERS="$WORK/mingw64-headers"
 
 mkdir -p "$WORK"
 
-if [ ! -f "$SRC/.oxide-prepared" ]; then
-    rm -rf "$SRC"
+# Prepared sources and configured objects must describe the same inputs.
+# An existence-only stamp silently retains removed or edited patches.
+INPUT_KEY="$( {
+    sha256sum "$TARBALL" "$MINGW_HEADERS_RPM" "$REPO_ROOT/tools/build-wine-runtime.sh"
+    for patch in "$PATCH_DIR"/*.patch; do
+        [ -e "$patch" ] || break
+        sha256sum "$patch"
+    done
+} | sha256sum )"
+PREPARED_KEY="$(cat "$SRC/.oxide-prepared" 2>/dev/null || true)"
+if [ "$PREPARED_KEY" != "$INPUT_KEY" ]; then
+    rm -rf "$SRC" "$BUILD" "$HEADERS"
     mkdir -p "$SRC"
     tar -xf "$TARBALL" -C "$WORK"
     [ -f "$SRC/VERSION" ] || die "tarball did not unpack to $SRC"
@@ -56,7 +66,7 @@ if [ ! -f "$SRC/.oxide-prepared" ]; then
         echo "build-wine-runtime: applying $(basename "$patch")"
         ( cd "$SRC" && patch -p1 --fuzz=5 --no-backup-if-mismatch < "$patch" ) || die "patch $(basename "$patch") did not apply"
     done
-    touch "$SRC/.oxide-prepared"
+    printf '%s\n' "$INPUT_KEY" > "$SRC/.oxide-prepared"
 fi
 
 if [ ! -d "$HEADERS/usr" ]; then
