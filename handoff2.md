@@ -60,7 +60,8 @@ ptrace remains a raw frame conversion.230 HAL and3256 syscall tests pass;
 old-selector/old-descriptor-slot positive controls fail. Both feature gates
 pass. Built ELF selector operands inspected. Stack336 failures unchanged, no
 new/worsened path vs prior branch report; exception7664 B unchanged.
-Publication pending: verify push result/local-remote SHA. No new boot.
+Selector repair published in draft PR7680; verify latest local/remote SHA.
+Hosted gate180 crates and both feature gates pass. No new boot.
 
 KI-0870 claimed: vDSO copies PT_LOAD bytes only, dropping ELF section metadata
 advertised in the mapped header. x86 image LOAD filesz1065, shoff1504,
