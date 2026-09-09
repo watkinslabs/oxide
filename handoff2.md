@@ -9,9 +9,10 @@ User explicitly requested harness dialog coverage. Goal remains active.
 ## Implemented and checked
 
 - `tools/notepad_dialogs.py` wired into acceptance `run_desktop_checks`:
+  all five menus must open/dismiss with visible entries, rejecting baseline text;
   About + OK/license, Save As + Save/Cancel, expanded file-type filters,
   named Save, New, Open, content round trip, both Cancel buttons.
-- 23 Python tests pass; removal of dialog hook and title-only evidence
+- 25 Python tests pass; removal of dialog hook and title-only evidence
   produce red tests. First-line fixture exposed fixed65px crop bug; crop
   now starts below measured File menu text.
 - `af36316b1`: X11 empty extents use 1x1 backing without feeding padded

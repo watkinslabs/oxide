@@ -5,7 +5,7 @@
 | In progress | About and push-button captions | Open About; visible OK/license captions; real button closes it; hosted causality check for defect | B3630-paint-region-collapse |
 | In progress | Save As, Save, Open | Save new file, edit/save, New, reopen; edited token inside document crop | B3630-paint-region-collapse |
 | In progress | File-type dropdowns and Cancel | Visible expanded filters in both dialogs; Cancel returns with document intact | B3630-paint-region-collapse |
-| Open | Menu dropdowns | File, Edit, Format, View, Help render and dispatch correctly | B3630-paint-region-collapse |
+| In progress | Menu dropdowns | All five opening/dismissal checks wired; runtime rendering and dispatch still unverified | B3630-paint-region-collapse |
 | Open | Border redraw and moves | Move/resize/occlusion evidence; preserved contents; no drawing outside surface | B3630-paint-region-collapse |
 | Open | Cross-architecture verification | Both kernel gates; both applicable runtime acceptance paths | B3630-paint-region-collapse |
 
@@ -63,3 +63,16 @@ Draft PR: #7680. Runtime acceptance still unverified.
 Final acceptance result: exit 1, "GNOME session marker appeared without a
 rendered desktop frame". Runner76178 and QEMU79681 both exited; no live VM
 remains. UART audit passes with no Windows calls, since Notepad never launched.
+
+Menu coverage: all five dropdowns must acquire their expected entries after
+opening and lose them after Escape. Existing document words are rejected as
+ambiguous baseline evidence. 25 Python tests pass; removing the menus call
+makes the wiring test red (/tmp/B3630-menu-hook-red.log).
+
+KI-0861 narrowed timeline from retained incident log: custom dialog 0x20001b
+is 600x30 at72.517. Parent 0x200004 resizing callbacks occur72.546-72.557;
+custom dialog resizing callbacks72.562-72.733; its next ShowWindow sees750x1
+at72.785. File-dialog initialization explicitly resizes the custom template
+to the parent's current client size after arranging controls. Neither the
+parent's requested dimensions nor NCCALCSIZE's returned rectangle are logged
+at that boundary. No additional cause is established by this inspection.

@@ -12,6 +12,26 @@ from notepad_evidence import ocr_text
 
 
 class DialogEvidenceTests(unittest.TestCase):
+    def test_document_words_cannot_prove_a_menu_opened(self):
+        runner = SimpleNamespace(SCREEN=Path("evidence"), screenshot=lambda *args: ("frame", "hash"),
+                                 locate_notepad_window=lambda _: (0, 0, 600, 400),
+                                 image_size=lambda _: (600, 400), ocr_raw=lambda _: "new open save exit",
+                                 die=lambda message: (_ for _ in ()).throw(RuntimeError(message)))
+        check = dialogs.DialogChecks(runner, None, 0)
+        with patch.object(dialogs, "menu_bar_word", return_value=(10, 30, 30, 15)), \
+                patch.object(dialogs, "crop_image"):
+            with self.assertRaisesRegex(RuntimeError, "already present before opening"):
+                check.menus()
+
+    def test_dialog_run_requires_menu_verification_before_about(self):
+        runner = SimpleNamespace(keys_immediate=lambda *args: self.fail("input preceded menu verification"))
+        check = dialogs.DialogChecks(runner, None, 0)
+        class ReachedMenus(Exception):
+            pass
+        with patch.object(check, "menus", side_effect=ReachedMenus):
+            with self.assertRaises(ReachedMenus):
+                check.run()
+
     def test_title_or_background_text_cannot_stand_in_for_button_caption(self):
         rows = [
             ("Open", 120, 100, 40, 15, (1, 1, 1)),

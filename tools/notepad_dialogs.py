@@ -105,6 +105,7 @@ class DialogChecks:
 
     def run(self):
         r = self.runner
+        self.menus()
         self.key("alt", "h")
         self.wait("help-menu", lambda path: "about" in words(r.ocr_raw(path)))
         self.key("a")
@@ -160,6 +161,33 @@ class DialogChecks:
         self.wait("open-cancelled", lambda path: dialog_rect(path, "Open") is None)
         self.document("after-dialog-cancel", updated)
         print("windows-notepad-acceptance: dialogs PASS (About, captions, Save As, Save, Open, file types, Cancel, content round trip)")
+
+    def menus(self):
+        entries = (("File", "f", ("new", "open", "save", "exit")),
+                   ("Edit", "e", ("undo", "copy", "paste", "replace", "select")),
+                   ("Format", "o", ("word", "wrap", "font")),
+                   ("View", "v", ("status", "bar")),
+                   ("Help", "h", ("contents", "about")))
+        for title, mnemonic, expected in entries:
+            path, _ = self.runner.screenshot(self.conn, f"before-{title.lower()}-menu")
+            rect = self.runner.locate_notepad_window(path)
+            item = menu_bar_word(path, rect, title) if rect else None
+            if item is None:
+                self.runner.die(f"{title} absent from Notepad menu bar; retained {path}")
+            width, height = self.runner.image_size(path)
+            left, top, _, item_height = item
+            box = (left, top + item_height, min(width, left + 320), min(height, top + 480))
+            crop = Path(f"{self.runner.SCREEN}-{title.lower()}-menu.png")
+            def painted(frame):
+                crop_image(frame, box, crop)
+                text = words(self.runner.ocr_raw(crop))
+                return all(word in text for word in expected)
+            if painted(path):
+                self.runner.die(f"{title} menu evidence already present before opening; retained {crop}")
+            self.key("alt", mnemonic)
+            self.wait(f"{title.lower()}-menu-items", painted)
+            self.key("esc")
+            self.wait(f"{title.lower()}-menu-dismissed", lambda frame: not painted(frame))
 
     def dropdown(self, path, title):
         rect = dialog_rect(path, title)
