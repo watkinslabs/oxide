@@ -111,6 +111,34 @@ sed -n '1,110p' crates/kernel/ipc/src/win32_window/paint_damage/owner.rs
 
 Then add the About-dialog step to the acceptance runner and boot **once**.
 
+## Lane B3630 — coordinate spaces already read (2026-09-09)
+
+Worktree `../kernel-B3630`, branch `B3630-paint-region-collapse`, refreshed to
+`origin/main` (`afa38ce09`). Read, not yet disproved or confirmed:
+
+- `paint_damage/owner.rs::paint_region_to_screen()` translates by each
+  window's own `client_rect` then walks to the parent. That is correct **if**
+  a window's `rect` and `client_rect` are both stored in its *parent's client*
+  coordinates.
+- `paint_damage/visible.rs::visible_paint_rect()` implies exactly that space:
+  it intersects `client_rect_raw(id)` with `rect(id)` directly, then per
+  ancestor offsets by the parent's client origin before intersecting with the
+  parent's client and window rects, and finally subtracts the accumulated
+  offset plus its own client origin to return window-local client coords.
+- `state.rs::set_rect()` carries `client_rect` with a move, so the two stay in
+  one space across moves. `client_rect()` normalises to `(0,0,w,h)`;
+  `paint_region()` clips by that, in window-local coords — consistent.
+- `syscalls/src/nt_window/create/nccalcsize.rs::apply_for_current()` feeds
+  `set_client_rect` a rect derived from `window_rect_for_current()`, i.e. the
+  same space as `rect`. No absolute/relative mismatch found at the setter.
+
+**So the handoff's "origins sum because client rects are absolute" hypothesis
+is NOT confirmed.** Nothing is ruled out yet either — the reading stopped
+before checking `nonclient_create::creation_client_rect()` (what the wndproc
+reply is interpreted as) and the other `set_client_rect` call paths
+(`menu_raw/bar.rs`). Next step is a hosted test that reproduces a 750x1
+region from real dialog geometry, not more reading.
+
 ## Box notes
 
 - Pre-push is red on `main` for `lint-ratchet`, `test-build-gate` and
@@ -118,3 +146,20 @@ Then add the About-dialog step to the acceptance runner and boot **once**.
 - Lanes share `/home/nd/oxide/kernel/target`: a concurrent build takes the
   cargo package lock and a kernel LTO link can sit for tens of minutes. Give
   every lane its own `CARGO_TARGET_DIR`.
+- **The box CRASHED on 2026-09-08 at ~23:32** — it was not shut down. Boot
+  `-1` journal stops mid-line at 23:14:36 with no systemd shutdown sequence;
+  next boot ran `fsck /dev/nvme0n1p2: recovering journal` and renamed a
+  corrupt `system.journal`; five ERST `dmesg-erst-*` records were archived to
+  `/var/lib/systemd/pstore/7683373218945564677/` (root-only; read
+  `dmesg.txt` there for the panic). Preceding pattern: escalating
+  `Under memory pressure, flushing caches` from `systemd-resolved` (22:22+)
+  then `systemd-journald` (22:42 -> 23:14, accelerating), multi-minute
+  scheduler stalls (`tailscaled: time jump detected (slept 2m0s)`),
+  `sssd-kcm` watchdog kill, `systemd-coredump@31` runtime-limit stop, under
+  postgres-container churn (`gitfoundary-namespaces-test-*` cycling every
+  1-2 min). 62 GB RAM, only 8 GB zram swap. Third crash in ~7 weeks
+  (2026-07-21, 2026-07-24). **Treat a lost boot/build result from that window
+  as a box death, not a kernel result.**
+- Note the clock: `journalctl --list-boots` shows this boot at `01:19:27`
+  while `who -b` says `05:19` — RTC was 4h off until NTP corrected. One boot,
+  not two.
