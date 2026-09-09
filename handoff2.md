@@ -1,9 +1,9 @@
 # Handoff — hardware retrieval repair, verification in progress
 
-First command: `tail -15 /tmp/B3630-pointer-position-build.log`
+First command: `git status --short`
 Worktree /home/nd/oxide/kernel-B3630; branch B3630-paint-region-collapse.
 Main read-only. Read CLAUDE.md. Draft PR7680; last verified remote843f82ed4.
-Local HEAD3e69d8755; hardware commits NOT pushed (final position build running).
+Final hardware/position validation passed; push pending. Verify remote before resuming.
 Goal remains defect-free Notepad buttons/borders/Open/Save/menus/About.
 User requests visible boot when ready and VM left running. Do not call done.
 Wine11.16 release/debug profiles explicit; consult pinned local sources first.
@@ -40,7 +40,7 @@ Wine11.16 release/debug profiles explicit; consult pinned local sources first.
 
 - Local runtime changes:8fedf4646 +249d43553 +276390dfd +3e69d8755.
   c9834ba26 helper experiment reverted06dcd177c after measured stack growth.
-  Latest HEAD3e69d8755; remote still843f82ed4. Never overwrite main.
+  Remote still843f82ed4 before publication. Never overwrite main.
 - Prepared message now Box<Selected>, a temporary handoff, not a queue copy.
   General Stage return fits the old small result; actual delivery helper
   performs usercopy outside GUI ownership. Snapshot lifetime ends at delivery.
@@ -62,10 +62,15 @@ Wine11.16 release/debug profiles explicit; consult pinned local sources first.
   Exception reservations remain7664/6368. Top20 membership changed as Windows
   paths shrank; an execve summary row appearing is NOT a new primary path.
   /tmp/B3630-hardware-box-stack-{x86,arm}.log. Keep full reports, don't hide flags.
-- CURRENT final build after position stamp:58475, log
-  /tmp/B3630-pointer-position-build.log; feature85075, log
-  /tmp/B3630-pointer-position-feature.log. Poll authoritative exit statuses.
-  Re-run final stack reports against produced ELFs before push.
+- Final position-stamp builds58475 and feature85075 PASS on BOTH arches.
+  /tmp/B3630-pointer-position-{build,feature}.log. Final primary stack tables
+  337x86/278ARM match baseline identities with no added/increased value;
+  /tmp/B3630-pointer-position-stack-{x86,arm}.log. KI-0019 baseline failures remain.
+- Exact release ELFs preserved target/B3630-hardware-final-{x86,arm}.elf.
+  x86 SHA6fdb203e7d2df7fe4c2c3bce54c41bc66d46c7cd5ee8dfe242f2434f4741d5c1;
+  ARM SHA0c9955f3afd6551fad9240c04ea6f2ad69fa10f96fb4ff0e3ab6a99c480fe2c3.
+- KI-0892/0893/0896 closed via829dc62d5/8fedf4646/3e69d8755. KI-0682 remains
+  open for child-surface scope/owner fallback, KI-0894 for filtering/scanning.
 - Earlier initial/refactor stack failures remain evidence, not current results.
   Do not use the abandoned dispatch helper or claim initial stack was baseline.
 - KI-0895 was a FALSE hypothesis: bridge::window only parses HWND, does not
