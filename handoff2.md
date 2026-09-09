@@ -1,4 +1,4 @@
-# Handoff — Debugger selector repair; Notepad runtime unverified
+# Handoff — Debugger image fixes; thread attach stop next
 
 First command: `git -C /home/nd/oxide/kernel-B3630 status --short`
 Branch B3630-paint-region-collapse; draft PR #7680. Verify local/remote SHAs
@@ -63,7 +63,7 @@ new/worsened path vs prior branch report; exception7664 B unchanged.
 Selector repair published in draft PR7680; verify latest local/remote SHA.
 Hosted gate180 crates and both feature gates pass. No new boot.
 
-KI-0870 fixed05071e0f1; publication pending. Complete image publication
+KI-0870 fixed05071e0f1 in draft PR7680. Complete image publication
 is now in exec::vdso::map_into, reached by syscalls::vdso::map_into_current
 from both exec paths. ELF parsing uses the existing shared parser. The full
 image and page-rounded extent survive, including non-PT_LOAD section metadata.
