@@ -310,3 +310,15 @@ fails. No later boot or successful final acceptance is claimed.
 - Actual compositor-pointer enqueue→hit-test→retrieval test covers nested ancestors, client inset, parent movement, negative screen positions, down/up identity/client coordinates, and excluded right/bottom/outside points. Original default hit returns0 instead of1; repaired path passes.
 - Actual production dispatch.rs fixture confirms its call site consumes the screen query. Restoring old call site fails Some(0) vs Some(1); restoration passes116 integration tests. Fixture source dependencies updated to actual key latch/compositor position admission; untested nonclient frame seams fail loudly if called. KI0604 wider hardware/menu coverage remains open.
 - All3262 syscall lib tests pass; both feature gates and release builds pass. Stack comparison has no increased/new reported path:13 x86 rows decrease, ARM unchanged; existing exception reservations unchanged. Running inspection VM still has earlier kernel.
+
+KI-0887: native child windows clipped pixels published by a parent-backed
+control DC because the presentation GC used the default child clipping mode.
+GC subwindow mode now includes child windows; the GUI DC owns the clip.
+Real Xvfb regression publishes a partial parent frame beneath a child:
+old call leaves all four child pixels unchanged (RED); corrected call changes
+only the two covered pixels (GREEN). Full compositor suite:97 tests pass.
+Runtime verification remains outstanding; pointer trails and stale menu pixels
+are not yet attributed to this defect.
+Both compositor release targets build. ARM uses the existing completed
+Fedora sysroot at target/B3630-arm-sysroot; default system sysroot still lacks
+the previously recorded XCB/XKB/libgcc link inputs (KI-0421/KI-0691).

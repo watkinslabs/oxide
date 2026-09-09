@@ -34,6 +34,33 @@ fn wait_damage(backend:&mut Backend)->BridgeEvent{
 fn drain(backend:&mut Backend){for _ in 0..40{while backend.poll_event().is_some(){} std::thread::sleep(Duration::from_millis(1));}}
 
 #[test]
+fn parent_surface_pixels_are_visible_through_a_child_control_window() {
+    const WS_CHILD:u32=0x40000000;
+    const WS_VISIBLE:u32=0x10000000;
+    let server=Server::start();let mut backend=Backend::connect(Some(&server.display)).unwrap();
+    let client=xcb::Client::connect(&server.display);
+    create(&mut backend,7);frame(&mut backend,7,0x112233);
+    backend.handle_command(BridgeCommand::Create{hwnd:8,title:Vec::new(),
+        rect:Rect{left:1,top:1,right:3,bottom:3},parent:7,style:WS_CHILD|WS_VISIBLE,ex_style:0}).unwrap();
+    let child=backend.xid_for(8).unwrap();
+    backend.handle_command(BridgeCommand::Frame{hwnd:8,
+        frame:Frame::new(2,2,2,vec![0xabcdef;4],Rect{left:0,top:0,right:2,bottom:2}).unwrap()}).unwrap();
+    drain(&mut backend);
+    assert_eq!(client.pixels(child,2,2),vec![0xabcdef;4]);
+    // A parent-clipped control DC publishes its label into the parent
+    // backing. The native child window must not clip that label away.
+    backend.handle_command(BridgeCommand::Frame{hwnd:7,
+        frame:Frame::new(4,3,1,vec![0x445566;2],Rect{left:1,top:1,right:2,bottom:3}).unwrap()}).unwrap();
+    let deadline=Instant::now()+Duration::from_secs(2);
+    loop {
+        let pixels=client.pixels(child,2,2);
+        if pixels==vec![0x445566,0xabcdef,0x445566,0xabcdef]{break;}
+        assert!(Instant::now()<deadline,"parent drawing was clipped out of child control: {pixels:x?}");
+        backend.poll_event();std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+#[test]
 fn an_exposure_the_retained_surface_cannot_answer_becomes_a_damage_record_on_the_wire(){
     let server=Server::start();let mut backend=Backend::connect(Some(&server.display)).unwrap();
     let client=xcb::Client::connect(&server.display);

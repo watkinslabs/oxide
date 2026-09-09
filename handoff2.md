@@ -56,9 +56,10 @@ Durable evidence: scratch/B3630-notepad-verification.md.
   Repair now wired through default_proc_state to canonical screen query.
  3262 syscall lib/116 actual-dispatch fixture tests pass; old hook fails0vs1.
  Both release/feature targets pass; no increased/new stack row. Not live yet.
-- Rendering suspect: CS_PARENTDC paints parent backing, but X11 GC defaults
- to ClipByChildren. Pinned driver uses IncludeInferiors for window drawables.
- Verify actual parent-frame/child-window pixels in Xvfb before changing GC.
+- KI0887: CS_PARENTDC paints parent backing, but default X11 child clipping
+ hid those pixels. IncludeInferiors repair passes real Xvfb RED/GREEN test
+ and full97-test compositor suite; both release targets build. Not live yet.
+ Pointer trails/stale menu cause remains unverified; row stays IN-PROGRESS.
   PR must remain draft: complete visual acceptance not achieved.
 
 ## Wine profiles

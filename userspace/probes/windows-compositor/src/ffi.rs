@@ -37,6 +37,8 @@ pub const PROP_MODE_REPLACE: u8 = 0; pub const ATOM_NONE: Atom = 0; pub const AT
 pub const ATOM_STRING: Atom = 31; pub const ATOM_WM_ICON_NAME: Atom = 37; pub const ATOM_WM_NAME: Atom = 39;
 pub const WINDOW_CLASS_INPUT_OUTPUT: u16 = 1; pub const IMAGE_FORMAT_Z_PIXMAP: u8 = 2;
 pub const CW_OVERRIDE_REDIRECT: u32 = 1 << 9; pub const CW_EVENT_MASK: u32 = 1 << 11;
+/// Window drawing already carries the GUI owner's clip, including parent-DC control pixels.
+pub const GC_SUBWINDOW_MODE: u32 = 1 << 15; pub const INCLUDE_INFERIORS: u32 = 1;
 pub const EVENT_KEY_PRESS: u32 = 1; pub const EVENT_KEY_RELEASE: u32 = 1 << 1; pub const EVENT_BUTTON_PRESS: u32 = 1 << 2; pub const EVENT_BUTTON_RELEASE: u32 = 1 << 3; pub const EVENT_POINTER_MOTION: u32 = 1 << 6; pub const EVENT_EXPOSURE: u32 = 1 << 15; pub const EVENT_STRUCTURE_NOTIFY: u32 = 1 << 17; pub const EVENT_FOCUS_CHANGE: u32 = 1 << 21; pub const EVENT_PROPERTY_CHANGE: u32 = 1 << 22;
 /// Focus-change `detail` and `mode` values. A pointer-boundary focus event is
 /// not a focus change, and a grab's focus event describes the grab, not the

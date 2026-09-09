@@ -313,7 +313,7 @@ impl Backend {
         let values = [u32::from(!crate::managed::at_creation(style, ex_style)), ffi::EVENT_KEY_PRESS | ffi::EVENT_KEY_RELEASE | ffi::EVENT_BUTTON_PRESS | ffi::EVENT_BUTTON_RELEASE | ffi::EVENT_POINTER_MOTION | ffi::EVENT_EXPOSURE | ffi::EVENT_STRUCTURE_NOTIFY | ffi::EVENT_FOCUS_CHANGE];
         let (x_width, x_height) = crate::extent::backing((width, height));
         let configure_sequence;
-        unsafe { configure_sequence = Some(ffi::xcb_create_window(self.conn, self.depth, xid, x_parent, x as i16, y as i16, x_width as u16, x_height as u16, 0, ffi::WINDOW_CLASS_INPUT_OUTPUT, self.visual, ffi::CW_OVERRIDE_REDIRECT | ffi::CW_EVENT_MASK, values.as_ptr()).sequence); ffi::xcb_create_gc(self.conn, gc, xid, 0, ptr::null()); }
+        unsafe { configure_sequence = Some(ffi::xcb_create_window(self.conn, self.depth, xid, x_parent, x as i16, y as i16, x_width as u16, x_height as u16, 0, ffi::WINDOW_CLASS_INPUT_OUTPUT, self.visual, ffi::CW_OVERRIDE_REDIRECT | ffi::CW_EVENT_MASK, values.as_ptr()).sequence); ffi::xcb_create_gc(self.conn, gc, xid, ffi::GC_SUBWINDOW_MODE, &ffi::INCLUDE_INFERIORS); }
         self.publish_title(xid, title);
         unsafe { ffi::xcb_change_property(self.conn, ffi::PROP_MODE_REPLACE, xid, self.atoms.wm_protocols, ffi::ATOM_ATOM, 32, 1, &self.atoms.wm_delete as *const _ as *const _); ffi::xcb_flush(self.conn); }
         // The owner travels in the parent field for a window that is not an X
