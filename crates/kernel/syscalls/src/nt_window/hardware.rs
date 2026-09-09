@@ -16,3 +16,9 @@ mod trace;
 #[cfg(all(target_os = "oxide-kernel", not(feature = "debug-winpump")))]
 #[path = "hardware/trace_off.rs"]
 mod trace;
+
+#[cfg(target_os = "oxide-kernel")]
+#[path = "hardware/delivery.rs"]
+mod delivery;
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) use delivery::{deliver_for_current, note_get};
