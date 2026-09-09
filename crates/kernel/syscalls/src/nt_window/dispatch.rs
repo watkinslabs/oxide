@@ -57,10 +57,14 @@ pub(super) fn dispatch_mode(call: NtCall, raw: bool) -> Option<u64> {
             // Activation, the cursor and the double click are decided here,
             // on the way out of the queue and inside the window procedure,
             // not by whatever posted the raw input.
-            match hardware::dispatch_for_current(call, raw, operation) {
-                hardware::DispatchStage::Complete(status) => return Some(status),
-                hardware::DispatchStage::Again => continue,
-                hardware::DispatchStage::Ready => {}
+            match hardware::process_for_current(call, raw, operation) {
+                hardware::Stage::Pending(status) => return Some(status),
+                hardware::Stage::Again => continue,
+                hardware::Stage::Ready => {}
+                hardware::Stage::Prepared { id, message } => {
+                    if let Some(status) = hardware::deliver_for_current(operation, id, message) { return Some(status); }
+                    continue;
+                }
             }
         }
         let (result, wake, sleep, cleanup, atoms, paint_dcs) = {

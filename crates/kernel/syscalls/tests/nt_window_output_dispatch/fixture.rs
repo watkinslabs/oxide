@@ -175,7 +175,7 @@ mod nt_window{
             use crate::{sched, timekeeper};
             include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/nt_window/hardware/delivery.rs"));
         }
-        pub(crate) use delivery::{dispatch_for_current, DispatchStage, note_get};
+        pub(crate) use delivery::{deliver_for_current, note_get};
         #[derive(Clone,Copy,Debug,Eq,PartialEq)]pub enum Stage{Ready,Again,Pending(u64),Prepared{id:u64,message:ipc::win32_window::WinMessage}}
         pub fn process_for_current(_:super::NtCall,_:bool,_:syscall::nt::NtWindowCall)->Stage{crate::hardware_view_fixture::stage()}}
     mod bridge{pub fn publish_destroy_current(_:u64)->Result<(),()>{Ok(())}pub fn publish_visibility_current(_:u64)->Result<(),()>{Ok(())}
