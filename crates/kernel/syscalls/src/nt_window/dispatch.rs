@@ -94,7 +94,7 @@ pub(super) fn dispatch_mode(call: NtCall, raw: bool) -> Option<u64> {
                                 paint_dcs.extend(windows.iter().filter_map(|window| state.paint_session(*window).ok().map(|session| session.dc).filter(|dc| *dc != 0)));
                                 let Ok((_, released)) = state.destroy_with_property_atoms(window) else { return Some(STATUS_INVALID_HANDLE); };
                                 atoms.extend(released);
-                                cleanup.extend(windows.into_iter().map(|window| window.raw()));
+                                cleanup.extend(windows.into_iter().rev().map(|window| window.raw()));
                             }
                             STATUS_SUCCESS
                         }
@@ -133,7 +133,7 @@ pub(super) fn dispatch_mode(call: NtCall, raw: bool) -> Option<u64> {
                     let windows = state.destruction_order(window).unwrap_or_default();
                     paint_dcs.extend(windows.iter().filter_map(|window| state.paint_session(*window).ok().map(|session| session.dc).filter(|dc| *dc != 0)));
                     let result = match state.destroy_with_property_atoms(window) {
-                        Ok((_, released)) => { atoms.extend(released); cleanup.extend(windows.into_iter().map(|window| window.raw())); STATUS_SUCCESS },
+                        Ok((_, released)) => { atoms.extend(released); cleanup.extend(windows.into_iter().rev().map(|window| window.raw())); STATUS_SUCCESS },
                         Err(_) => STATUS_INVALID_HANDLE,
                     };
                     (Some(result), None, None)

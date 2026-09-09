@@ -27,4 +27,6 @@ mod erase_fixture;
 mod paint_reserve_fixture;
 #[path="nt_window_output_dispatch/hardware_view.rs"]
 mod hardware_view_fixture;
+#[path="nt_window_output_dispatch/teardown.rs"]
+mod teardown_fixture;
 include!("nt_window_output_dispatch/fixture.rs");

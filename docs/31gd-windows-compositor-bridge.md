@@ -124,6 +124,13 @@ catalog links and desktop/MIME launch targets. Native pair bytes must match the
 selected staging inputs; file presence or timestamps do not establish provenance.
 Any gate failure fails assembly before reporting the image ready.
 
+Destruction publication removes descendant display windows before ancestors;
+callback traversal remains parent-first. Thread-exit cleanup already supplies
+dependents first. A parent display Destroy removes its remaining X subtree.
+Show replays each exact retained coverage area before acknowledgement; gaps
+remain application-owned and exposure requests still reach the paint owner.
+Partial coverage alone never turns successful mapping into a refusal.
+
 ## Verification
 
 Position opcode 7 carries 16 bytes: insertion HWND u64, flags u32, reserved

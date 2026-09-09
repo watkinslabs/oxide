@@ -298,7 +298,7 @@ impl Backend {
         self.repaint(hwnd, frame.damage)
     }
 
-    fn repaint(&mut self, hwnd: u32, damage: Rect) -> Result<(), BackendError> {
+    fn repaint(&self, hwnd: u32, damage: Rect) -> Result<(), BackendError> {
         let window = self.windows.get(&hwnd).ok_or(BackendError::InvalidCommand)?;
         let surface = window.surface.as_ref().ok_or(BackendError::InvalidCommand)?;
         if surface.width != window.width || surface.height != window.height { return Err(BackendError::InvalidCommand); }

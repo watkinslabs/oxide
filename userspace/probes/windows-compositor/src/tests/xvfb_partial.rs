@@ -164,3 +164,6 @@ fn a_partial_frame_after_a_server_resize_leaves_the_display_and_the_surface_agre
             assert_eq!(retained[index] | 0xff00_0000, SECOND | 0xff00_0000, "the display and the surface disagree inside the claim"); }
     } }
 }
+
+#[path = "xvfb_partial/show.rs"]
+mod show;

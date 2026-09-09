@@ -364,7 +364,7 @@ fn destroy_window_for_current(hwnd: u64) {
         for window in &windows { entries[index].paint_callbacks.cancel_window(window.raw() as u64); }
         for window in &windows { entries[index].redraw.cancel_window(*window); }
         for window in &windows { entries[index].scroll_pending.cancel_root(window.raw() as u64); }
-        (windows.into_iter().map(|window| window.raw()).collect::<Vec<_>>(), atoms, paint_dcs)
+        (windows.into_iter().rev().map(|window| window.raw()).collect::<Vec<_>>(), atoms, paint_dcs)
     };
     { let mut owner = USER_ATOMS.lock(); for atom in atoms { owner.release_property_atom(atom); } }
     for dc in paint_dcs { let _ = crate::nt_gdi::delete_paint_dc_current(dc); }

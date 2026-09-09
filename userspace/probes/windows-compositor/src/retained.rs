@@ -30,6 +30,9 @@ impl Retained {
     /// exposure paints the window's own content away. # C: O(1)
     pub(crate) fn holds(&self, rect: Rect) -> bool { self.held.holds(rect) }
 
+    /// Replay uses only areas supplied by successful frames. # C: O(1)
+    pub(crate) fn areas(&self) -> &[Rect] { self.held.areas() }
+
     /// The areas the surface holds pixels for, for a test that reads the
     /// display back and compares only what the surface claims.
     #[cfg(test)]

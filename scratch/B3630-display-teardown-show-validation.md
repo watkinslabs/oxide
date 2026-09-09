@@ -1,0 +1,13 @@
+# Display teardown and partial Show validation
+
+- KI-0898: canonical destruction_order is callback preorder. Ordinary Destroy/default Close and raw lifecycle cleanup published that order to a display backend whose parent Destroy removes the X subtree, making later child requests invalid. Cleanup publication now reverses the captured preorder. Callback order and existing thread-exit dependent-first order unchanged.
+- Actual production dispatcher tests record child/grandchild/sibling teardown after canonical revocation and outside GUI ownership. Original Destroy order fails /tmp/B3630-teardown-order-red.log. Restoring only default Close order also fails /tmp/B3630-teardown-default-red.log. Restored123 dispatcher-fixture tests PASS /tmp/B3630-teardown-final-dispatch.log. Raw lifecycle cleanup uses the same reversal but is not independently executed by this fixture.
+- KI-0899: Show mapped successfully then replayed full surface extent. Partial/disjoint coverage made repaint reject unknown pixels and return InvalidCommand. Show now iterates existing exact coverage using immutable repaint; no new coverage registry or copied full surface.
+- Actual Xvfb map regression fails Show before repair /tmp/B3630-partial-show-red.log. Final test checks both retained rectangles and every untouched background pixel. Removing replay returns success but fails pixel2,3 /tmp/B3630-partial-show-replay-control.log; restored compositor101 tests PASS /tmp/B3630-partial-show-final-tests.log.
+- These boundary regressions establish causes for the corresponding refusal classes; retained UART alone does not attribute all29 preview failures. No new boot or completed Notepad visual acceptance.
+- Both kernel release builds and feature gates PASS: /tmp/B3630-teardown-show-build.log, /tmp/B3630-teardown-feature.log. Both compositor release builds PASS: /tmp/B3630-partial-show-build-{x86,arm}.log.
+- Both frame gates PASS. Static stack gates retain KI0019 failures; primary336x86/278ARM rows have no new/increased path vs scope baseline, exception7664/6368 unchanged. /tmp/B3630-teardown-{stack,frame}-{x86,arm}.log and teardown-stack-compare.log. No new stack exception.
+- Final x86 kernel target/B3630-display-final-x86.elf: SHA256 c285e96a563edd1e0b6b0e9feeb015dd388e7d4e535b5d1e05557f01b3bdd003.
+- Final x86 compositor target/B3630-compositor-release-x86: SHA256 ee3c158b4e6afa2a6e24715916e27818bb1c13aac53fcf15a82f231cfc0fc0ed.
+- Final arm kernel target/B3630-display-final-arm.elf: SHA256 c90654a5345b2e41a812f8bfddbb407085b0a3ba1865e115a0a78f85f499d54d.
+- Final arm compositor target/B3630-compositor-release-arm: SHA256 760bb14a34b3facc365b9843dad4735a191726bec4797f17521206e498e6e175.

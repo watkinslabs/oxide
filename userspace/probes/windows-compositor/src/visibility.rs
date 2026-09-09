@@ -1,5 +1,5 @@
 //! Map acceptance and retained-frame replay share the backend's ordered X connection.
-use super::{Backend,BackendError,Rect,ffi};
+use super::{Backend,BackendError,ffi};
 impl Backend {
     pub(super) fn show(&mut self,hwnd:u32)->Result<(),BackendError>{
         let window=self.windows.get_mut(&hwnd).ok_or(BackendError::InvalidCommand)?;
@@ -9,9 +9,10 @@ impl Backend {
         if !error.is_null(){unsafe{libc::free(error as *mut _);}return Err(BackendError::X11);}
         // Rendering into an unmapped window does not retain its server pixels.
         // Replay before acknowledgement; a WM-delayed map still repaints on Expose.
-        let damage=window.surface.as_ref().filter(|s|s.width==window.width&&s.height==window.height)
-            .map(|s|Rect{left:0,top:0,right:s.width as i32,bottom:s.height as i32});
-        if let Some(damage)=damage{self.repaint(hwnd,damage)?;}
+        let window=self.windows.get(&hwnd).ok_or(BackendError::InvalidCommand)?;
+        if let Some(surface)=window.surface.as_ref().filter(|s|s.width==window.width&&s.height==window.height){
+            for area in surface.areas(){self.repaint(hwnd,*area)?;}
+        }
         Ok(())
     }
 }

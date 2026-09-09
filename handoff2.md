@@ -1,182 +1,128 @@
-# Handoff — pointer scope and display stacking repaired; visual acceptance open
+# Handoff — display stacking, teardown and partial Show repaired; acceptance open
 
 First command: `git status --short`
 Worktree /home/nd/oxide/kernel-B3630; branch B3630-paint-region-collapse.
-Main read-only. Read CLAUDE.md. Draft PR7680; filter runtimeee58ef0b7.
-Scope runtimea165b0c85 validated on both architectures; visual acceptance remains open.
-Goal remains defect-free Notepad buttons/borders/Open/Save/menus/About.
-User requests visible boot when ready and VM left running. Do not call done.
-Wine11.16 release/debug profiles explicit; consult pinned local sources first.
+Read CLAUDE.md. Main read-only afa38ce09. Draft PR7680.
+Goal: defect-free Notepad buttons/borders/Open/Save/menus/About; not complete.
+User requests visible boot when ready, inspection VM left running.
+No live QEMU. No boot during latest stacking/teardown/Show work.
+Consult local pinned primary sources first; Wine11.16 release/debug explicit.
 
-## Current changes
+## Current work
 
--829dc62d5 repairs point candidate parent-client coordinates, client clipping
-  and window regions (KI-0892);1526 IPC tests, both builds/features passed.
-- KI-0682 FIXED a165b0c85: hardware driver snapshots canonical scoped candidates, continues
-  after HTTRANSPARENT across synchronous/suspended calls, handles disabled
-  scopes, skips destroyed candidates and rejects destroyed/foreign targets.
-  Capture is resolved again at retrieval. Scope includes its own window last.
-  Native child surfaces now queue the top-level input scope, preserving screen
-  coordinates; allocation-free first-child point walk selects receiver thread.
-  Exhausted transparent scope may try its immediately following owner on the
-  same thread, once, including after suspended callbacks. Existing claim valid.
-  Scope runtimea165b0c85; both release builds/features and frame-size gates PASS.
-  Final primary stack tables336x86/278ARM unchanged; no new/increased path.
-  Existing KI-0019 failures and7664/6368 exception reservations remain.
-  /tmp/B3630-scope-final-build.log, scope-feature.log, scope-stack-{x86,arm}.log.
-  Evidence scratch/B3630-native-pointer-scope-validation.md; final ELFs saved.
-  RED controls: /tmp/B3630-scope-{driver,owner,popup}-red.log. Current1529 IPC,
-  3270 syscall-library,24 actual-driver and121 dispatcher-fixture tests PASS.
-  /tmp/B3630-scope-ipc-restored.log, scope-syscalls-lib-final.log,
-  scope-boundary-restored.log. Replacing direct thread lookup with scope hit
-  selection fails scope-thread-walk-red.log; restored1529 IPC tests PASS.
-- KI-0893 raw queued message survives Peek unchanged; Stage::Prepared returns
-  translated view to actual Peek/Get dispatcher. Canonical queue assigns a
-  stable selection ID so retirement cannot remove an identical successor.
-  Removed obsolete raw-message replacement API. MessageQueue implementation
-  extracted into message_queue.rs; root now below500 lines; docs52 updated.
-- Hardware processing checks queue origin bits: posted mouse-number messages
-  no longer enter hit testing. No parallel queue or HWND registry introduced.
-- debug-winpump adds WINDOWS-HARDWARE-HIT and WINDOWS-HARDWARE-VIEW with
-  selection ID, source/target HWND, raw screen point, hit and translated view.
-- KI-0894 FIXED ee58ef0b7: possible-number mouse prefilter,
-  final target/descendant filter, raw-preserving scan after stable identity.
-  Suspended callbacks resume scanning. Posted/quit/paint fallback excludes raw
-  hardware; completed scan watermark drives GetMessage readiness. New input
-  wakes retrieval, retained filtered input does not. No parallel queue/state.
-  debug-winpump WINDOWS-HARDWARE-FILTER records target/message and filter.
-  Claimdce01b596; runtimeee58ef0b7; ledger closed after final validation.
-- Queue-thread selection remains distinct from retrieval hit testing; disabled
-  root still permits the separate thread walk before its own hit test.
-  Broader focus/capture thread-input ownership KI-0504 remains open.
-- KI-0897: display stacking uses BELOW for preceding HWND. Top-level
-  BadMatch after X reparenting forwards original ConfigureRequest to root;
-  missing/destroyed windows still fail. Actual Xvfb regressions reproduced
-  reversed order and reparent refusal; broad error swallowing control fails.
-  Backend logs refusal sequence/HWND/error and restack XIDs/mode/error.
-  Runtime in x11/position.rs; full compositor suite100 tests PASS.
-  Next KI-0898: ordinary destruction publishes preorder; backend parent
-  Destroy already removes descendants. Reverse publication cleanup only;
-  canonical callback preorder and thread-exit dependent-first order stay.
-  Visibility refusals and full visual defects still need separate diagnosis.
-- KI-0861 old750x1 trace is superseded by actual Open run in
+- Pushed/remote-verified c11e7ea62: display stacking runtimea7d181ac3,
+  KI-0897 closed. Backend sibling insertion means preceding HWND: BELOW,
+  not ABOVE. Decorated top-level BadMatch forwards original ConfigureRequest
+  to root manager; other X errors remain failures. Real Xvfb red/green and
+  BadWindow-swallowing positive control. Backend diagnostics retain
+  sequence/HWND/error plus restack target/sibling/mode/error.
+  scratch/B3630-display-stacking-validation.md;100 compositor tests passed.
+  Both compositor/kernel release builds passed. Push180 hosted + both features
+  passed with only documented KI0019 lint/test-build/stack exceptions.
+- HEAD bbaff0a46 claims KI-0899. KI-0898 claimed in a7d181ac3. Both have
+  implementation/tests validated, awaiting runtime commit and push.
+- KI-0898: destruction_order is callback preorder. Ordinary Destroy/default
+  Close and raw lifecycle cleanup now reverse only publication cleanup, so
+  parent X Destroy cannot invalidate later descendant requests. Callback
+  order unchanged; thread-exit already dependent-first, unchanged.
+  Actual dispatcher regressions Destroy/default Close fail before correction,
+  pass after; raw lifecycle wrapper reviewed but not independently executed
+  by this fixture.123 dispatcher tests PASS.3270 syscall-library tests PASS.
+- KI-0899: Show previously replayed whole surface after map, rejecting valid
+  partial coverage. It now replays exact existing areas through immutable
+  repaint. Real Xvfb checks disjoint painted pixels plus untouched background;
+  removing replay fails pixels even though Show succeeds.101 compositor tests
+  PASS. No second coverage owner, no full-surface copy.
+- Evidence scratch/B3630-display-teardown-show-validation.md.
+  /tmp/B3630-teardown-{order-red,default-red,final-dispatch,syscalls-lib}.log.
+  /tmp/B3630-partial-show-{red,replay-control,final-tests}.log.
+- Both kernel/compositor release builds and both features PASS; both frame
+  gates PASS. Static primary336x86/278ARM rows have no added/increased path
+  vs scope baseline; existing KI0019 failures and7664/6368 exceptions remain.
+  /tmp/B3630-teardown-show-build.log, teardown-feature.log,
+  teardown-{stack,frame}-{x86,arm}.log, teardown-stack-compare.log.
+  Final ELFs target/B3630-display-final-{x86,arm}.elf and compositor-release
+  binaries saved; hashes in teardown/Show evidence. Need commit/close/push.
+- KI0900 discovered: unchecked PutImage errors arrive as X11 response0;
+  poll_event/decode_event silently discard them after ACK. Need actual server
+  rejection regression and sequence/resource/error propagation before trusting
+  drawing success. Checked stacking refusal logging does not cover this.
+- Next runtime acceptance must distinguish repaired refusal classes from
+  unexplained residual visual defects. Prior UART alone does not attribute
+  all29 refusals. Full scrollbar KI0885 and activation/cursor policies open.
+
+## Avoid stale diagnoses
+
+- KI-0861 historical750x1 is superseded by actual Open run
   target/boot-logs/x86_64-20260909-143112.log: parent100005/custom10001c
-  retain750x484. Do not restart from old one-pixel hypothesis. Its toolbar
-  invalid geometry predates control traversal fix322669c2a; lookup failures
-  leave layout RECTs unwritten. Full visual acceptance remains outstanding.
-- Current filter validation:18 hardware-driver +121 dispatcher-fixture tests
-  PASS;1527 IPC +3270 syscall library tests PASS. Initial nonclient-only and
-  retained-filter scan tests RED. Removed fallback/wait/target-filter hooks
-  each fail assertions; restored PASS. /tmp/B3630-filter-*-red.log,
-  /tmp/B3630-filter-restored.log. Both feature checks PASS.
-  Final builds /tmp/B3630-filter-final-build.log PASS on both architectures.
-  Both frame-size gates PASS. Final primary stack tables336x86/278ARM include
-  exception row, no new/increased reported path vs prior337x86/278ARM.
-  Existing KI-0019 failures remain; exception reservations7664/6368 unchanged.
-  /tmp/B3630-filter-final-stack-{x86,arm}.log; evidence
-  scratch/B3630-hardware-filter-validation.md. No new boot.
-  Final ELFs target/B3630-filter-final-{x86,arm}.elf, hashes in evidence.
-- Actual hardware fixture mocks task/clock/Send boundary but imports production
-  driver/context; tests synchronous and suspended callback completion.
-  Actual dispatcher fixture separately tests Stage::Prepared consumption.
-  These are separate boundary fixtures, not a full raw ABI/real User32 run.
+  retain750x484. Do not restart old collapsed-client investigation.
+- That run's toolbar invalid geometry predates control traversal322669c2a;
+  missing GetDlgItem results leave layout RECTs unwritten. Full layout
+  acceptance still outstanding; no new size clamp is justified.
+- KI-0895 CLOSED disproven: bridge::window only parses HWND, never queries
+  canonical state. Publishing Destroy after removal already works. The real
+  KI0898 defect is parent-before-child publication, not absent HWND lookup.
+  scratch/B3630-destroy-publication-audit.md;7f400aa52/51601b1ec.
 
-## Current verification
+## Existing input repairs
 
-- Local runtime changes:8fedf4646 +249d43553 +276390dfd +3e69d8755.
-  c9834ba26 helper experiment reverted06dcd177c after measured stack growth.
-  Runtime changes published in0c9a8101c. Never overwrite main.
-- Prepared message now Box<Selected>, a temporary handoff, not a queue copy.
-  General Stage return fits the old small result; actual delivery helper
-  performs usercopy outside GUI ownership. Snapshot lifetime ends at delivery.
--11 hardware-driver and119 dispatcher-fixture tests pass, including callback
-  suspend/resume, target destruction, capture changes, repeated client and
-  nonclient peeks, stable queue identity, posted-message origin, actual usercopy.
-- KI-0896 repaired3e69d8755: pointer post stamped previous self.cursor; now
-  the canonical queue receives the event's own screen point. New real IPC test
-  fails0vs14418030 before fix;1527 IPC tests and both boundary fixtures pass.
-  /tmp/B3630-pointer-position-{red,green,boundary}.log.
--3270 syscall library tests pass. /tmp/B3630-hardware-final-syscalls.log.
-- Positive controls raw overwrite, transparent-walk bypass, ignored view hook
-  fail assertions; restored. /tmp/B3630-hardware-{raw-view,transparent,view-hook}-red.log.
-- Box implementation BOTH builds and feature checks pass (28532/92516).
-  /tmp/B3630-hardware-box-{build,feature}.log.
-- Box stack reports BOTH architectures have no new/increased primary numeric
-  paths vs /tmp/B3630-scroll-procedure-stack-{x86,arm}.log. Primary tables:
-  337x86/278ARM entries including exception row (336/277 existing task failures).
-  Exception reservations remain7664/6368. Top20 membership changed as Windows
-  paths shrank; an execve summary row appearing is NOT a new primary path.
-  /tmp/B3630-hardware-box-stack-{x86,arm}.log. Keep full reports, don't hide flags.
-- Final position-stamp builds58475 and feature85075 PASS on BOTH arches.
-  /tmp/B3630-pointer-position-{build,feature}.log. Final primary stack tables
-  337x86/278ARM match baseline identities with no added/increased value;
-  /tmp/B3630-pointer-position-stack-{x86,arm}.log. KI-0019 baseline failures remain.
-- Exact release ELFs preserved target/B3630-hardware-final-{x86,arm}.elf.
-  x86 SHA6fdb203e7d2df7fe4c2c3bce54c41bc66d46c7cd5ee8dfe242f2434f4741d5c1;
-  ARM SHA0c9955f3afd6551fad9240c04ea6f2ad69fa10f96fb4ff0e3ab6a99c480fe2c3.
-- KI-0892/0893/0896 closed via829dc62d5/8fedf4646/3e69d8755.
-  KI-0682/0894 now closed after actual-driver and dispatcher validation.
-- Earlier initial/refactor stack failures remain evidence, not current results.
-  Do not use the abandoned dispatch helper or claim initial stack was baseline.
-- KI-0895 was a FALSE hypothesis: bridge::window only parses HWND, does not
-  query WindowManager. Destroy publishing already proceeds after teardown.
-  No destruction code changed. Closed via7f400aa52/51601b1ec; proof in
-  scratch/B3630-destroy-publication-audit.md. Do not revive that diagnosis.
-- Worktree refreshed with origin main (already up to date), then reconciliation
-  timestamp refreshed; guard passed. No stash, main edits or formatters.
+- Hardware runtime8fedf4646/249d43553/276390dfd/3e69d8755 preserves raw queued
+  messages, returns transient Box<Selected> views to real dispatcher, retires
+  by stable ID and stamps GetMessagePos from event screen coordinates.
+  c9834ba26 helper reverted06dcd177c for stack growth; never restore it.
+- KI0682/KI0892/KI0893/KI0894/KI0896 closed. Scope runtimea165b0c85,
+  filter runtimeee58ef0b7. Native child surfaces queue top-level scope;
+  allocation-free first-child walk selects receiver thread separately from
+  retrieval hit testing. Transparent candidates continue through callbacks;
+  exhausted popup may try immediately following same-thread owner once.
+- Filters retain excluded raw events and continue scanning with stable IDs;
+  posted fallback excludes hardware, scan watermark prevents GetMessage spin.
+  debug-winpump HIT/VIEW/FILTER traces correlate event identity and delivery.
+-1529 IPC,3270 syscall-library,24 actual-driver,121 prior dispatcher tests
+  passed; newest teardown fixture increases dispatcher count to123.
+  Fixtures use hosted task/clock/Send/usercopy seams, not full real User32.
+  scratch/B3630-native-pointer-scope-validation.md,
+  scratch/B3630-hardware-filter-validation.md.
+- Scope stack baseline /tmp/B3630-scope-stack-{x86,arm}.log:336/278 primary
+  rows including exception, no new/increased path vs filter baseline.
+  Exception7664/6368 unchanged. KI0019 baseline failures remain; never call
+  full gate green. Compare primary rows before "Split the chain", not top20.
+  Final ELFs target/B3630-scope-final-{x86,arm}.elf; hashes in scope evidence.
 
-## Last preview — FAILED, no live VM
+## Last preview — failed
 
-- Boot16:39:27UTC Sep9, QEMU1055258 and launcher1055198 exited16:41:20UTC,
-  launcher status0. No quit/shutdown sent here. User exit clarification pending.
-- target/B3630-click-preview-debug/live.json holds sockets/log/start/end/status.
-  Serial target/boot-logs/x86_64-20260909-163927.log.
-- Notepad activated, blank About-like dialog/button, stale surfaces and trails.
-  One controlled click713,397 had no verified button-down/up dispatch.
-  File→Open acceptance NOT completed. No automatic VM restart for its exit.
-- audit-live.md FAIL:29 bridge-refusal records (position7,show6,destroy2).
-  Screens notepad-ready.png and after-dialog-button.png retained beside audit.
-- Preview kernel SHA ee24bfab8d6385ca0de7af5c6fd757f9252122c08bc66bb5ada2a41a06cd243c;
-  Wine11.16-debug stamps matched source/staged root. Features winpump/frame/geom.
-- /tmp/B3630-click-preview.py prepare|run imports harness, activates Notepad,
-  logs serial and waits natural launcher exit. Never kills inspection VM.
-- /tmp/B3630-qmp-action.py status|screen LABEL|click X Y WIDTH HEIGHT|keys QCODE...
-  records commands. No live VM now. Boot only once final gates ready.
+- Sept9 16:39:27UTC; QEMU1055258/launcher1055198 exited16:41:20UTC,status0.
+  No quit/shutdown sent. Exit cause unknown; no automatic relaunch for exit.
+- target/B3630-click-preview-debug/live.json, audit-live.md, screenshots
+  notepad-ready.png/after-dialog-button.png. UART
+  target/boot-logs/x86_64-20260909-163927.log.
+- Blank About-like dialog/button, stale surfaces/trails; controlledclick713,397
+  did not verify down/up dispatch. File→Open acceptance not completed.
+  Audit FAIL29 distinct bridge-refusals position7/visibility6/destroy2.
+- Preview kernel SHAee24bfab8d6385ca0de7af5c6fd757f9252122c08bc66bb5ada2a41a06cd243c.
+  Wine11.16-debug source/staged stamps matched.
+- /tmp/B3630-click-preview.py prepare|run and /tmp/B3630-qmp-action.py
+  status|screen LABEL|click X Y WIDTH HEIGHT|keys QCODE... preserve VM.
+  Never terminate user inspection VM. Boot only when final acceptance ready.
 
-## Prior work / open defects
+## Open scope and companion repositories
 
-- KI-0886 fixed53cf05cdf: actual default hit-test hook uses screen geometry.
-- KI-0887 IN-PROGRESS0190b0530: parent-DC X11 IncludeInferiors; Xvfb red/green,
-  97 compositor tests. Trails, stale menus and complete visual repair remain.
-- KI-0888/0889 fixedbedf35f86: canonical scrollbar arrow flags, zero-page clamp,
-  hide/disable/redraw distinctions and actual action-consumer fixture.
-- KI-0885 IN-PROGRESSc39326127/a66384dcb: scrollbar CREATE/PAINT/ERASE/GETDLGCODE,
-  typed callback8 record104 bytes, callback DC lease through EndPaint,
-  creation style alignment. Remaining control messages emit explicit failure
-  with SCROLL-PROC-UNHANDLED; drawing rejection SCROLL-PAINT-FAIL. Audit rejects.
-  Missing full mouse/key tracking, focus/caret, accessibility, sizegrip,
-  visibility/drawable semantics and actual raw callback-boundary fixture.
-  Tracking record fields still inactive zeros. ARM callback continuationKI-0699.
-- c393/a663 verified3270syscall/116dispatch/1523IPC/33dialog-audit tests,
-  180 isolated hosted crates, both builds/features and no stack increase.
-  Logs /tmp/B3630-scroll-procedure-*.log. Release x86 saved
-  target/B3630-release-stack-x86.elf SHA82be120b948019627f641cfe9f8bf3c0c1e441f82d7d02f0f67fd556ea45e8ed.
-- KI-0890 default mouse-activation parent/caption semantics; KI-0462 cursor
-  parent-first policy; KI-0604 full actual input/menu boundary coverage open.
-- KI-0891 old detached VM exit provenance missing, preserve earlier logs.
-- Full Notepad issuesKI-0859/0860/0861/0862/0863/0865 remain open.
-- Durable evidence scratch/B3630-notepad-verification.md. Keep PR draft.
-
-## Companion repos / publishing
-
-- packages B3630-wine-profiles6830f27 clean, no remote.
-- images B3630-wine-profiles553217b, no remote; preserve .dist-old-layout/.
-- Wine named source/build/artifact/catalog/RPM paths and stamps documented39§13;
-  OXIDE_WINE_PROFILE=release|debug independent of kernel PROFILE.
-- PR7680 body /tmp/B3630-pr-body.md records current fixes and validation.
-  Push0c9a8101c passed180 isolated hosted crates and both feature checks.
-  Only documented KI-0019 lint/test-build/stack exceptions used after baseline
-  proof. No new/increased stack path, no hosted/feature bypass.
-- Push policy only known KI-0019 exceptions after actual baseline proof:
-  SKIP_LINT_RATCHET, SKIP_TEST_BUILD_GATE, SKIP_STACK_GATE. Never skip hosted
-  or feature checks; no new/increased stack path. Verify remote SHA after push.
+- KI0887 parent-DC IncludeInferiors repaired0190b0530; real Xvfb97 tests
+  passed. Full blank captions/trails/stale-menu visual acceptance still open.
+- KI0885 scrollbar CREATE/PAINT/ERASE/GETDLGCODE + callback8 record104bytes
+  repairedc39326127/a66384dcb. Full mouse/key tracking, focus/caret,
+  accessibility,sizegrip/visibility and raw callback boundary incomplete.
+  SCROLL-PROC-UNHANDLED/SCROLL-PAINT-FAIL rejected by UART audit.
+- KI0890 mouse activation parent/caption; KI0462 parent-first cursor;
+  KI0504 thread-input focus/capture ownership; KI0604 full input/menu tests.
+  ARM callback continuations KI0699/KI0703/KI0704 remain open.
+- Full Notepad KI0859/0860/0861/0862/0863/0865 open. Durable full evidence
+  scratch/B3630-notepad-verification.md. Keep PR draft.
+- packages B3630-wine-profiles6830f27; images B3630-wine-profiles553217b.
+  Both local commits, no remotes; preserve images .dist-old-layout/.
+  OXIDE_WINE_PROFILE=release|debug independent of kernel PROFILE; docs39§13.
+  ARM compositor builds use existing target/B3630-arm-sysroot completed from
+  cached Fedora RPMs. System sysroot unchanged; KI0421/KI0691 apply there.
+- PR body /tmp/B3630-pr-body.md. Explicit git add; no fmt/stash/reset/amend.
+  Push uses only proven KI0019 SKIP_LINT_RATCHET, SKIP_TEST_BUILD_GATE,
+  SKIP_STACK_GATE; never skip hosted/features or admit new stack growth.

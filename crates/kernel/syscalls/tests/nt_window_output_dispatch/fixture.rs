@@ -63,7 +63,7 @@ mod nt_gdi{
         }
     }
     pub fn delete_paint_dc_current(_:u32)->Result<(),()>{panic!("unexpected paint cleanup")}
-    pub fn destroy_window_dc_for_current(_:u32){panic!("unexpected destruction")}
+    pub fn destroy_window_dc_for_current(hwnd:u32){crate::teardown_fixture::destroy_dc(hwnd)}
     pub fn flush_pending_for_current(idle:bool){
         assert!(nt_window::GUI.unlocked(),"flush hook called with GUI locked");
         EVENTS.lock().unwrap().push(if idle{"idle"}else{"busy"});
@@ -179,7 +179,7 @@ mod nt_window{
         #[derive(Clone,Copy,Debug,Eq,PartialEq)]pub struct Selected{pub id:u64,pub message:ipc::win32_window::WinMessage}
         #[derive(Clone,Debug,Eq,PartialEq)]pub enum Stage{Ready,Drained(u64),Next(u64),Again,Pending(u64),Prepared(Box<Selected>)}
         pub fn process_for_current(_:super::NtCall,_:bool,_:syscall::nt::NtWindowCall)->Stage{crate::hardware_view_fixture::stage()}}
-    mod bridge{pub fn publish_destroy_current(_:u64)->Result<(),()>{Ok(())}pub fn publish_visibility_current(_:u64)->Result<(),()>{Ok(())}
+    mod bridge{pub fn publish_destroy_current(hwnd:u64)->Result<(),()>{crate::teardown_fixture::publish(hwnd)}pub fn publish_visibility_current(_:u64)->Result<(),()>{Ok(())}
         pub fn publish_title_current(_:u64)->Result<(),()>{Ok(())}pub fn publish_geometry_current(_:u64)->Result<(),()>{Ok(())}}
     // Visibility publication for a show goes through the show projection.
     mod show_order{pub fn publish_for_current(_:u64,_:u64,_:bool)->Result<(),()>{Ok(())}}
