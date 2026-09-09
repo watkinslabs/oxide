@@ -114,3 +114,13 @@ No new callback commit has been pushed; the pre-existing stack bypass was NOT
 used for it. Latest source restores stack10 after the separate snapshot-helper
 experiment worsened the route to19232. Revalidate the built artifact when
 continuing. Runtime requirements remain unverified; goal not complete.
+
+KI-0868 fixed232e63fd5: queue extraction and planning return a prepared request
+before callback execution. Raw argument storage does not survive into the
+callback chain. Current legacy route19136 B versus baseline19168; window_raw
+18816 versus18848. Complete failure-list comparison:338 baseline,336 current,
+no new or worsened entries; exception path remains7664 B. Both named stack
+reports retained in scratch/archive/B3630-KI0868-stack-{baseline,fixed}.log.
+No stack allowance changed. Only pre-existing KI-0019 failures remain.
+3255 syscall lib tests and30 callback-boundary tests pass. Positive control
+that replaced failed preparation with success fails the new outcome test.
