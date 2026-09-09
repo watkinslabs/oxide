@@ -131,7 +131,12 @@ u32=0. Flag 1 supplies insertion ordering, flag 2 requests activation; no other
 bits are valid. Without ordering, insertion is zero. Insertion values 0/1/-1/-2
 mean top/bottom/topmost/not-topmost; other values identify a canonical sibling.
 Kernel commits canonical ordering before sending; backend resolves only mapped
-XIDs and applies X11 sibling order or EWMH top-level state/activation.
+XIDs and places the window below its preceding sibling, or applies EWMH
+top-level state/activation. A top-level stacking BadMatch after decoration
+sends the original ConfigureRequest to the root window manager; other X11
+errors remain refusals. Backend diagnostics retain sequence/HWND/error,
+and stacking errors include XID/sibling/mode. Request handling lives in
+`windows-compositor/src/x11/position.rs`.
 Acknowledgement means request submission succeeded, not that the window manager
 granted focus. Actual focus remains an incoming Focus event.
 

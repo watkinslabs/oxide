@@ -1,4 +1,4 @@
-# Handoff — native pointer scope repaired; dialog rendering remains open
+# Handoff — pointer scope and display stacking repaired; visual acceptance open
 
 First command: `git status --short`
 Worktree /home/nd/oxide/kernel-B3630; branch B3630-paint-region-collapse.
@@ -49,9 +49,16 @@ Wine11.16 release/debug profiles explicit; consult pinned local sources first.
 - Queue-thread selection remains distinct from retrieval hit testing; disabled
   root still permits the separate thread walk before its own hit test.
   Broader focus/capture thread-input ownership KI-0504 remains open.
-- Next: tools/issues.sh --show KI-0897. Backend insertion currently places
-  HWND above its preceding sibling; canonical publication walks top-to-bottom.
-  Reproduce reversed order and reparented top-level requests with real Xvfb.
+- KI-0897: display stacking uses BELOW for preceding HWND. Top-level
+  BadMatch after X reparenting forwards original ConfigureRequest to root;
+  missing/destroyed windows still fail. Actual Xvfb regressions reproduced
+  reversed order and reparent refusal; broad error swallowing control fails.
+  Backend logs refusal sequence/HWND/error and restack XIDs/mode/error.
+  Runtime in x11/position.rs; full compositor suite100 tests PASS.
+  Next KI-0898: ordinary destruction publishes preorder; backend parent
+  Destroy already removes descendants. Reverse publication cleanup only;
+  canonical callback preorder and thread-exit dependent-first order stay.
+  Visibility refusals and full visual defects still need separate diagnosis.
 - KI-0861 old750x1 trace is superseded by actual Open run in
   target/boot-logs/x86_64-20260909-143112.log: parent100005/custom10001c
   retain750x484. Do not restart from old one-pixel hypothesis. Its toolbar

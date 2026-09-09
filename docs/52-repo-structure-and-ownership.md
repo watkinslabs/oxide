@@ -56,7 +56,7 @@ drift between `kernel/src`, ad-hoc `crates/*`, and one-off folders.
    canonical database operations (`registry`), durable session ownership (`store`),
    framed request transport (`wire`) and concurrent listener admission (`service`).
    All clients share the same RegistryStore; transport owns no registry copy.
-6. Kernel smoke probes, the separately-targeted Windows launcher and its desktop-independent compositor bridge (`31gd`) live under `userspace/`; `tools/xtask/src/rootfs_disks/probe_artifact.rs` resolves Cargo-owned target directories through `tools/probe-target-directory.py`. `rootfs_disks/windows_notepad/payload.rs` invokes read-only `tools/windows-rootfs-payload-check.py` after runtime staging. The boot userspace image is composed by the sibling `../images` repo,
+6. Kernel smoke probes, the separately-targeted Windows launcher and its desktop-independent compositor bridge (`31gd`) live under `userspace/`; compositor `x11/position.rs` owns stacking projection and window-manager requests; `tools/xtask/src/rootfs_disks/probe_artifact.rs` resolves Cargo-owned target directories through `tools/probe-target-directory.py`. `rootfs_disks/windows_notepad/payload.rs` invokes read-only `tools/windows-rootfs-payload-check.py` after runtime staging. The boot userspace image is composed by the sibling `../images` repo,
    never in kernel subsystem crates. This repo contains no general userspace runtime code — no libc, loader, NSS, PAM,
    package manager, or service manager (`29a§2`).
 

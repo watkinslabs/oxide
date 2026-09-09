@@ -32,7 +32,7 @@ fn xvfb_protocol_window_frame_and_server_pixels_non_gnome() {
     let (order_conn, _) = unsafe { connect(&server.display) }; let child_a = backend.xid_for(0x52).unwrap(); let child_b = backend.xid_for(0x53).unwrap();
     position(&mut peer, &mut backend, &mut transport, 7, 0x52, 1, wire::POSITION_ORDER); let order = unsafe { child_order(order_conn, parent_xid) }; assert_eq!(order.last().copied(), Some(child_b)); assert_eq!(order.first().copied(), Some(child_a));
     position(&mut peer, &mut backend, &mut transport, 8, 0x52, 0, wire::POSITION_ORDER); let order = unsafe { child_order(order_conn, parent_xid) }; assert_eq!(order.last().copied(), Some(child_a));
-    position(&mut peer, &mut backend, &mut transport, 9, 0x53, 0x52, wire::POSITION_ORDER); let order = unsafe { child_order(order_conn, parent_xid) }; assert_eq!(order, vec![child_a, child_b]);
+    position(&mut peer, &mut backend, &mut transport, 9, 0x53, 0x52, wire::POSITION_ORDER); let order = unsafe { child_order(order_conn, parent_xid) }; assert_eq!(order, vec![child_b, child_a]);
     position(&mut peer, &mut backend, &mut transport, 10, hwnd, 0, wire::POSITION_ACTIVATE); unsafe { ffi::xcb_disconnect(order_conn); }
     send(&mut peer, Opcode::Geometry, 5, hwnd, rect(10, 12, 4, 4)); ack(&mut peer, &mut backend, &mut transport, 5); send(&mut peer, Opcode::Destroy, 6, hwnd, Vec::new()); ack(&mut peer, &mut backend, &mut transport, 6); assert!(backend.xid_for(hwnd as u32).is_none());
 }

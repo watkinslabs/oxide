@@ -14,6 +14,8 @@ mod caret;
 mod visibility;
 #[path = "x11/decode.rs"]
 mod decode;
+#[path = "x11/position.rs"]
+mod position;
 pub use decode::decode_event;
 
 #[derive(Debug)]
@@ -162,50 +164,6 @@ impl Backend {
         }
     }
 
-    /// Apply Curie's canonical insertion value: None=no reorder, 0=Top,
-    /// 1=Bottom, MAX=Topmost, MAX-1=NotTopmost, otherwise an HWND sibling.
-    /// Activation is an EWMH request; success means X accepted the request,
-    /// not that a window manager has already granted focus.
-    pub fn position(&mut self, hwnd: u32, insertion: Option<u64>, activate: bool) -> Result<(), BackendError> {
-        let (xid, parent) = { let window = self.windows.get(&hwnd).ok_or(BackendError::InvalidCommand)?; (window.xid, window.parent) };
-        if let Some(order) = insertion {
-            match order {
-                0 => self.restack(xid, None, ffi::STACK_ABOVE)?,
-                1 => self.restack(xid, None, ffi::STACK_BELOW)?,
-                u64::MAX => { self.set_topmost(xid, parent == self.root, true)?; self.restack(xid, None, ffi::STACK_ABOVE)?; },
-                value if value == u64::MAX - 1 => { self.set_topmost(xid, parent == self.root, false)?; self.restack(xid, None, ffi::STACK_ABOVE)?; },
-                sibling_hwnd => {
-                    let sibling = u32::try_from(sibling_hwnd).map_err(|_| BackendError::InvalidCommand)?;
-                    let sibling_xid = self.windows.get(&sibling).ok_or(BackendError::InvalidCommand)?.xid;
-                    if self.windows.get(&sibling).map(|window| window.parent) != Some(parent) { return Err(BackendError::InvalidCommand); }
-                    self.restack(xid, Some(sibling_xid), ffi::STACK_ABOVE)?;
-                }
-            }
-        }
-        if activate && parent == self.root { self.request_activation(xid)?; }
-        unsafe { ffi::xcb_flush(self.conn); }
-        Ok(())
-    }
-
-    fn restack(&self, xid: Xid, sibling: Option<Xid>, mode: u32) -> Result<(), BackendError> {
-        let mut values = [0u32; 2]; let mask = if let Some(sibling) = sibling { values[0] = sibling; values[1] = mode; ffi::CONFIGURE_SIBLING | ffi::CONFIGURE_STACK_MODE } else { values[0] = mode; ffi::CONFIGURE_STACK_MODE };
-        let error = unsafe { ffi::xcb_request_check(self.conn, ffi::xcb_configure_window_checked(self.conn, xid, mask, values.as_ptr())) };
-        if error.is_null() { Ok(()) } else { unsafe { libc::free(error as *mut _); } Err(BackendError::X11) }
-    }
-
-    fn set_topmost(&self, xid: Xid, top_level: bool, enabled: bool) -> Result<(), BackendError> {
-        if !top_level { return Ok(()); }
-        let mut event = [0u8; 32]; event[0] = ffi::CLIENT_MESSAGE; event[1] = 32; event[4..8].copy_from_slice(&xid.to_ne_bytes()); event[8..12].copy_from_slice(&self.atoms.net_wm_state.to_ne_bytes()); event[12..16].copy_from_slice(&(if enabled { 1u32 } else { 0u32 }).to_ne_bytes()); event[16..20].copy_from_slice(&self.atoms.net_wm_state_above.to_ne_bytes());
-        let error = unsafe { ffi::xcb_request_check(self.conn, ffi::xcb_send_event(self.conn, 0, self.root, ffi::SUBSTRUCTURE_REDIRECT | ffi::SUBSTRUCTURE_NOTIFY, event.as_ptr() as *const libc::c_char)) };
-        if error.is_null() { Ok(()) } else { unsafe { libc::free(error as *mut _); } Err(BackendError::X11) }
-    }
-
-    fn request_activation(&self, xid: Xid) -> Result<(), BackendError> {
-        let mut event = [0u8; 32]; event[0] = ffi::CLIENT_MESSAGE; event[1] = 32; event[4..8].copy_from_slice(&xid.to_ne_bytes()); event[8..12].copy_from_slice(&self.atoms.net_active_window.to_ne_bytes()); event[12..16].copy_from_slice(&2u32.to_ne_bytes());
-        let error = unsafe { ffi::xcb_request_check(self.conn, ffi::xcb_send_event(self.conn, 0, self.root, ffi::SUBSTRUCTURE_REDIRECT | ffi::SUBSTRUCTURE_NOTIFY, event.as_ptr() as *const libc::c_char)) };
-        if error.is_null() { Ok(()) } else { unsafe { libc::free(error as *mut _); } Err(BackendError::X11) }
-    }
-
     pub fn poll_event(&mut self) -> Option<BridgeEvent> {
         if let Some(event) = self.pending.pop_front() { return Some(event); }
         let raw = unsafe { ffi::xcb_poll_for_event(self.conn) };
@@ -282,7 +240,7 @@ impl Backend {
         let result = self.handle_command(inbound.command);
         match result {
             Ok(events) => { for event in events { self.send_event(transport, event)?; } self.send_event(transport, BridgeEvent::Ack { sequence: inbound.sequence, hwnd: inbound.hwnd, status: 0 })?; }
-            Err(_) => { self.send_event(transport, BridgeEvent::Ack { sequence: inbound.sequence, hwnd: inbound.hwnd, status: 1 })?; }
+            Err(error) => { eprintln!("windows-compositor: refused sequence={} hwnd={:#x} error={error:?}", inbound.sequence, inbound.hwnd); self.send_event(transport, BridgeEvent::Ack { sequence: inbound.sequence, hwnd: inbound.hwnd, status: 1 })?; }
         }
         Ok(true)
     }
