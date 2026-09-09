@@ -258,7 +258,7 @@ pub enum QueueError { Full }
 const MESSAGE_QUEUE_LIMIT: usize = 10_000;
 
 #[derive(Default)]
-pub struct MessageQueue { messages: VecDeque<QueuedMessage>, quit: Option<i32>, keyboard: KeyboardState, caret: CaretState, caret_generation: u64, caret_blink: CaretBlink,
+pub struct MessageQueue { next_message_id: u64, messages: VecDeque<QueuedMessage>, quit: Option<i32>, keyboard: KeyboardState, caret: CaretState, caret_generation: u64, caret_blink: CaretBlink,
     /// Monotonic nanoseconds at which the owning thread last read this queue.
     access_ns: u64,
     /// Wake bits set since the last query that reported them.
@@ -274,85 +274,7 @@ pub struct MessageQueue { messages: VecDeque<QueuedMessage>, quit: Option<i32>, 
     /// Pointers this thread has seen, in the order they were first reported.
     pointers: Vec<pointer::Pointer> }
 
-impl MessageQueue {
-    /// Post one hardware message, which contributes its own input class. # C: O(1)
-    pub fn post_input(&mut self, message: WinMessage, pos: u32) -> Result<(), QueueError> {
-        self.post_input_at(message, msg_time::tick_ms(), pos)
-    }
-    /// # C: O(1)
-    pub fn post_input_at(&mut self, message: WinMessage, time: u32, pos: u32) -> Result<(), QueueError> {
-        if self.messages.len() >= MESSAGE_QUEUE_LIMIT { return Err(QueueError::Full); }
-        self.messages.push_back(QueuedMessage { message, key: None, bits: queue_status::hardware_bit(message.message), time, pos });
-        Ok(())
-    }
-    pub fn post(&mut self, message: WinMessage, pos: u32) -> Result<(), QueueError> {
-        self.post_with_bits(message, queue_status::QS_POSTED, pos)
-    }
-    /// Enqueue one message carrying the wake bits its origin sets. # C: O(1)
-    pub fn post_with_bits(&mut self, message: WinMessage, bits: u32, pos: u32) -> Result<(), QueueError> {
-        self.post_with_bits_at(message, bits, msg_time::tick_ms(), pos)
-    }
-    /// Enqueue one message with the tick count and position it is stamped with. # C: O(1)
-    pub fn post_with_bits_at(&mut self, message: WinMessage, bits: u32, time: u32, pos: u32) -> Result<(), QueueError> {
-        if self.messages.len() >= MESSAGE_QUEUE_LIMIT { return Err(QueueError::Full); }
-        self.changed |= bits;
-        self.messages.push_back(QueuedMessage { message, key: None, bits, time, pos });
-        Ok(())
-    }
-    pub fn peek(&mut self, filter: MessageFilter, remove: bool) -> Option<WinMessage> {
-        let index = self.messages.iter().position(|entry| filter.matches(entry.message))?;
-        self.read_entry(index, remove)
-    }
-    fn peek_matching<F>(&mut self, matches: F, remove: bool) -> Option<WinMessage>
-    where F: Fn(WinMessage) -> bool {
-        let index = self.messages.iter().position(|entry| matches(entry.message))?;
-        self.read_entry(index, remove)
-    }
-    /// Put the retrieval-prepared form of one queued message back where the
-    /// queued one was, so the canonical queue stays the only place a
-    /// retrieval reads a message from. # C: O(N_queued)
-    fn replace_matching<F>(&mut self, matches: F, message: WinMessage) -> bool
-    where F: Fn(WinMessage) -> bool {
-        let Some(index) = self.messages.iter().position(|entry| matches(entry.message)) else { return false; };
-        self.messages[index].message = message;
-        true
-    }
-    pub fn len(&self) -> usize { self.messages.len() }
-    fn cleanup_window(&mut self, id: WindowId) {
-        self.messages.retain(|entry| entry.message.hwnd != Some(id));
-        if self.caret.hwnd == Some(id) { self.caret.destroy(); self.caret_generation = self.caret_generation.saturating_add(1); }
-    }
-    /// Window that owns the caret and the rectangle it occupies. # C: O(1)
-    pub fn caret_placement(&self) -> Option<(WindowId, WindowRect)> {
-        let hwnd = self.caret.hwnd?;
-        Some((hwnd, WindowRect { left: self.caret.x, top: self.caret.y,
-            right: self.caret.x.saturating_add(self.caret.width),
-            bottom: self.caret.y.saturating_add(self.caret.height) }))
-    }
-    pub fn post_quit(&mut self, code: i32) { self.quit = Some(code); }
-    fn quit_pending(&self) -> bool { self.quit.is_some() }
-    fn quit_message(&mut self, filter: MessageFilter, remove: bool, pos: u32) -> Option<WinMessage> {
-        let code = self.quit?;
-        let message = WinMessage { hwnd: None, message: WM_QUIT, wparam: code as u64, lparam: 0 };
-        if !filter.matches(message) { return None; }
-        if remove { self.quit = None; }
-        self.note_message_time(msg_time::tick_ms());
-        self.note_message_pos(pos);
-        self.note_message_extra(0);
-        Some(message)
-    }
-    fn take_quit_matching<F>(&mut self, matches: F, pos: u32) -> Option<i32>
-    where F: Fn(WinMessage) -> bool {
-        let code = self.quit?;
-        let message = WinMessage { hwnd: None, message: WM_QUIT, wparam: code as u64, lparam: 0 };
-        if !matches(message) { return None; }
-        self.quit = None;
-        self.note_message_time(msg_time::tick_ms());
-        self.note_message_pos(pos);
-        self.note_message_extra(0);
-        Some(code)
-    }
-}
+mod message_queue;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct WindowRecord { pub owner_tid: u64, pub parent: Option<WindowId>, pub owner: Option<WindowId>, pub wndproc: u64, pub unicode: bool, pub class_atom: Option<u16>, pub visible: bool,

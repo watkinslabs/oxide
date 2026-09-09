@@ -1,133 +1,110 @@
-# Handoff — preview failed visually; dispatcher walk missing
+# Handoff — hardware retrieval repair, verification in progress
 
-First command: `cat target/B3630-click-preview-debug/live.json`
-
+First command: `git status --short`
 Worktree /home/nd/oxide/kernel-B3630; branch B3630-paint-region-collapse.
-Main read-only. Read CLAUDE.md. Draft PR7680; last pushed/verifieda66384dcb; implementationc39326127.
-Goal: defect-free Notepad borders/buttons/Open/Save/dropdowns/About, with
-actual visible acceptance. User requests boot when ready and VM left running.
-Consult pinned local sources first; Wine11.16, never host Wine fallback.
+Main read-only. Read CLAUDE.md. Draft PR7680; last verified remote843f82ed4.
+Goal remains defect-free Notepad buttons/borders/Open/Save/menus/About.
+User requests visible boot when ready and VM left running. Do not call done.
+Wine11.16 release/debug profiles explicit; consult pinned local sources first.
 
-## Live VM
+## Current changes
 
-- Preview1055195 booted16:39:27UTC; Notepad activated. QEMU1055258 and
-  launcher1055198 exited16:41:20UTC, launcher status0. No shutdown/quit sent.
-  No live QEMU now. User asked asynchronously whether they closed the window;
-  answer pending. Status0 alone does not prove why it exited.
-- target/B3630-click-preview-debug/live.json contains sockets/logs and later
-  launcher exit status. Never kill inspection VM or treat stale sockets as live.
-- /tmp/B3630-click-preview-live.log reports activation/readiness/failure.
+-829dc62d5 repairs point candidate parent-client coordinates, client clipping
+  and window regions (KI-0892);1526 IPC tests, both builds/features passed.
+- KI-0682 hardware driver now snapshots canonical scoped candidates, continues
+  after HTTRANSPARENT across synchronous/suspended calls, handles disabled
+  scopes, skips destroyed candidates and rejects destroyed/foreign targets.
+  Capture is resolved again at retrieval. Scope includes its own window last.
+- KI-0893 raw queued message survives Peek unchanged; Stage::Prepared returns
+  translated view to actual Peek/Get dispatcher. Canonical queue assigns a
+  stable selection ID so retirement cannot remove an identical successor.
+  Removed obsolete raw-message replacement API. MessageQueue implementation
+  extracted into message_queue.rs; root now below500 lines; docs52 updated.
+- Hardware processing checks queue origin bits: posted mouse-number messages
+  no longer enter hit testing. No parallel queue or HWND registry introduced.
+- debug-winpump adds WINDOWS-HARDWARE-HIT and WINDOWS-HARDWARE-VIEW with
+  selection ID, source/target HWND, raw screen point, hit and translated view.
+- KI-0894 OPEN: application filters run too early on raw numbers/HWND;
+  transformed filtered messages are deleted. Needs possible-number prefilter
+  and stable scan cursor, then final target/message filter without consumption.
+- KI-0682 still IN-PROGRESS: compositor events can name a child as scope;
+  real child-surface routing needs audit. Scoped walk cannot search siblings
+  outside that scope. Owner-next fallback not implemented. No full claim.
+- Actual hardware fixture mocks task/clock/Send boundary but imports production
+  driver/context; tests synchronous and suspended callback completion.
+  Actual dispatcher fixture separately tests Stage::Prepared consumption.
+  These are separate boundary fixtures, not a full raw ABI/real User32 run.
+
+## Current verification
+
+-11 hardware-driver tests and119 production-dispatch fixture tests pass.
+-1526 IPC and3270 syscall library tests passed before final unused-API cleanup
+  and target-destruction check. Rerun final libraries.
+- Positive controls raw overwrite, transparent-walk bypass, and ignored
+  Stage::Prepared dispatch hook each fail assertions, restored afterward.
+  Logs /tmp/B3630-hardware-{raw-view,transparent,view-hook}-red.log.
+- /tmp/B3630-hardware-boundary-final.log current tests.
+- Both feature checks passed initial implementation; final tracing/checks
+  require repeat. /tmp/B3630-hardware-feature.log is INITIAL pass only.
+- /tmp/B3630-hardware-build.log build53277 started before final target check,
+  API cleanup and tracing. NOT final-build proof. Poll, then rebuild both.
+- No final stack comparison yet. Previous baseline358x86/299ARM report rows,
+  336/277 existing overbudget paths,7664/6368 exception bytes (KI-0019).
+  Compare /tmp/B3630-scroll-procedure-stack-{x86,arm}.log against final ELF
+  reports, no new/increased path allowed. ARM has NO stack-switch-map option.
+- Worktree refreshed by fetch origin main + ff-only merge (already up to date),
+  then reconciliation timestamp refreshed; worktree guard passed.
+- No stash, formatters, main edits or new bypasses. Explicit stage paths.
+
+## Last preview — FAILED, no live VM
+
+- Boot16:39:27UTC Sep9, QEMU1055258 and launcher1055198 exited16:41:20UTC,
+  launcher status0. No quit/shutdown sent here. User exit clarification pending.
+- target/B3630-click-preview-debug/live.json holds sockets/log/start/end/status.
   Serial target/boot-logs/x86_64-20260909-163927.log.
-- /tmp/B3630-click-preview.py run launches/activates Notepad, keeps UART logging,
-  waits for natural launcher exit; no automatic powerdown or termination.
-- /tmp/B3630-qmp-action.py status; screen LABEL; click X Y WIDTH HEIGHT;
-  keys QCODE... . Records actions in preview manual-commands.jsonl.
-- File→Open acceptance NOT completed. Screenshot already showed blank dialog
-  and later Wine License. One controlled click713,397; no verified down/up.
-  Exit prevented subsequent Escape. Must verify actual File→Open/buttons.
-  QMP input acceptance alone is not guest dispatch success.
-- Preview Wine profile debug verified against composed source and staged root.
-  Kernel SHA256 ee24bfab8d6385ca0de7af5c6fd757f9252122c08bc66bb5ada2a41a06cd243c.
-  Features debug-winpump,debug-winframe,debug-wingeom. Fresh root staged;
-  final kernel refreshed after cleanup fix. No old artifact fallback.
+- Notepad activated, blank About-like dialog/button, stale surfaces and trails.
+  One controlled click713,397 had no verified button-down/up dispatch.
+  File→Open acceptance NOT completed. No automatic VM restart for its exit.
+- audit-live.md FAIL:29 bridge-refusal records (position7,show6,destroy2).
+  Screens notepad-ready.png and after-dialog-button.png retained beside audit.
+- Preview kernel SHA ee24bfab8d6385ca0de7af5c6fd757f9252122c08bc66bb5ada2a41a06cd243c;
+  Wine11.16-debug stamps matched source/staged root. Features winpump/frame/geom.
+- /tmp/B3630-click-preview.py prepare|run imports harness, activates Notepad,
+  logs serial and waits natural launcher exit. Never kills inspection VM.
+- /tmp/B3630-qmp-action.py status|screen LABEL|click X Y WIDTH HEIGHT|keys QCODE...
+  records commands. No live VM now. Boot only once final gates ready.
 
-## Uncommitted implementation (KI0885)
+## Prior work / open defects
 
-- Raw scrollbar selector029a routes CREATE/PAINT/ERASE/GETDLGCODE and delegates
-  default messages. Remaining known messages emit SCROLL-PROC-UNHANDLED and
-  explicit failure. Full scrollbar procedure remains unfinished; do not close.
-- Canonical HWND control storage initialized from CREATESTRUCT disabled style.
-  Creation alignment handles orientation, sizebox/grip and edge anchoring.
-- Typed nt_user_callback Input::User/Record; record copy below saved RSP,
-  checked alignment/bounds/write failure before callback frame admission.
-  Drawing callback8 takes104-byte record; pinned-header layout checked both
-  architectures in /tmp/B3630-scroll-callback-layout.c and object files.
-- Existing AMD64 continuation retained. ARM continuation remains unsupported
-  (KI0699); now reports USER-CALLBACK-REJECT with input metadata.
-- Control paint uses existing preparation queue then external callback lease
-  through EndPaint. Hold validates exact session and owner. Foreign destruction
-  keeps leased DC until return; wrong-thread/token cannot release it.
-- Paint-open failure cleanup uses existing paintlease::remove_for_current,
-  avoiding full dispatcher reentry. Initial version added15184-byte x86 path;
-  direct owner call removed that regression. No stack gate weakening.
-- Audit rejects unhandled scrollbar messages and failed drawing callbacks.
-- Missing: actual raw control/callback boundary fixture; full mouse/keyboard
-  tracking, focus/caret, control scroll-info/accessibility, sizegrip cursor/resize,
-  visibility/drawable semantics. Pure callback and ownership tests aren't full
-  production-callback coverage. Tracking fields currently inactive zeros.
+- KI-0886 fixed53cf05cdf: actual default hit-test hook uses screen geometry.
+- KI-0887 IN-PROGRESS0190b0530: parent-DC X11 IncludeInferiors; Xvfb red/green,
+  97 compositor tests. Trails, stale menus and complete visual repair remain.
+- KI-0888/0889 fixedbedf35f86: canonical scrollbar arrow flags, zero-page clamp,
+  hide/disable/redraw distinctions and actual action-consumer fixture.
+- KI-0885 IN-PROGRESSc39326127/a66384dcb: scrollbar CREATE/PAINT/ERASE/GETDLGCODE,
+  typed callback8 record104 bytes, callback DC lease through EndPaint,
+  creation style alignment. Remaining control messages emit explicit failure
+  with SCROLL-PROC-UNHANDLED; drawing rejection SCROLL-PAINT-FAIL. Audit rejects.
+  Missing full mouse/key tracking, focus/caret, accessibility, sizegrip,
+  visibility/drawable semantics and actual raw callback-boundary fixture.
+  Tracking record fields still inactive zeros. ARM callback continuationKI-0699.
+- c393/a663 verified3270syscall/116dispatch/1523IPC/33dialog-audit tests,
+  180 isolated hosted crates, both builds/features and no stack increase.
+  Logs /tmp/B3630-scroll-procedure-*.log. Release x86 saved
+  target/B3630-release-stack-x86.elf SHA82be120b948019627f641cfe9f8bf3c0c1e441f82d7d02f0f67fd556ea45e8ed.
+- KI-0890 default mouse-activation parent/caption semantics; KI-0462 cursor
+  parent-first policy; KI-0604 full actual input/menu boundary coverage open.
+- KI-0891 old detached VM exit provenance missing, preserve earlier logs.
+- Full Notepad issuesKI-0859/0860/0861/0862/0863/0865 remain open.
+- Durable evidence scratch/B3630-notepad-verification.md. Keep PR draft.
 
-## Validation
+## Companion repos / publishing
 
--3270 syscall lib,116 actual dispatcher fixture,1523 IPC lib pass.
--33 dialog/QMP/UART-audit tests pass, including21 UART-audit tests.
-- Positive controls fail on removed callback record copy, released active DC,
-  shifted callback field, substituted creation style; all code restored.
-  Creation first attempt was compiler-red; corrected mutation failed assertion.
-- Both release builds and both feature checks pass on final code.
-- Final stack reports match previous358x86/299ARM rows; no new/increased path.
-  Existing KI0019 failures persist:336/277 over-budget paths,7664/6368 exception.
-- Logs /tmp/B3630-scroll-procedure-{final-tests,ipc,feature,build,stack-x86,stack-arm}.log.
-  Positive controls /tmp/B3630-scroll-procedure-{frame,lease,abi,creation}-red.log.
-  /tmp/B3630-compare-stacks.py verifies reports vs scroll-policy baseline.
-- Release x86 ELF preserved target/B3630-release-stack-x86.elf SHA256
-  82be120b948019627f641cfe9f8bf3c0c1e441f82d7d02f0f67fd556ea45e8ed.
-  Image preparation uses shared Cargo target, so preview features replace
-  default x86 output after release validation. Keep evidence tied to ELF.
-- Implementation committedc39326127. Push first failed hosted unused exports;
-  kernel-only reexport cfg fixes it.180 isolated hosted crates and6 callback
-  tests pass after repair. Kernel code unchanged by that cfg-only repair.
-  Explicit stage paths; no stash/formatters.
-  Before push use only documented KI0019 bypasses after baseline proof:
-  SKIP_LINT_RATCHET, SKIP_TEST_BUILD_GATE, SKIP_STACK_GATE. No new increases.
-
-## Prior repairs and remaining findings
-
-- KI0886 fixed53cf05cdf: default child hit test now canonical screen rectangle.
-  Old VM click655,463 reached button100007, returned HTNOWHERE0 and dropped
-  down/up. Real dispatcher regression restored old hook fails0vs1.
-- KI0887 IN-PROGRESS: parent-DC X11 clipping fixed0190b0530 IncludeInferiors;
-  real Xvfb RED/GREEN and97 compositor tests pass, both builds. Pointer trails,
-  stale menus and full visual acceptance remain unproven.
-- KI0888/0889 fixedbedf35f86: sole scrollbar arrow flags, zero-page clamp,
-  visibility transitions, unchanged redraw and arrow-only refresh. Joined
-  fixture uses actual action consumer and worktree modules.
-- KI0890 OPEN: default WM_MOUSEACTIVATE lacks parent forwarding/caption rule.
-  Ordinary0 still activates in hardware ladder; parent veto/eat semantics absent.
-- KI0462 OPEN: default cursor parent-first policy not wired resumably.
-  KI0604 broader actual hardware/menu dispatch fixture coverage remains.
-- KI0891 OPEN: old detached VM exit provenance missing. Old832847 and launcher
- 832789 disappeared with no termination issued here; cause unknown. Preserve
-  target/B3630-debug-dialogs logs/screens and serial145749; don't relaunch old VM.
-- Existing full Notepad defectsKI0859/0860/0861/0862/0863/0865 remain open.
-  PR must remain draft until complete visual acceptance.
-- Durable evidence scratch/B3630-notepad-verification.md.
-
-## Wine profiles / companion repositories
-
-- Wine11.16, OXIDE_WINE_PROFILE=release|debug; independent of kernel PROFILE.
-  Named source/build/artifact/catalog/RPM paths, stamps and alias gates.
-  Both full Wine builds and named RPMs complete; docs39§13.
-- packages branchB3630-wine-profiles6830f27 clean, no remote.
-- images branchB3630-wine-profiles553217b, no remote; preserve .dist-old-layout/.
-
-## Immediate next work
-
-- Preview audit FAIL:29 bridge refusal records (position7, show6, destroy2).
-  target/B3630-click-preview-debug/{notepad-ready,after-dialog-button}.png
-  retain blank text, stale surfaces and pointer trails. audit-live.md retained.
-- Source/code check confirms KI0682: hardware/live.rs asks only queued HWND,
-  then passes HTTRANSPARENT through decide instead of continuing z-order walk.
-  Log100.520+ asks static100028, returns-1, then SETCURSOR; no retarget walk.
-  This is a concrete missing dispatcher mechanism; exact cause of the controlled
-  click is not yet proven. KI0682 now claimed on this branch; add actual path
-  coverage including capture, disabled candidates and transparent siblings.
-- Push a66384dcb verified. KI0682 claim committed before implementation.
-  Keep PR draft and preserve all failed preview evidence. Do not restart VM
-  just because it exited. No complete Notepad or dispatcher correctness claim.
-
-- Candidate enumeration itself needs coordinate audit before wiring:
-  tree/hit.rs::windows_from_point compares child parent-relative rects with
-  unchanged screen points; rect_in_parent subtracts parent coordinates again.
-  Existing tree hit fixture uses screen-style child rectangles and masks the
-  mismatch. Use canonical parent-client coordinates and client clipping in
-  candidate tests; check shape/visible bounds and DPI semantics as well.
+- packages B3630-wine-profiles6830f27 clean, no remote.
+- images B3630-wine-profiles553217b, no remote; preserve .dist-old-layout/.
+- Wine named source/build/artifact/catalog/RPM paths and stamps documented39§13;
+  OXIDE_WINE_PROFILE=release|debug independent of kernel PROFILE.
+- PR7680 body /tmp/B3630-pr-body.md stale for current driver changes.
+- Push policy only known KI-0019 exceptions after actual baseline proof:
+  SKIP_LINT_RATCHET, SKIP_TEST_BUILD_GATE, SKIP_STACK_GATE. Never skip hosted
+  or feature checks; no new/increased stack path. Verify remote SHA after push.

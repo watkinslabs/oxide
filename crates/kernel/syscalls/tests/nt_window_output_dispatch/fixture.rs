@@ -111,7 +111,7 @@ mod nt_gdi{
 }
 mod nt_window{
     use super::*;
-    const STATUS_SUCCESS:u64=0;const STATUS_INVALID_PARAMETER:u64=0xc000000d;const STATUS_INVALID_HANDLE:u64=0xc0000008;
+    const STATUS_SUCCESS:u64=0;pub(super) const STATUS_INVALID_PARAMETER:u64=0xc000000d;const STATUS_INVALID_HANDLE:u64=0xc0000008;
     const STATUS_ACCESS_DENIED:u64=0xc0000022;pub const STATUS_NO_MORE_ENTRIES:u64=0x8000001a;
     const STATUS_QUOTA_EXCEEDED:u64=0xc0000044;pub const STATUS_ALERTED:u64=0x101;
     const STATUS_PENDING:u64=0x103;const STATUS_NOT_SUPPORTED:u64=0xc00000bb;const WM_DESTROY:u64=2;const CALLBACK_DESTROY:u64=1;
@@ -136,7 +136,7 @@ mod nt_window{
     fn valid_window(hwnd:u64)->Option<WindowId>{u32::try_from(hwnd).ok().and_then(WindowId::from_raw)}
     fn message_filter(state:&WindowManager,hwnd:u64,first:u32,last:u32)->Option<MessageFilter>{
         let hwnd=u32::try_from(hwnd).ok().and_then(WindowId::from_raw);state.validate_message_filter(hwnd).ok()?;Some(MessageFilter{hwnd,first,last})}
-    fn copy_message(_:syscall::UserPtr<NtWindowMessage>,_:ipc::win32_window::WinMessage)->Result<(),syscall::Errno>{panic!("unexpected queued message")}
+    fn copy_message(_:syscall::UserPtr<NtWindowMessage>,message:ipc::win32_window::WinMessage)->Result<(),syscall::Errno>{crate::hardware_view_fixture::copy(message)}
     fn copy_rect(_:syscall::UserPtr<nt::NtWindowRect>,_:ipc::win32_window::WindowRect)->u64{panic!("unexpected rect")}
     fn read_rect(_:syscall::UserPtr<nt::NtWindowRect>)->Option<ipc::win32_window::WindowRect>{panic!("unexpected rect input")}
     struct CreateStructArgs;impl CreateStructArgs{fn empty(_:u64)->Self{Self}}
@@ -170,9 +170,9 @@ mod nt_window{
         pub fn nc_calc_size_for_current(_:u64,_:u64)->Option<u64>{None}
         pub fn hit_test_for_current(_:u64,_:i64)->Option<i16>{None}
         pub fn default_proc_for_current(_:u64,_:u32,_:u64,_:i64)->Option<u64>{None}}}
-    mod hardware{
-        #[derive(Clone,Copy,Debug,Eq,PartialEq)]pub enum Stage{Ready,Again,Pending(u64)}
-        pub fn process_for_current(_:super::NtCall,_:bool,_:syscall::nt::NtWindowCall)->Stage{Stage::Ready}}
+    pub(super) mod hardware{
+        #[derive(Clone,Copy,Debug,Eq,PartialEq)]pub enum Stage{Ready,Again,Pending(u64),Prepared{id:u64,message:ipc::win32_window::WinMessage}}
+        pub fn process_for_current(_:super::NtCall,_:bool,_:syscall::nt::NtWindowCall)->Stage{crate::hardware_view_fixture::stage()}}
     mod bridge{pub fn publish_destroy_current(_:u64)->Result<(),()>{Ok(())}pub fn publish_visibility_current(_:u64)->Result<(),()>{Ok(())}
         pub fn publish_title_current(_:u64)->Result<(),()>{Ok(())}pub fn publish_geometry_current(_:u64)->Result<(),()>{Ok(())}}
     // Visibility publication for a show goes through the show projection.

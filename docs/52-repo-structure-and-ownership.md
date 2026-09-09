@@ -24,7 +24,9 @@ drift between `kernel/src`, ad-hoc `crates/*`, and one-off folders.
 4. Native GUI state remains in `ipc::win32_window`: `class` owns registration
    and class-bound creation, `extra` owns per-HWND extra/scalar storage inside
    the canonical window vector, `state` owns window/message work, and
-   `thread_exit` revokes the canonical ownership closure. GDI `font` owns
+   `thread_exit` revokes the canonical ownership closure. `message_queue` owns
+   queue insertion and stable entry selection/retirement; hardware retrieval
+   returns a translated view without overwriting the raw queued event. GDI `font` owns
    complete logical records and selected-object lifetime. Syscalls children
    adapt raw ABI/usercopy and process lifetime gates; no parallel object table.
    `nt_window/paint` releases GUI ownership before usercopy; raw window `paint`

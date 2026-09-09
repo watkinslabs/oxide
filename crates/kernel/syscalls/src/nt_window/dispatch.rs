@@ -50,6 +50,7 @@ pub(super) fn dispatch_mode(call: NtCall, raw: bool) -> Option<u64> {
     }
     let group = Arc::clone(&cur.thread_group);
     loop {
+        let mut prepared = None;
         if matches!(operation, NtWindowCall::Peek { .. } | NtWindowCall::Get { .. }) {
             crate::nt_gdi::flush_pending_for_current(false);
             let _ = caret::blink::expire_for_current(timekeeper::monotonic_ns());
@@ -61,6 +62,7 @@ pub(super) fn dispatch_mode(call: NtCall, raw: bool) -> Option<u64> {
                 hardware::Stage::Pending(status) => return Some(status),
                 hardware::Stage::Again => continue,
                 hardware::Stage::Ready => {}
+                hardware::Stage::Prepared { id, message } => prepared = Some((id, message)),
             }
         }
         let (result, wake, sleep, cleanup, atoms, paint_dcs) = {
@@ -140,16 +142,26 @@ pub(super) fn dispatch_mode(call: NtCall, raw: bool) -> Option<u64> {
                 NtWindowCall::Peek { message, hwnd, first, last, remove } => {
                     let Some(filter) = message_filter(state, hwnd, first, last) else { return Some(STATUS_INVALID_HANDLE); };
                     state.note_queue_access(cur.tid as u64, timekeeper::monotonic_ns());
-                    if let Some(found) = state.peek_for_thread(cur.tid as u64, filter, false) {
+                    if let Some(found) = prepared.map(|(_, message)| message).or_else(|| state.peek_for_thread(cur.tid as u64, filter, false)) {
                         if copy_message(message, found).is_err() { return Some(STATUS_INVALID_PARAMETER); }
-                        if remove != 0 { let _ = state.peek_for_thread(cur.tid as u64, filter, true); }
+                        if remove != 0 {
+                            if let Some((id, _)) = prepared { let _ = state.read_selected_for_thread(cur.tid as u64, id, true); }
+                            else { let _ = state.peek_for_thread(cur.tid as u64, filter, true); }
+                        }
                         (Some(STATUS_SUCCESS), None, None)
                     } else { (Some(STATUS_NO_MORE_ENTRIES), None, None) }
                 }
                 NtWindowCall::Get { message, hwnd, first, last } => {
                     let Some(filter) = message_filter(state, hwnd, first, last) else { return Some(STATUS_INVALID_HANDLE); };
                     state.note_queue_access(cur.tid as u64, timekeeper::monotonic_ns());
-                    match state.take_for_thread(cur.tid as u64, filter) {
+                    let selected = match prepared {
+                        Some((id, message)) => {
+                            if state.read_selected_for_thread(cur.tid as u64, id, true).is_none() { continue; }
+                            ipc::win32_window::QueueResult::Message(message)
+                        }
+                        None => state.take_for_thread(cur.tid as u64, filter),
+                    };
+                    match selected {
                         ipc::win32_window::QueueResult::Message(found) => {
                             // Which message a pump is handed decides everything
                             // downstream: an application that never receives

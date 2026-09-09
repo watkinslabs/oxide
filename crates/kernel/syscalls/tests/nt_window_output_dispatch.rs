@@ -25,4 +25,6 @@ mod protocol_fixture;
 mod erase_fixture;
 #[path="nt_window_output_dispatch/paint_reserve.rs"]
 mod paint_reserve_fixture;
+#[path="nt_window_output_dispatch/hardware_view.rs"]
+mod hardware_view_fixture;
 include!("nt_window_output_dispatch/fixture.rs");

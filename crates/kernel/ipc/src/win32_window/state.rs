@@ -310,16 +310,6 @@ impl WindowManager {
         self.note_thread_message_pos(tid, pos);
         Some(message)
     }
-    /// Replace one queued message with the form a retrieval prepared: the
-    /// nonclient renumbering and the double-click promotion belong to the
-    /// message the application receives, not to a second copy of the queue.
-    /// # C: O(N_queued + N_windows)
-    pub fn replace_for_thread(&mut self, tid: u64, filter: MessageFilter, message: WinMessage) -> bool {
-        let Some(queue_index) = self.queues.iter().position(|(owner, _)| *owner == tid) else { return false; };
-        let windows = &self.windows;
-        let matches = |candidate| message_matches_in_windows(windows, filter, candidate);
-        self.queues[queue_index].1.replace_matching(matches, message)
-    }
     /// # C: O(1)
     pub fn window_count(&self) -> usize { self.windows.len() }
     /// Validate the optional HWND filter before a queue lookup. # C: O(N_windows)

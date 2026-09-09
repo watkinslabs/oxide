@@ -62,6 +62,26 @@ impl WindowManager {
         found
     }
 
+    /// Candidates inside one scope, including the scope after its descendants.
+    /// The input point is in screen coordinates. # C: O(N_windows²)
+    pub fn windows_in_scope(&self, scope: WindowId, x: i32, y: i32) -> Vec<WindowId> {
+        let mut found = Vec::new();
+        let Some(record) = self.get(scope) else { return found; };
+        let origin = match record.parent { Some(parent) => self.client_origin(parent), None => Some((0, 0)) };
+        let Some((dx, dy)) = origin else { return found; };
+        let Some((x, y)) = x.checked_sub(dx).zip(y.checked_sub(dy)) else { return found; };
+        if !self.point_reaches(scope, x, y) { return found; }
+        if record.style & (WS_MINIMIZE | WS_DISABLED) == 0 {
+            if let Some(client) = self.client_rect_raw(scope).filter(|rect| point_in_rect(*rect, x, y)) {
+                if let Some((x, y)) = x.checked_sub(client.left).zip(y.checked_sub(client.top)) {
+                    self.children_at_point(Some(scope), x, y, &mut found);
+                }
+            }
+        }
+        found.push(scope);
+        found
+    }
+
     fn children_at_point(&self, parent: Option<WindowId>, x: i32, y: i32, found: &mut Vec<WindowId>) {
         for child in self.siblings_top_first(parent) {
             if !self.point_reaches(child, x, y) { continue; }
