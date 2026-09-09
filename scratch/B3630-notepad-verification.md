@@ -33,3 +33,18 @@ Pre-push hosted gate: 180 crates pass. Test-build gate fails in unchanged
 ipc/syscalls test targets (unused settings helpers; missing paint_trace test
 module; unused mark_exiting). No branch change touches those crates. KI-0019;
 SKIP_TEST_BUILD_GATE is the only additional bypass for this pre-existing gate.
+
+ARM compositor release build passes with the Fedora sysroot completed locally
+at target/B3630-arm-sysroot from cached Fedora 42 libgcc/gcc/libxcb/libXau/
+libxkbcommon/libxkbcommon-x11 RPMs. System sysroot is unchanged; KI-0421 and
+KI-0691 remain applicable to the default environment. Link uses that sysroot,
+its GCC linker-script directory and its lib64 as rpath-link (not runtime rpath).
+
+Both kernel feature gates pass. Stack gate fails on unchanged kernel paths:
+exception-entry oxide_fault_print_rust 7664 B > 7200 B; longest paths exceed
+stack budget. KI-0019; only SKIP_STACK_GATE added to prior named bypasses.
+
+Acceptance run 76178: fresh branch kernel and staged runtime, one QEMU boot.
+GNOME reports running but QMP still displays boot console. Notepad has not
+launched. SSH on this VM (localhost port 22363 added through QMP) confirms
+active VT2/session and open DRM descriptors. Do not claim dialog verification.
