@@ -53,5 +53,5 @@ pub(crate) enum Input<'a> { User { address: u64, length: u32 }, Record(&'a [u8])
 #[cfg(any(test, target_arch = "x86_64"))]
 #[path = "nt_user_callback/frame.rs"]
 mod frame;
-#[cfg(any(test, target_arch = "x86_64"))]
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 pub(crate) use frame::{prepare, Memory};

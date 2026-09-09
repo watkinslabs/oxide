@@ -3,7 +3,7 @@
 First command: `cat target/B3630-click-preview-debug/live.json`
 
 Worktree /home/nd/oxide/kernel-B3630; branch B3630-paint-region-collapse.
-Main read-only. Read CLAUDE.md. Draft PR7680; last pushed6e5ece2fd.
+Main read-only. Read CLAUDE.md. Draft PR7680; last pushed6e5ece2fd; local implementationc39326127.
 Goal: defect-free Notepad borders/buttons/Open/Save/dropdowns/About, with
 actual visible acceptance. User requests boot when ready and VM left running.
 Consult pinned local sources first; Wine11.16, never host Wine fallback.
@@ -73,7 +73,10 @@ Consult pinned local sources first; Wine11.16, never host Wine fallback.
   82be120b948019627f641cfe9f8bf3c0c1e441f82d7d02f0f67fd556ea45e8ed.
   Image preparation uses shared Cargo target, so preview features replace
   default x86 output after release validation. Keep evidence tied to ELF.
-- No commit/push yet for current WIP. Explicit stage paths; no stash/formatters.
+- Implementation committedc39326127. Push first failed hosted unused exports;
+  kernel-only reexport cfg fixes it.180 isolated hosted crates and6 callback
+  tests pass after repair. Kernel code unchanged by that cfg-only repair.
+  Explicit stage paths; no stash/formatters.
   Before push use only documented KI0019 bypasses after baseline proof:
   SKIP_LINT_RATCHET, SKIP_TEST_BUILD_GATE, SKIP_STACK_GATE. No new increases.
 
@@ -118,6 +121,6 @@ Consult pinned local sources first; Wine11.16, never host Wine fallback.
   This is a concrete missing dispatcher mechanism; exact cause of the controlled
   click is not yet proven. Claim KI0682 before implementation, add actual path
   coverage including capture, disabled candidates and transparent siblings.
-- Current uncommitted code has passed final builds; commit before next claim.
+- Current implementation has passed final builds; finalize push before next claim.
   Keep PR draft and preserve all failed preview evidence. Do not restart VM
   just because it exited. No complete Notepad or dispatcher correctness claim.
