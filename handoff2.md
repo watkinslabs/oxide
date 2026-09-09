@@ -1,77 +1,63 @@
-# Handoff — Wine profiles and user-visible Notepad
+# Handoff — actual Notepad Open failure
 
 First command: `git -C /home/nd/oxide/kernel-B3630 status --short`
 
-Branch B3630-paint-region-collapse; draft PR #7680. Main read-only.
-Goal remains all Notepad borders/redrawing/buttons/Save/Open/dropdowns/About
-working and verified. Read CLAUDE.md. Consult pinned local sources first.
+Branch B3630-paint-region-collapse; draft PR #7680; main read-only.
+Read CLAUDE.md; consult pinned local sources first. Goal: all Notepad
+borders/redrawing/buttons/Save/Open/dropdowns/About working and verified.
 Durable evidence: scratch/B3630-notepad-verification.md.
 
-## Runtime evidence and next verification
+## Latest runtime
 
-- Both VMs have exited. Revalidate ps before any later launch; no boot loops.
-- User-visible run namespace notepad-debug-696997 reached GNOME and Notepad
-  with user text. Serial target/boot-logs/x86_64-20260909-140413.log.
-- Final automated run759158 used separate namespace B3630-debug-final;
-  target/B3630-debug-final contains UART, screenshots, cadence and audit files.
-  /tmp/B3630-debug-final-acceptance.log records terminal exit1.
-- This automated run reached Notepad but failed BEFORE dialogs: expected token
-  oxide-b3630-final absent, displayed suffix -0-final; crop wrongly ended y165.
-- KI-0880: frame_extent followed inset columns into dark edit border. Repair
-  follows outer frame edges; retained real PNG measures(148,122,877,692), and
-  still correctly rejects missing full token. Synthetic border control too.
-- KI-0881: asynchronous send-key chord releases raced immediate text events.
-  Verified input scheduling in pinned QEMU9.2.4 source. All correctness chords
-  now use immediate ordered press/release events. Removed timed comparative
-  typing experiment from correctness run; actual token cadence still reported.
-- Restoring either defect fails its hosted regression. No subsequent boot;
-  commit/publication and ledger status for these repairs need checking.
-- Goal still requires visible Save/Open/About/dropdowns and redraw correctness.
+- User rejected automated menu-only verification that killed QEMU before an
+  item was selected. Run804065 did paint the full token after input/frame
+  repairs92373c14a, then failed File-menu OCR before dialogs.
+- Actual visible follow-up clicked File then Open; black horizontal strip,
+  no usable Open dialog. target/B3630-dialog-live/{file-menu-painted,
+  open-dialog-stable}.png and commands.jsonl preserve action/evidence.
+- Serial target/boot-logs/x86_64-20260909-143112.log records toolbar creation
+  failure plus three compositor bridge refusals; caption draw succeeds.
+  Parent100005 and child10001c are750x484, not previous750x1 observation.
+  Sizegrip10001b repeats WM_PAINT returningc0000002.
+- QEMU808134 later absent; log ends at169.713s mid-line. Cause unknown.
+  No live QEMU as of14:45UTC; revalidate. Never kill a user's inspection VM.
 
-## Current profile work
+## Current repairs
 
-- OXIDE_WINE_PROFILE=release|debug, default release; kernel PROFILE independent.
-- Source/build/dest directories and artifact catalogs have explicit suffixes.
-- RPMs oxide-wine-release and oxide-wine-debug install physical windows-<profile>
-  catalogs. Image selection sets common loader aliases to the selected catalog.
-- Version/profile/preparation-input ID stamps; mismatch gates in packaging,
-  image compose, payload staging, cached xtask launch and wrapper.
-- Both full builds and named RPMs completed. Debug image composed through flag;
-  actual installed RPM and extracted user32 hash match named debug artifacts.
-- Source profile gate and full staged payload gate pass. Wrong-profile commands
-  fail before build/boot.95 xtask tests/19 payload/28 harness/5 cache/17 package/
-  2 image tests pass; existing xtask ignored test remains. Hook controls fail red.
-- packages commit6830f27d0530148550646cfa95c582ea67826383 and images commit
-  553217b1bd369f34a9e41e24ad81870ec967e0ad on B3630-wine-profiles; neither repo
-  has a remote. Preserve images/.dist-old-layout (pre-existing untracked).
-- Kernel profiles implemented in d4043445d; KI-0878 archived fixed with that SHA.
-  Publication status and draft PR update still need verification.
+- KI-0883: canonical GW_CHILD/FIRST/LAST endpoints inverted relative to
+  NEXT and hwnd_list. Child→list→control-id lookup regression fails old code;
+  repaired ordering passes1512 IPC lib tests and both feature-gate targets.
+  No runtime claim yet. Both release builds launched; check own job/log.
+- KI-0882: harness selects actual File→Open before broad menu checks, waits
+  for Open/Cancel controls, and retains failed live VM/sockets by default.
+  OXIDE_NOTEPAD_KEEP_ON_FAILURE=0 opts into termination. Pointer clicks release
+  before capture and park outside captions. Shutdown timeout fails.
+- KI-0884: audit detects create/bridge refusals. Actual Open log now FAILs
+  with4 findings.43 relevant harness/audit tests pass;5 restored-defect
+  controls fail. Source changes need commit/publication verification.
+- Claims committed1a7214aa5 and6124d97; prior claimKI0882 b5fcd305f.
+- Last verified remote b7398c33f; re-fetch before assuming publication.
+  PR must remain draft: complete visual acceptance not achieved.
 
-## UART audit follow-up
+## Wine profiles
 
-- KI-0879: replaced host Wine name decoding with a preboot map extracted from
-  the selected staged image;19 audit tests and29 harness tests pass. Check
-  commit/publication status. Live log audit clean; UI correctness still open.
-- Earlier availability question referred to the now-exited manual VM.
+- Wine11.16; OXIDE_WINE_PROFILE=release|debug (default release), independent
+  of kernel PROFILE. Named source/build/artifact/catalog paths and RPMs;
+  stamps/profile gates cover composition, cache, staging and launch.
+- Both full builds and named RPMs complete. Source GNOME image selects debug;
+  packaged/extracted user32 hash matches debug artifact. No host-Wine fallback.
+- packages6830f27 and images553217b on B3630-wine-profiles, no configured
+  remotes. Preserve images/.dist-old-layout pre-existing untracked directory.
+- Kernel profile commitd4043445d, UART guest ordinal capture38abeac2c.
+  Previous tests:95 xtask(1 ignored),19 payload,5 cache,17 package,2 image.
 
-## Earlier repairs and remaining evidence
+## Existing repairs and constraints
 
-- Published remote last verifiedab8fa3bb9878bdf45e5e53a9c7542751f1b0bee7;
-  re-fetch before assuming publication. Local geometry changesab216dba9 and
-  stack repair174ef9636 plus claims were unpublished at profile task start.
-- Geometry trace captures request/after-changing/raw NCCALC input+answer/commit.
-  Final stack reports exactly match prior baseline both arches; KI-0877 fixed
-  in ledger using174ef9636. No new/worsened stack path.
-- Harness covers five menus, About, Open/Save, file-type dropdowns, buttons and
-  file-content round trip. Prior automated run failed before Notepad when GNOME
-  did not render. Current manual launch reached desktop; do not conflate them.
-- Prior GDB ABI repairs: selectors e7dde8192, vDSO05071e0f1, private attach stop
-  0fe94a760, traced worker stop/exit identity and retentiondc3fbe15e.
-  GNOME stall cause was not established; current run alone does not establish it.
-- X11 empty/stale Configure, atomic resize and owner-thread resize callbacks
-  already repaired; detailed tests/SHAs in scratch plan and git history.
-- KI-0859 caption hypothesis unproven; fresh button trace supplies missing
-  actual caption lookup/measurement/draw outcomes. Dialog750x1 origin KI-0861
-  needs analysis against new geometry boundaries if reproduced.
-- Keep PR draft until requirements verified. Only known KI-0019 gate bypasses
-  permitted after baseline proof; no new stack regression or hook bypass.
+- Resize callbacks, stale/zero X11 Configure, atomic rejected resizes already
+  repaired. Geometry/caption traces retained; button traces debug-only.
+- Geometry stack repair174ef9636 equals previous baseline on both arches:
+  336/277 existing over-budget paths,7664/6368-byte exception reservations.
+- Only documented KI-0019 bypasses: SKIP_LINT_RATCHET,
+  SKIP_TEST_BUILD_GATE, SKIP_STACK_GATE after baseline proof. No new increase.
+- Earlier selectors/vDSO/ptrace fixes remain; earlier GNOME stall cause unknown.
+- Open remainingKI0859/0860/0861/0862/0863; do not close on kernel test counts.

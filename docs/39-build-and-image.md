@@ -156,3 +156,10 @@ may coexist; selecting one never overwrites the other's build directory.
 `wine-build-id` identifies preparation inputs (source, headers, patch set,
 recipe and profile); it is not a claim that module bytes were measured in a
 running guest. `OXIDE_WINE_PROFILE` is independent of kernel `PROFILE`.
+
+Visible Notepad acceptance selects File → Open before broad menu checks,
+requires rendered dialog controls, and audits window-creation and compositor
+refusals even when a visual check fails. Failed runs retain the live VM and
+print its launcher PID and QMP/UART socket paths for inspection by default.
+`OXIDE_NOTEPAD_KEEP_ON_FAILURE=0` requests automatic termination on failure.
+Successful runs require guest power-off; shutdown timeout is a failure.

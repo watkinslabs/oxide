@@ -105,7 +105,7 @@ class DialogChecks:
 
     def run(self):
         r = self.runner
-        self.menus()
+        self.open_from_menu()
         self.key("alt", "h")
         self.wait("help-menu", lambda path: "about" in words(r.ocr_raw(path)))
         self.key("a")
@@ -160,7 +160,28 @@ class DialogChecks:
         self.click_caption(path, rect, "Cancel")
         self.wait("open-cancelled", lambda path: dialog_rect(path, "Open") is None)
         self.document("after-dialog-cancel", updated)
+        self.menus()
         print("windows-notepad-acceptance: dialogs PASS (About, captions, Save As, Save, Open, file types, Cancel, content round trip)")
+
+    def open_from_menu(self):
+        r = self.runner
+        path, _ = r.screenshot(self.conn, "before-open-menu")
+        rect = r.locate_notepad_window(path)
+        item = menu_bar_word(path, rect, "File") if rect else None
+        if item is None:
+            r.die(f"File absent from Notepad menu bar; retained {path}")
+        width, height = r.image_size(path)
+        left, top, item_width, item_height = item
+        r.click(self.conn, left + item_width // 2, top + item_height // 2, width, height)
+        r.pointer_to(self.conn, width - 20, height - 20, width, height)
+        menu = (left, top, min(width, left + 320), min(height, top + 480))
+        path, point = self.wait("open-menu-item", lambda frame: control_word(frame, menu, "Open"))
+        r.click(self.conn, *point, width, height)
+        r.pointer_to(self.conn, width - 20, height - 20, width, height)
+        path, rect = self.dialog("open-from-menu", "Open", ("Open", "Cancel"))
+        self.click_caption(path, rect, "Cancel")
+        self.wait("open-menu-cancelled", lambda frame: dialog_rect(frame, "Open") is None)
+        self.document("after-open-menu", r.TOKEN)
 
     def menus(self):
         entries = (("File", "f", ("new", "open", "save", "exit")),

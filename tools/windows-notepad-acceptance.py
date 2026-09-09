@@ -73,10 +73,15 @@ DESKTOP_LAUNCH = (b'set -- $(pgrep -x gnome-shell); if [ "$#" -eq 1 ]; then '
                   b'else echo "[WINDOWS-NOTEPAD] runtime-exit status=11 desktop-session-ambiguous"; fi\n')
 qemu = None
 WIN32U_ORDINALS = {}
+run_succeeded = False
+KEEP_ON_FAILURE = os.environ.get("OXIDE_NOTEPAD_KEEP_ON_FAILURE", "1") == "1"
 
 
 def cleanup():
     if qemu is not None and qemu.poll() is None:
+        if KEEP_ON_FAILURE and not run_succeeded:
+            print(f"windows-notepad-acceptance: retained failed VM launcher={qemu.pid} QMP={QMP} UART={UART}", file=sys.stderr)
+            return
         try:
             os.killpg(qemu.pid, 15)
             qemu.wait(timeout=3)
@@ -462,7 +467,7 @@ MENU_ITEMS = ("new", "open", "save", "exit")
 
 
 def drive_menu(conn):
-    """A6: press File on the menu bar and read the dropdown that opens.
+    """A6: click File on the menu bar and read the dropdown that opens.
 
     A menu that opens nothing looks exactly like a menu bar that was never
     clicked, so this is checked by what is on the screen under the item and
@@ -481,12 +486,13 @@ def drive_menu(conn):
     box = (max(0, left - 30), max(0, top - 12), min(width, left + MENU_CROP_WIDTH), min(height, top + MENU_CROP_HEIGHT))
     pointer_to(conn, centre[0], centre[1], width, height)
     button(conn, True)
+    button(conn, False)
+    pointer_to(conn, width - 20, height - 20, width, height)
     time.sleep(1.5)
     opened, _ = screenshot(conn, "menu-open")
     crop = Path(f"{SCREEN}-menu-open-crop.png")
     crop_image(opened, box, crop)
     text = " ".join(ocr_raw(crop).split())
-    button(conn, False)
     print(f"menu: item={item} crop={crop} text={text!r}")
     missing = [name for name in MENU_ITEMS if name not in text]
     if missing:
@@ -530,9 +536,9 @@ def run_desktop_checks(uart, reader, qmp_sock, deadline, guest=None):
     if not found:
         die(f"token not painted inside the Notepad window {rect} within {TOKEN_SECONDS}s; retained {after_path}")
     print("windows-notepad-acceptance: A1/A2/A3 PASS (PE, window, present, token)")
-    drive_menu(qmp_sock)
     report_cadence(reader)
     DialogChecks(sys.modules[__name__], qmp_sock, deadline, guest).run()
+    drive_menu(qmp_sock)
     keys(qmp_sock, "alt", "f4")
     wait_marker(reader, "[WINDOWS-NOTEPAD] runtime-exit status=", deadline, guest)
     if "[WINDOWS-NOTEPAD] runtime-exit status=0" not in reader.text():
@@ -546,7 +552,7 @@ def run_desktop_checks(uart, reader, qmp_sock, deadline, guest=None):
 
 
 def main():
-    global qemu
+    global qemu, run_succeeded
     if not re.fullmatch(r"[a-z0-9-]{4,64}", TOKEN):
         die("OXIDE_NOTEPAD_TOKEN must contain lowercase letters, digits, and hyphens")
     print(f"windows-notepad-acceptance: output={OUT} token={TOKEN} attempts=1")
@@ -592,11 +598,11 @@ def main():
         qemu.wait(timeout=SHUTDOWN_TIMEOUT)
         print("windows-notepad-acceptance: shutdown=powered-off")
     except subprocess.TimeoutExpired:
-        print(f"windows-notepad-acceptance: shutdown=killed — guest did not power off "
-              f"within {SHUTDOWN_TIMEOUT}s; the root image is left unclean", file=sys.stderr)
+        die(f"guest did not power off within {SHUTDOWN_TIMEOUT}s")
     result = run_uart_audit()
     if not result.passed:
         die(f"unclaimed or refused Windows call(s) in the UART log; see the table above and {AUDIT_MD}")
+    run_succeeded = True
     print(f"windows-notepad-acceptance: PASS — evidence retained in {OUT}")
 
 

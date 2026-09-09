@@ -40,6 +40,10 @@ WIN32U_IMAGE_PATH = "/usr/local/lib/oxide/windows/x86_64-windows/win32u.dll"
 
 # (kind, human label, compiled pattern, detail template using named groups)
 _FINDING_SPECS = [
+    ("window-create-fail", "window creation failed",
+     re.compile(r"\[WINDOWS-WINDOW-CREATE-FAIL\](?P<rest>[^\r\n]*)")),
+    ("bridge-refused", "compositor bridge operation refused",
+     re.compile(r"\[WINDOWS-BRIDGE-REFUSED\](?P<rest>[^\r\n]*)")),
     ("raw-unclaimed", "unadmitted win32u ordinal",
      re.compile(r"\[WINDOWS-RAW-UNCLAIMED\] ordinal=(?P<ordinal>[0-9a-fA-F]+)")),
     ("ldr-fail", "runtime DLL load refused",
@@ -104,7 +108,7 @@ def _detail_for(kind, match, win32u_ordinals):
         return f"reason={match.group('reason')}"
     if kind == "delayload-fail-console":
         return f"{match.group('dll')}.{match.group('api')}"
-    if kind in ("bug", "segfault", "pe-fault"):
+    if kind in ("bug", "segfault", "pe-fault", "window-create-fail", "bridge-refused"):
         return match.group("rest").strip()[:200]
     return match.group(0)[:200]
 

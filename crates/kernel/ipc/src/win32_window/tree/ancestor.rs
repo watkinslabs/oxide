@@ -49,16 +49,16 @@ impl WindowManager {
         false
     }
 
-    /// GetWindow. Sibling order runs bottom to top, so the first window is the
-    /// bottom of the z-order and `GW_HWNDNEXT` walks downward from the caller.
+    /// GetWindow. The first sibling is the top of the z-order;
+    /// `GW_HWNDNEXT` walks downward and `GW_HWNDPREV` walks upward.
     /// # C: O(N_windows²)
     pub fn window_relative(&self, id: WindowId, relationship: u32) -> Option<WindowId> {
         let record = self.get(id)?;
         match relationship {
             GW_OWNER => record.owner,
-            GW_CHILD => self.siblings_top_first(Some(id)).last().copied(),
-            GW_HWNDFIRST => self.siblings_top_first(record.parent).last().copied(),
-            GW_HWNDLAST => self.siblings_top_first(record.parent).first().copied(),
+            GW_CHILD => self.siblings_top_first(Some(id)).first().copied(),
+            GW_HWNDFIRST => self.siblings_top_first(record.parent).first().copied(),
+            GW_HWNDLAST => self.siblings_top_first(record.parent).last().copied(),
             GW_HWNDNEXT | GW_HWNDPREV => {
                 let siblings = self.siblings_top_first(record.parent);
                 let index = siblings.iter().position(|sibling| *sibling == id)?;

@@ -289,3 +289,13 @@ from correctness run; token retrieval cadence reporting retained. No sleep,
 retry or timeout increase. Production input-call test tracks held modifiers
 and proves exact token delivery with no key left held. Restoring timed chord
 fails. No later boot or successful final acceptance is claimed.
+
+## Actual File Open and dialog control lookup, 2026-09-09
+
+- Automatic run804065 (B3630-debug-ordered) painted the complete token and passed A1/A2/A3 after92373c14a. File-menu OCR failed before any item selection; cleanup terminated that VM. User correctly rejected this as dialog verification.
+- Persistent visible run used the same staged named debug payload. Actual pointer clicks File(168,156), Open(194,195), pointer parked(930,700). Evidence target/B3630-dialog-live/file-menu-painted.png and open-dialog-stable.png; commands.jsonl journals QMP actions. Open produced a black strip, no usable controls.
+- Serial target/boot-logs/x86_64-20260909-143112.log: parent100005 and custom child10001c retain750x484 bounds. Prior750x1 claim does not describe this run. Toolbar10001a creation style54020944 carries nonsensical geometry, fails publication with transport3; bridge refusals also name100019 and100014. Open caption lookup/measurement/draw returns success. Sizegrip10001b repeatedly returns c0000002 from WM_PAINT.
+- QEMU808134 was later absent from ps; serial ends mid-line at169.713s. Exit cause unknown. No live VM as of14:45UTC; revalidate before launching. Retained evidence establishes an attempted dialog, not a successful one.
+- KI-0883: GW_CHILD and GW_HWNDFIRST returned bottom while enumeration/NEXT walked down. Dialog child→sibling-list→identifier lookup missed control0x471 in a hosted regression (None vs HWND4). Correct first/last endpoints; verify both directional walks and unrelated-parent exclusion. All1512 IPC lib tests pass; both architecture debug-all checks pass. Runtime effect unverified.
+- KI-0882: select actual File→Open item before broad menu checks, require Open/Cancel captions, preserve a failed live VM and sockets by default. OXIDE_NOTEPAD_KEEP_ON_FAILURE=0 requests termination. Full menu clicks release before capture and park cursor clear of captions. Shutdown timeout fails acceptance.
+- KI-0884: UART audit now recognizes window-create and bridge-refused markers. Re-auditing actual Open trace reports four findings instead of PASS.43 dialog/failure/desktop-order/audit tests pass. Five targeted controls restoring early menu ordering, removing Open actions, restoring termination, or omitting error patterns each fail assertions; restored production code passes.

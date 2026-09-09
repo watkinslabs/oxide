@@ -11,6 +11,7 @@ import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from types import SimpleNamespace
 
 TOOLS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOOLS))
@@ -32,6 +33,29 @@ class FailureTests(unittest.TestCase):
         with patch("atexit.register"), patch.dict(
                 "os.environ", {"OXIDE_NOTEPAD_ACCEPTANCE_DIR": self.tmp.name}):
             spec.loader.exec_module(self.runner)
+
+    def test_failed_visible_vm_and_control_sockets_survive_cleanup(self):
+        r = self.runner
+        r.qemu = SimpleNamespace(pid=12345, poll=lambda: None, wait=lambda timeout: 0)
+        r.QMP.touch()
+        r.UART.touch()
+        with patch.object(r.os, "killpg") as kill, patch("sys.stderr", new=io.StringIO()):
+            r.cleanup()
+        kill.assert_not_called()
+        self.assertTrue(r.QMP.exists())
+        self.assertTrue(r.UART.exists())
+
+    def test_explicit_failure_cleanup_terminates_launcher_group(self):
+        r = self.runner
+        r.KEEP_ON_FAILURE = False
+        r.qemu = SimpleNamespace(pid=12345, poll=lambda: None, wait=lambda timeout: 0)
+        r.QMP.touch()
+        r.UART.touch()
+        with patch.object(r.os, "killpg") as kill:
+            r.cleanup()
+        kill.assert_called_once_with(12345, 15)
+        self.assertFalse(r.QMP.exists())
+        self.assertFalse(r.UART.exists())
 
     def test_fault_rejects_even_with_expected_marker_buffered(self):
         for text in (b"[BUG] broken\nready\n", b"ready\n[FAULT] broken\n"):

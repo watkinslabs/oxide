@@ -41,6 +41,18 @@ def test_clean_log_passes():
     assert "PASS" in audit_mod.render_table(result)
 
 
+def test_dialog_creation_and_bridge_refusals_fail_with_original_context():
+    text = ("[116.482] [WINDOWS-WINDOW-CREATE-FAIL] stage=publish hwnd=000000000010001a transport=0000000000000003\n"
+            "[116.488] [WINDOWS-BRIDGE-REFUSED] op=0000000000000002 hwnd=000000000010001a seq=00000000000000aa status=0000000000000001\n")
+    result = audit_mod.audit(text)
+    assert not result.passed
+    assert [finding.kind for finding in result.findings] == ["window-create-fail", "bridge-refused"]
+    assert [finding.first_ts for finding in result.findings] == ["116.482", "116.488"]
+    assert "stage=publish" in result.findings[0].detail
+    assert "transport=0000000000000003" in result.findings[0].detail
+    assert "seq=00000000000000aa status=0000000000000001" in result.findings[1].detail
+
+
 def test_raw_unclaimed_marker_fails_and_decodes_ordinal():
     text = _fixture_text("uart-raw-unclaimed.log")
     result = audit_mod.audit(text, _SYNTHETIC_WIN32U_ORDINALS)

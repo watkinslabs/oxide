@@ -23,14 +23,35 @@ class DialogEvidenceTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "already present before opening"):
                 check.menus()
 
-    def test_dialog_run_requires_menu_verification_before_about(self):
-        runner = SimpleNamespace(keys_immediate=lambda *args: self.fail("input preceded menu verification"))
+    def test_dialog_run_selects_open_before_broad_menu_verification(self):
+        runner = SimpleNamespace(keys_immediate=lambda *args: self.fail("input preceded Open selection"))
         check = dialogs.DialogChecks(runner, None, 0)
-        class ReachedMenus(Exception):
+        class ReachedOpen(Exception):
             pass
-        with patch.object(check, "menus", side_effect=ReachedMenus):
-            with self.assertRaises(ReachedMenus):
+        with patch.object(check, "open_from_menu", side_effect=ReachedOpen), \
+                patch.object(check, "menus", side_effect=AssertionError("menus preceded Open")):
+            with self.assertRaises(ReachedOpen):
                 check.run()
+
+    def test_open_item_is_clicked_before_missing_dialog_is_reported(self):
+        events = []
+        runner = SimpleNamespace(screenshot=lambda *args: ("frame", "digest"),
+                                 locate_notepad_window=lambda _: (100, 100, 700, 600),
+                                 image_size=lambda _: (1024, 768),
+                                 click=lambda conn, x, y, *size: events.append(("click", x, y)),
+                                 pointer_to=lambda conn, x, y, *size: events.append(("park", x, y)))
+        check = dialogs.DialogChecks(runner, None, 0)
+        def wait(label, predicate):
+            return "menu", predicate("menu")
+        check.wait = wait
+        with patch.object(dialogs, "menu_bar_word", return_value=(150, 150, 30, 12)), \
+                patch.object(dialogs, "control_word", return_value=(190, 195)), \
+                patch.object(check, "dialog", side_effect=RuntimeError("dialog absent")) as dialog:
+            with self.assertRaisesRegex(RuntimeError, "dialog absent"):
+                check.open_from_menu()
+        self.assertEqual(events, [("click", 165, 156), ("park", 1004, 748),
+                                  ("click", 190, 195), ("park", 1004, 748)])
+        dialog.assert_called_once_with("open-from-menu", "Open", ("Open", "Cancel"))
 
     def test_title_or_background_text_cannot_stand_in_for_button_caption(self):
         rows = [
@@ -89,6 +110,7 @@ class DialogEvidenceTests(unittest.TestCase):
                 runner.run_desktop_checks(None, reader, "qmp", 10**20)
             factory.assert_called_once_with(runner, "qmp", 10**20, None)
             runner.keys.assert_not_called()
+            runner.drive_menu.assert_not_called()
 
     def test_filename_injection_handles_windows_path_punctuation(self):
         sent = []
