@@ -39,6 +39,13 @@ Durable evidence: scratch/B3630-notepad-verification.md.
 - Kernel profiles implemented in d4043445d; KI-0878 archived fixed with that SHA.
   Publication status and draft PR update still need verification.
 
+## UART audit follow-up
+
+- KI-0879: replaced host Wine name decoding with a preboot map extracted from
+  the selected staged image;19 audit tests and29 harness tests pass. Check
+  commit/publication status. Live log audit clean; UI correctness still open.
+- User availability question pending before automated input into the live VM.
+
 ## Earlier repairs and remaining evidence
 
 - Published remote last verifiedab8fa3bb9878bdf45e5e53a9c7542751f1b0bee7;

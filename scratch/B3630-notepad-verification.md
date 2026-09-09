@@ -250,3 +250,15 @@ all dialog/dropdown/redraw requirements; acceptance remains incomplete.
 Geometry tracing174ef9636 removes ab216dba9 stack regression: complete final
 x86/ARM reports exactly match prior caption-trace baselines (336/277 failed
 static paths, exception7664/6368 B). KI-0877 archived fixed with literal SHA.
+
+
+## Guest-owned UART names, KI-0879
+
+Status: implemented; Branch:B3630-paint-region-collapse.
+Acceptance captures win32u ordinals from the validated staged disk before
+boot; UART audit uses that immutable map. Missing DLL preserves raw ordinals,
+never names from another Wine installation. Real ext4 fixture verifies selected
+DLL extraction and missing-DLL behavior.19 audit tests and29 harness tests pass;
+removing the preboot capture hook fails its wiring test. Current source debug
+image yields1540 names; retained live UART audit has no unclaimed/refused calls.
+Logs /tmp/B3630-audit-{guest-tests,harness-tests,capture-red,capture-green}.log.

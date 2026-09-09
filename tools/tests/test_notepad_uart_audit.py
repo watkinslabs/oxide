@@ -176,19 +176,29 @@ def test_parse_win32u_exports_rejects_a_non_pe_blob():
     assert audit_mod.parse_win32u_exports(b"not a PE image") == {}
 
 
-def test_load_win32u_ordinals_returns_empty_dict_for_missing_roots():
-    assert audit_mod.load_win32u_ordinals(roots=("/no/such/wine/root",)) == {}
+def test_load_win32u_ordinals_returns_empty_dict_for_missing_image():
+    assert audit_mod.load_win32u_ordinals("/no/such/guest.img") == {}
 
 
-def test_load_win32u_ordinals_decodes_the_installed_wine_dll_if_present():
-    """Real round trip against the shipped win32u.dll the surface gate also
-    reads (crates/kernel/syscalls/tests/windows_call_surface/catalog.rs
-    ROOTS); skipped when Wine is not installed on this host."""
-    decoded = audit_mod.load_win32u_ordinals()
-    if not decoded:
-        import pytest
-        pytest.skip("no win32u.dll installed on this host")
-    # Sample ordinals observed in the fixture logs above decode to the same
-    # NtUser* exports the syscall surface gate admits by name.
-    assert decoded.get(0x14dd) == "NtUserQueryInputContext"
-    assert decoded.get(0x1581) == "NtUserSetScrollInfo"
+def test_load_win32u_ordinals_reads_selected_guest_dll(tmp_path):
+    import subprocess
+    import pytest
+    dll = Path(__file__).resolve().parents[2] / "target/artifacts/wine/x86_64-debug/x86_64-windows/win32u.dll"
+    if not dll.is_file():
+        pytest.skip("build the pinned debug Wine artifact first")
+    image = tmp_path / "guest.img"
+    with image.open("wb") as out:
+        out.truncate(8 * 1024 * 1024)
+    subprocess.run(["mkfs.ext4", "-q", "-F", str(image)], check=True, capture_output=True)
+    commands = [f"mkdir {path}" for path in ("/usr", "/usr/local", "/usr/local/lib", "/usr/local/lib/oxide",
+                "/usr/local/lib/oxide/windows-debug", "/usr/local/lib/oxide/windows-debug/x86_64-windows")]
+    commands += ["symlink /usr/local/lib/oxide/windows windows-debug",
+                 f"write {dll} /usr/local/lib/oxide/windows-debug/x86_64-windows/win32u.dll"]
+    script = tmp_path / "debugfs.commands"
+    script.write_text("\n".join(commands) + "\n")
+    subprocess.run(["debugfs", "-w", "-f", str(script), str(image)], check=True, capture_output=True)
+    expected = audit_mod.parse_win32u_exports(dll.read_bytes())
+    assert "NtUserSetScrollInfo" in expected.values()
+    assert audit_mod.load_win32u_ordinals(image) == expected
+    subprocess.run(["debugfs", "-w", "-R", f"rm {audit_mod.WIN32U_IMAGE_PATH}", str(image)], check=True, capture_output=True)
+    assert audit_mod.load_win32u_ordinals(image) == {}

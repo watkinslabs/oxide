@@ -29,12 +29,14 @@ shipped win32u.dll PE export table using only the standard library.
 """
 import re
 import struct
+import subprocess
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
 TIMESTAMP_RE = re.compile(r"\[(\d+\.\d+)\]")
 
-WIN32U_ROOTS = ("/usr/lib64/wine/x86_64-windows", "/usr/lib/wine/x86_64-windows")
+WIN32U_IMAGE_PATH = "/usr/local/lib/oxide/windows/x86_64-windows/win32u.dll"
 
 # (kind, human label, compiled pattern, detail template using named groups)
 _FINDING_SPECS = [
@@ -235,15 +237,21 @@ def parse_win32u_exports(data):
     return result
 
 
-def load_win32u_ordinals(roots=WIN32U_ROOTS):
-    """Best-effort ordinal->name map from the shipped win32u.dll. Empty dict
-    (never an exception) when no image is found -- callers fall back to raw
-    hex ordinals in the table."""
-    for root in roots:
-        path = Path(root) / "win32u.dll"
-        if path.is_file():
-            try:
+def load_win32u_ordinals(image):
+    """Capture names from the validated, offline guest disk before boot.
+
+    A missing or unreadable DLL leaves raw ordinals in the audit; it never
+    substitutes another installation's names.
+    """
+    if not Path(image).is_file():
+        return {}
+    try:
+        with tempfile.TemporaryDirectory(prefix="oxide-uart-ordinals-") as temporary:
+            path = Path(temporary) / "win32u.dll"
+            result = subprocess.run(["debugfs", "-R", f"dump {WIN32U_IMAGE_PATH} {path}", str(image)],
+                                    capture_output=True, timeout=30)
+            if result.returncode == 0 and path.is_file():
                 return parse_win32u_exports(path.read_bytes())
-            except (struct.error, IndexError):
-                return {}
+    except (OSError, subprocess.TimeoutExpired, struct.error, IndexError):
+        return {}
     return {}

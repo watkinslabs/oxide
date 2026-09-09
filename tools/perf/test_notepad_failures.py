@@ -71,8 +71,11 @@ class FailureTests(unittest.TestCase):
         with patch.dict("os.environ", overrides, clear=True), \
              patch.object(Path, "is_file", lambda path: path == source), \
              patch.object(self.runner.subprocess, "run", return_value=result) as run, \
+             patch.object(self.runner, "load_win32u_ordinals", return_value={123: "guest_symbol"}) as ordinals, \
              patch("sys.stdout", new=io.StringIO()):
             self.runner.prepare_image()
+        ordinals.assert_called_once_with(self.runner.ROOT / "target" / "builds" / self.runner.BUILD_ID / "root-x86_64.img")
+        self.assertEqual(self.runner.WIN32U_ORDINALS, {123: "guest_symbol"})
         image = next(call for call in run.call_args_list if call.args[0][0] == "cargo")
         self.assertIn("image", image.args[0])
         checks = [call.args[0] for call in run.call_args_list if "--profile-only" in call.args[0]]
@@ -93,6 +96,15 @@ class FailureTests(unittest.TestCase):
 
     def test_debug_profile_is_propagated_to_both_image_checks(self):
         self.assertEqual(self.image_environment({"OXIDE_WINE_PROFILE": "debug"})["OXIDE_WINE_PROFILE"], "debug")
+
+    def test_uart_audit_uses_the_preboot_guest_mapping(self):
+        self.runner.WIN32U_ORDINALS = {0x123: "GuestOnlyCall"}
+        self.runner.UART_LOG.write_text("[WINDOWS-RAW-UNCLAIMED] ordinal=0123\n")
+        with patch.object(self.runner, "load_win32u_ordinals", side_effect=AssertionError("must not reread a running disk")), \
+             patch("sys.stdout", new=io.StringIO()):
+            result = self.runner.run_uart_audit()
+        self.assertFalse(result.passed)
+        self.assertIn("GuestOnlyCall", result.findings[0].detail)
 
     def test_wrong_cached_profile_stops_before_image_build(self):
         cached = self.runner.ROOT / "target" / "builds" / self.runner.BUILD_ID / "root-x86_64.img"

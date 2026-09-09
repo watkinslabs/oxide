@@ -72,6 +72,7 @@ DESKTOP_LAUNCH = (b'set -- $(pgrep -x gnome-shell); if [ "$#" -eq 1 ]; then '
                   b'/usr/local/bin/windows-notepad-smoke; '
                   b'else echo "[WINDOWS-NOTEPAD] runtime-exit status=11 desktop-session-ambiguous"; fi\n')
 qemu = None
+WIN32U_ORDINALS = {}
 
 
 def cleanup():
@@ -410,6 +411,7 @@ def verify_image_wine_profile(image, profile):
 
 def prepare_image():
     """Compose the current Oxide profile before staging the kernel image."""
+    global WIN32U_ORDINALS
     build_env = image_build_env()
     cached_root = ROOT / "target" / "builds" / BUILD_ID / "root-x86_64.img"
     if cached_root.is_file() and os.environ.get("OXIDE_REBUILD_ROOTFS", "0") != "1":
@@ -450,6 +452,7 @@ def prepare_image():
     if result.returncode:
         die(f"kernel image preparation failed; see {QEMU_LOG}")
     verify_image_wine_profile(cached_root, build_env["OXIDE_WINE_PROFILE"])
+    WIN32U_ORDINALS = load_win32u_ordinals(cached_root)
 
 
 def run_uart_audit():
@@ -460,7 +463,7 @@ def run_uart_audit():
     one (KI: unclaimed win32u ordinals and refused loads/callbacks were only
     ever noticed by a human reading the log)."""
     text = UART_LOG.read_bytes().decode("utf-8", "replace") if UART_LOG.is_file() else ""
-    result = uart_audit(text, load_win32u_ordinals())
+    result = uart_audit(text, WIN32U_ORDINALS)
     print(uart_audit_table(result))
     AUDIT_MD.write_text(uart_audit_markdown(RUN, result))
     return result
