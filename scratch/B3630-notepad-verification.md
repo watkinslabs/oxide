@@ -102,3 +102,15 @@ retrieval once. Positive controls bypass the queue, drop a queued original-size
 return, or suppress application corrections; each fails its regression.
 Restored:3255 syscalls lib tests and28 production position-boundary tests pass;
 both kernel feature gates pass. Runtime verification still outstanding.
+
+Local follow-up1787af1ac and later refactoring: nested same-window position
+changes mark a pending compositor origin as Remote, ensuring the outer commit
+corrects display geometry.29 callback-boundary tests pass, including a failing
+positive control without that mark;3255 syscalls lib tests also pass.
+KI-0868 holds callback publication: best stack10 result19200/18880 versus
+baseline19168/18848 for legacy/window_raw routes. The32 B increase is new,
+even though338 existing paths and the7664 B exception path still fail.
+No new callback commit has been pushed; the pre-existing stack bypass was NOT
+used for it. Latest source restores stack10 after the separate snapshot-helper
+experiment worsened the route to19232. Revalidate the built artifact when
+continuing. Runtime requirements remain unverified; goal not complete.

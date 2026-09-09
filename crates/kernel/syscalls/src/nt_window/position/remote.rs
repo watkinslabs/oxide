@@ -35,15 +35,10 @@ pub(crate) fn pump_position_current()->Option<u64> {
 /// Preserve the shared reply while a position callback interrupts a GUI wait. # C: O(requests + windows)
 pub(crate) fn pump_for_reply(reply:Arc<work::Reply>)->Option<u64>{pump(Some(reply))}
 fn pump(resume_send:Option<Arc<work::Reply>>)->Option<u64> {
-    let cur=sched::live::current()?;
-    let mut work={
-        let mut entries=GUI.lock();let e=entries.iter_mut().find(|e|e.group.ptr_eq(&Arc::downgrade(&cur.thread_group)))?;
-        work::take(&mut e.remote_positions,cur.tid as u64)?
-    };
-    let reply=work.reply.clone();
-    if work.compositor {match prepare_compositor(&mut work.args){Some(true)=>{},Some(false)=>return Some(1),None=>return Some(0)}}
-    let result=match crate::nt_wine_window::position::plan_current(&work.args){
-        Err(())=>0,Ok(None)=>1,Ok(Some(request))=>super::live::start_queued(request,work.compositor,reply.clone(),resume_send)
+    let work::RemotePosition{mut args,reply,compositor,..}=take_current()?;
+    if compositor {match prepare_compositor(&mut args){Some(true)=>{},Some(false)=>return Some(1),None=>return Some(0)}}
+    let result=match crate::nt_wine_window::position::plan_current(&args){
+        Err(())=>0,Ok(None)=>1,Ok(Some(request))=>super::live::start_queued(request,compositor,reply.clone(),resume_send)
     };
     if result!=super::super::STATUS_PENDING{finish_reply(reply.as_ref(),result);}
     Some(result)
@@ -83,4 +78,13 @@ pub(crate) fn cancel_position_window(group:&Arc<sched::thread_group::ThreadGroup
 fn prepare_compositor(args:&mut [u64;7])->Option<bool>{
     let context=super::live::position_context_for_current(args[0])?;
     Some(super::compositor::plan(args,context.rect))
+}
+
+// Queue extraction completes before callbacks; its lock and removal temporaries
+// must not occupy the callback chain's stack frame.
+#[inline(never)]
+fn take_current()->Option<work::RemotePosition>{
+    let cur=sched::live::current()?;
+    let mut entries=GUI.lock();let e=entries.iter_mut().find(|e|e.group.ptr_eq(&Arc::downgrade(&cur.thread_group)))?;
+    work::take(&mut e.remote_positions,cur.tid as u64)
 }
