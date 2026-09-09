@@ -90,9 +90,10 @@ def frame_extent(image, centre_x, title_top):
         return None
     left, right, row = best
     # The centre column crosses the title glyphs, so measure the depth down
-    # the frame's own edges, which carry no text.
+    # the outer frame edges. Inset columns cross the edit control's dark
+    # border and would mistake its top for the window bottom.
     bottom = row
-    for column in (left + 2, right - 2):
+    for column in (left, right):
         depth = row
         while depth + 1 < height and chrome(column, depth + 1): depth += 1
         bottom = max(bottom, depth)

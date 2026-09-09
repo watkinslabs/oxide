@@ -7,18 +7,26 @@ Goal remains all Notepad borders/redrawing/buttons/Save/Open/dropdowns/About
 working and verified. Read CLAUDE.md. Consult pinned local sources first.
 Durable evidence: scratch/B3630-notepad-verification.md.
 
-## Live user session
+## Runtime evidence and next verification
 
-- User requested a visible launch. QEMU PID708994 was started with GTK/KVM;
-  revalidate PID and argv before acting. Do not stop it or overwrite its disks.
-- Namespace target/builds/notepad-debug-696997; current kernel was rebuilt.
-- QMP target/B3630-user-debug/qmp.sock; UART target/B3630-user-debug/uart.sock.
-- Serial target/boot-logs/x86_64-20260909-140413.log; launcher log
-  target/B3630-user-debug/qemu.log. QEMU writes serial independently of reader.
-- Initial frame showed console; later frame shows GNOME and Notepad with
-  user-entered text. User controls input; do not run automated UI checks over it.
-- Button diagnostics show OK caption, nonzero measurement and draw success.
-  Save/Open/About/dropdown/redraw correctness still needs complete evidence.
+- Both VMs have exited. Revalidate ps before any later launch; no boot loops.
+- User-visible run namespace notepad-debug-696997 reached GNOME and Notepad
+  with user text. Serial target/boot-logs/x86_64-20260909-140413.log.
+- Final automated run759158 used separate namespace B3630-debug-final;
+  target/B3630-debug-final contains UART, screenshots, cadence and audit files.
+  /tmp/B3630-debug-final-acceptance.log records terminal exit1.
+- This automated run reached Notepad but failed BEFORE dialogs: expected token
+  oxide-b3630-final absent, displayed suffix -0-final; crop wrongly ended y165.
+- KI-0880: frame_extent followed inset columns into dark edit border. Repair
+  follows outer frame edges; retained real PNG measures(148,122,877,692), and
+  still correctly rejects missing full token. Synthetic border control too.
+- KI-0881: asynchronous send-key chord releases raced immediate text events.
+  Verified input scheduling in pinned QEMU9.2.4 source. All correctness chords
+  now use immediate ordered press/release events. Removed timed comparative
+  typing experiment from correctness run; actual token cadence still reported.
+- Restoring either defect fails its hosted regression. No subsequent boot;
+  commit/publication and ledger status for these repairs need checking.
+- Goal still requires visible Save/Open/About/dropdowns and redraw correctness.
 
 ## Current profile work
 
@@ -44,7 +52,7 @@ Durable evidence: scratch/B3630-notepad-verification.md.
 - KI-0879: replaced host Wine name decoding with a preboot map extracted from
   the selected staged image;19 audit tests and29 harness tests pass. Check
   commit/publication status. Live log audit clean; UI correctness still open.
-- User availability question pending before automated input into the live VM.
+- Earlier availability question referred to the now-exited manual VM.
 
 ## Earlier repairs and remaining evidence
 

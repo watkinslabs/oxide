@@ -207,22 +207,9 @@ def wait_marker(reader, marker, deadline, guest=None):
     die(f"missing guest marker {marker}")
 
 
-# QEMU delays the key-up of a `send-key` by `hold-time`, which defaults to
-# 100 ms, and the input queue that carries it is serial, so consecutive
-# default `send-key` commands reach the guest about a tenth of a second apart
-# however fast they are issued -- the QMP command itself returns in about half
-# a millisecond. A harness that types with the default therefore reports its
-# own pacing as the guest's typing cadence. Everything typed for a result
-# names its own hold; the cadence probe types one phase with the default on
-# purpose, to measure what that costs.
-KEY_HOLD_MS = 5
-
-
-def keys(conn, *names, hold_ms=KEY_HOLD_MS):
-    arguments = {"keys": [{"type": "qcode", "data": name} for name in names]}
-    if hold_ms is not None:
-        arguments["hold-time"] = hold_ms
-    qmp(conn, "send-key", arguments)
+def keys(conn, *names):
+    """Deliver a complete chord before any following command's input."""
+    keys_immediate(conn, *names)
 
 
 def keys_immediate(conn, *names):
@@ -268,30 +255,6 @@ def type_text(conn, text, send=keys_immediate):
 def type_token(conn):
     keys(conn, "ctrl", "a")
     type_text(conn, TOKEN)
-
-
-# One phase per way of delivering a keystroke, typed into the same control in
-# the same run so the comparison is not across boots. Each phase is the same
-# length and they are separated by an idle pause the log analysis segments on.
-CADENCE_PHASES = (
-    ("send-key default hold", "aaaaaaaa", lambda conn, name: keys(conn, name, hold_ms=None)),
-    (f"send-key hold {KEY_HOLD_MS}ms", "bbbbbbbb", keys),
-    ("input-send-event", "cccccccc", keys_immediate),
-)
-
-
-def probe_cadence(conn):
-    """Type each phase, leaving the control empty and the buffer selected.
-
-    Which side owns the per-character interval is not something the guest's
-    trace can say on its own: it stamps when it retrieved a character, not
-    when the character was sent. Typing the same text three ways in one run
-    makes the sender's contribution the only thing that differs.
-    """
-    for _, text, send in CADENCE_PHASES:
-        keys(conn, "ctrl", "a")
-        type_text(conn, text, send)
-        time.sleep(notepad_cadence.PHASE_PAUSE_SECONDS)
 
 
 def launch_on_desktop(uart, reader, qmp_sock, deadline, guest=None):
@@ -472,7 +435,7 @@ def run_uart_audit():
 
 def report_cadence(reader):
     """Print and retain the per-character interval of every typing phase."""
-    labels = [label for label, _, _ in CADENCE_PHASES] + ["token"]
+    labels = ["token"]
     rows = notepad_cadence.summarise(reader.text(), labels)
     table = notepad_cadence.render(rows)
     print("windows-notepad-acceptance: typing cadence by phase")
@@ -543,7 +506,6 @@ def run_desktop_checks(uart, reader, qmp_sock, deadline, guest=None):
     # reopened overview) before any input is typed into it (KI-0472).
     ensure_notepad_active(qmp_sock, deadline)
     _, before = screenshot(qmp_sock, "before-token")
-    probe_cadence(qmp_sock)
     type_token(qmp_sock)
     # The guest paints a typed character in its own time, so a fixed wait
     # cannot tell a slow paint from a control that never draws: poll until

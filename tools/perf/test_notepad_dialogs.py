@@ -75,7 +75,7 @@ class DialogEvidenceTests(unittest.TestCase):
             stack.enter_context(patch.dict(sys.modules, {spec.name: runner}))
             spec.loader.exec_module(runner)
             for name in ("launch_on_desktop", "wait_marker", "ensure_notepad_active",
-                         "probe_cadence", "type_token", "drive_menu", "report_cadence", "keys", "qmp"):
+                         "type_token", "drive_menu", "report_cadence", "keys", "qmp"):
                 stack.enter_context(patch.object(runner, name))
             stack.enter_context(patch.object(runner.time, "sleep"))
             stack.enter_context(patch.object(runner, "screenshot", return_value=("frame", "digest")))

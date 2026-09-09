@@ -262,3 +262,30 @@ DLL extraction and missing-DLL behavior.19 audit tests and29 harness tests pass;
 removing the preboot capture hook fails its wiring test. Current source debug
 image yields1540 names; retained live UART audit has no unclaimed/refused calls.
 Logs /tmp/B3630-audit-{guest-tests,harness-tests,capture-red,capture-green}.log.
+
+
+## Final automated run759158 and harness failures
+
+Status: failed before dialog checks; Branch:B3630-paint-region-collapse.
+Manual QEMU708994 exited. Separate B3630-debug-final image validated, then
+QEMU779614 reached GNOME and Notepad. Run759158 ended exit1: expected token
+oxide-b3630-final not present inside measured crop(148,122,877,165).
+Retained full frame shows the window ends y692 and text suffix -0-final.
+Source image remains named debug; output target/B3630-debug-final and
+/tmp/B3630-debug-final-acceptance.log. No unclaimed/refused calls in audit.
+
+KI-0880: inset frame columns cross dark edit-control border at y165/166;
+outer chrome columns remain continuous to y691. Repair measures outer edges.
+Real retained PNG regression and synthetic recessed border regression pass;
+original inset columns fail both. Correct full crop still rejects missing
+full token, preventing the measurement repair from laundering the input failure.
+
+KI-0881: send-key schedules each press/release through a virtual-time delay
+queue; input-send-event directly dispatches events without waiting for that
+queue. A send-key Ctrl+A followed by immediate token text can invoke shortcuts
+before Ctrl release. Correctness driver now emits complete immediate chords
+and text on one ordered event path. Removed comparative timed-typing probe
+from correctness run; token retrieval cadence reporting retained. No sleep,
+retry or timeout increase. Production input-call test tracks held modifiers
+and proves exact token delivery with no key left held. Restoring timed chord
+fails. No later boot or successful final acceptance is claimed.

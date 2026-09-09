@@ -63,3 +63,15 @@ def test_a_title_painted_on_the_wallpaper_measures_no_frame():
 
 def test_a_centre_outside_the_image_measures_nothing():
     assert frame_extent(frame_image(), 4096, TITLE_TOP) is None
+
+
+def test_edit_control_border_does_not_end_the_outer_frame():
+    image = frame_image()
+    ImageDraw.Draw(image).rectangle((FRAME[0] + 1, 165, FRAME[2] - 2, 166), fill=GLYPH)
+    assert frame_extent(image, 512, TITLE_TOP) == (FRAME[0], FRAME[2], FRAME[3])
+
+
+def test_real_notepad_edit_border_frame():
+    fixture = Path(__file__).parent / "fixtures/ki0880-notepad-edit-border.png"
+    with Image.open(fixture) as image:
+        assert frame_extent(image, 512, TITLE_TOP) == (FRAME[0], FRAME[2], FRAME[3])
