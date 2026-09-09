@@ -66,6 +66,7 @@ pub fn dispatch_waitv_timed(entries: &[WaitvEntry], deadline_ns: u64) -> i64 {
                     Err(_) => return -(Errno::Efault.as_i32() as i64),
                 }
             }
+            sched::park_site::note(core::panic::Location::caller());
             arc.set_sleep_state(sched::WaitState::Interruptible);
             cur.futex_uaddr.store(entries[0].uaddr, core::sync::atomic::Ordering::Relaxed);
             groups.push(group.clone());

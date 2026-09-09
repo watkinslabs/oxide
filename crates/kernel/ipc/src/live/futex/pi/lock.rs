@@ -172,7 +172,10 @@ pub fn lock_pi(uaddr: u64, private: bool, deadline_ns: u64, trylock: bool) -> i6
                     enqueue(&mut tbl, i, waiter.take().unwrap());
                 }
             }
-            if !trylock { me.set_sleep_state(sched::WaitState::Interruptible); }
+            if !trylock {
+                sched::park_site::note(core::panic::Location::caller());
+                me.set_sleep_state(sched::WaitState::Interruptible);
+            }
         }
         if trylock {
             unqueue(key, vpid);

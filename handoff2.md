@@ -5,7 +5,22 @@ Worktree /home/nd/oxide/kernel-B3630; branch B3630-paint-region-collapse.
 Read CLAUDE.md. Main read-only afa38ce09. Draft PR7680.
 Goal: defect-free Notepad buttons/borders/Open/Save/menus/About; not complete.
 User requests visible boot when ready, inspection VM left running.
-No live QEMU. No boot during latest stacking/teardown/Show work.
+No live QEMU. Latest final-verification boot Sept9 22:32:39UTC stalled before
+GNOME desktop appeared; user closed it because startup took too long.
+Launcher exited status0 at22:36:26UTC. No Notepad launched or menus clicked.
+Artifacts target/B3630-display-verification-debug; UART
+ target/boot-logs/x86_64-20260909-223239.log. Kernel10b1ae09f staging, explicit
+Wine11.16-debug; compositor SHA9d2d07c8452d9035c73f44edf9dab9fc00caa54de5aa8c2310b8c04e884f6a3e.
+GNOME387 snapshot /tmp/B3630-display-guest-threads.json: syscall202 private
+wait expected2; poll wchan stale. KI0901 claimed: futex wait paths never
+refresh park_site. Repair records all five sleep publications;68 core,
+102 PI and1529 IPC library tests pass. Both builds/features/frame gates pass;
+static336x86/278ARM primary rows unchanged; KI0019 failures remain.
+Repair is diagnostic, not a proven KI0865 stall fix.
+SSH DisplayConfig query did not reach guest (connection refused after exit).
+Empty stack strings came from uid1000 reads; proc stack requires SYS_ADMIN.
+Next capture: privileged per-thread stack reads, record credentials first.
+Do not infer an unwinder defect from these unprivileged empty results.
 Consult local pinned primary sources first; Wine11.16 release/debug explicit.
 
 ## Current work
