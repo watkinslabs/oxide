@@ -151,7 +151,10 @@ measurement return/rect, empty-label branch, final label and draw-state result.
 Patch applies with fuzz0 to the pinned source; actual button translation unit
 compiles warning-free for x86_64-windows and aarch64-windows (ARM excludes the
 x86-only mcx16/long-double flags). Artifacts /tmp/B3630-button-trace. This is
-NOT a rebuilt/staged guest DLL and provides NO runtime caption evidence yet.
+NOT a rebuilt/staged guest runtime and provides NO runtime caption evidence yet.
+Isolated x86 user32.dll link also passes with the new button object and existing
+module dependencies; /tmp/B3630-button-trace/user32.dll, SHA256
+ba3afa0bec044f1e94863936083bd48afb03f5a5c1e44ee73802e256472634da.
 
 KI-0876 fixedeb1322715: runtime builder fingerprints source tarball, headers,
 recipe and patch set. Changed inputs discard prepared source, configured
