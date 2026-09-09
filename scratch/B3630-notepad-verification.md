@@ -205,5 +205,9 @@ restore the wrong fallback, stop/exit identity, premature retirement, missing
 exit publication hook or erroneous worker handback; each fails its regression.
 The original retirement path independently failed four tests. Logs:
 /tmp/B3630-wait-{identity-red,retirement-red,final-worker-red,controls,
-controls-green,feature}.log. Release/stack checks pending at this note.
+controls-green,feature}.log. Both feature gates and release builds pass.
+Complete stack reports match the pre-change branch exactly: x86336 failing
+paths/7664 B exception and ARM277/6368 B. No new/worsened entry. Logs:
+/tmp/B3630-wait-stack-{x86,arm}.log. Lint4723 findings/46 regressed keys match
+clean main exactly in this invocation (/tmp/B3630-wait-{lint,main-lint}.log).
 No new boot; no GNOME startup cause established.

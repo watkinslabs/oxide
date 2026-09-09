@@ -1,4 +1,4 @@
-# Handoff — Private attach stop fixed; job-control traps next
+# Handoff — Traced worker status and notification repairs
 
 First command: `git -C /home/nd/oxide/kernel-B3630 status --short`
 Branch B3630-paint-region-collapse; draft PR #7680. Verify local/remote SHAs
@@ -97,7 +97,33 @@ Logs /tmp/B3630-attach-stack-{x86,arm}.log. Default ARM ELF now contains this
 candidate, replacing the earlier comparison baseline. No new boot or runtime
 cause established. Verify publication state before assuming push finished.
 
-Next: KI-0872 INTERRUPT and KI-0873 already-group-stopped attachment.
+KI-0874/0875 fixeddc3fbe15e: tracer SIGCHLD uses worker TID in receiver PID
+namespace; real-parent group-stop notifications use leader identity. Wait
+snapshots/selectors use the task-number helper. Important correction: mapped
+worker wait selection already passed before the change. Registry insertion
+installs PID mappings; the wrong TGID fallback was an unmapped snapshot case,
+not proof that the failed GDB run selected the wrong task.
+
+Traced worker exits now survive ThreadGroup::finish_exit and are published
+from live::mark_done's exit notification path. Traced exit policy preserves a
+waitable zombie even with SIGCHLD ignored. Separate tracer reap consumes a
+worker without handing it back as a leader zombie. Final traced worker and
+deferred leader both remain waitable; non-leader notification still uses
+SIGCHLD when live count reaches zero because the leader remains retained.
+Ten new tests exercise actual retirement, real groups/namespaces, SIGCHLD and
+peek/reap.2029 scheduler tests pass; six restored-defect controls fail, then
+full restored suite passes. Both feature gates pass. ARM release build passes;
+277 stack failures/6368 B exception exactly match preceding branch report.
+x86 release build passes;336 failures/7664 B exception also match exactly.
+No new/worsened stack entry. Lint4723 findings/46 regressed keys identical to
+clean main in this invocation; KI-0019. Logs /tmp/B3630-wait-{controls,controls-green,
+retirement-red,final-worker-red,feature,stack-arm,stack-x86}.log.
+
+GDB17.1 uses ATTACH for its LWPs, not SEIZE/INTERRUPT. Keep diagnosis focused
+on the path the retained failed debugger run used. No GNOME cause or Notepad
+runtime behavior verified by these repairs. No new boot.
+
+Remaining: KI-0872 INTERRUPT and KI-0873 already-group-stopped attachment.
 INTERRUPT wrongly publishes stop_pending/code/siginfo from the tracer before
 posting process SIGSTOP. Required mechanism arms jobctl TRAP_STOP, wakes an
 interruptible target (or LISTENING stop) and reports on the tracee when parked.
