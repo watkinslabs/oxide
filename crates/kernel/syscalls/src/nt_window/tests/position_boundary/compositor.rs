@@ -1,6 +1,25 @@
 use super::*;
 
 #[test]
+fn preparation_preserves_noop_and_invalid_queued_request_outcomes(){
+    let _serial=SERIAL.lock().unwrap();let request=setup(5);
+    let id=WindowId::from_raw(request.hwnd as u32).unwrap();
+    {
+        let mut entries=GUI.lock();let e=&mut entries[0];e.state.set_rect(id,request.rect).unwrap();
+        assert!(position::queue_compositor(&mut e.state,&mut e.remote_positions,id,request.rect));
+    }
+    assert_eq!(position::pump_position_current(),Some(1));
+    ENV.with(|e|e.borrow_mut().task.as_mut().unwrap().tid=2);
+    let args=[request.hwnd,0x12345678,0,0,20,30,0x4000];
+    assert_eq!(position::queue_position_for_current(&args),Some(1));
+    ENV.with(|e|e.borrow_mut().task.as_mut().unwrap().tid=1);
+    assert_eq!(position::pump_position_current(),Some(0));
+    assert_eq!(position::pump_position_current(),None);
+    assert_eq!(GUI.lock()[0].state.rect(id),Some(request.rect));
+    ENV.with(|e|assert!(e.borrow().callbacks.is_empty()));
+}
+
+#[test]
 fn display_resize_runs_owner_callbacks_and_adopts_size_dependent_client_without_echo(){
     let _serial=SERIAL.lock().unwrap();let request=setup(5);
     let id=WindowId::from_raw(request.hwnd as u32).unwrap();

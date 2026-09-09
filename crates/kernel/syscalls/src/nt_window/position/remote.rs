@@ -34,15 +34,27 @@ pub(crate) fn pump_position_current()->Option<u64> {
 }
 /// Preserve the shared reply while a position callback interrupts a GUI wait. # C: O(requests + windows)
 pub(crate) fn pump_for_reply(reply:Arc<work::Reply>)->Option<u64>{pump(Some(reply))}
+enum Prepared {
+    Complete(u64),
+    Position{request:crate::nt_wine_window::position::Request,reply:Option<Arc<work::Reply>>,compositor:bool},
+}
 fn pump(resume_send:Option<Arc<work::Reply>>)->Option<u64> {
-    let work::RemotePosition{mut args,reply,compositor,..}=take_current()?;
-    if compositor {match prepare_compositor(&mut args){Some(true)=>{},Some(false)=>return Some(1),None=>return Some(0)}}
-    let result=match crate::nt_wine_window::position::plan_current(&args){
-        Err(())=>0,Ok(None)=>1,Ok(Some(request))=>super::live::start_queued(request,compositor,reply.clone(),resume_send)
-    };
+    let (request,reply,compositor)=match prepare_current()?{Prepared::Complete(result)=>return Some(result),Prepared::Position{request,reply,compositor}=>(request,reply,compositor)};
+    let result=super::live::start_queued(request,compositor,reply.clone(),resume_send);
     if result!=super::super::STATUS_PENDING{finish_reply(reply.as_ref(),result);}
     Some(result)
 }
+// Raw arguments and planning temporaries end before the callback chain begins.
+#[inline(never)]
+fn prepare_current()->Option<Prepared> {
+    let work::RemotePosition{mut args,reply,compositor,..}=take_current()?;
+    if compositor {match prepare_compositor(&mut args){Some(true)=>{},Some(false)=>return Some(Prepared::Complete(1)),None=>return Some(Prepared::Complete(0))}}
+    let result=match crate::nt_wine_window::position::plan_current(&args){
+        Err(())=>0,Ok(None)=>1,Ok(Some(request))=>return Some(Prepared::Position{request,reply,compositor}),
+    };
+    finish_reply(reply.as_ref(),result);Some(Prepared::Complete(result))
+}
+
 pub(super) fn finish_reply(reply:Option<&Arc<work::Reply>>,result:u64){
     let Some(reply)=reply else{return;};reply.complete(result);
     let Some(cur)=sched::live::current()else{return;};
