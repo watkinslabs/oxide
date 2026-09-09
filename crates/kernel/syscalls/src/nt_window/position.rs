@@ -2,6 +2,7 @@
 use crate::nt_wine_window::position::{Order,Request};
 #[path="position/layout.rs"] mod layout;
 #[path="position/live.rs"] mod live;
+#[path="position/trace.rs"] mod trace;
 #[path="position/remote.rs"] mod remote;
 #[path="position/work.rs"] mod work;
 #[path="position/continuation.rs"] mod continuation;

@@ -87,11 +87,13 @@ fn start_inner(request:Request,origin:Origin,reply:Option<Arc<super::work::Reply
         let token=entry.next_create;let Some(next)=token.checked_add(1) else{return 0;};entry.next_create=next;
         PendingPosition {token,tid:cur.tid as u64,request,origin,cancelled:false,wndproc:record.wndproc,pointer:0,old,old_client:record.client_rect.unwrap_or(old),client:None,class_style:0,valid:None,reply,resume_send,caller}
     };
+    super::trace::position(b"request",&p.request,p.token,p.old_client,0);
     if p.wndproc!=0&&p.request.flags&NOSENDCHANGING==0 {let bytes=encode(p.request);callback(p,CHANGING,WM_WINDOWPOSCHANGING,0,&bytes)}
     else {after_changing(p)}
 }
 
 fn after_changing(mut p:PendingPosition)->u64 {
+    super::trace::position(b"after-changing",&p.request,p.token,p.old_client,0);
     if p.request.flags&NOSIZE==0||p.request.flags&FRAMECHANGED!=0 {
         let Some(cur)=sched::live::current()else{return 0;};
         let class_style={let entries=GUI.lock();entries.iter().find(|e|e.group.ptr_eq(&Arc::downgrade(&cur.thread_group)))
@@ -139,6 +141,7 @@ fn commit(mut p:PendingPosition)->u64 {
         }
         entry.foreground=entry.state.active_window().is_some();(Arc::clone(&entry.wait),activate,stack)
     };
+    super::trace::position(b"commit",&p.request,p.token,client,1);
     wait.wake_all();
     if crate::nt_gdi::position_preserve_for_current(id.raw(),p.old,p.request.rect,p.valid,p.request.flags).is_err(){return 0;}
     if p.origin!=Origin::Compositor&&bridge::publish_geometry_current(p.request.hwnd).is_err(){return 0;}
@@ -161,8 +164,9 @@ pub(crate) fn complete_position_callback(completion:sched::nt_callback::Completi
         }
         NCCALC=>{
             let mut bytes=[0;48];if uaccess::copy_from_user(&mut bytes,p.pointer).is_err(){return 0;}
-            let Some(client)=decode_rect(bytes[..16].try_into().unwrap()) else{return 0;};
             let raw_rect=|offset:usize|{let n=|i:usize|i32::from_le_bytes(bytes[offset+i*4..offset+i*4+4].try_into().unwrap());WindowRect{left:n(0),top:n(1),right:n(2),bottom:n(3)}};
+            super::trace::position(b"nccalc-answer",&p.request,p.token,raw_rect(0),callback_result);
+            let Some(client)=decode_rect(bytes[..16].try_into().unwrap()) else{return 0;};
             p.valid=nccalc::valid(p.old_client,client,p.class_style,callback_result as u32,p.request.flags,[raw_rect(16),raw_rect(32)]);
             p.client=Some(client);commit(p)
         }
@@ -184,6 +188,7 @@ pub(super) fn start_queued(request:Request,compositor:bool,reply:Option<Arc<supe
 // The callback payload is not live on the separate geometry-commit path.
 #[inline(never)]
 fn calculate_client(p:PendingPosition)->u64 {
+    super::trace::position(b"nccalc-input",&p.request,p.token,p.old_client,0);
     let mut bytes=[0;NCCALC_BYTES];bytes[..16].copy_from_slice(&encode_rect(p.request.rect));
     bytes[16..32].copy_from_slice(&encode_rect(p.old));bytes[32..48].copy_from_slice(&encode_rect(p.old_client));
     bytes[NCCALC_WINPOS as usize..].copy_from_slice(&encode(p.request));
