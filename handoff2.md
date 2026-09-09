@@ -27,16 +27,33 @@ Durable evidence: scratch/B3630-notepad-verification.md.
 - KI-0883: canonical GW_CHILD/FIRST/LAST endpoints inverted relative to
   NEXT and hwnd_list. Child→list→control-id lookup regression fails old code;
   repaired ordering passes1512 IPC lib tests and both feature-gate targets.
-  No runtime claim yet. Both release builds launched; check own job/log.
+  No runtime claim yet. Both release builds passed. Stack reports match
+  preceding reports exactly (358/299 rows including existing failures).
 - KI-0882: harness selects actual File→Open before broad menu checks, waits
   for Open/Cancel controls, and retains failed live VM/sockets by default.
   OXIDE_NOTEPAD_KEEP_ON_FAILURE=0 opts into termination. Pointer clicks release
   before capture and park outside captions. Shutdown timeout fails.
 - KI-0884: audit detects create/bridge refusals. Actual Open log now FAILs
   with4 findings.43 relevant harness/audit tests pass;5 restored-defect
-  controls fail. Source changes need commit/publication verification.
+  controls fail. Implemented322669c2a; ledger archived with that SHA.
 - Claims committed1a7214aa5 and6124d97; prior claimKI0882 b5fcd305f.
-- Last verified remote b7398c33f; re-fetch before assuming publication.
+- Last verified remote ca548c4f5; hosted180 and both feature gates pass.
+- KI-0885 remains OPEN: scrollbar procedure selector029a has no dispatch arm,
+  returns STATUS_NOT_IMPLEMENTED for WM_CREATE/WM_PAINT. Actual debug DLL
+  disassembly identifies the repeated callback as ScrollBarWndProc_W.
+- Current LIVE QEMU832847 (launcher832789), named debug namespace
+  B3630-debug-dialogs. Do not kill. QMP target/B3630-debug-dialogs/qmp-831735.sock,
+  UART uart-831735.sock; serial x86_64-20260909-145749.log.
+  Acceptance831735 failed Open-item visibility while About was on screen;
+  automatic input stopped and VM/sockets retained as designed.
+- User reports corrupted rendering and controls not receiving clicks.
+  user-wacky.png / before-dispatch-click.png capture trails/blank captions.
+  KI0887 records this; Position op7 refused at56.526, caption draw succeeds.
+- KI0886 claimed: controlled click655,463 reaches button100007 WM_NCHITTEST,
+  returns0 and is discarded (only WM_SETCURSOR afterward). DefaultProc uses
+  parent-relative state.rect against screen lParam. Reuse rect_query Window
+  mapping at default-procedure boundary; source confirms screen rect test.
+  Test actual compositor enqueue→hit-test→mouse decision with nonzero ancestors.
   PR must remain draft: complete visual acceptance not achieved.
 
 ## Wine profiles
