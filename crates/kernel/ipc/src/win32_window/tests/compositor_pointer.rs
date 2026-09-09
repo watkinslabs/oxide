@@ -151,3 +151,16 @@ fn a_press_on_a_nested_control_accumulates_every_ancestor_client_origin() {
     assert_eq!(messages.iter().map(|message| (message.message, message.lparam)).collect::<Vec<_>>(),
         alloc::vec![(WM_MOUSEMOVE, mouse_lparam(183, 264))]);
 }
+
+#[test]
+fn pointer_message_position_is_the_event_point_even_after_later_motion() {
+    let (mut state, id) = setup();
+    state.post_compositor_pointer(id, 10, 20, MK_LBUTTON as u32, 0, 0).unwrap();
+    state.post_compositor_pointer(id, 30, 40, MK_LBUTTON as u32, 0, 0).unwrap();
+    let filter = MessageFilter { hwnd: None, first: 0, last: 0 };
+    for expected in [(110, 220), (110, 220), (130, 240)] {
+        let message = state.peek_for_thread(11, filter, true).unwrap();
+        assert_eq!(message.lparam as u32, msg_pos::pack_pos(expected.0, expected.1));
+        assert_eq!(state.message_pos(11), msg_pos::pack_pos(expected.0, expected.1));
+    }
+}

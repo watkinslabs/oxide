@@ -75,7 +75,11 @@ impl WindowManager {
             append(WM_MOUSEHWHEEL, buttons as u64 | (((hwheel_delta as i16 as u16) as u64) << 16), screen);
         }
         if !self.queue_has_capacity(owner, count) { return Err(WindowError::QueueFull); }
-        for message in &messages[..count] { self.post_to_window_with_bits(target, *message, super::queue_status::hardware_bit(message.message))?; }
+        let pos = msg_pos::pack_pos(screen.0, screen.1);
+        let queue = &mut self.queues.iter_mut().find(|(tid, _)| *tid == owner).ok_or(WindowError::NoSuchWindow)?.1;
+        for message in &messages[..count] {
+            queue.post_with_bits(*message, queue_status::hardware_bit(message.message), pos).map_err(|_| WindowError::QueueFull)?;
+        }
 
         self.cursor = screen; self.buttons = buttons;
         Ok(())
