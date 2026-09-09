@@ -330,3 +330,6 @@ Three targeted tests fail when initialization is removed; restored code passes
 all1515 IPC tests. This is not a completed scrollbar implementation.
 KI-0888 claimed before changing shared scroll-info policy: disabled flags and
 page-only/no-fields transitions need correction before the control consumes it.
+Control-state foundation721f8120d builds both release kernels. Stack reports
+match53cf05cdf exactly on both architectures:358/299 reported rows, no
+new/increased path; existing336/277 failures and7664/6368 exception bytes.

@@ -90,12 +90,12 @@ Durable evidence: scratch/B3630-notepad-verification.md.
 -0190b0530 commits parent-DC presentation repair;940591edd claimsKI0885.
  PR body updated for click repair and retained VM. Screenshot
  target/B3630-debug-dialogs/dispatcher-current.png still shows corrupted About.
-- KI0885 control-state foundation now adds optional storage to OwnedWindow;
+-721f8120d: KI0885 control-state foundation adds optional storage to OwnedWindow;
  scroll/control owns initialization, info/range/flags with3 targeted tests.
  Removing initialization fails all3; full IPC suite1515 passes restored.
  No production raw scrollbar-procedure arm yet; do not claim it implemented.
 - KI0888 claimed: shared ScrollState::apply_for_bar does not maintain flags,
- skips page-only disabling and mishandles DISABLENOSCROLL-only. Correct this
+ skips page-only hiding and mishandles DISABLENOSCROLL-only. Correct this
  canonical policy before consuming it; new control helper currently reuses it.
 - Remaining scrollbar work: all selector029a messages, canonical state and
  tracking, paint Begin/Draw callback/End lifecycle, focus/caret, sizegrip
@@ -105,3 +105,5 @@ Durable evidence: scratch/B3630-notepad-verification.md.
  Paint preparation already retains Prepared in paint_callbacks::Completion;
  extend that lifecycle for control painting so callbacks cannot lose HDCs.
  Read source again before implementation; no WM_PAINT-only success stub.
+- Both release kernels build after721f8120d; stack reports exactly match
+ the preceding dispatcher repair on both arches. No new/increased row.
