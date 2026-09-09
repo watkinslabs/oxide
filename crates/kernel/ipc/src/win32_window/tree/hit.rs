@@ -12,11 +12,7 @@ impl WindowManager {
     /// Rectangle of one window in its parent's coordinates; a window with no
     /// parent is already in screen coordinates. # C: O(N_windows)
     pub fn rect_in_parent(&self, id: WindowId) -> Option<WindowRect> {
-        let rect = self.rect(id)?;
-        let Some(parent) = self.get(id)?.parent else { return Some(rect) };
-        let Some(origin) = self.rect(parent) else { return Some(rect) };
-        Some(WindowRect { left: rect.left - origin.left, top: rect.top - origin.top,
-            right: rect.right - origin.left, bottom: rect.bottom - origin.top })
+        self.rect(id)
     }
 
     /// ChildWindowFromPointEx: the topmost child of `parent` covering a point
@@ -38,7 +34,7 @@ impl WindowManager {
         Some(parent)
     }
 
-    /// Whether a screen point can land on one window at all: it must be
+    /// Whether a parent-client point can land on one window at all: it must be
     /// visible, must not be a disabled child, must not be a layered
     /// transparent window, and must cover the point. # C: O(N_windows)
     fn point_reaches(&self, id: WindowId, x: i32, y: i32) -> bool {
@@ -46,7 +42,10 @@ impl WindowManager {
         if record.style & WS_VISIBLE == 0 { return false; }
         if record.style & (WS_POPUP | WS_CHILD | WS_DISABLED) == (WS_CHILD | WS_DISABLED) { return false; }
         if record.ex_style & (WS_EX_LAYERED | WS_EX_TRANSPARENT) == (WS_EX_LAYERED | WS_EX_TRANSPARENT) { return false; }
-        self.rect(id).is_some_and(|rect| point_in_rect(rect, x, y))
+        let Some(rect) = self.rect(id).filter(|rect| point_in_rect(*rect, x, y)) else { return false; };
+        let Some(region) = self.window_region(id) else { return true; };
+        let Some((x, y)) = x.checked_sub(rect.left).zip(y.checked_sub(rect.top)) else { return false; };
+        region.iter().any(|rect| point_in_rect(*rect, x, y))
     }
 
     /// Candidate windows under a screen point, deepest first: each child that
@@ -56,18 +55,26 @@ impl WindowManager {
     /// # C: O(N_windows²)
     pub fn windows_from_point(&self, parent: Option<WindowId>, x: i32, y: i32) -> Vec<WindowId> {
         let mut found = Vec::new();
+        let origin = match parent { Some(parent) => self.client_origin(parent), None => Some((0, 0)) };
+        let Some((dx, dy)) = origin else { return found; };
+        let Some((x, y)) = x.checked_sub(dx).zip(y.checked_sub(dy)) else { return found; };
+        self.children_at_point(parent, x, y, &mut found);
+        found
+    }
+
+    fn children_at_point(&self, parent: Option<WindowId>, x: i32, y: i32, found: &mut Vec<WindowId>) {
         for child in self.siblings_top_first(parent) {
             if !self.point_reaches(child, x, y) { continue; }
             let record = match self.get(child) { Some(record) => record, None => continue };
-            let covered = self.client_rect(child).zip(self.rect(child)).is_some_and(|(client, rect)| {
-                point_in_rect(client, x - rect.left, y - rect.top)
-            });
-            if record.style & (WS_MINIMIZE | WS_DISABLED) == 0 && covered {
-                found.extend(self.windows_from_point(Some(child), x, y));
+            if record.style & (WS_MINIMIZE | WS_DISABLED) == 0 {
+                if let Some(client) = self.client_rect_raw(child).filter(|rect| point_in_rect(*rect, x, y)) {
+                    if let Some((x, y)) = x.checked_sub(client.left).zip(y.checked_sub(client.top)) {
+                        self.children_at_point(Some(child), x, y, found);
+                    }
+                }
             }
             found.push(child);
         }
-        found
     }
 
     /// WindowFromPoint: the innermost window under a screen point, with the
