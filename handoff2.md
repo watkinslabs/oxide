@@ -2,8 +2,8 @@
 
 First command: `git status --short`
 Worktree /home/nd/oxide/kernel-B3630; branch B3630-paint-region-collapse.
-Main read-only. Read CLAUDE.md. Draft PR7680; last verified remote843f82ed4.
-Final hardware/position validation passed; push pending. Verify remote before resuming.
+Main read-only. Read CLAUDE.md. Draft PR7680; runtime fixes pushed0c9a8101c.
+Final hardware/position validation passed. Remote0c9a8101c verified after push.
 Goal remains defect-free Notepad buttons/borders/Open/Save/menus/About.
 User requests visible boot when ready and VM left running. Do not call done.
 Wine11.16 release/debug profiles explicit; consult pinned local sources first.
@@ -40,7 +40,7 @@ Wine11.16 release/debug profiles explicit; consult pinned local sources first.
 
 - Local runtime changes:8fedf4646 +249d43553 +276390dfd +3e69d8755.
   c9834ba26 helper experiment reverted06dcd177c after measured stack growth.
-  Remote still843f82ed4 before publication. Never overwrite main.
+  Runtime changes published in0c9a8101c. Never overwrite main.
 - Prepared message now Box<Selected>, a temporary handoff, not a queue copy.
   General Stage return fits the old small result; actual delivery helper
   performs usercopy outside GUI ownership. Snapshot lifetime ends at delivery.
@@ -128,8 +128,10 @@ Wine11.16 release/debug profiles explicit; consult pinned local sources first.
 - images B3630-wine-profiles553217b, no remote; preserve .dist-old-layout/.
 - Wine named source/build/artifact/catalog/RPM paths and stamps documented39§13;
   OXIDE_WINE_PROFILE=release|debug independent of kernel PROFILE.
-- PR7680 body /tmp/B3630-pr-body.md now describes local follow-ups explicitly
-  as unpushed, pending stack repair. Update after actual push/remote SHA check.
+- PR7680 body /tmp/B3630-pr-body.md records current fixes and validation.
+  Push0c9a8101c passed180 isolated hosted crates and both feature checks.
+  Only documented KI-0019 lint/test-build/stack exceptions used after baseline
+  proof. No new/increased stack path, no hosted/feature bypass.
 - Push policy only known KI-0019 exceptions after actual baseline proof:
   SKIP_LINT_RATCHET, SKIP_TEST_BUILD_GATE, SKIP_STACK_GATE. Never skip hosted
   or feature checks; no new/increased stack path. Verify remote SHA after push.
