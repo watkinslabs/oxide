@@ -58,7 +58,7 @@ pub struct MouseContext {
 /// What the retrieval does with the message the stage prepared.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MouseOutcome {
-    /// Outside the caller's message range: drop it and retrieve again.
+    /// Outside the caller's message range: leave queued and scan onward.
     Filtered,
     /// An error or nowhere hit: tell the window's cursor and drop it.
     ErrorCursor,
@@ -156,4 +156,17 @@ const fn outcome_of(message: u32, ctx: &MouseContext) -> MouseOutcome {
     if ctx.hit_test == HTERROR || ctx.hit_test == HTNOWHERE { return MouseOutcome::ErrorCursor; }
     if !ctx.remove || ctx.captured { return MouseOutcome::Deliver; }
     MouseOutcome::Ladder
+}
+
+/// Raw pointer input can become nonclient or double-click input at retrieval.
+/// # C: O(1)
+pub fn possible_filter(message: u32, filter: MessageFilter) -> bool {
+    let (first, last) = filter.range();
+    let admits = |number| number >= first && number <= last;
+    if admits(message) { return true; }
+    if message == WM_MOUSEWHEEL { return false; }
+    let nonclient = message.wrapping_sub(WM_MOUSEMOVE - WM_NCMOUSEMOVE);
+    if admits(nonclient) { return true; }
+    is_button_down(message) && (admits(message + WM_LBUTTONDBLCLK - WM_LBUTTONDOWN)
+        || admits(nonclient + WM_LBUTTONDBLCLK - WM_LBUTTONDOWN))
 }

@@ -32,9 +32,9 @@ impl MessageQueue {
         let index = self.messages.iter().position(|entry| filter.matches(entry.message))?;
         self.read_entry(index, remove)
     }
-    pub(super) fn peek_matching<F>(&mut self, matches: F, remove: bool) -> Option<WinMessage>
+    pub(super) fn peek_matching<F>(&mut self, matches: F, remove: bool, hardware: bool) -> Option<WinMessage>
     where F: Fn(WinMessage) -> bool {
-        let index = self.messages.iter().position(|entry| matches(entry.message))?;
+        let index = self.messages.iter().position(|entry| (hardware || !entry.hardware()) && matches(entry.message))?;
         self.read_entry(index, remove)
     }
     /// # C: O(1)
@@ -89,7 +89,7 @@ impl WindowManager {
             queue.messages[index].id = queue.next_message_id;
         }
         let entry = queue.messages[index];
-        let hardware = entry.bits & (queue_status::QS_KEY | queue_status::QS_MOUSEMOVE | queue_status::QS_MOUSEBUTTON) != 0;
+        let hardware = entry.hardware();
         queue.read_entry(index, false)?;
         Some((entry.id, entry.message, hardware))
     }
@@ -101,5 +101,46 @@ impl WindowManager {
         let queue = &mut self.queues.iter_mut().find(|(owner, _)| *owner == tid)?.1;
         let index = queue.messages.iter().position(|entry| entry.id == id)?;
         queue.read_entry(index, remove)
+    }
+}
+
+impl QueuedMessage {
+    /// # C: O(1)
+    pub(super) fn hardware(&self) -> bool {
+        self.bits & (queue_status::QS_KEY | queue_status::QS_MOUSEMOVE | queue_status::QS_MOUSEBUTTON) != 0
+    }
+}
+
+impl WindowManager {
+    /// Admit possible input numbers before hit testing; resume after an excluded identity.
+    /// Exhaustion returns the queue identity watermark used by the waiter.
+    /// # C: O(N_queued * N_windows²)
+    pub fn inspect_retrieval_for_thread(&mut self, tid: u64, filter: MessageFilter, after: u64)
+        -> Result<(u64, WinMessage, bool), u64> {
+        let windows = &self.windows;
+        let Some((_, queue)) = self.queues.iter_mut().find(|(owner, _)| *owner == tid) else { return Err(0); };
+        for entry in &mut queue.messages {
+            if entry.id == 0 {
+                let Some(id) = queue.next_message_id.checked_add(1) else { return Err(queue.next_message_id); };
+                queue.next_message_id = id; entry.id = id;
+            }
+        }
+        let start = queue.messages.iter().position(|entry| after != 0 && entry.id == after).map_or(0, |index| index + 1);
+        let index = queue.messages.iter().enumerate().position(|(index, entry)| {
+            if !entry.hardware() { return message_matches_in_windows(windows, filter, entry.message); }
+            if index < start { return false; }
+            if hardware::is_mouse_message(entry.message.message) {
+                hardware::possible_mouse_filter(entry.message.message, filter)
+            } else { message_matches_in_windows(windows, filter, entry.message) }
+        }).ok_or(queue.next_message_id)?;
+        let entry = queue.messages[index];
+        let _ = queue.read_entry(index, false);
+        Ok((entry.id, entry.message, entry.hardware()))
+    }
+
+    /// Final target filtering includes descendants of the requested window.
+    /// # C: O(N_windows²)
+    pub fn matches_message(&self, filter: MessageFilter, message: WinMessage) -> bool {
+        message_matches_in_windows(&self.windows, filter, message)
     }
 }

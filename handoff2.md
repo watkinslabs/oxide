@@ -25,12 +25,22 @@ Wine11.16 release/debug profiles explicit; consult pinned local sources first.
   no longer enter hit testing. No parallel queue or HWND registry introduced.
 - debug-winpump adds WINDOWS-HARDWARE-HIT and WINDOWS-HARDWARE-VIEW with
   selection ID, source/target HWND, raw screen point, hit and translated view.
-- KI-0894 OPEN: application filters run too early on raw numbers/HWND;
-  transformed filtered messages are deleted. Needs possible-number prefilter
-  and stable scan cursor, then final target/message filter without consumption.
+- KI-0894 implementation under verification: possible-number mouse prefilter,
+  final target/descendant filter, raw-preserving scan after stable identity.
+  Suspended callbacks resume scanning. Posted/quit/paint fallback excludes raw
+  hardware; completed scan watermark drives GetMessage readiness. New input
+  wakes retrieval, retained filtered input does not. No parallel queue/state.
+  debug-winpump WINDOWS-HARDWARE-FILTER records target/message and filter.
+  Claimdce01b596; runtime commit/publication pending final stack checks.
 - KI-0682 still IN-PROGRESS: compositor events can name a child as scope;
   real child-surface routing needs audit. Scoped walk cannot search siblings
   outside that scope. Owner-next fallback not implemented. No full claim.
+- Current filter validation:18 hardware-driver +121 dispatcher-fixture tests
+  PASS;1527 IPC +3270 syscall library tests PASS. Initial nonclient-only and
+  retained-filter scan tests RED. Removed fallback/wait/target-filter hooks
+  each fail assertions; restored PASS. /tmp/B3630-filter-*-red.log,
+  /tmp/B3630-filter-restored.log. Both feature checks PASS.
+  Final builds /tmp/B3630-filter-final-build.log in progress; no new boot.
 - Actual hardware fixture mocks task/clock/Send boundary but imports production
   driver/context; tests synchronous and suspended callback completion.
   Actual dispatcher fixture separately tests Stage::Prepared consumption.
@@ -70,7 +80,7 @@ Wine11.16 release/debug profiles explicit; consult pinned local sources first.
   x86 SHA6fdb203e7d2df7fe4c2c3bce54c41bc66d46c7cd5ee8dfe242f2434f4741d5c1;
   ARM SHA0c9955f3afd6551fad9240c04ea6f2ad69fa10f96fb4ff0e3ab6a99c480fe2c3.
 - KI-0892/0893/0896 closed via829dc62d5/8fedf4646/3e69d8755. KI-0682 remains
-  open for child-surface scope/owner fallback, KI-0894 for filtering/scanning.
+  open for child-surface scope/owner fallback; KI-0894 verification ongoing.
 - Earlier initial/refactor stack failures remain evidence, not current results.
   Do not use the abandoned dispatch helper or claim initial stack was baseline.
 - KI-0895 was a FALSE hypothesis: bridge::window only parses HWND, does not

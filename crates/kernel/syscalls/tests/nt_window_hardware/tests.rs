@@ -160,3 +160,106 @@ fn target_destroyed_by_its_hit_test_is_not_delivered() {
     assert!(nt_window::GUI.lock()[0].state.peek_for_thread(41,
         MessageFilter { hwnd: None, first: ipc::win32_window::WM_LBUTTONDOWN, last: ipc::win32_window::WM_LBUTTONDOWN }, false).is_none());
 }
+
+#[test]
+fn nonclient_only_filter_finds_a_raw_client_button() {
+    let _serial = SERIAL.lock().unwrap_or_else(|error| error.into_inner()); setup();
+    const HTCAPTION: i32 = 2;
+    const WM_NCLBUTTONDOWN: u32 = 0x00a1;
+    let parent = window(None, (280, 200, 740, 540), HTCAPTION);
+    raw_button(parent, 330, 250);
+    let original = queued_button();
+    let view = selected(peek_range(false, WM_NCLBUTTONDOWN, WM_NCLBUTTONDOWN));
+    assert_eq!(view.message.message, WM_NCLBUTTONDOWN);
+    assert_eq!(queued_button(), original);
+}
+
+#[test]
+fn filtered_nonclient_event_survives_and_scan_finds_later_client_event() {
+    let _serial = SERIAL.lock().unwrap_or_else(|error| error.into_inner()); setup();
+    const HTCAPTION: i32 = 2;
+    let frame = window(None, (280, 200, 740, 540), HTCAPTION);
+    let client = window(None, (800, 200, 1000, 540), HTCLIENT);
+    raw_button(frame, 330, 250);
+    raw_button(client, 850, 250);
+    let original = queued_button();
+    for _ in 0..3 {
+        assert_eq!(selected(peek_mouse(false)).message.hwnd, Some(client));
+        assert_eq!(queued_button(), original, "excluded event was consumed");
+    }
+}
+
+#[test]
+fn suspended_filtered_event_resumes_scan_without_consuming_it() {
+    let _serial = SERIAL.lock().unwrap_or_else(|error| error.into_inner()); setup();
+    const HTCAPTION: i32 = 2;
+    let frame = window(None, (280, 200, 740, 540), HTCAPTION);
+    let client = window(None, (800, 200, 1000, 540), HTCLIENT);
+    raw_button(frame, 330, 250); raw_button(client, 850, 250);
+    let original = queued_button();
+    *SUSPEND.lock().unwrap() = true;
+    assert_eq!(peek_mouse(false), nt_window::hardware::Stage::Pending(nt_window::STATUS_PENDING));
+    assert_eq!(complete_callback(), nt_window::hardware::Stage::Pending(nt_window::STATUS_PENDING));
+    assert_eq!(selected(complete_callback()).message.hwnd, Some(client));
+    assert_eq!(queued_button(), original);
+    assert_eq!(CALLS.lock().unwrap().len(), 2);
+}
+
+#[test]
+fn hwnd_filter_tests_final_target_and_accepts_descendants() {
+    let _serial = SERIAL.lock().unwrap_or_else(|error| error.into_inner()); setup();
+    let parent = window(None, (280, 200, 740, 540), HTCLIENT);
+    let button = window(Some(parent), (30, 40, 130, 68), HTCLIENT);
+    raw_button(parent, 330, 250);
+    for hwnd in [button.raw(), parent.raw()] {
+        assert_eq!(selected(peek_filtered(false, hwnd as u64, 0, 0)).message.hwnd, Some(button));
+    }
+    let unrelated = window(None, (800, 200, 1000, 540), HTCLIENT);
+    assert!(matches!(peek_filtered(false, unrelated.raw() as u64, 0, 0), nt_window::hardware::Stage::Drained(_)));
+    assert_eq!(queued_button().hwnd, Some(parent));
+}
+
+#[test]
+fn exhausted_filtered_scan_waits_until_new_input_arrives() {
+    let _serial = SERIAL.lock().unwrap_or_else(|error| error.into_inner()); setup();
+    const HTCAPTION: i32 = 2;
+    let frame = window(None, (280, 200, 740, 540), HTCAPTION);
+    raw_button(frame, 330, 250);
+    let nt_window::hardware::Stage::Drained(mark) = peek_mouse(false) else { panic!("scan did not finish"); };
+    let filter = MessageFilter { hwnd: None, first: ipc::win32_window::WM_LBUTTONDOWN, last: ipc::win32_window::WM_LBUTTONDOWN };
+    {
+        let mut entries = nt_window::GUI.lock(); let state = &mut entries[0].state;
+        assert!(state.peek_posted_for_thread(41, filter, false).is_none());
+        assert!(!state.has_message_since(41, filter, Some(mark)));
+        assert!(state.peek_for_thread(41, filter, false).is_some());
+    }
+    raw_button(frame, 340, 260);
+    assert!(nt_window::GUI.lock()[0].state.has_message_since(41, filter, Some(mark)));
+}
+
+#[test]
+fn nonclient_double_click_only_filter_finds_raw_button() {
+    let _serial = SERIAL.lock().unwrap_or_else(|error| error.into_inner()); setup();
+    const HTCAPTION: i32 = 2;
+    const WM_NCLBUTTONDBLCLK: u32 = 0x00a3;
+    let frame = window(None, (280, 200, 740, 540), HTCAPTION);
+    raw_button(frame, 330, 250);
+    let previous = ClickRecord { hwnd: frame.raw(), message: ipc::win32_window::WM_LBUTTONDOWN,
+        wparam: 1, time_ms: 0, point: (330, 250) };
+    nt_window::GUI.lock()[0].last_click = Some(previous);
+    assert_eq!(selected(peek_range(false, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDBLCLK)).message.message, WM_NCLBUTTONDBLCLK);
+    assert_eq!(nt_window::GUI.lock()[0].last_click, Some(previous));
+}
+
+#[test]
+fn removing_filtered_peek_keeps_raw_event_and_click_history() {
+    let _serial = SERIAL.lock().unwrap_or_else(|error| error.into_inner()); setup();
+    const HTCAPTION: i32 = 2;
+    let frame = window(None, (280, 200, 740, 540), HTCAPTION);
+    raw_button(frame, 330, 250);
+    let original = queued_button();
+    assert!(matches!(peek_mouse(true), nt_window::hardware::Stage::Drained(_)));
+    assert_eq!(queued_button(), original);
+    assert!(nt_window::GUI.lock()[0].last_click.is_none());
+    assert_eq!(CALLS.lock().unwrap().len(), 1, "excluded click ran activation/cursor ladder");
+}

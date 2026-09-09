@@ -8,7 +8,7 @@ use super::super::{MessageFilter, WinMessage};
 /// What the retrieval does with the message the stage prepared.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum KeyOutcome {
-    /// Outside the caller's message range: drop it and retrieve again.
+    /// Outside the caller's message range: leave queued and scan onward.
     Filtered,
     Deliver,
 }

@@ -177,7 +177,7 @@ mod nt_window{
         }
         pub(crate) use delivery::{deliver_for_current, note_get};
         #[derive(Clone,Copy,Debug,Eq,PartialEq)]pub struct Selected{pub id:u64,pub message:ipc::win32_window::WinMessage}
-        #[derive(Clone,Debug,Eq,PartialEq)]pub enum Stage{Ready,Again,Pending(u64),Prepared(Box<Selected>)}
+        #[derive(Clone,Debug,Eq,PartialEq)]pub enum Stage{Ready,Drained(u64),Next(u64),Again,Pending(u64),Prepared(Box<Selected>)}
         pub fn process_for_current(_:super::NtCall,_:bool,_:syscall::nt::NtWindowCall)->Stage{crate::hardware_view_fixture::stage()}}
     mod bridge{pub fn publish_destroy_current(_:u64)->Result<(),()>{Ok(())}pub fn publish_visibility_current(_:u64)->Result<(),()>{Ok(())}
         pub fn publish_title_current(_:u64)->Result<(),()>{Ok(())}pub fn publish_geometry_current(_:u64)->Result<(),()>{Ok(())}}

@@ -36,9 +36,10 @@ mod nt_window {
     }
     pub static GUI: Lock<Vec<GuiEntry>> = Lock::new(Vec::new());
     pub static USER_SETTINGS: Lock<ipc::win32_window::UserSettings> = Lock::new(ipc::win32_window::UserSettings::new());
-    pub fn message_filter(_: &WindowManager, hwnd: u64, first: u32, last: u32) -> Option<MessageFilter> {
-        assert_eq!(hwnd, 0, "HWND filter admission is outside this fixture");
-        Some(MessageFilter { hwnd: None, first, last })
+    pub fn message_filter(state: &WindowManager, hwnd: u64, first: u32, last: u32) -> Option<MessageFilter> {
+        let hwnd = if hwnd == 0 { None } else { Some(WindowId::from_raw(u32::try_from(hwnd).ok()?)?) };
+        state.validate_message_filter(hwnd).ok()?;
+        Some(MessageFilter { hwnd, first, last })
     }
     pub fn resume_position_message_current() -> u64 {
         retrieval::drop_saved();
@@ -109,9 +110,12 @@ fn peek_mouse(remove: bool) -> nt_window::hardware::Stage {
     peek_range(remove, ipc::win32_window::WM_LBUTTONDOWN, ipc::win32_window::WM_LBUTTONDOWN)
 }
 fn peek_range(remove: bool, first: u32, last: u32) -> nt_window::hardware::Stage {
+    peek_filtered(remove, 0, first, last)
+}
+fn peek_filtered(remove: bool, hwnd: u64, first: u32, last: u32) -> nt_window::hardware::Stage {
     let request = NtCall { service: syscall::nt::NtService::PeekMessage,
         args: syscall::SyscallArgs { a0: 0, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 } };
-    let operation = NtWindowCall::Peek { message: syscall::UserPtr::new(0x1000).unwrap(), hwnd: 0,
+    let operation = NtWindowCall::Peek { message: syscall::UserPtr::new(0x1000).unwrap(), hwnd,
         first, last, remove: u32::from(remove) };
     nt_window::hardware::process_for_current(request, false, operation)
 }

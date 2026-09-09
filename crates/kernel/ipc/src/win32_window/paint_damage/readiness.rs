@@ -6,9 +6,19 @@ impl WindowManager {
     /// Non-consuming wait predicate: posted messages, quit, then canonical paint selection.
     /// Same filtering/order as retrieval; never clears internal paint. # C: O(messages + windows³)
     pub fn has_message_for_thread(&self, tid: u64, filter: MessageFilter) -> bool {
+        self.has_message_since(tid, filter, None)
+    }
+    /// A completed input scan waits for new input, without waking on excluded raw events.
+    /// Posted messages and paint retain their ordinary level readiness. # C: O(messages * windows² + windows³)
+    pub fn has_message_since(&self, tid: u64, filter: MessageFilter, scanned: Option<u64>) -> bool {
         let Some((_, queue)) = self.queues.iter().find(|(owner, _)| *owner == tid) else { return false; };
         let matches = |message| message_matches_in_windows(&self.windows, filter, message);
-        if queue.messages.iter().any(|entry| matches(entry.message)) { return true; }
+        if queue.messages.iter().any(|entry| {
+            if entry.hardware() {
+                if let Some(scanned) = scanned { return entry.id == 0 || entry.id > scanned; }
+            }
+            matches(entry.message)
+        }) { return true; }
         if queue.quit.is_some_and(|code| matches(WinMessage { hwnd: None, message: super::super::WM_QUIT, wparam: code as u64, lparam: 0 })) { return true; }
         self.pending_paint_message(tid).is_some_and(matches)
     }

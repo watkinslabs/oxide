@@ -51,6 +51,10 @@ pub(crate) struct Selected { pub id: u64, pub message: WinMessage }
 pub(crate) enum Stage {
     /// Nothing to process, or the message is ready: carry on into the queue.
     Ready,
+    /// All eligible raw input was examined through this queue watermark.
+    Drained(u64),
+    /// Internal scan continuation; process_for_current consumes this stage.
+    Next(u64),
     /// A translated retrieval view; the queue retains the raw event.
     Prepared(Box<Selected>),
     /// The message was consumed here; retrieve again.
@@ -94,18 +98,22 @@ fn record(result: Result<u64, ()>) {
 /// Process the message at the front of this thread's queue before the
 /// retrieval hands it over. # C: O(N_windows + N_sends); # Sleeps: yes
 pub(crate) fn process_for_current(call: NtCall, raw: bool, operation: NtWindowCall) -> Stage {
-    if let Some(parked) = take() { put(parked); return drive(call, raw); }
-    match begin(operation) {
-        Some(Stage::Pending(_)) => drive(call, raw),
-        Some(stage) => stage,
-        None => Stage::Ready,
+    let mut after = 0;
+    loop {
+        let stage = if let Some(parked) = take() { put(parked); drive(call, raw) }
+            else { match begin(operation, after) {
+                Some(Stage::Pending(_)) => drive(call, raw),
+                Some(stage) => stage,
+                None => Stage::Ready,
+            } };
+        match stage { Stage::Next(id) => after = id, stage => return stage }
     }
 }
 
 /// Prepare the front hardware message and park a ladder if it needs one.
 /// `Pending` here means the ladder was parked, not that anything suspended.
 /// # C: O(N_windows + N_classes)
-fn begin(operation: NtWindowCall) -> Option<Stage> {
+fn begin(operation: NtWindowCall, after: u64) -> Option<Stage> {
     let (hwnd, first, last, remove) = match operation {
         NtWindowCall::Peek { hwnd, first, last, remove, .. } => (hwnd, first, last, remove != 0),
         NtWindowCall::Get { hwnd, first, last, .. } => (hwnd, first, last, true),
@@ -118,7 +126,10 @@ fn begin(operation: NtWindowCall) -> Option<Stage> {
     let double_click_ms = super::super::USER_SETTINGS.lock().double_click_ms();
     let (stage, parked) = with_entry(|entry| {
         let filter = super::super::message_filter(&entry.state, hwnd, first, last)?;
-        let (id, queued, hardware_origin) = entry.state.inspect_for_thread(tid, filter)?;
+        let (id, queued, hardware_origin) = match entry.state.inspect_retrieval_for_thread(tid, filter, after) {
+            Ok(selected) => selected,
+            Err(mark) => return Some((Stage::Drained(mark), None)),
+        };
         if !hardware_origin { return None; }
         let window = queued.hwnd?;
         if !hardware::is_hardware_message(queued.message) { return None; }
@@ -140,8 +151,8 @@ fn keyboard(entry: &mut super::super::GuiEntry, tid: u64, id: u64, window: Windo
     let ctx = context::key_context(&entry.state, window, modal, remove, filter);
     let prepared = hardware::prepare_key(queued, &ctx);
     if prepared.outcome == hardware::KeyOutcome::Filtered {
-        let _ = entry.state.read_selected_for_thread(tid, id, true);
-        return (Stage::Again, None);
+        super::trace::filtered(id, prepared.message, filter);
+        return (Stage::Next(id), None);
     }
     if let Some(extra) = prepared.extra {
         // A posted extra joins the queue behind the key it came from; a sent
@@ -196,6 +207,11 @@ fn decide(entry: &mut super::super::GuiEntry, tid: u64, probe: HitProbe, hit_tes
         return (Stage::Again, None);
     }
     super::trace::hit(id, queued, window, hit_test, remove);
+    let target = WinMessage { hwnd: Some(window), ..queued };
+    if !entry.state.matches_message(MessageFilter { first: 0, last: 0, ..filter }, target) {
+        super::trace::filtered(id, target, filter);
+        return (Stage::Next(id), None);
+    }
     let ctx = context::mouse_context(&entry.state, window, hit_test, menu_mode, modal, time_ms, double_click_ms, remove, filter);
     let prepared = hardware::prepare_mouse(WinMessage { hwnd: Some(window), ..queued }, entry.last_click, &ctx);
     match prepared.click {
@@ -204,7 +220,7 @@ fn decide(entry: &mut super::super::GuiEntry, tid: u64, probe: HitProbe, hit_tes
         ClickUpdate::Clear => entry.last_click = None,
     }
     match prepared.outcome {
-        MouseOutcome::Filtered => { let _ = entry.state.read_selected_for_thread(tid, id, true); (Stage::Again, None) }
+        MouseOutcome::Filtered => { super::trace::filtered(id, prepared.message, filter); (Stage::Next(id), None) }
         MouseOutcome::ErrorCursor => {
             let call = ProcCall { hwnd: window.raw(), message: ipc::win32_window::WM_SETCURSOR, wparam: window.raw() as u64,
                 lparam: hardware::make_hit_param(prepared.hit_test, prepared.origin) };
