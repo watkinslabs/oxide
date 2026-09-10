@@ -11,8 +11,8 @@ Helper /tmp/B3630-identity-verification.py run; session82991; live.json in
 KI0922: child/GetDC/BeginPaint/erase/nonclient paths now share containing backing.
 Hosted1560IPC+3276syscalls+278boundary tests PASS;3 source controls RED.
 b1a9c0feb release/features/frame PASS both; static334/277+exception unchanged.
-Live QEMU4000869 retained; runner38961 failed Open check. KI0923 claimed.
-target/B3630-shared-paint-verification-debug/live.json; UART uart-4000812.log.
+QEMU4000869 exited0; no shutdown issued. Open failed; KI0923 claimed.
+Read target/B3630-shared-paint-verification-debug/live.json; probe /tmp/B3630-dc-probe/.
 KI0920: rapid click+pointer parking makes desktop deliver release outside
 Notepad; menu correctly exits before paint. Held click/release stays open.
 Evdev order correct; X RECORD shows release1004,748 after press168,156.
