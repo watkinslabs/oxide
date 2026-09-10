@@ -93,7 +93,7 @@ fn enable(hwnd: u64, bar: i32, flags: u32) -> u64 {
     let Some(previous) = stored_flags(hwnd, target) else { return 0; };
     if !store_flags(hwnd, target, flags) { return 0; }
     if enable_unchanged(bar, other_matched, previous == flags) { return 0; }
-    if let Some(enabled) = control_window_enabled(target, flags) { show_window(hwnd, enabled); }
+    if let Some(enabled) = control_window_enabled(target, flags) { let _ = crate::nt_window::enable_window_for_current(hwnd, enabled); }
     let mut sink = production();
     sink.repaint_scrollbar(hwnd, target, true);
     1

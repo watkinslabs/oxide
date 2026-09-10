@@ -35,6 +35,10 @@ static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 pub mod live { pub fn current() -> Option<&'static super::Task> { super::CURRENT.with(|c| *c.borrow()) } }
 
+pub fn get_user_u32(address:u64)->Result<u32,()> {
+    let mut bytes=[0;4];copy_from_user(&mut bytes,address)?;Ok(u32::from_le_bytes(bytes))
+}
+
 pub fn copy_from_user(dst: &mut [u8], address: u64) -> Result<(), ()> {
     if address == 0 { return Err(()); }
     // Hosted fixture pointers are created by `user_info`; production usercopy
@@ -71,6 +75,19 @@ pub mod nt_window {
     }
 
     pub(crate) static GUI: Lock<Vec<GuiEntry>> = Lock(Mutex::new(Vec::new()));
+
+    pub fn dispatch(call:syscall::nt::NtCall)->Option<u64> {
+        assert_eq!(call.service,syscall::nt::NtService::ShowWindow);
+        let id=win32_window::WindowId::from_raw(call.args.a0 as u32)?;
+        GUI.lock()[0].state.show(7,id,call.args.a1!=0).ok()?;Some(0)
+    }
+    pub fn enable_window_for_current(hwnd:u64,enabled:bool)->Option<win32_window::EnableOutcome> {
+        let id=win32_window::WindowId::from_raw(hwnd as u32)?;
+        GUI.lock()[0].state.enable_window(id,enabled).ok()
+    }
+    pub fn nonclient_scroll_context_for_current(_:u64)->Option<crate::nt_gdi::nonclient_scroll::Context> {
+        panic!("accessibility geometry is outside this fixture")
+    }
 
     pub mod send {
         pub fn send_for_current(_: u64, _: u32, _: u64, _: u64) -> u64 { panic!("scroll fixture does not model window-procedure sends") }
@@ -118,6 +135,8 @@ pub mod nt_window {
 
     #[path = "."]
     pub(crate) mod scroll {
+        #[path = "bar_raw.rs"] pub(crate) mod bar_raw;
+        #[path = "bar_live.rs"] pub(crate) mod bar_live;
         #[path = "pending.rs"]
         pub(crate) mod pending;
         pub(crate) const SBM_SETSCROLLINFO: u32 = 0x00e9;
@@ -147,6 +166,12 @@ pub mod nt_wine_window {
 
 pub mod nt_gdi {
     use super::*;
+    pub mod nonclient_scroll {
+        #[derive(Clone,Copy)] pub struct Context {pub metrics:ipc::win32_gdi::ScrollMetrics}
+        pub fn bounds(_:Context,_:i32)->Result<Option<ipc::win32_gdi::Rect>,()> {
+            panic!("accessibility geometry is outside this fixture")
+        }
+    }
     pub fn repaint_nonclient_scroll_for_current(hwnd: u64, bar: i32, state: win32_window::ScrollState, interior: bool) -> bool {
         RASTER.with(|r| r.borrow_mut().push((hwnd, bar, state, interior)));
         !RASTER_FAIL.with(|f| f.get())
@@ -276,3 +301,5 @@ fn unchanged_redraw_and_arrow_only_refresh_reach_the_real_action_sink() {
         assert_eq!(calls[0].2.flags, win32_window::ESB_ENABLE_BOTH); assert!(!calls[0].3); });
     assert_eq!(POSITION_CALLS.with(|c| c.get()), 0);
 }
+
+#[path="tests/bar_visibility.rs"] mod bar_visibility;

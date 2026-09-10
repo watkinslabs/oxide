@@ -2,7 +2,7 @@
 //! `scroll: [ScrollState; 2]` to `OwnedWindow`; these helpers keep all state
 //! attached to that lifetime.
 
-use super::super::{OwnedWindow, ScrollError, ScrollInfo, ScrollOutcome, ScrollState, WindowId, WindowManager, WindowError, SB_HORZ, SB_VERT};
+use super::super::{OwnedWindow, ScrollError, ScrollInfo, ScrollOutcome, ScrollState, WindowId, WindowManager, WindowError, SB_CTL, SB_HORZ, SB_VERT};
 
 const WS_HSCROLL: u32 = 0x0010_0000;
 const WS_VSCROLL: u32 = 0x0020_0000;
@@ -49,6 +49,7 @@ impl WindowManager {
     }
 
     pub fn owned_scroll_state(&self, window: WindowId, bar: i32) -> Result<ScrollState, ScrollError> {
+        if bar == SB_CTL { return self.scroll_control_state(window); }
         let Some((_, owned)) = self.windows.iter().find(|(candidate, _)| *candidate == window) else {
             return Err(ScrollError::InvalidWindow);
         };
@@ -108,6 +109,7 @@ impl WindowManager {
     /// Store one bar's arrow-disable flags and report whether they changed.
     /// # C: O(N_windows)
     pub fn set_scroll_flags(&mut self, window: WindowId, bar: i32, flags: u32) -> Result<bool, ScrollError> {
+        if bar == SB_CTL { return self.set_scroll_control_flags(window, flags); }
         let Some(index) = index(bar) else { return Err(ScrollError::InvalidBar); };
         let Some((_, owned)) = self.windows.iter_mut().find(|(candidate, _)| *candidate == window) else {
             return Err(ScrollError::InvalidWindow);
