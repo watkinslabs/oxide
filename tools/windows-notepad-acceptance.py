@@ -20,6 +20,7 @@ from uart_reader import UartReader
 from notepad_fault_drain import drain as drain_fault
 import notepad_cadence
 from notepad_dialogs import DialogChecks
+from notepad_desktop_diagnostics import DesktopDiagnostics
 from screenshot_evidence import screenshot_completed, record_screenshot
 from notepad_evidence import token_in_notepad_window, locate_notepad_window, image_size, crop_image, menu_bar_word
 from gnome_overview import overview_showing, pill_stats, window_activated
@@ -147,12 +148,14 @@ def desktop_ready_text(text):
     return re.search(r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}\s+\d{1,2}:\d{2}\b", text) is not None
 
 
-def wait_for_rendered_desktop(conn, deadline):
+def wait_for_rendered_desktop(conn, deadline, diagnostics=None):
     """Require two OCR-confirmed GNOME frames before launching the PE."""
     probe = Path(f"{SCREEN}-gnome-probe.ppm")
     ocr_probe = Path(f"{SCREEN}-gnome-probe-ocr.png")
     stable = 0
     while time.monotonic() < deadline:
+        if diagnostics is not None:
+            diagnostics.poll()
         probe.unlink(missing_ok=True)
         ocr_probe.unlink(missing_ok=True)
         qmp(conn, "screendump", {"filename": str(probe)})
@@ -265,7 +268,7 @@ def type_token(conn):
 def launch_on_desktop(uart, reader, qmp_sock, deadline, guest=None):
     wait_marker(reader, "sh-5.2#", deadline, guest)
     wait_marker(reader, "Entering running state", deadline, guest)
-    wait_for_rendered_desktop(qmp_sock, deadline)
+    wait_for_rendered_desktop(qmp_sock, deadline, DesktopDiagnostics(uart))
     leave_overview(qmp_sock, deadline, "launch")
     screenshot(qmp_sock, "gnome-before-notepad")
     uart.sendall(DESKTOP_LAUNCH)

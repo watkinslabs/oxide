@@ -25,6 +25,18 @@ Consult local pinned primary sources first; Wine11.16 release/debug explicit.
 
 ## Current work
 
+- KI0903 runtime13f9a59e9: SB_CTL uses existing control-owned flags and
+  EnableWindow state helper; no ShowWindow on enable.21 boundary tests PASS,
+  restored ShowWindow regression RED. Fixture uses canonical show to preserve
+  WS_VISIBLE. Full callbacks/accessibility KI0904; control raster KI0885.
+  scratch/B3630-scroll-enable-validation.md. Both builds/features PASS;
+  final-source build/frame/stack validation ongoing; not yet pushed.
+- KI0865 claimed8b4a842f2. Harness now captures reader credentials plus desktop
+  process/thread status,syscall,wchan,stack during the real frame wait after30s.
+  Command bounded10s; UART retains read errors/status. No debugger attachment.
+  Launch/poll hook removals fail tests;51 Notepad Python tests PASS.
+  scratch/B3630-desktop-capture-validation.md. No new boot/root-cause claim.
+
 - KI0890 runtimee3a491288 committed: parent Send continuation, nonzero parent
   result preserved; caption left-down MA_NOACTIVATE, others MA_ACTIVATE.
   IPC owns policy; canonical relative_parent handles combined child/popup
