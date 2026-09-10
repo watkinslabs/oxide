@@ -497,7 +497,7 @@ def drive_menu(conn):
     pointer_to(conn, centre[0], centre[1], width, height)
     button(conn, True)
     button(conn, False)
-    pointer_to(conn, width - 20, height - 20, width, height)
+    # Keep the release on its target until the resulting menu is observed.
     time.sleep(1.5)
     opened, _ = screenshot(conn, "menu-open")
     crop = Path(f"{SCREEN}-menu-open-crop.png")

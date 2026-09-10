@@ -172,12 +172,12 @@ class DialogChecks:
             r.die(f"File absent from Notepad menu bar; retained {path}")
         width, height = r.image_size(path)
         left, top, item_width, item_height = item
+        # A QMP release acknowledgement precedes desktop delivery. Keep the
+        # pointer on the clicked target while observing the resulting UI.
         r.click(self.conn, left + item_width // 2, top + item_height // 2, width, height)
-        r.pointer_to(self.conn, width - 20, height - 20, width, height)
         menu = (left, top, min(width, left + 320), min(height, top + 480))
         path, point = self.wait("open-menu-item", lambda frame: control_word(frame, menu, "Open"))
         r.click(self.conn, *point, width, height)
-        r.pointer_to(self.conn, width - 20, height - 20, width, height)
         path, rect = self.dialog("open-from-menu", "Open", ("Open", "Cancel"))
         self.click_caption(path, rect, "Cancel")
         self.wait("open-menu-cancelled", lambda frame: dialog_rect(frame, "Open") is None)

@@ -35,23 +35,70 @@ class DialogEvidenceTests(unittest.TestCase):
 
     def test_open_item_is_clicked_before_missing_dialog_is_reported(self):
         events = []
+        pointer = {"position": None, "release_target": None}
+        def click(conn, x, y, *size):
+            pointer.update(position=(x, y), release_target=(x, y))
+            events.append(("click", x, y))
+        def move(conn, x, y, *size):
+            pointer["position"] = (x, y)
+        def deliver_release():
+            self.assertEqual(pointer["position"], pointer["release_target"],
+                             "desktop delivered release outside clicked target")
         runner = SimpleNamespace(screenshot=lambda *args: ("frame", "digest"),
                                  locate_notepad_window=lambda _: (100, 100, 700, 600),
                                  image_size=lambda _: (1024, 768),
-                                 click=lambda conn, x, y, *size: events.append(("click", x, y)),
-                                 pointer_to=lambda conn, x, y, *size: events.append(("park", x, y)))
+                                 click=click, pointer_to=move)
         check = dialogs.DialogChecks(runner, None, 0)
         def wait(label, predicate):
+            deliver_release()
             return "menu", predicate("menu")
+        def absent_dialog(*args):
+            deliver_release()
+            raise RuntimeError("dialog absent")
         check.wait = wait
         with patch.object(dialogs, "menu_bar_word", return_value=(150, 150, 30, 12)), \
                 patch.object(dialogs, "control_word", return_value=(190, 195)), \
-                patch.object(check, "dialog", side_effect=RuntimeError("dialog absent")) as dialog:
+                patch.object(check, "dialog", side_effect=absent_dialog) as dialog:
             with self.assertRaisesRegex(RuntimeError, "dialog absent"):
                 check.open_from_menu()
-        self.assertEqual(events, [("click", 165, 156), ("park", 1004, 748),
-                                  ("click", 190, 195), ("park", 1004, 748)])
+        self.assertEqual(events, [("click", 165, 156), ("click", 190, 195)])
         dialog.assert_called_once_with("open-from-menu", "Open", ("Open", "Cancel"))
+
+    def test_file_menu_release_stays_on_target_until_observed(self):
+        import importlib.util
+        from contextlib import ExitStack
+        source = Path(__file__).resolve().parents[1] / "windows-notepad-acceptance.py"
+        spec = importlib.util.spec_from_file_location("menu_release_test", source)
+        runner = importlib.util.module_from_spec(spec)
+        pointer = {"x": 0, "y": 0, "release": None}
+        def qmp(conn, command, args):
+            for event in args["events"]:
+                data = event["data"]
+                if event["type"] == "abs":
+                    pointer[data["axis"]] = data["value"]
+                elif not data["down"]:
+                    pointer["release"] = (pointer["x"], pointer["y"])
+        def screenshot(conn, label):
+            if label == "menu-open":
+                self.assertEqual((pointer["x"], pointer["y"]), pointer["release"],
+                                 "desktop delivered release outside File")
+            return "frame", "digest"
+        with tempfile.TemporaryDirectory(prefix="B3630-release-") as tmp, ExitStack() as stack:
+            stack.enter_context(patch.dict("os.environ", {"OXIDE_NOTEPAD_ACCEPTANCE_DIR": tmp}))
+            stack.enter_context(patch("atexit.register"))
+            spec.loader.exec_module(runner)
+            for name, value in (("image_size", (1024, 768)),
+                                ("locate_notepad_window", (100, 100, 700, 600)),
+                                ("menu_bar_word", (150, 150, 30, 12)),
+                                ("ocr_raw", "new open save exit")):
+                stack.enter_context(patch.object(runner, name, return_value=value))
+            stack.enter_context(patch.object(runner, "qmp", side_effect=qmp))
+            stack.enter_context(patch.object(runner, "screenshot", side_effect=screenshot))
+            for name in ("crop_image", "keys"):
+                stack.enter_context(patch.object(runner, name))
+            stack.enter_context(patch.object(runner.time, "sleep"))
+            runner.drive_menu(None)
+            self.assertIsNotNone(pointer["release"])
 
     def test_title_or_background_text_cannot_stand_in_for_button_caption(self):
         rows = [
