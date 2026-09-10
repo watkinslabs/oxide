@@ -17,7 +17,7 @@ const MODULE: usize = 48;
 const MAX_PATH_UNITS: usize = 260;
 
 #[derive(Clone, Copy)]
-pub(super) struct Notification {
+pub(crate) struct Notification {
     pub event: u32, pub hwnd: u64, pub object_id: i32, pub child_id: i32,
     pub thread: u32, pub time: u32,
 }

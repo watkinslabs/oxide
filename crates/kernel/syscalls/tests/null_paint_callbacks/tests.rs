@@ -3,6 +3,7 @@ use ipc::win32_window::{RDW_INVALIDATE,RDW_ERASE,RDW_FRAME,PaintSessionError};
 fn setup()->(u32,u32,u32){
     let group=Arc::new(thread_group::ThreadGroup);ENV.with(|e|*e.borrow_mut()=Env{task:Some(Task{tid:7,thread_group:group.clone()}),..Default::default()});
     let mut state=WindowManager::new();let id=state.create(7,None,0).unwrap();
+    state.set_style_bits(id,ipc::win32_window::WS_VISIBLE,0).unwrap();
     state.set_rect(id,WindowRect{left:0,top:0,right:4,bottom:4}).unwrap();
     let region=PaintRegion::from_rect(WindowRect{left:0,top:0,right:2,bottom:2}).unwrap();
     state.redraw_damage(id,Some(&region),RDW_INVALIDATE|RDW_ERASE|RDW_FRAME,false).unwrap();

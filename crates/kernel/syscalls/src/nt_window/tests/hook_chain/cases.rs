@@ -97,3 +97,26 @@ fn continuation_filters_with_announced_event_not_previous_hooks_lower_bound() {
         assert_eq!(u32::from_le_bytes(record[..4].try_into().unwrap()), 0x800a);
     }
 }
+fn add_posted(owner:u64)->u32 {
+    hook_install(HookScope::Global,&HookRequest{id:WH_WINEVENT,process:None,thread:None,owner,
+        event_min:1,event_max:0xffff,flags:0,proc_address:99,unicode:true,module:&[]}).unwrap()
+}
+#[test]
+fn out_of_context_hooks_are_posted_even_when_owner_is_announcer() {
+    let _guard=reset();let older=add_posted(2);let newer=add_posted(1);
+    assert_eq!(announce(),0);assert!(CALLS.lock().unwrap().is_empty());
+    hook_remove(older).unwrap();hook_remove(newer).unwrap();
+    let posts=POSTED.lock().unwrap();assert_eq!(posts.len(),2);
+    assert_eq!((posts[0].0.handle,posts[0].0.owner),(newer,1));
+    assert_eq!((posts[1].0.handle,posts[1].0.owner),(older,2));
+    for (_,event) in posts.iter(){assert_eq!((event.event,event.hwnd,event.thread,event.time),(0x800a,0x100001,1,123));}
+}
+#[test]
+fn mixed_chain_posts_on_each_side_of_synchronous_callback() {
+    let _guard=reset();let older=add_posted(2);
+    let synchronous=add(HookScope::Global,1,0xffff,10);let newer=add_posted(2);
+    assert_eq!(announce(),STATUS_PENDING);assert_eq!(last().0,synchronous);
+    assert_eq!(POSTED.lock().unwrap().len(),1);assert_eq!(POSTED.lock().unwrap()[0].0.handle,newer);
+    assert_eq!(complete(),0);assert_eq!(POSTED.lock().unwrap().len(),2);
+    assert_eq!(POSTED.lock().unwrap()[1].0.handle,older);assert_eq!(CALLS.lock().unwrap().len(),1);
+}

@@ -58,6 +58,9 @@ impl ThreadInputs {
 }
 
 impl WindowManager {
+    /// Whether the thread owns a canonical message queue. # C: O(N_queues)
+    pub fn has_thread_queue(&self, tid: u64) -> bool { self.queues.iter().any(|(owner, _)| *owner == tid) }
+
     /// # C: O(N_links)
     pub fn thread_input(&self, tid: u64) -> u64 { self.inputs.input_of(tid) }
 

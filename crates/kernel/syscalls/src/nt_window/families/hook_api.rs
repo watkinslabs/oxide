@@ -68,6 +68,10 @@ fn resume_event(token: u64, thread: u64) -> u64 {
         match step {
             Some(super::hook_state::Step::Call(hook, mut notification)) => {
                 notification.time = timekeeper::monotonic_ns().saturating_div(1_000_000) as u32;
+                if hook.flags & ipc::win32_hook::WINEVENT_INCONTEXT == 0 {
+                    let _ = super::super::send::post_event(hook, notification);
+                    continue;
+                }
                 let completion = sched::nt_callback::Completion { kind: CALLBACK_WIN_EVENT, argument: token };
                 let status = super::hook_event::begin(&hook, notification, completion);
                 if status == STATUS_PENDING { return status; }
@@ -88,3 +92,9 @@ pub(crate) fn hook_complete_event(completion: sched::nt_callback::Completion, _:
 
 /// Drop every hook an exiting thread installed or targeted. # C: O(N_threads + N_hooks)
 pub(crate) fn hook_forget_thread(thread: u64) { HOOKS.lock().forget_thread(thread); }
+
+/// Deliver one copied queued event; registration removal does not revoke queued data.
+/// # C: O(module path); # Sleeps: usercopy
+pub(crate) fn hook_deliver_queued(hook: &Hook, notification: super::HookNotification, completion: sched::nt_callback::Completion) -> u64 {
+    super::hook_event::begin(hook, notification, completion)
+}

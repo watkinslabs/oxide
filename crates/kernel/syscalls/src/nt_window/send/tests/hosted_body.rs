@@ -11,7 +11,7 @@ thread_local!{static DEADLINE:Cell<Option<std::time::Instant>>=const{Cell::new(N
 pub mod live {
     use super::*;
     pub struct WaitList;
-    impl WaitList {pub fn wake_all(&self){}}
+    impl WaitList {pub fn wake_all(&self){GUI_DEPTH.with(|depth|assert_eq!(depth.get(),0));WAKES.fetch_add(1,std::sync::atomic::Ordering::SeqCst);}}
     pub fn current()->Option<&'static Task>{CURRENT.with(Cell::get)}
     pub unsafe fn wait_event_uninterruptible(_: &WaitList,ready:impl Fn()->bool){
         assert!(std::time::Instant::now()<DEADLINE.with(|d|d.get().unwrap()),"hosted GUI wait made no progress");
@@ -23,8 +23,8 @@ pub mod win32_window {
     #[derive(Clone,Copy,PartialEq,Eq)]pub struct WindowId(u32);
     impl WindowId {pub fn from_raw(raw:u32)->Option<Self>{(raw!=0).then_some(Self(raw))}}
     #[derive(Clone,Copy)]pub struct Record {pub owner_tid:u64,pub wndproc:u64}
-    pub struct Manager(pub Vec<(WindowId,Record)>);
-    impl Manager {pub fn get(&self,id:WindowId)->Option<Record>{self.0.iter().find(|r|r.0==id).map(|r|r.1)}}
+    pub struct Manager(pub Vec<(WindowId,Record)>,pub Vec<u64>);
+    impl Manager {pub fn has_thread_queue(&self,tid:u64)->bool{self.1.contains(&tid)} pub fn get(&self,id:WindowId)->Option<Record>{self.0.iter().find(|r|r.0==id).map(|r|r.1)}}
     // In-send-message thread-state class (1884d8a50); mirrors ipc::win32_window::in_send.
     pub const ISMEX_NOSEND:u32=0x0000_0000;
     pub const ISMEX_SEND:u32=0x0000_0001;
@@ -37,8 +37,24 @@ pub mod win32_window {
         ISMEX_SEND|if received.replied {ISMEX_REPLIED} else {0}
     }
 }
+#[path="../../../../../ipc/src/win32_hook.rs"]pub mod win32_hook;
+#[path="../../families/hook_event.rs"]mod hook_event;
+use hook_event::Notification as HookNotification;
+mod nt_user_callback {pub enum Input<'a>{Record(&'a[u8])}}
+fn hook_deliver_queued(hook:&win32_hook::Hook,event:HookNotification,completion:nt_callback::Completion)->u64{hook_event::begin(hook,event,completion)}
+static WAKES:std::sync::atomic::AtomicUsize=std::sync::atomic::AtomicUsize::new(0);
+static EVENT_CALLS:Mutex<Vec<(u64,Vec<u8>)>>=Mutex::new(Vec::new());
 static CALLS:Mutex<Vec<(u64,u64,u64,u64,u64)>>=Mutex::new(Vec::new());
 mod nt_rtl {
+    pub fn begin_user_callback(index:u32,input:crate::nt_user_callback::Input<'_>,c:crate::nt_callback::Completion)->u64{
+        assert_eq!(index,3);crate::GUI_DEPTH.with(|depth|assert_eq!(depth.get(),0));
+        if crate::INSTALL_FAIL.with(|fail|fail.get()){return 0xc000000d;}
+        let crate::nt_user_callback::Input::Record(bytes)=input;
+        let tid=crate::live::current().unwrap().tid;
+        crate::EVENT_CALLS.lock().unwrap().push((tid,bytes.to_vec()));
+        crate::CALLBACK.with(|saved|{assert!(saved.get().is_none());saved.set(Some(c));});0x103
+    }
+
     pub fn begin_wndproc_callback_with_completion(hwnd:u64,msg:u64,wp:u64,lp:u64,_proc:u64,c:crate::nt_callback::Completion)->u64{
         if crate::INSTALL_FAIL.with(|f|f.get()){return 0xc000000d;}
         let tid=crate::live::current().unwrap().tid;
@@ -82,8 +98,8 @@ fn setup()->Arc<thread_group::ThreadGroup>{
     let group=Arc::new(thread_group::ThreadGroup);
     *GUI.lock()=vec![nt_window::GuiEntry{group:Arc::downgrade(&group),sent:send::Queue::new(),wait:Arc::new(live::WaitList),
         state:win32_window::Manager(vec![(win32_window::WindowId::from_raw(7).unwrap(),win32_window::Record{owner_tid:2,wndproc:0x1234}),
-            (win32_window::WindowId::from_raw(8).unwrap(),win32_window::Record{owner_tid:1,wndproc:0x1234})])}];
-    CALLS.lock().unwrap().clear();group
+            (win32_window::WindowId::from_raw(8).unwrap(),win32_window::Record{owner_tid:1,wndproc:0x1234})],vec![1,2])}];
+    CALLS.lock().unwrap().clear();EVENT_CALLS.lock().unwrap().clear();WAKES.store(0,std::sync::atomic::Ordering::SeqCst);group
 }
 fn current(group:&Arc<thread_group::ThreadGroup>,tid:u64){
     CURRENT.with(|c|c.set(Some(Box::leak(Box::new(Task{tid,thread_group:group.clone()})))));
@@ -147,3 +163,5 @@ fn shared_wait_returns_position_boolean_without_reinterpreting_it(){
     let reply=Arc::new(send::Reply::new());reply.complete(1);assert_eq!(send::wait_reply(reply),1);
 }
 #[path="resumable_hosted.rs"]mod resumable_hosted;
+
+#[path="events_hosted.rs"]mod events_hosted;

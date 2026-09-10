@@ -56,7 +56,7 @@ Consult local pinned primary sources first; Wine11.16 release/debug explicit.
   credentials and desktop process/thread status,syscall,wchan,stack after30s.
   Command bounded10s; read errors/status retained in UART.51 Notepad Python
   tests PASS; launch/poll hook removals RED. No debugger attachment.
-- KI0907 chain continuation: scratch/B3630-hook-chain-validation.md; owner queue next.
+- KI0907 owner queue: scratch/B3630-hook-owner-validation.md; KI0910 status/wait next.
 - Next visible verification helper /tmp/B3630-sizegrip-verification.py
   prepare|run; id B3630-sizegrip-verification-debug, Wine11.16-debug,
   token oxide-b3630-verify. Latest run failed as above; no automatic reboot.

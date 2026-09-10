@@ -3,5 +3,6 @@
 pub mod hook_api;
 #[path = "../../families/hook_event.rs"]
 mod hook_event;
+pub(crate) use hook_event::Notification as HookNotification;
 #[path = "../../families/hook_state.rs"]
 mod hook_state;

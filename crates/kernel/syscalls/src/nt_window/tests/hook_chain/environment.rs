@@ -12,6 +12,7 @@ impl<T, L> Spinlock<T, L> {
 }
 static SERIAL: Mutex<()> = Mutex::new(());
 pub static FAIL_CALLBACK: AtomicBool = AtomicBool::new(false);
+pub static POSTED: Mutex<Vec<(ipc::win32_hook::Hook,crate::families::HookNotification)>> = Mutex::new(Vec::new());
 pub static CALLS: Mutex<Vec<(Vec<u8>, ::sched::nt_callback::Completion)>> = Mutex::new(Vec::new());
 pub struct Guard(MutexGuard<'static, ()>);
 impl Drop for Guard { fn drop(&mut self) { for tid in 1..10 { crate::families::hook_api::hook_forget_thread(tid); } } }
@@ -19,7 +20,7 @@ pub fn reset() -> Guard {
     let guard = Guard(SERIAL.lock().unwrap_or_else(|e| e.into_inner()));
     for tid in 1..10 { crate::families::hook_api::hook_forget_thread(tid); }
     FAIL_CALLBACK.store(false, Ordering::Relaxed);
-    CALLS.lock().unwrap().clear(); guard
+    CALLS.lock().unwrap().clear(); POSTED.lock().unwrap().clear(); guard
 }
 pub struct Task { pub tid: u32, pub thread_group: Group }
 pub struct Group;
@@ -40,6 +41,8 @@ pub fn begin_user_callback(index: u32, input: crate::nt_user_callback::Input<'_>
     if FAIL_CALLBACK.load(Ordering::Relaxed) { 0xc000000d } else { STATUS_PENDING }
 }
 pub mod send {
+    pub fn post_event(hook:ipc::win32_hook::Hook,event:crate::families::HookNotification)->bool { super::POSTED.lock().unwrap().push((hook,event)); true }
+
     #[derive(Clone, Copy)]
     pub struct Continuation { pub token: u64, pub resume: fn(u64, Result<u64, ()>) -> u64 }
     pub fn handles_callback(_: u64) -> bool { false }

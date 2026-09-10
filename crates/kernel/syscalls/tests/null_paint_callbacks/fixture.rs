@@ -37,3 +37,11 @@ pub fn copy_to_user(destination:u64,bytes:&[u8])->Result<(),()>{
 }
 fn valid_window(hwnd:u64)->Option<WindowId>{u32::try_from(hwnd).ok().and_then(WindowId::from_raw)}
 fn copy_rect(_:syscall::UserPtr<syscall::nt::NtWindowRect>,_:WindowRect)->u64{panic!("unexpected native RECT write")}
+
+#[path="../../src/nt_window/paint_trace.rs"]mod paint_trace;
+mod scroll {
+    pub mod control_paint {
+        pub fn finish_for_current(_:super::super::paint_prepare::Prepared,_:Result<bool,()>)->u64{panic!("control paint belongs to the scrollbar fixture")}
+    }
+    pub mod control_refresh {pub fn discard(_:u32){panic!("control refresh belongs to the scrollbar fixture")}}
+}

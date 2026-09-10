@@ -57,7 +57,13 @@ pub mod live {
     }
 }
 static CALLS:Mutex<Vec<(u64,u64,u64,u64,u64)>>=Mutex::new(Vec::new());
+#[path="../families/hook_event.rs"]mod hook_event;
+use hook_event::Notification as HookNotification;
+mod nt_user_callback {pub enum Input<'a>{Record(&'a[u8])}}
+fn hook_deliver_queued(_: &ipc::win32_hook::Hook,_:HookNotification,_:nt_callback::Completion)->u64{panic!("queued hooks belong to the send boundary fixture")}
 mod nt_rtl {
+    pub fn begin_user_callback(_:u32,_:crate::nt_user_callback::Input<'_>,_:crate::nt_callback::Completion)->u64{panic!("queued hooks belong to the send boundary fixture")}
+
     pub fn begin_wndproc_callback_with_completion(hwnd:u64,msg:u64,wp:u64,lp:u64,_proc:u64,c:crate::nt_callback::Completion)->u64{
         assert!(!crate::GUI_HELD.with(|v|v.get()), "GUI held at PE callback installation");
         if crate::INSTALL_FAIL.with(|f|f.get()){return 0xc000000d;}

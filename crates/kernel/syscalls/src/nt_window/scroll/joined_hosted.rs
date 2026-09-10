@@ -82,6 +82,8 @@ pub mod nt_window {
     pub const STATUS_PENDING: u64 = 0x103;
     pub const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
     const CALLBACK_INIT_BUILTIN_CLASSES:u64=0x10;
+    const CALLBACK_WIN_EVENT:u64=0x82;
+    fn hook_complete_event(_:crate::nt_callback::Completion,_:u64)->u64{panic!("hook completion belongs to the hook-chain fixture")}
     mod create {pub fn complete_callback(_:crate::nt_callback::Completion,_:u64)->u64{panic!("unexpected create completion")}}
     #[path="../callbacks.rs"] mod callbacks;
     pub(crate) use callbacks::complete_callback;
