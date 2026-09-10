@@ -130,6 +130,12 @@ dependents first. A parent display Destroy removes its remaining X subtree.
 Show replays each exact retained coverage area before acknowledgement; gaps
 remain application-owned and exposure requests still reach the paint owner.
 Partial coverage alone never turns successful mapping into a refusal.
+New frame drawing includes visible native descendants; its exact clipped coverage
+updates their existing retained images using accepted native child geometry.
+Hidden child branches retain their previous pixels. Show, Expose and caret
+restoration clip children so ancestor replay cannot erase newer child drawing.
+Transient frame patches prepare storage before retained pixels change; no
+parallel window or paint-state registry.
 Image tiles use checked X11 requests submitted as one batch before completion.
 Every tile result is consumed before Frame acknowledgement; an earlier error
 cannot be hidden by a later success. A rejected draw returns failure with

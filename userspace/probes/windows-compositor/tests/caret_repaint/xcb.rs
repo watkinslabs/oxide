@@ -15,6 +15,7 @@ unsafe extern "C"{
     fn xcb_clear_area_checked(c:*mut Connection,exposures:u8,window:u32,x:i16,y:i16,width:u16,height:u16)->Cookie;
     fn xcb_change_window_attributes_checked(c:*mut Connection,window:u32,mask:u32,values:*const u32)->Cookie;
     fn xcb_send_event_checked(c:*mut Connection,propagate:u8,destination:u32,mask:u32,event:*const c_char)->Cookie;
+    fn xcb_configure_window_checked(c:*mut Connection,window:u32,mask:u16,values:*const u32)->Cookie;
     fn xcb_request_check(c:*mut Connection,cookie:Cookie)->*mut c_void;
 }
 pub struct Client(*mut Connection);
@@ -39,6 +40,11 @@ impl Client{
         let bytes=std::slice::from_raw_parts(xcb_get_image_data(image),len as usize);
         let pixels=bytes.chunks_exact(4).map(|b|u32::from_ne_bytes(b.try_into().unwrap())&0xffffff).collect();
         libc::free(image.cast());pixels}
+    }
+    pub fn move_window(&self,xid:u32,x:i32,y:i32){
+        let values=[x as u32,y as u32];
+        // SAFETY: the live connection and two-value array cover the X/Y configure mask.
+        self.checked(unsafe{xcb_configure_window_checked(self.0,xid,3,values.as_ptr())});
     }
     pub fn clear(&self,xid:u32,width:u16,height:u16){
         // Backend windows have background=None; ClearArea would otherwise do

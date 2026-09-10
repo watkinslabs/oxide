@@ -18,6 +18,8 @@ mod decode;
 mod position;
 #[path = "x11/readback.rs"]
 mod readback;
+#[path = "x11/retention.rs"]
+mod retention;
 #[path = "x11/requests.rs"]
 pub(crate) mod requests;
 pub use decode::decode_event;
@@ -230,6 +232,7 @@ impl Backend {
                 // the synthetic notification a window manager sends is
                 // already root-relative.
                 let rect = if synthetic || !toplevel { rect } else { self.root_position(xid).map_or(rect, |(left, top)| Rect { left, top, right: left + (rect.right - rect.left), bottom: top + (rect.bottom - rect.top) }) };
+                self.windows.get_mut(&hwnd)?.rect=rect;
                 Some(BridgeEvent::Configure { hwnd, rect })
             }
             Some(BridgeEvent::Input(input)) => { let input = self.retarget_input(input)?; self.map_input(input) }
@@ -300,15 +303,9 @@ impl Backend {
                 eprintln!("windows-compositor: frame-refused hwnd={hwnd:#x} step=extent frame={}x{} window={}x{} damage={:?}", frame.width, frame.height, window.width, window.height, frame.damage);
                 return Err(BackendError::InvalidCommand);
             }
-            if !window.surface.as_ref().is_some_and(|s| s.width == frame.width && s.height == frame.height) {
-                window.surface = Some(crate::retained::Retained::new(frame.width, frame.height).map_err(BackendError::Transport)?);
-            }
-            window.surface.as_mut().ok_or(BackendError::InvalidCommand)?.apply(frame).map_err(|error| {
-                eprintln!("windows-compositor: frame-refused hwnd={hwnd:#x} step=retain frame={}x{} damage={:?} error={error:?}", frame.width, frame.height, frame.damage);
-                BackendError::Transport(error)
-            })?;
         }
-        self.repaint(hwnd, frame.damage).inspect_err(|error| {
+        self.retain_frame(hwnd,frame)?;
+        self.repaint_mode(hwnd, frame.damage, ffi::INCLUDE_INFERIORS).inspect_err(|error| {
             eprintln!("windows-compositor: frame-refused hwnd={hwnd:#x} step=repaint frame={}x{} damage={:?} held={} error={error:?}", frame.width, frame.height, frame.damage,
                 self.windows.get(&hwnd).and_then(|w| w.surface.as_ref()).is_some_and(|s| s.holds(frame.damage)));
         })?;
@@ -317,6 +314,10 @@ impl Backend {
     }
 
     fn repaint(&self, hwnd: u32, damage: Rect) -> Result<(), BackendError> {
+        self.repaint_mode(hwnd,damage,ffi::CLIP_BY_CHILDREN)
+    }
+
+    fn repaint_mode(&self, hwnd: u32, damage: Rect, mode:u32) -> Result<(), BackendError> {
         let window = self.windows.get(&hwnd).ok_or(BackendError::InvalidCommand)?;
         let surface = window.surface.as_ref().ok_or(BackendError::InvalidCommand)?;
         if surface.width != window.width || surface.height != window.height { return Err(BackendError::InvalidCommand); }
@@ -336,7 +337,10 @@ impl Backend {
         let payload_limit = self.max_request_bytes.saturating_sub(32).max(4);
         let tile_width = damage_width.min(payload_limit / 4).max(1);
         let tile_height = (payload_limit / tile_width.saturating_mul(4)).max(1);
-        let mut cookies = Vec::new();
+        // Restore one drawable without overwriting independently retained
+        // descendants. New drawing explicitly includes its child coverage.
+        // SAFETY: the live window GC and mode value survive this checked request.
+        let mut cookies = vec![unsafe { ffi::xcb_change_gc_checked(self.conn,window.gc,ffi::GC_SUBWINDOW_MODE,&mode) }];
         for y in (damage.top as usize..damage.bottom as usize).step_by(tile_height) { for x in (damage.left as usize..damage.right as usize).step_by(tile_width) {
             let w = tile_width.min(damage.right as usize - x); let h = tile_height.min(damage.bottom as usize - y); let mut damaged = Vec::with_capacity(w.saturating_mul(h).saturating_mul(4));
             for row in y..y + h {

@@ -58,6 +58,69 @@ fn parent_surface_pixels_are_visible_through_a_child_control_window() {
         assert!(Instant::now()<deadline,"parent drawing was clipped out of child control: {pixels:x?}");
         backend.poll_event();std::thread::sleep(Duration::from_millis(1));
     }
+    backend.handle_command(BridgeCommand::Hide{hwnd:8}).unwrap();
+    backend.handle_command(BridgeCommand::Show{hwnd:8}).unwrap();
+    drain(&mut backend);
+    assert_eq!(client.pixels(child,2,2),vec![0x445566,0xabcdef,0x445566,0xabcdef],
+        "child replay erased later parent-DC drawing");
+}
+
+#[test]
+fn showing_parent_preserves_newer_child_pixels() {
+    const WS_CHILD:u32=0x40000000;
+    const WS_VISIBLE:u32=0x10000000;
+    let server=Server::start();let mut backend=Backend::connect(Some(&server.display)).unwrap();
+    let client=xcb::Client::connect(&server.display);
+    create(&mut backend,7);frame(&mut backend,7,0xd4d0c8);
+    backend.handle_command(BridgeCommand::Create{hwnd:8,title:Vec::new(),
+        rect:Rect{left:1,top:1,right:3,bottom:3},parent:7,style:WS_CHILD|WS_VISIBLE,ex_style:0}).unwrap();
+    let child=backend.xid_for(8).unwrap();
+    backend.handle_command(BridgeCommand::Frame{hwnd:8,
+        frame:Frame::new(2,2,2,vec![0x112233;4],Rect{left:0,top:0,right:2,bottom:2}).unwrap()}).unwrap();
+    drain(&mut backend);
+    assert_eq!(client.pixels(child,2,2),vec![0x112233;4]);
+    backend.handle_command(BridgeCommand::Show{hwnd:7}).unwrap();
+    drain(&mut backend);
+    assert_eq!(client.pixels(child,2,2),vec![0x112233;4],"parent replay erased a newer child paint");
+    client.expose(backend.xid_for(7).unwrap(),0,0,4,3);drain(&mut backend);
+    assert_eq!(client.pixels(child,2,2),vec![0x112233;4],"parent Expose erased a newer child paint");
+}
+
+#[test]
+fn parent_drawing_leaves_hidden_child_retention_untouched() {
+    let server=Server::start();let mut backend=Backend::connect(Some(&server.display)).unwrap();
+    let client=xcb::Client::connect(&server.display);
+    create(&mut backend,7);frame(&mut backend,7,0x112233);
+    backend.handle_command(BridgeCommand::Create{hwnd:8,title:Vec::new(),
+        rect:Rect{left:1,top:1,right:3,bottom:3},parent:7,style:0x50000000,ex_style:0}).unwrap();
+    let child=backend.xid_for(8).unwrap();
+    backend.handle_command(BridgeCommand::Frame{hwnd:8,
+        frame:Frame::new(2,2,2,vec![0xabcdef;4],Rect{left:0,top:0,right:2,bottom:2}).unwrap()}).unwrap();
+    drain(&mut backend);
+    backend.handle_command(BridgeCommand::Hide{hwnd:8}).unwrap();
+    frame(&mut backend,7,0x445566);
+    backend.handle_command(BridgeCommand::Show{hwnd:8}).unwrap();drain(&mut backend);
+    assert_eq!(client.pixels(child,2,2),vec![0xabcdef;4]);
+}
+
+#[test]
+fn parent_drawing_retains_nested_child_pixels_at_reported_position() {
+    let server=Server::start();let mut backend=Backend::connect(Some(&server.display)).unwrap();
+    let client=xcb::Client::connect(&server.display);
+    create(&mut backend,7);frame(&mut backend,7,0x112233);
+    for (id,parent) in [(8,7),(9,8)]{
+        backend.handle_command(BridgeCommand::Create{hwnd:id,title:Vec::new(),
+            rect:Rect{left:0,top:0,right:2,bottom:2},parent,style:0x50000000,ex_style:0}).unwrap();
+    }
+    let child=backend.xid_for(8).unwrap();let nested=backend.xid_for(9).unwrap();
+    backend.handle_command(BridgeCommand::Frame{hwnd:9,
+        frame:Frame::new(2,2,2,vec![0xabcdef;4],Rect{left:0,top:0,right:2,bottom:2}).unwrap()}).unwrap();
+    drain(&mut backend);
+    client.move_window(child,1,1);drain(&mut backend);
+    backend.handle_command(BridgeCommand::Frame{hwnd:7,
+        frame:Frame::new(4,3,1,vec![0x445566;2],Rect{left:1,top:1,right:2,bottom:3}).unwrap()}).unwrap();
+    client.expose(nested,0,0,2,2);drain(&mut backend);
+    assert_eq!(client.pixels(nested,2,2),vec![0x445566,0xabcdef,0x445566,0xabcdef]);
 }
 
 #[test]
