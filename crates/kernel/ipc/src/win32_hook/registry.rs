@@ -7,8 +7,11 @@ use alloc::vec::Vec;
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct HookLocation { pub handle: u32, pub global: bool }
 
+/// One active chain walk retains deleted cursor records until completion.
+pub struct ChainLease { pub(super) index: usize, pub(super) thread: u64, pub(super) local: bool }
+
 #[derive(Default)]
-pub struct HookRegistry { global: HookTable, threads: Vec<(u64, HookTable)>, next_handle: u32 }
+pub struct HookRegistry { pub(super) global: HookTable, pub(super) threads: Vec<(u64, HookTable)>, next_handle: u32 }
 
 impl HookRegistry {
     /// # C: O(1)

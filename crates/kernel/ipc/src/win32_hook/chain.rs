@@ -4,7 +4,7 @@ use super::*;
 
 impl HookTable {
     /// Create an empty table. # C: O(1)
-    pub const fn new() -> Self { Self { hooks: Vec::new(), next_handle: 1 } }
+    pub const fn new() -> Self { Self { hooks: Vec::new(), next_handle: 1, active: [0; NB_HOOKS] } }
 
     /// Install one hook at the head of its chain, answering its handle. A new
     /// hook precedes the ones already installed, so the most recent runs first.
@@ -26,7 +26,7 @@ impl HookTable {
     /// Remove one hook by handle. # C: O(N_hooks)
     pub fn remove(&mut self, handle: u32) -> Result<Hook, HookError> {
         let index = self.hooks.iter().position(|hook| hook.handle == handle).ok_or(HookError::InvalidHandle)?;
-        Ok(self.hooks.remove(index))
+        Ok(self.retire(index))
     }
 
     /// Remove the first hook in one chain with a given procedure; the caller-
@@ -35,14 +35,14 @@ impl HookTable {
         if proc_address == 0 || chain_index(id).is_none() { return Err(HookError::InvalidParameter); }
         let index = self.hooks.iter().position(|hook| hook.id == id && hook.proc_address == proc_address)
             .ok_or(HookError::InvalidParameter)?;
-        Ok(self.hooks.remove(index))
+        Ok(self.retire(index))
     }
 
     /// One hook by handle, without removing it. # C: O(N_hooks)
     pub fn get(&self, handle: u32) -> Option<&Hook> { self.hooks.iter().find(|hook| hook.handle == handle) }
 
     /// Hooks in one chain, newest first. # C: O(N_hooks)
-    pub fn chain(&self, id: i32) -> impl Iterator<Item = &Hook> { self.hooks.iter().filter(move |hook| hook.id == id) }
+    pub fn chain(&self, id: i32) -> impl Iterator<Item = &Hook> { self.hooks.iter().filter(move |hook| hook.id == id && hook.proc_address != 0) }
 
     /// Count of hooks in one chain; a thread with a zero count skips the call
     /// entirely. # C: O(N_hooks)
@@ -55,7 +55,7 @@ impl HookTable {
         let mut seen = after.is_none();
         for hook in self.hooks.iter().filter(|hook| hook.id == id) {
             if !seen { seen = Some(hook.handle) == after; continue; }
-            if !runs_in_thread(hook, thread) { continue; }
+            if hook.proc_address == 0 || !runs_in_thread(hook, thread) { continue; }
             if event < hook.event_min || event > hook.event_max { continue; }
             return Some(hook);
         }
@@ -94,5 +94,5 @@ impl HookTable {
     }
 
     /// Every handle in this table, newest first. # C: O(N_hooks)
-    pub(super) fn chain_handles(&self) -> Vec<u32> { self.hooks.iter().map(|hook| hook.handle).collect() }
+    pub(super) fn chain_handles(&self) -> Vec<u32> { self.hooks.iter().filter(|hook| hook.proc_address != 0).map(|hook| hook.handle).collect() }
 }
