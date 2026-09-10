@@ -27,3 +27,19 @@ QS_TIMER entries. An arbitrary message-number filter cannot substitute for
 origin classification. Any selected QS_INPUT permits the hardware scan;
 individual input bits do not narrow that scan. Posted WM_TIMER remains a
 posted message, distinct from a generated timer. No class runtime changes yet.
+
+Class runtime now uses canonical QueuedMessage origins. Both actual Peek
+copy/removal calls carry full flags; hardware/live passes flags into canonical
+inspection. Existing default wrappers use the same owner. Posted entries
+precede input regardless of insertion order; selected input class admits the
+hardware scan; excluded paint remains pending; generated timers follow paint.
+Get and Peek share fallback selection. Owner1559 and dispatcher149 passed
+before controls. Three controls (adapter drops flags, hardware ignores upper
+word, timer classification uses number instead of origin) each ran exactly
+one failing intended test; all sources restored. Final suites/builds pending.
+Logs /tmp/B3630-peek-classes-{ipc,dispatch,control-dispatch,control-hardware,
+control-origin}.log. Live hardware ladder still lacks direct hosted coverage
+for upper flags; target build and final desktop verification required.
+
+Final restored owner1559, syscall library3276 and dispatcher149 PASS.
+Builds/features running; stack comparison pending against retrieval-paint ELFs.

@@ -71,3 +71,21 @@ fn nonremoving_flags_retain_posted_message_across_repeated_peeks(){
         }
     }
 }
+
+#[test]
+fn class_filter_skips_posted_message_and_retains_it(){
+    let _serial=SERIAL.lock().unwrap();setup();post(QS_POSTED);
+    for class in [QS_INPUT,QS_PAINT,QS_TIMER,QS_SENDMESSAGE,QS_ALLPOSTMESSAGE]{
+        let mut request=call(nt::NtService::PeekMessage);request.args.a4=(class<<16) as u64;
+        assert_eq!(nt_window::production::dispatch(request),Some(nt_window::STATUS_NO_MORE_ENTRIES));
+        assert_eq!(status(QS_POSTED)>>16,QS_POSTED);
+    }
+}
+#[test]
+fn class_filter_skips_pending_paint_and_retains_region(){
+    let _serial=SERIAL.lock().unwrap();setup();
+    {let mut entries=nt_window::GUI.lock();let state=&mut entries[0].state;let hwnd=state.siblings_top_first(None)[0];state.invalidate(hwnd,None).unwrap();}
+    let mut request=call(nt::NtService::PeekMessage);request.args.a4=(QS_POSTMESSAGE<<16) as u64;
+    assert_eq!(nt_window::production::dispatch(request),Some(nt_window::STATUS_NO_MORE_ENTRIES));
+    assert!(nt_window::GUI.lock()[0].state.pending_paint_message(41).is_some());
+}

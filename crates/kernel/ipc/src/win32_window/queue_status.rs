@@ -86,9 +86,12 @@ impl MessageQueue {
     pub(super) fn clear_changed(&mut self, bits: u32) { self.changed &= !bits; }
 }
 
+/// Upper-word retrieval classes; zero selects every input class. # C: O(1)
+pub const fn retrieval_classes(flags:u32)->u32{if flags>>16==0{QS_ALLINPUT}else{flags>>16}}
+
 /// Classes acknowledged by retrieval, independently of removal or HWND filtering. # C: O(1)
 pub const fn retrieval_clear_bits(flags:u32,first:u32,last:u32)->u32{
-    let classes=if flags>>16==0{QS_ALLINPUT}else{flags>>16};
+    let classes=retrieval_classes(flags);
     let mut clear=0;
     if classes&QS_POSTMESSAGE!=0{
         clear|=QS_POSTMESSAGE|QS_HOTKEY|QS_TIMER;

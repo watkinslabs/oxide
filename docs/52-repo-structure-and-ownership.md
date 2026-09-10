@@ -25,7 +25,9 @@ drift between `kernel/src`, ad-hoc `crates/*`, and one-off folders.
    and class-bound creation, `extra` owns per-HWND extra/scalar storage inside
    the canonical window vector, `state` owns window/message work, and
    `thread_exit` revokes the canonical ownership closure. `message_queue` owns
-   queue insertion and stable entry selection/retirement; hardware retrieval
+   queue insertion, class-filtered selection from canonical origins, and stable
+   entry retirement; `state` shares Get/Peek selection and paint-before-timer
+   fallback; hardware retrieval
    returns a translated view without overwriting the raw queued event. GDI `font` owns
    complete logical records and selected-object lifetime. Syscalls children
    adapt raw ABI/usercopy and process lifetime gates; no parallel object table.

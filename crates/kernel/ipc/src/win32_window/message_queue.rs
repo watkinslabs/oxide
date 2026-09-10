@@ -1,5 +1,6 @@
 //! Canonical queue insertion, selection and retirement.
 use super::*;
+const WM_HOTKEY:u32=0x0312;
 
 impl MessageQueue {
     /// Post one hardware message, which contributes its own input class. # C: O(1)
@@ -32,9 +33,9 @@ impl MessageQueue {
         let index = self.messages.iter().position(|entry| filter.matches(entry.message))?;
         self.read_entry(index, remove)
     }
-    pub(super) fn peek_matching<F>(&mut self, matches: F, remove: bool, hardware: bool) -> Option<WinMessage>
+    pub(super) fn peek_matching<F>(&mut self, matches: F, remove: bool, hardware: bool, classes: u32) -> Option<WinMessage>
     where F: Fn(WinMessage) -> bool {
-        let index = self.messages.iter().position(|entry| (hardware || !entry.hardware()) && matches(entry.message))?;
+        let index = self.messages.iter().position(|entry| (hardware || !entry.hardware()) && entry.retrieval_class(classes) && matches(entry.message))?;
         self.read_entry(index, remove)
     }
     /// # C: O(1)
@@ -58,7 +59,7 @@ impl MessageQueue {
         let code = self.quit?;
         let message = WinMessage { hwnd: None, message: WM_QUIT, wparam: code as u64, lparam: 0 };
         if !filter.matches(message) { return None; }
-        if remove { self.quit = None; self.clear_drained_posted(); }
+        if remove { self.take_quit_matching(|message|filter.matches(message),pos)?; return Some(message); }
         self.note_message_time(msg_time::tick_ms());
         self.note_message_pos(pos);
         self.note_message_extra(0);
@@ -107,6 +108,12 @@ impl WindowManager {
 }
 
 impl QueuedMessage {
+    fn retrieval_class(&self,classes:u32)->bool{
+        use queue_status::*;
+        if self.hardware(){return classes&QS_INPUT!=0;}
+        if self.bits&QS_TIMER!=0&&self.bits&QS_POSTED==0{return classes&QS_TIMER!=0;}
+        classes&QS_POSTMESSAGE!=0 || (classes&QS_HOTKEY!=0&&self.message.message==WM_HOTKEY)
+    }
     /// # C: O(1)
     pub(super) fn hardware(&self) -> bool {
         self.bits & (queue_status::QS_KEY | queue_status::QS_MOUSEMOVE | queue_status::QS_MOUSEBUTTON) != 0
@@ -119,6 +126,12 @@ impl WindowManager {
     /// # C: O(N_queued * N_windows²)
     pub fn inspect_retrieval_for_thread(&mut self, tid: u64, filter: MessageFilter, after: u64)
         -> Result<(u64, WinMessage, bool), u64> {
+        self.inspect_retrieval_with_flags(tid,filter,after,0)
+    }
+    /// Select canonical posted or hardware entries using retrieval class flags. # C: O(N_queued * N_windows²)
+    pub fn inspect_retrieval_with_flags(&mut self,tid:u64,filter:MessageFilter,after:u64,flags:u32)
+        ->Result<(u64,WinMessage,bool),u64>{
+        let classes=queue_status::retrieval_classes(flags);
         let windows = &self.windows;
         let Some((_, queue)) = self.queues.iter_mut().find(|(owner, _)| *owner == tid) else { return Err(0); };
         for entry in &mut queue.messages {
@@ -128,13 +141,16 @@ impl WindowManager {
             }
         }
         let start = queue.messages.iter().position(|entry| after != 0 && entry.id == after).map_or(0, |index| index + 1);
-        let index = queue.messages.iter().enumerate().position(|(index, entry)| {
-            if !entry.hardware() { return message_matches_in_windows(windows, filter, entry.message); }
+        let posted=queue.messages.iter().position(|entry| !entry.hardware()&&entry.retrieval_class(classes&!queue_status::QS_TIMER)
+            &&message_matches_in_windows(windows,filter,entry.message));
+        if posted.is_none()&&classes&queue_status::QS_POSTMESSAGE!=0&&queue.quit_pending()&&filter.matches(WinMessage{hwnd:None,message:WM_QUIT,wparam:0,lparam:0}){return Err(queue.next_message_id);}
+        let index = posted.or_else(||queue.messages.iter().enumerate().position(|(index, entry)| {
+            if !entry.hardware()||!entry.retrieval_class(classes) { return false; }
             if index < start { return false; }
             if hardware::is_mouse_message(entry.message.message) {
                 hardware::possible_mouse_filter(entry.message.message, filter)
             } else { message_matches_in_windows(windows, filter, entry.message) }
-        }).ok_or(queue.next_message_id)?;
+        })).ok_or(queue.next_message_id)?;
         let entry = queue.messages[index];
         let _ = queue.read_entry(index, false);
         Ok((entry.id, entry.message, entry.hardware()))

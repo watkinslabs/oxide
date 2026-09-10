@@ -114,11 +114,12 @@ pub(crate) fn process_for_current(call: NtCall, raw: bool, operation: NtWindowCa
 /// `Pending` here means the ladder was parked, not that anything suspended.
 /// # C: O(N_windows + N_classes)
 fn begin(operation: NtWindowCall, after: u64) -> Option<Stage> {
-    let (hwnd, first, last, remove) = match operation {
-        NtWindowCall::Peek { hwnd, first, last, remove, .. } => (hwnd, first, last, remove & ipc::win32_window::queue_status::PM_REMOVE != 0),
-        NtWindowCall::Get { hwnd, first, last, .. } => (hwnd, first, last, true),
+    let (hwnd, first, last, flags) = match operation {
+        NtWindowCall::Peek { hwnd, first, last, remove, .. } => (hwnd, first, last, remove),
+        NtWindowCall::Get { hwnd, first, last, .. } => (hwnd, first, last, ipc::win32_window::queue_status::PM_REMOVE),
         _ => return None,
     };
+    let remove=flags&ipc::win32_window::queue_status::PM_REMOVE!=0;
     let tid = current_tid()?;
     let time_ms = (timekeeper::monotonic_ns() / 1_000_000) as u32;
     // Read outside the GUI lock: the settings owner is a sibling lock of the
@@ -126,7 +127,7 @@ fn begin(operation: NtWindowCall, after: u64) -> Option<Stage> {
     let double_click_ms = super::super::USER_SETTINGS.lock().double_click_ms();
     let (stage, parked) = with_entry(|entry| {
         let filter = super::super::message_filter(&entry.state, hwnd, first, last)?;
-        let (id, queued, hardware_origin) = match entry.state.inspect_retrieval_for_thread(tid, filter, after) {
+        let (id, queued, hardware_origin) = match entry.state.inspect_retrieval_with_flags(tid, filter, after, flags) {
             Ok(selected) => selected,
             Err(mark) => return Some((Stage::Drained(mark), None)),
         };

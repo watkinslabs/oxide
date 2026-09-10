@@ -296,26 +296,35 @@ impl WindowManager {
     }
     /// # C: O(N_queued * N_windows² + N_windows³)
     pub fn peek_for_thread(&mut self, tid: u64, filter: MessageFilter, remove: bool) -> Option<WinMessage> {
-        self.peek_for_thread_kind(tid, filter, remove, true)
+        self.peek_for_thread_kind(tid, filter, remove, true, queue_status::QS_ALLINPUT)
     }
     /// Posted/quit/paint fallback after hardware processing. # C: O(N_queued * N_windows² + N_windows³)
     pub fn peek_posted_for_thread(&mut self, tid: u64, filter: MessageFilter, remove: bool) -> Option<WinMessage> {
-        self.peek_for_thread_kind(tid, filter, remove, false)
+        self.peek_for_thread_kind(tid, filter, remove, false, queue_status::QS_ALLINPUT)
     }
-    fn peek_for_thread_kind(&mut self, tid: u64, filter: MessageFilter, remove: bool, hardware: bool) -> Option<WinMessage> {
+    /// Class-filtered posted/quit/paint/timer retrieval after hardware processing. # C: O(N_queued * N_windows² + N_windows³)
+    pub fn peek_posted_with_flags(&mut self,tid:u64,filter:MessageFilter,flags:u32)->Option<WinMessage>{
+        self.peek_for_thread_kind(tid,filter,flags&queue_status::PM_REMOVE!=0,false,queue_status::retrieval_classes(flags))
+    }
+    fn peek_for_thread_kind(&mut self, tid: u64, filter: MessageFilter, remove: bool, hardware: bool, classes:u32) -> Option<WinMessage> {
         let now = self.queue_pos_default();
         let queue_index = self.queues.iter().position(|(owner, _)| *owner == tid)?;
         let windows = &self.windows;
         let matches = |message| message_matches_in_windows(windows, filter, message);
         let queue = &mut self.queues[queue_index].1;
-        if let Some(message) = queue.peek_matching(matches, remove, hardware).or_else(|| queue.quit_message(filter, remove, now)) {
+        if let Some(message) = queue.peek_matching(matches, remove, hardware, classes&!queue_status::QS_TIMER).or_else(|| if classes&queue_status::QS_POSTMESSAGE!=0{queue.quit_message(filter, remove, now)}else{None}) {
             self.note_retrieved_message(tid, message, timekeeper::monotonic_ns());
             return Some(message);
         }
         // A deferred paint is synthesised by the retrieval, so it carries the
         // tick count of the retrieval rather than a queued stamp.
         let pos = self.queue_pos_default();
-        let message = self.take_pending_paint(tid, filter, remove)?;
+        let message=if classes&queue_status::QS_PAINT!=0{self.take_pending_paint(tid,filter,remove)}else{None};
+        let Some(message)=message else{
+            let windows=&self.windows;
+            let message=self.queues[queue_index].1.peek_matching(|message|message_matches_in_windows(windows,filter,message),remove,hardware,classes&queue_status::QS_TIMER)?;
+            self.note_retrieved_message(tid,message,timekeeper::monotonic_ns());return Some(message);
+        };
         self.note_thread_message_time(tid, msg_time::tick_ms());
         self.note_thread_message_pos(tid, pos);
         Some(message)
@@ -359,24 +368,12 @@ impl WindowManager {
         self.take_for_thread_kind(tid, filter, false)
     }
     fn take_for_thread_kind(&mut self, tid: u64, filter: MessageFilter, hardware: bool) -> QueueResult {
-        let now = self.queue_pos_default();
-        let Some(queue_index) = self.queues.iter().position(|(owner, _)| *owner == tid) else { return QueueResult::Empty; };
-        let windows = &self.windows;
-        let matches = |message| message_matches_in_windows(windows, filter, message);
-        let queue = &mut self.queues[queue_index].1;
-        if let Some(message) = queue.peek_matching(matches, true, hardware) {
-            self.note_retrieved_message(tid, message, timekeeper::monotonic_ns());
-            QueueResult::Message(message)
+        match self.peek_for_thread_kind(tid,filter,true,hardware,queue_status::QS_ALLINPUT){
+            Some(message) if message.message==WM_QUIT=>QueueResult::Quit(message.wparam as i32),
+            Some(message)=>QueueResult::Message(message),None=>QueueResult::Empty,
         }
-        else if let Some(code) = queue.take_quit_matching(matches, now) { QueueResult::Quit(code) }
-        else if let Some(message) = self.take_pending_paint(tid, filter, true) {
-            let pos = self.queue_pos_default();
-            self.note_thread_message_time(tid, msg_time::tick_ms());
-            self.note_thread_message_pos(tid, pos);
-            QueueResult::Message(message)
-        }
-        else { QueueResult::Empty }
     }
+
     pub fn quit_pending(&self, tid: u64) -> bool { self.queues.iter().find(|(owner, _)| *owner == tid).is_some_and(|(_, queue)| queue.quit_pending()) }
     pub fn len(&self) -> usize { self.windows.len() }
 
