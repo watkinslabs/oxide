@@ -17,8 +17,8 @@ Compositor9d2d07c8452d9035c73f44edf9dab9fc00caa54de5aa8c2310b8c04e884f6a3e.
 Caption repair: shared text snapshots admit and carry MM_TEXT translation;
 native request maps run and active rectangle before callback. Actual binding
 regression RED Codec; real renderer pixel test GREEN and missing translation
-control RED.76 native GDI tests pass. Full gates pending; KI0906 pen underline
-translation is next. scratch/B3630-caption-origin-validation.md. Two Frame refusals
+control RED.76 native GDI tests pass. KI0906 underline repaired6afc8cf2a. Both builds/features/frame gates PASS;
+static336/278 no added/increased path. KI0019 failures remain. scratch/B3630-caption-origin-validation.md. Two Frame refusals
 HWND10000e seq216/221 InvalidCommand; stripe cause unproved.
 Prior Sept9 22:32 verification stalled before GNOME; user closed that VM.
 KI0901 repaired stale futex park_site diagnostics9afaf5491, not proven GNOME
@@ -26,6 +26,15 @@ stall fix. Privileged capture wired below; foreign proc maps still KI0905.
 Consult local pinned primary sources first; Wine11.16 release/debug explicit.
 
 ## Current work
+
+- Caption text124db9405, underline6afc8cf2a; audit4afe6e193 detects twelve
+  measured text refusals in retained run.52 Python tests PASS;76 native GDI,
+  8 pen boundary,1532 IPC tests PASS. Text and pen translation removals RED.
+  ELFs target/B3630-caption-final-{x86_64,aarch64}.elf; full evidence
+  scratch/B3630-caption-origin-validation.md. No new VM after failed run.
+- Compositor refusal diagnostics identify stage/dimensions/damage/coverage;
+  103 compositor tests PASS. Stripe mechanism not proved. Preserve correct
+  IncludeInferiors: parent-DC controls already share parent backing.
 
 - KI0903 runtime13f9a59e9: control-owned arrow state and EnableWindow state
   helper preserve visibility. Closed after source37f740be7 validation.

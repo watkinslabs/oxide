@@ -290,14 +290,26 @@ impl Backend {
     /// the window, then put that sub-rectangle on the display.
     fn present(&mut self, hwnd: u32, frame: &Frame) -> Result<(), BackendError> {
         {
-            let window = self.windows.get_mut(&hwnd).ok_or(BackendError::InvalidCommand)?;
-            if window.width != frame.width || window.height != frame.height { return Err(BackendError::InvalidCommand); }
+            let Some(window) = self.windows.get_mut(&hwnd) else {
+                eprintln!("windows-compositor: frame-refused hwnd={hwnd:#x} step=window frame={}x{} damage={:?}", frame.width, frame.height, frame.damage);
+                return Err(BackendError::InvalidCommand);
+            };
+            if window.width != frame.width || window.height != frame.height {
+                eprintln!("windows-compositor: frame-refused hwnd={hwnd:#x} step=extent frame={}x{} window={}x{} damage={:?}", frame.width, frame.height, window.width, window.height, frame.damage);
+                return Err(BackendError::InvalidCommand);
+            }
             if !window.surface.as_ref().is_some_and(|s| s.width == frame.width && s.height == frame.height) {
                 window.surface = Some(crate::retained::Retained::new(frame.width, frame.height).map_err(BackendError::Transport)?);
             }
-            window.surface.as_mut().ok_or(BackendError::InvalidCommand)?.apply(frame).map_err(BackendError::Transport)?;
+            window.surface.as_mut().ok_or(BackendError::InvalidCommand)?.apply(frame).map_err(|error| {
+                eprintln!("windows-compositor: frame-refused hwnd={hwnd:#x} step=retain frame={}x{} damage={:?} error={error:?}", frame.width, frame.height, frame.damage);
+                BackendError::Transport(error)
+            })?;
         }
-        self.repaint(hwnd, frame.damage)
+        self.repaint(hwnd, frame.damage).inspect_err(|error| {
+            eprintln!("windows-compositor: frame-refused hwnd={hwnd:#x} step=repaint frame={}x{} damage={:?} held={} error={error:?}", frame.width, frame.height, frame.damage,
+                self.windows.get(&hwnd).and_then(|w| w.surface.as_ref()).is_some_and(|s| s.holds(frame.damage)));
+        })
     }
 
     fn repaint(&self, hwnd: u32, damage: Rect) -> Result<(), BackendError> {

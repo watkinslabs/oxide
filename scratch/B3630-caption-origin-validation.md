@@ -31,7 +31,12 @@ Runtime wiring: nt_gdi::text_snapshot_for_current consumes ClientBinding's
 mapped snapshot; gdi_raw/kernel.rs::ext_text_out calls TextRequest::translated
 before begin. Hosted tests exercise binding and renderer boundaries separately;
 they do not execute a full real User32 callback sequence. Both kernel target
-checks pass. Full release/features/stack validation still pending.
+checks pass. Both release builds/features/frame gates pass on6afc8cf2a. Static stack gates
+retain existing KI0019 failures:336x86/278ARM primary rows, no added/increased
+path versus sizegrip-final. No exception or ceiling changed. ELFs:
+- target/B3630-caption-final-x86_64.elf SHA0165460b0126ab065219c8d62a58b8c465d7b0ebbe3df0318021e64e1cd44582.
+- target/B3630-caption-final-aarch64.elf SHAada5497a84e45ea7c5823cc3f25684b9d8e0e2bac912bab856344dac377aaa35.
+Logs /tmp/B3630-caption-{build,feature,stack-x86,stack-arm,frame-x86_64,frame-aarch64}.log.
 
 KI0906: pen shared admission now carries the same translation. Canonical
 stroke/fill owner maps endpoints, rectangle edges and point runs before
@@ -50,3 +55,9 @@ retained latest UART:12 measurement refusals (11 on nonzero DCs) plus two
 Frame refusals. The zero-DC failure is retained separately, not suppressed.
 Artifacts /tmp/B3630-caption-audit-{red,green}.log and latest run directory
  audit-caption-recheck.md. Caption cause/visual acceptance stay KI0859.
+
+Removing pen device translation produces a pixel assertion failure, exit101
+(/tmp/B3630-caption-underline-control-red.log); production source restored.
+Frame refusal diagnostics distinguish absent HWND, extent mismatch, retain
+failure and replay failure; include frame/window sizes, damage and coverage.
+Compositor full suite103 tests passes. Diagnostics do not repair stripes.
