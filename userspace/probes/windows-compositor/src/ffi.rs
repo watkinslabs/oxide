@@ -66,6 +66,7 @@ extern "C" {
     pub fn xcb_get_window_attributes_reply(c: *mut Connection, cookie: GetWindowAttributesCookie, e: *mut *mut GenericError) -> *mut GetWindowAttributesReply;
     pub fn xcb_change_property(c: *mut Connection, mode: u8, window: Window, property: Atom, type_: Atom, format: u8, data_len: u32, data: *const c_void) -> u32;
     pub fn xcb_map_window(c: *mut Connection, window: Window) -> u32;
+    pub fn xcb_reparent_window_checked(c: *mut Connection, window: Window, parent: Window, x: i16, y: i16) -> VoidCookie;
     pub fn xcb_map_window_checked(c: *mut Connection, window: Window) -> VoidCookie;
     pub fn xcb_unmap_window(c: *mut Connection, window: Window) -> u32;
     pub fn xcb_configure_window(c: *mut Connection, window: Window, value_mask: u16, value_list: *const u32) -> VoidCookie;

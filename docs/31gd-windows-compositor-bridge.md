@@ -59,6 +59,15 @@ canonical kernel window owner. Configure, keyboard/text, pointer and close
 events return to that owner. A WM_DELETE_WINDOW request becomes a Windows close
 request, not an unconditional process kill. Stale handles/events are rejected.
 
+Reparent opcode9 carries canonical native-parent HWND u64 (zero means desktop)
+and parent-relative window Rect16. Canonical SetParent commits before publication
+after releasing GUI locks. Backend reparents the existing XID with a checked
+request, retains its surface/descendants and updates its presentation parent.
+Style bits cannot substitute for the current parent after creation. Failed X
+reparenting refuses acknowledgement; unknown parents never become desktop.
+Hosted real-X-server regression moves a combo list outside its former parent,
+checks actual server parentage and visible pixels, then reparents it back.
+
 ## Caret presentation
 
 Caret presentation uses outbound opcode 8: generation u64, window-frame Rect

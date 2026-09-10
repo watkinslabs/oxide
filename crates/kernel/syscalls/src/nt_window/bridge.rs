@@ -16,7 +16,7 @@ const KEY_FLAGS: u32 = KEY_EXTENDED | KEY_PREVIOUS;
 const POINTER_FLAGS: u32 = 0x007f;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct Snapshot { rect: wire::Rect, parent: u64, title: Vec<u8>, visible: bool, ready: bool }
+pub(super) struct Snapshot { rect: wire::Rect, parent: u64, tree_parent:u64, title: Vec<u8>, visible: bool, ready: bool }
 
 fn window(hwnd: u64) -> Option<WindowId> { WindowId::from_raw(u32::try_from(hwnd).ok()?) }
 
@@ -72,7 +72,7 @@ pub(super) fn snapshot(state: &WindowManager, hwnd: u64) -> Option<Snapshot> {
         (b"parent", parent_rects.map_or(own, |(window, _)| window)),
         (b"parentclient", parent_rects.map_or(own, |(_, client)| client))]);
     Some(Snapshot { rect: wire_rect(rect)?,
-        parent: record.parent.or(record.owner).map_or(0, |id| id.raw() as u64), title, visible: record.visible, ready: record.presentation_ready })
+        parent: record.parent.or(record.owner).map_or(0, |id| id.raw() as u64), tree_parent:record.parent.map_or(0,|id|id.raw() as u64), title, visible: record.visible, ready: record.presentation_ready })
 }
 
 fn update_snapshot(state: &WindowManager, hwnd: u64) -> Result<Option<Snapshot>, ()> {
@@ -87,6 +87,10 @@ fn create_snapshot(state: &mut WindowManager, hwnd: u64, style: u32, ex_style: u
 }
 
 impl Snapshot {
+    fn reparent_payload(&self)->Option<Vec<u8>>{
+        let mut payload=self.tree_parent.to_le_bytes().to_vec();
+        payload.extend_from_slice(&self.rect.encode_window().ok()?);Some(payload)
+    }
     fn create_payload(&self, style: u32, exstyle: u32) -> Option<Vec<u8>> {
         let mut payload = self.rect.encode_window().ok()?.to_vec();
         payload.extend_from_slice(&self.parent.to_le_bytes());
@@ -257,6 +261,11 @@ mod live {
         result
     }
 
+    /// Publish canonical tree parent after SetParent and GUI unlock. # C: O(windows) + ACK; # Sleeps: yes
+    pub(crate) fn publish_reparent_current(hwnd:u64)->Result<(),TransportError>{
+        let Some((group,value))=current_update(hwnd)?else{return Ok(());};
+        publish(&group,Opcode::Reparent,hwnd,value.reparent_payload().ok_or(TransportError::Invalid)?)
+    }
     /// Invoke after canonical visibility mutation and GUI unlock. # C: O(windows) + ACK; # Sleeps: yes
     pub(crate) fn publish_visibility_current(hwnd: u64) -> Result<(), TransportError> {
         let Some((group, value)) = current_update(hwnd)? else { return Ok(()); };
@@ -324,7 +333,7 @@ mod live {
 
 #[cfg(target_os = "oxide-kernel")]
 pub(crate) use live::{handle_event, publish_create_current, publish_destroy_current,
-    publish_geometry_current, publish_position_current, publish_title_current, publish_visibility_current};
+    publish_geometry_current, publish_reparent_current, publish_position_current, publish_title_current, publish_visibility_current};
 
 #[cfg(test)]
 #[path = "bridge/tests/events.rs"]
@@ -335,3 +344,7 @@ mod key_tests;
 #[cfg(test)]
 #[path = "bridge/tests/focus.rs"]
 mod focus_tests;
+
+#[cfg(test)]
+#[path="bridge/tests/reparent.rs"]
+mod reparent_tests;

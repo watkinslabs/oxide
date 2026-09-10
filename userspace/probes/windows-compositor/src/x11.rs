@@ -16,6 +16,8 @@ mod visibility;
 mod decode;
 #[path = "x11/position.rs"]
 mod position;
+#[path = "x11/reparent.rs"]
+mod reparent;
 #[path = "x11/readback.rs"]
 mod readback;
 #[path = "x11/retention.rs"]
@@ -138,6 +140,7 @@ impl Backend {
     pub fn handle_command(&mut self, command: BridgeCommand) -> Result<Vec<BridgeEvent>, BackendError> {
         match command {
             BridgeCommand::Create { hwnd, title, rect, parent, style, ex_style } => { validate_title(&title).map_err(BackendError::Transport)?; self.create(hwnd, &title, rect, parent, style, ex_style)?; Ok(self.snapshot_event().into_iter().collect()) }
+            BridgeCommand::Reparent { hwnd, parent, rect } => { self.reparent(hwnd,parent,rect)?; Ok(Vec::new()) }
             BridgeCommand::Show { hwnd } => { self.show(hwnd)?; Ok(Vec::new()) }
             BridgeCommand::Hide { hwnd } => { let window = self.windows.get_mut(&hwnd).ok_or(BackendError::InvalidCommand)?; window.requested_visible = false; unsafe { ffi::xcb_unmap_window(self.conn, window.xid); ffi::xcb_flush(self.conn); } Ok(Vec::new()) }
             BridgeCommand::SetTitle { hwnd, title } => { validate_title(&title).map_err(BackendError::Transport)?; let xid = self.windows.get(&hwnd).ok_or(BackendError::InvalidCommand)?.xid; self.publish_title(xid, &title); Ok(Vec::new()) }

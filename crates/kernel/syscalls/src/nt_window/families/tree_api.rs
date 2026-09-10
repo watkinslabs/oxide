@@ -62,8 +62,10 @@ pub(crate) fn set_parent_for_current(hwnd: u64, parent: u64) -> Result<u64, Wind
     let window = id(hwnd).ok_or(WindowError::NoSuchWindow)?;
     let parent = if parent == 0 { None } else { Some(id(parent).ok_or(WindowError::InvalidParent)?) };
     let tid = sched::live::current().map_or(0, |task| task.tid as u64);
-    access::with_state_mut(|state| state.set_parent(tid, window, parent))
-        .unwrap_or(Err(WindowError::NoSuchWindow)).map(|old| raw(old))
+    let old=access::with_state_mut(|state| state.set_parent(tid, window, parent))
+        .unwrap_or(Err(WindowError::NoSuchWindow))?;
+    if old!=parent{bridge::publish_reparent_current(hwnd).map_err(|_|WindowError::InvalidParameter)?;}
+    Ok(raw(old))
 }
 
 /// Window one device context draws into. # C: O(N_processes + N_dcs)
