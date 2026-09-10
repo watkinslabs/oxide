@@ -33,6 +33,12 @@ before begin. Hosted tests exercise binding and renderer boundaries separately;
 they do not execute a full real User32 callback sequence. Both kernel target
 checks pass. Full release/features/stack validation still pending.
 
-Full visual acceptance remains open. Accelerator underline uses pen drawing,
-whose separate shared reader still rejects translation; repair required.
+KI0906: pen shared admission now carries the same translation. Canonical
+stroke/fill owner maps endpoints, rectangle edges and point runs before
+lease-aware coverage; shared current position stays logical. Joined raw pen
+regression initially fails UnsupportedTransform, then8 tests pass. Full IPC
+suite1532 passes, including translated rectangle, overflow before mutation,
+polyline/polygon and independent viewport/lease origins with visible holes.
+Logs /tmp/B3630-caption-underline-{red,green}.log and caption-ipc-green.log.
+Full visual acceptance remains open.
 Horizontal stripes and Frame refusals remain unexplained. No additional VM.

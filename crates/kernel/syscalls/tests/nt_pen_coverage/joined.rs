@@ -28,3 +28,23 @@ fn raw_line_and_rectangle_consume_selected_owner_objects_and_fresh_client_bytes(
     assert!(shared::decode(&bytes,dc).is_err());assert_eq!(g.pixels(dc).unwrap(),before);
     assert!(g.pen_rectangle(u32::MAX,Rect{left:0,top:0,right:4,bottom:4},None).is_err());
 }
+
+#[test]
+fn caption_underline_uses_shared_origin_and_keeps_logical_current_position(){
+    let mut g=GdiManager::new();let dc=g.create_dc(130,28).unwrap();
+    let pen=g.create_pen(0,1,0x123456).unwrap();g.select_pen(dc,pen).unwrap();
+    let mut bytes=abi::encode_dc_attr(dc,130,28,abi::DcText{current_position:(0,19),..abi::DcText::default()}).unwrap();
+    for(offset,value)in[(abi::dc::WND_ORG,3i32),(abi::dc::WND_ORG+4,-2),
+        (abi::dc::VPORT_ORG,59),(abi::dc::VPORT_ORG+4,1)]{
+        bytes[offset..offset+4].copy_from_slice(&value.to_le_bytes());
+    }
+    let state=shared::decode(&bytes,dc).unwrap();assert_eq!(state.position,(0,19));
+    assert_eq!(raw::route(raw::LINE_TO,&[u64::from(dc),8,19],|call|{
+        let raw::PenCall::Line{dc,x,y}=call else{unreachable!()};
+        g.pen_line_to(dc as u32,(x,y),Some(state)).unwrap();1
+    }),Some(1));
+    for y in 0..28 {for x in 0..130 {
+        assert_eq!(g.pixels(dc).unwrap()[y*130+x],if y==22&&(56..64).contains(&x){0x123456}else{0});
+    }}
+    assert_eq!(state.position,(0,19));
+}

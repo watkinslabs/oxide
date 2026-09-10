@@ -12,7 +12,7 @@ fn draw(dc:u64,end:Option<(i32,i32)>,rect:Option<Rect>)->u64{
     let Ok(_gate)=lifecycle::ClientGate::acquire_current()else{return 0;};
     let Ok((_,binding))=text::snapshot_binding(u64::from(dc))else{return 0;};
     let shared=if let Some(binding)=binding{
-        let Ok(bytes)=binding.read_dc_attr(dc)else{return 0;};
+        let Ok(bytes)=binding.read_text_attr(dc)else{return 0;};
         let Ok(state)=super::shared::decode(&bytes,dc)else{return 0;};Some(state)
     }else{None};
     let Some(current)=sched::live::current()else{return 0;};

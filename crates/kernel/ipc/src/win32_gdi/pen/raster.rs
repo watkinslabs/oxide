@@ -6,8 +6,15 @@ const RGB:u32=0xffffff;
 
 #[derive(Clone,Copy,Debug,Eq,PartialEq)]
 pub struct PenRasterState {
-    pub position:(i32,i32),pub rop:u16,pub clockwise:bool,
+    pub position:(i32,i32),pub origin:(i64,i64),pub rop:u16,pub clockwise:bool,
     pub pen_color:u32,pub brush_color:u32,pub background:u32,pub opaque:bool,
+}
+impl PenRasterState {
+    fn device_point(self,point:(i32,i32))->Result<(i32,i32),GdiError>{
+        let x=i32::try_from(i64::from(point.0).checked_add(self.origin.0).ok_or(GdiError::InvalidDimensions)?).map_err(|_|GdiError::InvalidDimensions)?;
+        let y=i32::try_from(i64::from(point.1).checked_add(self.origin.1).ok_or(GdiError::InvalidDimensions)?).map_err(|_|GdiError::InvalidDimensions)?;
+        Ok((x,y))
+    }
 }
 impl GdiManager {
     /// Unbound DC defaults; bound callers supply admitted shared attributes. # C: O(DCs)
@@ -15,7 +22,7 @@ impl GdiManager {
         let state=&self.dcs.iter().find(|(id,_)|*id==dc).ok_or(GdiError::NoSuchObject)?.1;
         state.ensure_active()?;
         let text=self.text_state(dc)?.attributes;
-        Ok(PenRasterState{position:text.current_position,rop:13,clockwise:false,
+        Ok(PenRasterState{position:text.current_position,origin:(0,0),rop:13,clockwise:false,
             pen_color:state.dc_pen_color,brush_color:state.dc_brush_color,
             background:text.background,opaque:text.background_mode==2})
     }
@@ -26,8 +33,9 @@ impl GdiManager {
         if self.path_recording(dc)? {self.path_line_to(dc,end.0,end.1)?;return self.set_text_position(dc,end).map(|_|());}
         let state=shared.unwrap_or(self.pen_raster_state(dc)?);
         let pen=self.stroke_pen(dc,state)?;
+        let start=state.device_point(state.position)?;let device_end=state.device_point(end)?;
         let mut target=self.raster_dc(dc)?;
-        stroke(&mut target,pen,state,state.position,end,0)?;
+        stroke(&mut target,pen,state,start,device_end,0)?;
         drop(target);
         if shared.is_none(){self.set_text_position(dc,end)?;}
         Ok(())
@@ -40,6 +48,9 @@ impl GdiManager {
         let pen=self.stroke_pen(dc,state)?;
         let dc_state=&self.dcs.iter().find(|(id,_)|*id==dc).ok_or(GdiError::NoSuchObject)?.1;
         let brush=self.brush_style(dc_state.brush.unwrap_or(self.stock_object(0).ok_or(GdiError::NoSuchObject)?.handle),state.brush_color)?;
+        let (left,top)=state.device_point((rect.left,rect.top))?;
+        let (right,bottom)=state.device_point((rect.right,rect.bottom))?;
+        let rect=Rect{left,top,right,bottom};
         let (left,right)=(rect.left.min(rect.right),rect.left.max(rect.right));
         let (top,bottom)=(rect.top.min(rect.bottom),rect.top.max(rect.bottom));
         let mut target=self.raster_dc(dc)?;
@@ -69,10 +80,11 @@ impl GdiManager {
         let state=shared.unwrap_or(self.pen_raster_state(dc)?);
         let pen=self.stroke_pen(dc,state)?;
         let mut target=self.raster_dc(dc)?;
+        for point in points {state.device_point(*point)?;}
         let segments=if close{points.len()}else{points.len()-1};
         let mut phase=0;
         for index in 0..segments {
-            let a=points[index];let b=points[(index+1)%points.len()];
+            let a=state.device_point(points[index])?;let b=state.device_point(points[(index+1)%points.len()])?;
             stroke(&mut target,pen,state,a,b,phase)?;
             phase+=(i64::from(a.0)-i64::from(b.0)).abs().max((i64::from(a.1)-i64::from(b.1)).abs()) as u64;
         }
@@ -86,6 +98,12 @@ impl GdiManager {
         let dc_state=&self.dcs.iter().find(|(id,_)|*id==dc).ok_or(GdiError::NoSuchObject)?.1;
         let handle=dc_state.brush.unwrap_or(self.stock_object(0).ok_or(GdiError::NoSuchObject)?.handle);
         let BrushStyle::Solid(color)=self.brush_style(handle,state.brush_color)? else {return Ok(());};
+        let mut mapped=alloc::vec::Vec::new();
+        if state.origin!=(0,0){
+            mapped.try_reserve_exact(points.len()).map_err(|_|GdiError::HandleLimit)?;
+            for point in points {let(x,y)=state.device_point((point.x,point.y))?;mapped.push(crate::win32_gdi::Point{x,y});}
+        }
+        let points=if state.origin==(0,0){points}else{&mapped};
         let mut target=self.raster_dc(dc)?;
         let clip=target.bounds();
         crate::win32_gdi::draw::fill_polygon(points,clip,mode,|x,y|{target.update(x,y,|old|rop2(state.rop,color,old));})
