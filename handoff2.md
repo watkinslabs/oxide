@@ -5,24 +5,21 @@ Worktree /home/nd/oxide/kernel-B3630; branch B3630-paint-region-collapse.
 Read CLAUDE.md. Main read-only afa38ce09. Draft PR7680.
 Goal: defect-free Notepad buttons/borders/Open/Save/menus/About; not complete.
 User requests visible boot when ready, inspection VM left running.
-No live QEMU. Latest verification Sept10 01:09:04-01:12:20UTC reached GNOME
-and Notepad; About shows blank captions and horizontal stripes outside dialog.
-Exit0; no quit sent, exit cause unconfirmed. Artifacts
- target/B3630-sizegrip-verification-debug; UART uart-2337193.log.
-Automated helper failed initial-token with About already open; no automated
-File/Open/Save check ran. Do not report menu acceptance. Kernel SHA
- fd1c550d91647e63988ac4b4c57d9d1efb1a6350e560b385905e86a55c555239;
+No live QEMU. Latest verification Sept10 11:00:48UTC failed initial-token:
+overlapping Notepad windows, cursor trails, blank foreground edit area.
+No automatic dialogs ran. Run3595455 output target/B3630-queue-verification-debug;
+UART uart-3595455.log; evidence scratch/B3630-queue-desktop-validation.md.
+Launcher exited0 later; no helper shutdown, cause unknown. Audit3619138 FAIL:
+one later dialog readback mismatch16340/118680 pixels, two DC0 measurement refusals.
+Important: two PE starts59.015s/65.819s and two main HWND100001/200001;
+do not classify all overlap as stale scanout. Second launch cause unknown.
+KI0918 trace129a1d5a9 adds canonical tid/image; both target checks PASS;
+full release/features/frame/static and live identity capture still pending.
+KI0919 wrapperb6a1c5a8f separates logs by profile/PID; old two-launch shell
+control RED, all4 wrapper tests GREEN. Fresh image must inject new wrapper.
 Wine11.16-debug stamp000982e8e976863f0a29925ab7426d09808a3e61c125c18decc4cf77f27af5da.
-Compositor9d2d07c8452d9035c73f44edf9dab9fc00caa54de5aa8c2310b8c04e884f6a3e.
-Caption repair: shared text snapshots admit and carry MM_TEXT translation;
-native request maps run and active rectangle before callback. Actual binding
-regression RED Codec; real renderer pixel test GREEN and missing translation
-control RED.76 native GDI tests pass. KI0906 underline repaired6afc8cf2a. Both builds/features/frame gates PASS;
-static336/278 no added/increased path. KI0019 failures remain. scratch/B3630-caption-origin-validation.md. Two Frame refusals
-HWND10000e seq216/221 InvalidCommand; stripe cause unproved.
-Prior Sept9 22:32 verification stalled before GNOME; user closed that VM.
-KI0901 repaired stale futex park_site diagnostics9afaf5491, not proven GNOME
-stall fix. Privileged capture wired below; foreign proc maps still KI0905.
+Previous caption/frame evidence remains in scratch/B3630-caption-origin-validation.md.
+KI0901 futex park_site repair9afaf5491 is diagnostic, not proven GNOME fix.
 Consult local pinned primary sources first; Wine11.16 release/debug explicit.
 
 ## Current work
@@ -31,7 +28,7 @@ Consult local pinned primary sources first; Wine11.16 release/debug explicit.
   measured text refusals in retained run.52 Python tests PASS;76 native GDI,
   8 pen boundary,1532 IPC tests PASS. Text and pen translation removals RED.
   ELFs target/B3630-caption-final-{x86_64,aarch64}.elf; full evidence
-  scratch/B3630-caption-origin-validation.md. No new VM after failed run.
+  scratch/B3630-caption-origin-validation.md. Caption-era validation only.
 - Compositor refusal diagnostics plus opt-in X pixel readback;107 tests PASS.
   Enable harness OXIDE_NOTEPAD_READBACK=1. Both release builds PASS; evidence
   scratch/B3630-readback-validation.md. Stripe mechanism remains unproved.
