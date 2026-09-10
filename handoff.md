@@ -6,12 +6,13 @@ This file is current; handoff2.md predates the final uncommitted stack correctio
 ## Start here
 
 ```sh
-cd /home/nd/oxide/kernel-B3630
+cd /home/nd/oxide/kernel
 git status --short
 cat CLAUDE.md
 ```
 
-Active worktree: /home/nd/oxide/kernel-B3630.
+Fresh main checkout after merge: /home/nd/oxide/kernel.
+Implementation worktree/evidence: /home/nd/oxide/kernel-B3630.
 Branch: B3630-paint-region-collapse.
 HEAD: 5789e8b18748653acee7e7f88a0e0b2584f58a5c.
 Last remote verification at handoff: 795fcf64bf5b27ef97d4d4ab9840d6b4045ed34c.
@@ -94,8 +95,9 @@ path. Other snapshot users retain the previous structure size. The canonical
 payload regression passes after this correction; log
 /tmp/B3630-reparent-payload-small.log.
 
-Final target builds/frame/static comparison for this correction are outstanding.
-Do not discard the correction or claim stack growth resolved before measuring.
+Final x86 release/frame checks pass. Static334 paths remain; raw window router
+increases18184->18216bytes. Other previously increased paths returned to baseline.
+This remaining32byte growth is open and must not be called unchanged or passing.
 
 ## Tests completed for reparent repair
 
@@ -117,29 +119,23 @@ Native hashes:
 x86 36e794e362a604a0c858719bebd7c78515cde5ba3018139e0870f020009c5d21
 ARM dd2b85cdecf5ca69c0494e8b4cae9543f55fe50ac64d4ec4e01a5482b4df4660
 
-## Running jobs at interruption
+## Final verification before merge
 
-- Session88034: make -j2 frame-gate stack-gate;
-  /tmp/B3630-reparent-stack.log. x86 completed; ARM release linking at last read.
-  This invocation spans the Snapshot correction; not a clean final verification.
-- Session82244: push with documented KI0019 exceptions;
-  /tmp/B3630-reparent-push.log. Hosted gate passed; feature checks were waiting
-  for build lock. Verify terminal status and remote ref before claiming push.
-- Session34958: payload-small test; log reports1pass, terminal may need polling.
-
-Do not blindly relaunch jobs. Check processes and these logs first.
-Existing baseline logs: /tmp/B3630-desktop-bootstrap-stack.log and
-/tmp/B3630-desktop-bootstrap-stack-arm.log. Baseline334x86/277ARM paths,
-exception7664/6368. Compare all primary NEW rows by name and bytes.
-If make stops before ARM frame/static commands, use repository policy values:
-ARM stack --arch aarch64 --fail13000 --entry-fail6100, with allowlist and
-entry/indirect maps from Makefile. Do not use the wrong8192/6144 thresholds.
+Source correction1438c3913: both kernel release builds and both frame gates PASS.
+Hosted push gate and both feature checks PASS; source push completed.
+Final stack gates FAIL: existing KI0019 limits plus KI0929 growth in raw window
+router. x86 primary334rows,18184->18216bytes; ARM277rows,15424->15472bytes.
+No added rows; all other primary paths unchanged. Exception7664/6368 unchanged.
+Logs /tmp/B3630-reparent-final-stack.log, reparent-final-frame-arm.log,
+reparent-final-stack-arm.log and /tmp/B3630-final-merge-push.log.
+Earlier build/push sessions are superseded by these terminal results.
+No post-reparent guest boot; full Notepad acceptance remains open.
 
 ## Next work, if user resumes
 
-1. Finish/poll current jobs; preserve and commit corrected reparent snapshot.
-2. Run final both-architecture build/features/frame/static checks. Resolve any
-   added/increased stack paths; record honest results and verify remote push.
+1. Start from freshly pulled main after PR7680 merge; create a new branch.
+2. Resolve KI0929 raw-router stack growth; both final build/frame checks passed
+   but static gate did not. Preserve the committed snapshot correction.
 3. Fresh image helper /tmp/B3630-reparent-verification.py exists but has NOT
    prepared or booted an image. It is cloned from prior verification helper.
    Verify staged kernel/native hashes before using it. No VM currently runs.

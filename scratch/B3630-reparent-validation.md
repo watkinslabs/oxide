@@ -11,3 +11,7 @@ Source repair adds checked reparent opcode9 to existing bridge and publishes can
 Logs /tmp/B3630-reparent-{backend,backend-red,backend-all,hook,hook-red,hook-green,payload,codec,check-x86,check-arm}.log. Backend suite101pass including retained pixels before/after reparent, unknown-parent rejection and native BadWindow refusal. Snapshot of actual kernel/UI traces remains target/B3630-desktop-verification-debug. New reparent code has not run in guest.
 
 Full SetParent callback/desktop-handle/cross-thread semantics remain a separate ledger gap; current regression proves canonical parent publication, not those callback contracts.
+
+Final1438c3913 x86 release/frame PASS. Static334 rows; raw window router18184->18216bytes remains increased, other previously increased paths restored. Final log /tmp/B3630-reparent-final-stack.log. User authorized merging current unfinished work; do not call full static or guest acceptance green.
+
+Final ARM release/frame PASS;277 static rows with raw window router15424->15472bytes, no other added/increased primary path. KI0929 tracks remaining growth. Source1438c3913 push hosted/features PASS. No post-reparent guest verification.
