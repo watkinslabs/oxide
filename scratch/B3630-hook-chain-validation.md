@@ -38,3 +38,13 @@ Remaining: out-of-context hooks still need owner-thread queuing/pumping;
 full client execution and ARM callback continuation remain unverified/open.
 EnableWindow WM_CANCELMODE/event/focus/WM_ENABLE sequence remains KI0904.
 No VM; Notepad About/Open/Save/menus/redraw acceptance remains outstanding.
+
+Runtime3ec012e16: both warnings-wrapped release builds and both frame gates
+PASS. Static stack gates exit1 on existing KI0019 failures; primary multiset
+335x86/278ARM unchanged, no added/increased path against client-event baseline.
+Exception reservations7664/6368 unchanged. Logs /tmp/B3630-hook-chain-
+{build-x86_64,build-aarch64,frame-x86,frame-arm,stack-x86,stack-arm,stack-compare}.log.
+x86: primary rows 335 -> 335; added={} growth=[]
+target/B3630-hook-chain-x86_64.elf sha256=8ab92e133d480a3a517af926b87bfe25ad5e0c6d4f34bed7cab28812d7931577
+arm: primary rows 278 -> 278; added={} growth=[]
+target/B3630-hook-chain-aarch64.elf sha256=1c91e1ad49a0aba7967d9502bfc410acec65441bd2f5ef148036fe4bd1905a51
