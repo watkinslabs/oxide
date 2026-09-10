@@ -10,7 +10,12 @@ fn finish_event()->u64{let c=CALLBACK.with(|saved|saved.take().unwrap());send::c
 fn event_posts_without_entering_caller_and_runs_in_owner_pump(){
     let _serial=SERIAL.lock().unwrap();let group=setup();current(&group,1);
     assert!(send::post_event(hook(2),event(8)));assert_eq!(WAKES.load(std::sync::atomic::Ordering::SeqCst),1);assert!(EVENT_CALLS.lock().unwrap().is_empty());assert!(!send::has_current());
-    current(&group,2);assert!(send::has_current());assert_eq!(send::pump_current(),Some(send::Outcome::Pending));
+    current(&group,2);assert!(send::has_current());
+    let mask=win32_window::queue_status::QS_SENDMESSAGE;
+    assert_eq!(GUI.lock()[0].sent.queue_status(2,mask),0x00400040);
+    assert_eq!(GUI.lock()[0].sent.queue_status(2,mask),0x00400000);
+    assert_eq!(send::pump_current(),Some(send::Outcome::Pending));
+    assert_eq!(GUI.lock()[0].sent.queue_status(2,mask),0);
     assert_eq!(GUI.lock()[0].sent.received_send(2),None);
     let calls=EVENT_CALLS.lock().unwrap();assert_eq!(calls.len(),1);assert_eq!(calls[0].0,2);
     let bytes=&calls[0].1;assert_eq!(u32::from_le_bytes(bytes[32..36].try_into().unwrap()),1);

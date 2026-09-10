@@ -1,4 +1,4 @@
-// Cargo-discovered target; execute the same production boundary harness as rustc.
+// Cargo-discovered target executing the production send boundary harness.
 extern crate alloc;
 extern crate self as sched;
 extern crate self as ipc;

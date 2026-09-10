@@ -3,6 +3,7 @@
 use super::super::*;
 use crate::nt_wine_window::queue_raw::{self, pointer, startup, wait};
 use ipc::win32_window::queue_status;
+use super::wait_live::msg_wait;
 
 /// The audible warning the message beep produces, in hertz and milliseconds.
 const BEEP_HZ: u32 = 750;
@@ -31,7 +32,7 @@ pub(crate) fn route(ordinal: u64, args: &[u64]) -> Option<u64> {
     }
 }
 
-fn with_entry<R>(f: impl FnOnce(&mut GuiEntry, u64) -> R) -> Option<R> {
+pub(super) fn with_entry<R>(f: impl FnOnce(&mut GuiEntry, u64) -> R) -> Option<R> {
     let cur = sched::live::current().filter(|cur| cur.is_nt_personality())?;
     let group = Arc::clone(&cur.thread_group);
     let mut entries = GUI.lock();
@@ -106,49 +107,4 @@ fn modify_startup_info_flags(mask: u32, flags: u32) -> u64 {
 fn foreground_boost() -> u64 {
     crate::nt_rtl::set_last_win32_error(startup::ERROR_CALL_NOT_IMPLEMENTED as u64);
     0
-}
-
-/// Wait until the queue holds work in one of the named classes, one of the
-/// named objects signals, or the timeout expires. The queue occupies the wait
-/// slot after the caller's objects and shares their process wait list, so an
-/// object another thread signals releases this wait at once.
-/// # C: O(N_objects + N_queued); # Sleeps: yes
-pub(crate) fn msg_wait(count: u32, handles: u64, timeout_ms: u32, mask: u32) -> u32 {
-    if !wait::count_admitted(count) {
-        crate::nt_rtl::set_last_win32_error(wait::ERROR_INVALID_PARAMETER as u64);
-        return wait::WAIT_FAILED;
-    }
-    let Some(cur) = sched::live::current().filter(|cur| cur.is_nt_personality()) else { return wait::WAIT_FAILED; };
-    let Ok(objects) = crate::nt_dispatch::resolve_wait_objects(handles, count) else {
-        crate::nt_rtl::set_last_win32_error(wait::ERROR_INVALID_PARAMETER as u64);
-        return wait::WAIT_FAILED;
-    };
-    let group = Arc::clone(&cur.thread_group);
-    let tid = cur.tid as u64;
-    let deadline = wait::deadline_ns(timekeeper::monotonic_ns(), timeout_ms);
-    loop {
-        let now = timekeeper::monotonic_ns();
-        let Some((ready, queue_deadline, wait_list)) = with_entry(|entry, tid| {
-            entry.state.expire_timers(now);
-            let sent = mask & queue_status::QS_SENDMESSAGE != 0 && entry.sent.has_for_tid(tid);
-            (entry.state.queue_satisfies(tid, mask) || sent, entry.state.next_retrieval_deadline(tid), Arc::clone(&entry.wait))
-        }) else { return wait::WAIT_FAILED; };
-        let expired = deadline.is_some_and(|limit| now >= limit);
-        let signaled = objects.iter().map(|object| object.is_signaled_at(tid, now));
-        if let Some(status) = wait::step_result(wait::step(signaled, ready, expired), count) { return status; }
-        let park = sched::nt_object::merge_wait_deadline(deadline.unwrap_or(0), queue_deadline);
-        // SAFETY: msg_wait holds owned wait-list and object references and rechecks
-        // queue status plus object state after every wake, before answering.
-        let outcome = unsafe { sched::live::wait_event_interruptible_until(&wait_list, park, timekeeper::monotonic_ns, || {
-            let now = timekeeper::monotonic_ns();
-            let object_signaled = objects.iter().any(|object| object.is_signaled_at(tid, now));
-            let mut entries = GUI.lock();
-            entries.retain(|entry| entry.group.upgrade().is_some());
-            let queue_ready = entries.iter_mut().find(|entry| entry.group.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, &group)))
-                .is_some_and(|entry| entry.state.queue_satisfies(tid, mask) || entry.sent.has_for_tid(tid));
-            wait::wake_condition(queue_ready, object_signaled)
-        }) };
-        if outcome == sched::task::WaitOutcome::Ready || outcome == sched::task::WaitOutcome::TimedOut { continue; }
-        return wait::WAIT_IO_COMPLETION;
-    }
 }

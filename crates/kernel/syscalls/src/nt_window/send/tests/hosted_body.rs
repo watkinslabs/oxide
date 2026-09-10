@@ -1,4 +1,5 @@
-// Production send boundary harness body shared by rustc and Cargo wrappers.
+// Production send boundary harness body.
+extern crate ipc as actual_ipc;
 use std::sync::{Arc,Weak,Mutex,MutexGuard};
 use std::cell::Cell;
 pub mod thread_group {pub struct ThreadGroup;}
@@ -20,6 +21,7 @@ pub mod live {
     }
 }
 pub mod win32_window {
+    pub use crate::actual_ipc::win32_window::queue_status;
     #[derive(Clone,Copy,PartialEq,Eq)]pub struct WindowId(u32);
     impl WindowId {pub fn from_raw(raw:u32)->Option<Self>{(raw!=0).then_some(Self(raw))}}
     #[derive(Clone,Copy)]pub struct Record {pub owner_tid:u64,pub wndproc:u64}
