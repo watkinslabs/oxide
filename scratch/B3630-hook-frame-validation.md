@@ -29,3 +29,14 @@ EnableWindow must wait for WM_CANCELMODE before style mutation/return-state
 capture; event completion before rereading focus; CBT veto and WM_KILLFOCUS
 before WM_ENABLE. SB_CTL refresh follows completion. Current state helper
 clears focus prematurely. Notepad acceptance remains unproven; no new VM.
+
+Runtime 05bb33507: both warnings-wrapped kernel release builds, feature-gate,
+and both frame gates PASS. Syscalls library3270 PASS. Stack gates exit1 on
+existing KI0019 failures; primary multiset335x86/278ARM, no added/increased
+path versus control-focus baseline, exception7664/6368 unchanged.
+Logs /tmp/B3630-win-event-{build-x86_64,build-aarch64,feature,syscalls,
+frame-x86,frame-arm,stack-x86,stack-arm,stack-compare}.log.
+x86: primary rows 335 -> 335; added={} growth=[]
+target/B3630-win-event-x86_64.elf sha256=773470053a878f2d7c80845f9860cf43af03d786beee4af7cf19290545598a13
+arm: primary rows 278 -> 278; added={} growth=[]
+target/B3630-win-event-aarch64.elf sha256=916ce2e02131b032642df41381ae52a22638dc0edad92c365f5da685b430578e
