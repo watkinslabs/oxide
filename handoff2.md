@@ -25,20 +25,30 @@ Consult local pinned primary sources first; Wine11.16 release/debug explicit.
 
 ## Current work
 
-- KI0903 runtime13f9a59e9: SB_CTL uses existing control-owned flags and
-  EnableWindow state helper; no ShowWindow on enable.21 boundary tests PASS,
-  restored ShowWindow regression RED. Fixture uses canonical show to preserve
-  WS_VISIBLE. Full callbacks/accessibility KI0904; control raster KI0885.
-  scratch/B3630-scroll-enable-validation.md. Both builds/features PASS;
-  current x86 router path grew16B (frame272->288); ARM unchanged.4ad3d553a
-  enable-only separation did not reduce it and was removed. Accessibility
-  query snapshot/copyout buffers now isolated; final build95432 running,
-  /tmp/B3630-sizegrip-final-build.log. Do not claim stack comparison passed.
-- KI0865 claimed8b4a842f2. Harness now captures reader credentials plus desktop
-  process/thread status,syscall,wchan,stack during the real frame wait after30s.
-  Command bounded10s; UART retains read errors/status. No debugger attachment.
-  Launch/poll hook removals fail tests;51 Notepad Python tests PASS.
-  scratch/B3630-desktop-capture-validation.md. No new boot/root-cause claim.
+- KI0903 runtime13f9a59e9: control-owned arrow state and EnableWindow state
+  helper preserve visibility. Closed after source37f740be7 validation.
+- KI0885 sizegrip input4ad3d553a: cursor preserves previous handle; click
+  sends canonical parent SC_SIZE with RTL edge and resumes0.26 actual control
+  boundary tests PASS; missing cursor/click and old ShowWindow controls RED.
+- Final source37f740be7 both builds/features/frame gates PASS; static336x86/
+  278ARM rows unchanged, no added/increased path versus parent-handling.
+  Existing KI0019 failures/exception7664+6368 remain. info query storage kept
+  off shared Show router frame; deepest x86 route14792->14744. Enable-only
+  separation failed and was removed. Final logs /tmp/B3630-sizegrip-final-*;
+  snapshots target/B3630-sizegrip-final-{x86_64,aarch64}.elf. Evidence
+  scratch/B3630-sizegrip-validation.md and B3630-scroll-enable-validation.md.
+- KI0865 claimed8b4a842f2; captured73b21c9f: desktop wait sends reader
+  credentials and desktop process/thread status,syscall,wchan,stack after30s.
+  Command bounded10s; read errors/status retained in UART.51 Notepad Python
+  tests PASS; launch/poll hook removals RED. No debugger attachment.
+- Next visible verification helper /tmp/B3630-sizegrip-verification.py
+  prepare|run; id B3630-sizegrip-verification-debug, Wine11.16-debug,
+  token oxide-b3630-verify. No VM launched yet. All new commits since
+  879b334df not yet pushed. After launch, actually click and verify menus and
+  DialogChecks; retain VM for user. Helper itself only launches/activates.
+- Full refresh/callbacks KI0885/KI0904 remain; raw static harness KI0574 still
+  fails its stale source needle. Foreign maps omit file identity/offsets/
+  paths (newKI0905); captured user PCs cannot yet be assigned to ELF symbols.
 
 - KI0890 runtimee3a491288 committed: parent Send continuation, nonzero parent
   result preserved; caption left-down MA_NOACTIVATE, others MA_ACTIVATE.
@@ -59,10 +69,6 @@ Consult local pinned primary sources first; Wine11.16 release/debug explicit.
   /tmp/B3630-parent-handling-final-{build,feature}.log;
   parent-handling-{frame,stack}-{x86,arm}.log and stack-compare.log.
   ELFs target/B3630-parent-handling-{x86_64,aarch64}.elf; hashes in evidence.
-- KI0885 sizegrip input4ad3d553a: cursor preserves previous handle; click
-  sends canonical parent SC_SIZE with RTL edge and resumes0.26 real control
-  boundary tests PASS; cursor/click missing-route controls RED. Initial both
-  builds PASS; final info-frame separation build ongoing. All new commits since879b334df not yet pushed.
 - Next work: KI0885 full scrollbar procedure (control_proc/proc_abi). Existing
   unhandled cases include SBM state messages, keyboard,
   pointer tracking, focus/caret and accessibility. Primary procedure reviewed.
@@ -156,21 +162,11 @@ Consult local pinned primary sources first; Wine11.16 release/debug explicit.
   full gate green. Compare primary rows before "Split the chain", not top20.
   Final ELFs target/B3630-scope-final-{x86,arm}.elf; hashes in scope evidence.
 
-## Last preview — failed
+## Prior preview
 
-- Sept9 16:39:27UTC; QEMU1055258/launcher1055198 exited16:41:20UTC,status0.
-  No quit/shutdown sent. Exit cause unknown; no automatic relaunch for exit.
-- target/B3630-click-preview-debug/live.json, audit-live.md, screenshots
-  notepad-ready.png/after-dialog-button.png. UART
-  target/boot-logs/x86_64-20260909-163927.log.
-- Blank About-like dialog/button, stale surfaces/trails; controlledclick713,397
-  did not verify down/up dispatch. File→Open acceptance not completed.
-  Audit FAIL29 distinct bridge-refusals position7/visibility6/destroy2.
-- Preview kernel SHAee24bfab8d6385ca0de7af5c6fd757f9252122c08bc66bb5ada2a41a06cd243c.
-  Wine11.16-debug source/staged stamps matched.
-- /tmp/B3630-click-preview.py prepare|run and /tmp/B3630-qmp-action.py
-  status|screen LABEL|click X Y WIDTH HEIGHT|keys QCODE... preserve VM.
-  Never terminate user inspection VM. Boot only when final acceptance ready.
+- Sept9 16:39 run: blank About-like dialog/button, stale surfaces/trails.
+  target/B3630-click-preview-debug; full evidence in Notepad validation doc.
+  Superseded display/input repairs still require actual dialog acceptance.
 
 ## Open scope and companion repositories
 

@@ -23,7 +23,7 @@ Cursor installation and Send execution are explicit seams; tests assert GUI
 is not held at either call. Existing real cursor/Send owners are reused;
 these tests do not establish rendered pixels or full real User32 acceptance.
 
-Build/features/stack validation ongoing. Ordinary scrollbar tracking, focus,
+Final source37f740be7: both builds/features/frame gates PASS. Ordinary scrollbar tracking, focus,
 state messages and synchronous refresh remain KI0885; no full-procedure or
 Notepad completion claim. No new boot.
 
@@ -33,3 +33,10 @@ exercises that control entry, not the raw selector codec itself.
 Existing static tools/test-windows-notepad-harness.sh still fails on its old
 raw-DC-routing source needle (KI0574); /tmp/B3630-sizegrip-harness.log, exit1.
 It is not a passing gate; executable Notepad Python tests are separate.
+
+Static gates retain existing KI0019 failures:336x86/278ARM primary rows,
+no added/increased path versus parent-handling; exception7664/6368 unchanged.
+Full gate not green. Final logs /tmp/B3630-sizegrip-final-{build,feature}.log,
+frame-{x86,arm}.log, stack-{x86,arm}.log and stack-compare.log. Snapshots:
+b12b3f926b857f9fef5768f72a7c4e7a56bda6b88e2834f4d7be4da9f15f4c79  target/B3630-sizegrip-final-x86_64.elf
+dbbb69659cbb5f130e4055fc4754584fff3ffd39f16db01b90c15d33793ac641  target/B3630-sizegrip-final-aarch64.elf
