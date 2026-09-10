@@ -26,7 +26,12 @@ acknowledgement before sent callbacks, clear all-posted for restricted ranges,
 ignore selected classes, or clear before HWND validation. Restore and full
 suites PASS. Logs /tmp/B3630-retrieval-status-{owner,ipc,dispatch,tests,
 control-wiring,control-ordering,control-range,control-classes,
-control-invalid-filter}.log. Release/features/frame/static validation running.
+control-invalid-filter}.log. Initial790058093 release/features PASS; x86
+frame gate PASS but dispatcher frame1424->1440 added16 bytes on11 deep paths.
+Replaced borrowed NtWindowCall argument with scalar HWND/range/flags. All144
+dispatcher tests PASS; final release/static validation still required.
+Logs /tmp/B3630-retrieval-status-{build-x86_64,build-aarch64,feature,
+frame-x86,stack-x86,path-x86,scalar-tests}.log.
 
 KI0913 remains in progress pending full paint-status observation: queue_status
 synthesizes QS_PAINT as changed while dirty (KI0915). Peek still treats any

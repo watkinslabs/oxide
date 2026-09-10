@@ -60,7 +60,12 @@ pub(super) fn dispatch_mode(call: NtCall, raw: bool) -> Option<u64> {
             crate::nt_gdi::flush_pending_for_current(false);
             let _ = caret::blink::expire_for_current(timekeeper::monotonic_ns());
             if let Some(result) = retrieval::pump(call, raw) { return Some(result); }
-            if let Some(result) = retrieval_status::acknowledge(&operation) { return Some(result); }
+            let acknowledged = match operation {
+                NtWindowCall::Peek { hwnd, first, last, remove, .. } => retrieval_status::acknowledge(hwnd, first, last, remove),
+                NtWindowCall::Get { hwnd, first, last, .. } => retrieval_status::acknowledge(hwnd, first, last, 0),
+                _ => None,
+            };
+            if let Some(result) = acknowledged { return Some(result); }
             // Activation, the cursor and the double click are decided here,
             // on the way out of the queue and inside the window procedure,
             // not by whatever posted the raw input.
