@@ -4,7 +4,7 @@ use ipc::win32_window::WindowRect;
 #[test]
 fn draw_callback_record_preserves_native_offsets_and_zero_tracking() {
     let bytes = draw_record(0x123456789, 0xabcdef123, Rect { left: -3, top: 4, right: 97, bottom: 104 },
-        ScrollLayout { arrow_size: 17, thumb_pos: 35, thumb_size: 23 }, 2, true);
+        ScrollLayout { arrow_size: 17, thumb_pos: 35, thumb_size: 23 }, 2, true, true, true);
     assert_eq!(bytes.len(), 104);
     assert_eq!(u64::from_le_bytes(bytes[0..8].try_into().unwrap()), 0x123456789);
     assert_eq!(u64::from_le_bytes(bytes[8..16].try_into().unwrap()), 0xabcdef123);

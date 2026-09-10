@@ -25,6 +25,7 @@ impl State {
         let mut windows = WindowManager::new();
         let window = windows.create(9, None, 0x1234).unwrap();
         windows.set_rect(window, WindowRect { left: 0, top: 0, right: 4, bottom: 4 }).unwrap();
+        windows.set_visible(window, true).unwrap();
         if region.right > region.left && region.bottom > region.top { windows.invalidate(window, Some(region)).unwrap(); }
         Self { gdi: GdiManager::new(), region: Some(region), ps: [0; 80], setter_calls: 0,
             presents: 0, ended: 0, deletes: 0, retains: 0, reject_clip: false, reject_copy: false, milestones: 0, windows, window, seed_layout: None, seed_calls: 0 }
@@ -35,7 +36,9 @@ static TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 fn region(left: i32, top: i32, right: i32, bottom: i32) -> WindowRect { WindowRect { left, top, right, bottom } }
 fn win_bool(status: u64) -> u64 { u64::from(status == STATUS_SUCCESS) }
 
+#[path="../../../nt_window/paint_trace.rs"] mod paint_trace;
 mod nt_window {
+    pub(crate) use crate::paint_trace;
     use super::*;
     pub(crate) use crate::paint_prepare_adapter as paint_prepare;
     pub mod caret { pub mod paint { pub(crate) use crate::paint_prepare_adapter::caret::{begin_for_current, end_for_current}; } }
@@ -257,7 +260,8 @@ fn retained_output_finishes_paint_without_claiming_presentation_or_callback() {
         let submit = |service, args| if service == NtService::PresentGdiWindowRegion { status } else { gdi(service, args) };
         assert_eq!(production::end_paint(&args, native, submit), u64::from(status != STATUS_INVALID_PARAMETER));
         let state = STATE.lock().unwrap();
-        assert_eq!(state.milestones, usize::from(status == STATUS_SUCCESS));
+        // Output flush owns the presentation milestone; EndPaint only retains and closes.
+        assert_eq!(state.milestones, 0);
         assert_eq!(state.deletes, 1);
         assert!(!state.gdi.contains_object(dc as u32));
         assert!(state.windows.paint_session(state.window).is_err());

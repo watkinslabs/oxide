@@ -9,6 +9,10 @@ extern crate ipc as ipc_types;
 extern crate self as ipc;
 extern crate self as sched;
 extern crate self as uaccess;
+#[path="refresh_hosted.rs"] mod refresh_hosted;
+pub mod nt_callback { #[derive(Clone,Copy,Debug)] pub struct Completion {pub kind:u64,pub argument:u64} }
+pub mod nt_user_callback {pub enum Input<'a>{Record(&'a[u8])}}
+pub mod nt_rtl {pub(crate) use crate::refresh_hosted::begin_user_callback;}
 
 pub use ipc_types::{win32_gdi, win32_window, win32_imc};
 
@@ -30,6 +34,7 @@ thread_local! {
     static SEND_PENDING: Cell<bool> = const { Cell::new(false) };
     static SEND_CONT: RefCell<Option<nt_window::send::Continuation>> = const { RefCell::new(None) };
     static RASTER_FAIL: Cell<bool> = const { Cell::new(false) };
+    static CARET_CALLS:RefCell<Vec<(u64,bool)>>=const{RefCell::new(Vec::new())};
 }
 
 // `setup` replaces the hosted GUI vector, while CURRENT is thread-local. A
@@ -68,6 +73,14 @@ pub mod nt_window {
 
     pub const STATUS_PENDING: u64 = 0x103;
     pub const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
+    const CALLBACK_INIT_BUILTIN_CLASSES:u64=0x10;
+    mod create {pub fn complete_callback(_:crate::nt_callback::Completion,_:u64)->u64{panic!("unexpected create completion")}}
+    #[path="../callbacks.rs"] mod callbacks;
+    pub(crate) use callbacks::complete_callback;
+    #[path="../paint_prepare.rs"] pub(crate) mod paint_prepare;
+    #[path="../paint_callbacks.rs"] pub(crate) mod paint_callbacks;
+    #[path="../redraw/erase.rs"] pub(crate) mod erase;
+    pub(crate) mod redraw {pub(crate) use super::erase;}
 
     pub struct Wait;
     impl Wait { pub fn wake_all(&self) {} }
@@ -76,6 +89,7 @@ pub mod nt_window {
         pub(crate) group: Weak<thread_group::ThreadGroup>,
         pub(crate) state: win32_window::WindowManager,
         pub(crate) scroll_pending: scroll::pending::Queue,
+        pub(crate) paint_callbacks:paint_callbacks::Queue,
     }
 
     pub(crate) static GUI: Lock<Vec<GuiEntry>> = Lock(Mutex::new(Vec::new()));
@@ -92,8 +106,23 @@ pub mod nt_window {
     pub fn nonclient_scroll_context_for_current(_:u64)->Option<crate::nt_gdi::nonclient_scroll::Context> {
         panic!("accessibility geometry is outside this fixture")
     }
+    pub(crate) mod caret {
+        pub mod publish {pub struct Current;}
+        pub mod live {
+            fn apply(hwnd:u64,show:bool)->u64{
+                assert!(super::super::GUI.0.try_lock().is_ok());crate::CARET_CALLS.with(|calls|calls.borrow_mut().push((hwnd,show)));
+                let tid=crate::live::current().unwrap().tid;let id=crate::win32_window::WindowId::from_raw(hwnd as u32);
+                let mut entries=super::super::GUI.lock();let state=&mut entries[0].state;
+                if show{state.show_caret(tid,id).is_ok()as u64}else{state.hide_caret(tid,id).is_ok()as u64}
+            }
+            pub fn hide_caret_for_current(hwnd:u64,_:&mut super::publish::Current)->u64{apply(hwnd,false)}
+            pub fn show_caret_for_current(hwnd:u64,_:&mut super::publish::Current)->u64{apply(hwnd,true)}
+        }
+    }
 
     pub mod send {
+        pub fn handles_callback(_:u64)->bool{false}
+        pub fn complete_callback(_:crate::nt_callback::Completion,_:u64)->u64{panic!("unexpected send completion")}
         #[derive(Clone,Copy)] pub struct Continuation {pub token:u64,pub resume:fn(u64,Result<u64,()>)->u64}
         pub enum SendOutcome {Complete(u64),Failed,Pending}
         pub fn send_resumable_current(hwnd:u64,message:u32,wparam:u64,lparam:u64,caller:Continuation)->SendOutcome {
@@ -107,6 +136,8 @@ pub mod nt_window {
     }
 
     pub mod position {
+        pub fn handles_callback(_:u64)->bool{false}
+        pub fn complete_position_callback(_:crate::nt_callback::Completion,_:u64)->u64{panic!("unexpected position completion")}
         use super::*;
         use ipc::win32_window::WindowRect;
 
@@ -151,9 +182,12 @@ pub mod nt_window {
         #[path = "proc_abi.rs"] pub(crate) mod proc_abi;
         #[path = "control_input.rs"] pub(crate) mod control_input;
         #[path = "control_query.rs"] pub(crate) mod control_query;
+        #[path = "control_draw.rs"] pub(crate) mod control_draw;
+        #[path = "control_refresh.rs"] pub(crate) mod control_refresh;
         #[path = "control_proc.rs"] pub(crate) mod control_proc;
         pub(crate) mod control_paint {
             pub(crate) fn for_current(_:u64,_:u64)->u64 { panic!("control paint outside input fixture") }
+            pub(crate) fn complete_callback(_:crate::nt_callback::Completion,_:u64)->u64 {panic!("unexpected paint completion")}
         }
         #[path = "bar_raw.rs"] pub(crate) mod bar_raw;
         #[path = "bar_live.rs"] pub(crate) mod bar_live;
@@ -194,6 +228,7 @@ pub mod nt_wine_window {
 
 pub mod nt_gdi {
     use super::*;
+    pub(crate) use crate::refresh_hosted::{get_dc_ex_for_current,release_dc_lease_for_current};
     pub mod nonclient_scroll {
         #[derive(Clone,Copy)] pub struct Context {pub metrics:ipc::win32_gdi::ScrollMetrics}
         pub fn bounds(_:Context,_:i32)->Result<Option<ipc::win32_gdi::Rect>,()> {
@@ -220,6 +255,8 @@ fn current(group: &Arc<thread_group::ThreadGroup>, tid: u64) {
     RASTER_FAIL.with(|f| f.set(false));
     CURSOR_CALLS.with(|calls|calls.borrow_mut().clear());SEND_CALLS.with(|calls|calls.borrow_mut().clear());
     SEND_PENDING.with(|pending|pending.set(false));SEND_CONT.with(|pending|*pending.borrow_mut()=None);
+    refresh_hosted::reset();
+    CARET_CALLS.with(|calls|calls.borrow_mut().clear());
 }
 
 fn setup() -> (Arc<thread_group::ThreadGroup>, u64) { setup_with_style(false) }
@@ -232,6 +269,7 @@ fn setup_with_style(vertical_style: bool) -> (Arc<thread_group::ThreadGroup>, u6
     state.set_rect(hwnd, win32_window::WindowRect { left: 0, top: 0, right: 640, bottom: 480 }).unwrap();
     *nt_window::GUI.0.lock().unwrap() = vec![nt_window::GuiEntry {
         group: Arc::downgrade(&group), state, scroll_pending: nt_window::scroll::pending::Queue::default(),
+        paint_callbacks:nt_window::paint_callbacks::Queue::new(),
     }];
     current(&group, 7);
     (group, hwnd.raw() as u64)
@@ -336,3 +374,5 @@ fn unchanged_redraw_and_arrow_only_refresh_reach_the_real_action_sink() {
 
 #[path="tests/sizegrip.rs"] mod sizegrip;
 #[path="tests/control_query.rs"] mod control_query;
+#[path="tests/control_refresh.rs"] mod control_refresh;
+#[path="tests/control_keyboard.rs"] mod control_keyboard;

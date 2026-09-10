@@ -2,11 +2,9 @@
 #![allow(dead_code, unused_imports, unexpected_cfgs)]
 extern crate alloc;
 extern crate self as sched;
-extern crate self as ipc;
+pub use ipc::{win32_sysparams,win32_gdi,win32_imc,win32_window};
 extern crate self as uaccess;
 #[path="../desktop/geometry.rs"] mod desktop_geometry;
-#[path="../../../../ipc/src/win32_sysparams.rs"] pub mod win32_sysparams;
-#[path="../../../../ipc/src/win32_gdi.rs"] pub mod win32_gdi;
 static GDI:std::sync::LazyLock<Mutex<win32_gdi::GdiManager>>=std::sync::LazyLock::new(||Mutex::new(win32_gdi::GdiManager::new()));
 mod nt_gdi {
     use crate::{GDI,win32_window::PaintRegion,win32_gdi::{PaintBacking,Rect}};
@@ -58,8 +56,6 @@ pub mod live {
         while !ready(){assert!(std::time::Instant::now()<end,"hosted sender failed to wake");std::thread::yield_now();}
     }
 }
-#[path = "../../../../ipc/src/win32_imc.rs"] pub mod win32_imc;
-#[path="../../../../ipc/src/win32_window.rs"] pub mod win32_window;
 static CALLS:Mutex<Vec<(u64,u64,u64,u64,u64)>>=Mutex::new(Vec::new());
 mod nt_rtl {
     pub fn begin_wndproc_callback_with_completion(hwnd:u64,msg:u64,wp:u64,lp:u64,_proc:u64,c:crate::nt_callback::Completion)->u64{
@@ -82,7 +78,7 @@ impl<T> Lock<T>{fn lock(&self)->Guard<'_,T>{
 }}
 mod nt_window {
     use super::*;
-    pub(crate) use crate::paint_callbacks;
+    pub(crate) use crate::{paint_callbacks,paint_prepare};
     pub const STATUS_PENDING:u64=0x103;
     pub struct GuiEntry{pub group:Weak<thread_group::ThreadGroup>,pub state:win32_window::WindowManager,pub redraw:redraw::Queue,pub sent:send::Queue,pub wait:Arc<live::WaitList>,pub paint_callbacks:paint_callbacks::Queue}
     pub static GUI:Lock<Vec<GuiEntry>>=Lock(Mutex::new(Vec::new()));
@@ -95,6 +91,11 @@ use nt_window::{GUI,STATUS_PENDING,resume_position_message_current};
     pub(crate) use policy::*;
     pub(crate) fn finish_for_current(_:Prepared,_:Result<bool,()>)->u64 { unreachable!("BeginPaint preparation has a separate owner harness") }
     pub(crate) fn discard_for_current(_:Prepared) { unreachable!("BeginPaint preparation has a separate owner harness") }
+}
+// Scrollbar drawing executes in its own boundary fixture; these branches must never run here.
+mod scroll {
+    pub(crate) mod control_paint {pub(crate) fn finish_for_current(_:crate::paint_prepare::Prepared,_:Result<bool,()>)->u64 {unreachable!("scroll control paint has a separate owner harness")}}
+    pub(crate) mod control_refresh {pub(crate) fn discard(_:u32) {unreachable!("scroll control refresh has a separate owner harness")}}
 }
 mod default_paint{pub(crate) fn finish_for_current(_:crate::paint_prepare::Prepared,_:Result<bool,()>)->u64{unreachable!("default paint is a kernel-only path")}}
 #[path="../paint_callbacks"] mod paint_callbacks {

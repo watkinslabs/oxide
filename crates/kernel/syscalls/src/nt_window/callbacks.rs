@@ -16,6 +16,9 @@ pub(crate) fn complete_callback(completion: sched::nt_callback::Completion, resu
     if completion.kind == super::scroll::proc_abi::PAINT_COMPLETION {
         return super::scroll::control_paint::complete_callback(completion, result);
     }
+    if completion.kind == super::scroll::proc_abi::REFRESH_COMPLETION {
+        return super::scroll::control_refresh::complete_callback(completion, result);
+    }
     if send::handles_callback(completion.kind) { send::complete_callback(completion, result) }
     else if position::handles_callback(completion.kind) { position::complete_position_callback(completion, result) }
     else { create::complete_callback(completion, result) }

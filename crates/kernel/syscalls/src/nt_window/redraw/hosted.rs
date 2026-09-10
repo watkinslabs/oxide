@@ -1,16 +1,11 @@
 //! Hosted execution of the actual redraw continuation with canonical paint state.
 #![allow(dead_code, unused_imports, unexpected_cfgs)]
 extern crate alloc;
-extern crate self as ipc;
+pub use ipc::{win32_sysparams,win32_gdi,win32_imc,win32_window};
 extern crate self as sched;
 extern crate self as uaccess;
-#[path="../../../../ipc/src/win32_sysparams.rs"] pub mod win32_sysparams;
-#[path = "../../../../ipc/src/win32_gdi.rs"] pub mod win32_gdi;
 pub fn copy_from_user(_: &mut [u8], _: u64) -> Result<(), ()> { Err(()) }
 mod nt_gdi { pub fn region_snapshot_for_current(_: u64) -> Result<crate::win32_window::PaintRegion, ()> { Err(()) } }
-#[path = "../../../../ipc/src/win32_imc.rs"] pub mod win32_imc;
-#[path = "../../../../ipc/src/win32_window.rs"]
-pub mod win32_window;
 use std::sync::{Arc, Weak, Mutex, MutexGuard};
 const STATUS_PENDING: u64 = 0x103;
 pub struct Task { tid: u32, thread_group: Arc<()> }

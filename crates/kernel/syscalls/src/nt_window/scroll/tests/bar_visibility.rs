@@ -8,10 +8,18 @@ fn control(visible:bool)->(Arc<thread_group::ThreadGroup>,u64){
     entries[0].state.initialize_scroll_control_style(id,0).unwrap();
     entries[0].state.show(7,id,visible).unwrap();(group,hwnd)
 }
-fn enable(hwnd:u64,flags:u32)->Option<u64>{bar_live::route(bar_raw::ENABLE_SCROLL_BAR,[hwnd,SB_CTL as u64,flags as u64,0])}
+fn enable(hwnd:u64,flags:u32)->Option<u64>{
+    let result=bar_live::route(bar_raw::ENABLE_SCROLL_BAR,[hwnd,SB_CTL as u64,flags as u64,0]);
+    if result==Some(nt_window::STATUS_PENDING){Some(refresh_hosted::complete(u64::MAX))}else{result}
+}
 fn state(hwnd:u64)->(bool,bool,u32){
     let entries=nt_window::GUI.lock();let state=&entries[0].state;let id=WindowId::from_raw(hwnd as u32).unwrap();
     (state.get(id).unwrap().visible,state.is_enabled(id),state.owned_scroll_state(id,SB_CTL).unwrap().flags)
+}
+#[test]
+fn control_redraw_suspends_before_returning_api_result(){
+    let _serial=TEST_LOCK.lock().unwrap();let(_group,hwnd)=control(true);
+    assert_eq!(bar_live::route(bar_raw::ENABLE_SCROLL_BAR,[hwnd,SB_CTL as u64,ESB_DISABLE_BOTH as u64,0]),Some(nt_window::STATUS_PENDING));
 }
 #[test]
 fn disabling_a_visible_control_keeps_it_visible_and_enabling_a_hidden_control_keeps_it_hidden(){

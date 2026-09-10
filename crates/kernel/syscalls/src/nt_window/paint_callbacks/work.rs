@@ -13,6 +13,7 @@ pub(crate) enum Completion {
     /// Default WM_PAINT: the kernel ends the paint itself once preparation completes.
     DefaultPaint(super::super::paint_prepare::Prepared),
     ControlPaint(super::super::paint_prepare::Prepared),
+    ControlRefresh { dc:u32, result:u64 },
     Erase(super::super::redraw::erase::ErasePrepared),
 }
 #[derive(Clone, Copy)]
@@ -87,10 +88,8 @@ impl Queue {
     }
     /// Mark cancellation before draining; active Send keeps its resource payload until return.
     pub(crate) fn cancel_window(&mut self,hwnd:u64){for p in &mut self.pending{if p.resources.hwnd==hwnd{p.cancelled=true;}}}
-    /// Destruction keeps a leased fresh paint HDC alive until its active callback returns.
-    pub(crate) fn holds_dc(&self,dc:u32)->bool{self.pending.iter().any(|p|p.in_flight&&match p.completion{
-        Completion::Paint(prepared)|Completion::DefaultPaint(prepared)|Completion::ControlPaint(prepared)=>prepared.dc==dc,Completion::Erase(prepared)=>prepared.dc==dc,Completion::Callback{..}=>false,
-    })}
+    /// The active callback's resource record names its HDC regardless of terminal return convention.
+    pub(crate) fn holds_dc(&self,dc:u32)->bool{dc!=0&&self.pending.iter().any(|p|p.in_flight&&p.resources.dc==dc as u64)}
     /// Only quiescent entries may release HDC/HRGN before a callback return.
     pub(crate) fn take_window(&mut self,hwnd:u64)->Option<Completion>{
         let index=self.pending.iter().position(|p|p.resources.hwnd==hwnd&&!p.in_flight)?;

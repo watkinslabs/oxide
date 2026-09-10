@@ -2,6 +2,7 @@
 use alloc::sync::Arc;
 use ipc::win32_window::{WindowId, WindowRect, WM_PAINT, WM_SETCURSOR, WM_LBUTTONDOWN};
 use ipc::win32_window::hardware::WM_LBUTTONDBLCLK;
+use ipc::win32_window::{WM_KEYDOWN,WM_KEYUP};
 use crate::nt_window::{GUI, position};
 use super::proc_abi::*;
 const STATUS_NOT_IMPLEMENTED: u64 = 0xc0000002;
@@ -27,6 +28,9 @@ pub(crate) fn for_current(hwnd: u64, message: u32, wparam: u64, lparam: u64) -> 
         WM_PAINT => Some(super::control_paint::for_current(hwnd, wparam)),
         WM_ERASEBKGND => Some(1),
         WM_GETDLGCODE => Some(DLGC_WANTARROWS),
+        WM_ENABLE => Some(super::control_refresh::enabled(hwnd, wparam != 0)),
+        WM_KEYDOWN => Some(super::control_input::key_down(hwnd, parent, style, wparam, lparam)),
+        WM_KEYUP => Some(super::control_input::key_up(hwnd)),
         SBM_GETPOS => Some(super::control_query::position(hwnd)),
         SBM_GETRANGE => Some(super::control_query::range(hwnd, wparam, lparam)),
         SBM_GETSCROLLINFO => Some(super::live::get_scroll_info_for_current(hwnd, ipc::win32_window::SB_CTL, lparam)),

@@ -32,12 +32,14 @@ fn callback_failure_nested_ownership_and_bounded_admission() {
 fn drawing_lease_survives_window_cancellation_until_its_own_return() {
     let mut q = Queue::new();
     let token = q.hold(7, resources(), completion()).unwrap();
+    assert!(q.holds_dc(2));assert!(!q.holds_dc(0));
     q.cancel_window(1);
     assert!(q.take_window(1).is_none());
     assert!(q.step(7, token, 0).is_none());
     assert!(q.release_held(8, token).is_none());
     assert!(q.release_held(7, token + 1).is_none());
     assert!(matches!(q.release_held(7, token), Some((_, true))));
+    assert!(!q.holds_dc(2));
     assert!(q.release_held(7, token).is_none());
 }
 

@@ -1,7 +1,6 @@
 //! Scrollbar BeginPaint, client drawing callback and owned EndPaint continuation.
 use alloc::sync::Arc;
 use ipc::win32_window::WindowId;
-use ipc::win32_gdi::{Rect, ScrollLayout, ScrollMetrics};
 use syscall::{nt::{NtCall, NtService}, SyscallArgs};
 use crate::nt_window::{GUI, paint_callbacks, paint_prepare};
 use super::proc_abi::*;
@@ -32,24 +31,6 @@ pub(crate) fn finish_for_current(prepared: paint_prepare::Prepared, result: Resu
     draw(prepared.hwnd as u64, dc, Some(paint_prepare::Prepared { nc_region: 0, ..prepared }))
 }
 
-fn record(hwnd: u64, dc: u64) -> Option<[u8; DRAW_BYTES]> {
-    let cur = sched::live::current().filter(|cur| cur.is_nt_personality())?;
-    let window = u32::try_from(hwnd).ok().and_then(WindowId::from_raw)?;
-    let (rect, style, state) = {
-        let entries = GUI.lock();
-        let entry = entries.iter().find(|entry| entry.group.ptr_eq(&Arc::downgrade(&cur.thread_group)))?;
-        let rect = entry.state.client_rect(window)?;
-        (Rect { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom },
-            entry.state.get(window)?.style, entry.state.scroll_control_state(window).ok()?)
-    };
-    if rect.left >= rect.right || rect.top >= rect.bottom { return None; }
-    let size_box = style & (SBS_SIZEBOX | SBS_SIZEGRIP) != 0;
-    let vertical = !size_box && style & SBS_VERT != 0;
-    let layout = if size_box { ScrollLayout { arrow_size: 0, thumb_pos: 0, thumb_size: 0 } }
-        else { ipc::win32_gdi::scrollbar_layout(if vertical { rect.bottom - rect.top } else { rect.right - rect.left },
-            state, ScrollMetrics { arrow_size: ipc::win32_gdi::system_metric_default(SM_CXVSCROLL)?, dpi: 96 }).ok()? };
-    Some(draw_record(hwnd, dc, rect, layout, state.flags, vertical))
-}
 
 fn hold(prepared: paint_prepare::Prepared) -> Option<u64> {
     let cur = sched::live::current().filter(|cur| cur.is_nt_personality() && cur.tid as u64 == prepared.tid)?;
@@ -63,7 +44,7 @@ fn hold(prepared: paint_prepare::Prepared) -> Option<u64> {
     entry.paint_callbacks.hold(prepared.tid, resources, paint_callbacks::Completion::ControlPaint(prepared))
 }
 fn draw(hwnd: u64, dc: u64, prepared: Option<paint_prepare::Prepared>) -> u64 {
-    let Some(bytes) = record(hwnd, dc) else { if prepared.is_some() { present(hwnd, dc); } return 0; };
+    let Some(bytes) = super::control_draw::record(hwnd, dc, true, true) else { if prepared.is_some() { present(hwnd, dc); } return 0; };
     let completion = match prepared {
         Some(prepared) => {
             let Some(token) = hold(prepared) else { paint_prepare::discard_for_current(prepared); return 0; };

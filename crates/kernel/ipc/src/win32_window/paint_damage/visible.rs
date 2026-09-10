@@ -13,6 +13,20 @@ fn offset(r: WindowRect, dx: i32, dy: i32) -> Option<WindowRect> {
 }
 
 impl WindowManager {
+    /// Drawing eligibility without clipping: own visibility and visible, non-minimized ancestors.
+    /// The target's minimized state does not exclude ordinary non-icon drawing. # C: O(windows²)
+    pub fn drawable(&self, id: WindowId) -> bool {
+        let Some(record) = self.get(id).filter(|record| record.visible) else { return false; };
+        let mut parent = record.parent;
+        for _ in 0..=self.windows.len() {
+            let Some(id) = parent else { return true; };
+            let Some(record) = self.get(id) else { return false; };
+            if !record.visible || record.style & WS_MINIMIZE != 0 { return false; }
+            parent = record.parent;
+        }
+        false
+    }
+
     /// Frame or client rectangle one window can take damage in, in that
     /// window's own client coordinates. The rectangle is intersected with
     /// every ancestor's client and window rectangles, so coverage outside the
