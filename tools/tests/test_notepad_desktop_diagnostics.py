@@ -103,3 +103,19 @@ def test_readback_flag_reaches_compositor_in_the_session_user_environment():
          patch.dict(acceptance.os.environ, {'OXIDE_NOTEPAD_READBACK': '1'}):
         acceptance.launch_on_desktop(uart, Mock(), Mock(), 200)
     uart.sendall.assert_called_once_with(command)
+
+
+def test_measure_trace_reaches_actual_desktop_launch_independently_of_readback():
+    spec = importlib.util.spec_from_file_location('notepad_measure_acceptance', TOOLS / 'windows-notepad-acceptance.py')
+    acceptance = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(acceptance)
+    for readback in ('0', '1'):
+        uart = Mock()
+        with patch.object(acceptance, 'wait_marker'), patch.object(acceptance, 'leave_overview'), \
+             patch.object(acceptance, 'screenshot'), patch.object(acceptance, 'wait_for_rendered_desktop'), \
+             patch.dict(acceptance.os.environ, {'OXIDE_NOTEPAD_READBACK': readback, 'OXIDE_NOTEPAD_GDI_TRACE': '1'}):
+            acceptance.launch_on_desktop(uart, Mock(), Mock(), 200)
+        command = uart.sendall.call_args.args[0]
+        assert b'OXIDE_GDI_TRACE=1 /usr/local/bin/windows-notepad-smoke' in command
+        assert (b'OXIDE_COMPOSITOR_READBACK=1' in command) == (readback == '1')
+        assert command.index(b'--setgid "$gid"') < command.index(b'OXIDE_GDI_TRACE=1')

@@ -10,11 +10,11 @@ pub(crate) fn begin_measure(mut request: abi::MeasureRequest) -> u64 {
     copy.resize(bytes, 0);
     if request.count != 0 && uaccess::copy_from_user(&mut copy[head..], request.text).is_err() {
         super::measure_trace::refused(request.dc, request.kind, b"text"); return 0; }
-    super::context::launch(&mut copy, |payload, copy| {
+    super::context::launch_checked(&mut copy, |payload, copy| {
         request.text = payload + head as u64;
         // SAFETY: repr(C) measurement header is entirely initialized integer fields without padding.
         copy[..head].copy_from_slice(unsafe { core::slice::from_raw_parts((&request as *const abi::MeasureRequest).cast(), head) });
-    })
+    }).unwrap_or_else(|| { super::measure_trace::refused(request.dc, request.kind, b"redirect");0 })
 }
 
 pub(super) fn copy_result(task: &sched::Task, request: u64, output: u64) -> u64 {

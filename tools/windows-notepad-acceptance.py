@@ -265,11 +265,16 @@ def type_token(conn):
     type_text(conn, TOKEN)
 
 
-def desktop_launch_command(readback=False):
-    if not readback:
+def desktop_launch_command(readback=False, gdi_trace=False):
+    settings = []
+    if readback:
+        settings.append(b'OXIDE_COMPOSITOR_READBACK=1')
+    if gdi_trace:
+        settings.append(b'OXIDE_GDI_TRACE=1')
+    if not settings:
         return DESKTOP_LAUNCH
     return DESKTOP_LAUNCH.replace(b'/usr/local/bin/windows-notepad-smoke',
-                                 b'env OXIDE_COMPOSITOR_READBACK=1 /usr/local/bin/windows-notepad-smoke')
+                                 b'env ' + b' '.join(settings) + b' /usr/local/bin/windows-notepad-smoke')
 
 
 def launch_on_desktop(uart, reader, qmp_sock, deadline, guest=None):
@@ -278,7 +283,8 @@ def launch_on_desktop(uart, reader, qmp_sock, deadline, guest=None):
     wait_for_rendered_desktop(qmp_sock, deadline, DesktopDiagnostics(uart))
     leave_overview(qmp_sock, deadline, "launch")
     screenshot(qmp_sock, "gnome-before-notepad")
-    uart.sendall(desktop_launch_command(os.environ.get("OXIDE_NOTEPAD_READBACK", "0") == "1"))
+    uart.sendall(desktop_launch_command(os.environ.get("OXIDE_NOTEPAD_READBACK", "0") == "1",
+                                       os.environ.get("OXIDE_NOTEPAD_GDI_TRACE", "0") == "1"))
 
 
 def ocr_raw(path):

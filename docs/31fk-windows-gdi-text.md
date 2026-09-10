@@ -131,6 +131,11 @@ decodes it into the canonical GDI owner: `NtGdiCreateCompatibleDC`,
 `NtGdiGetTextMetricsW`, `NtGdiGetTextExtentExW`, and
 `NtGdiExtTextOutW` (ordinal `0x11c9`, all nine arguments). The adapter owns no
 GDI table, does not rasterize, and never returns a fabricated success value.
+`debug-wingeom` traces raw DC acquisition HWND/region/flags and returned HDC.
+Harness `OXIDE_NOTEPAD_GDI_TRACE=1` sets native `OXIDE_GDI_TRACE=1` for the guest launch.
+Native `OXIDE_GDI_TRACE=1` traces measurement request/font/compute/copy
+outcomes with process/DC identity and returned extent; no text contents are logged.
+Failed native callback installation emits the existing bounded measurement refusal trace.
 The native owner supplies the RasterFont callback and performs the bounded
 user-buffer validation, clipping, opaque fill, and tile submission described
 above.

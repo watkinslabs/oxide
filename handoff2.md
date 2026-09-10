@@ -16,7 +16,7 @@ Read target/B3630-shared-paint-verification-debug/live.json; probe /tmp/B3630-dc
 KI0920: rapid click+pointer parking makes desktop deliver release outside
 Notepad; menu correctly exits before paint. Held click/release stays open.
 Evdev order correct; X RECORD shows release1004,748 after press168,156.
-Latest: labels/buttons visible; file list blank, filename1px then negative top.
+Next harness: OXIDE_NOTEPAD_GDI_TRACE=1; debug-wingeom records raw DC returns.
 KI0920 fixed598ecf668;32 harness tests PASS, both old-path controls RED.
 Guest SSH localhost2222 oxide/oxide; DISPLAY=:0; XAUTH under /run/user/1000.
 KI0921 fixed18869d93e:110 compositor tests,4 controlsRED,both release builds.
