@@ -11,12 +11,12 @@ Helper /tmp/B3630-identity-verification.py run; session82991; live.json in
 KI0922: child/GetDC/BeginPaint/erase/nonclient paths now share containing backing.
 Hosted1560IPC+3276syscalls+278boundary tests PASS;3 source controls RED.
 b1a9c0feb release/features/frame PASS both; static334/277+exception unchanged.
-New image preparing: /tmp/B3630-shared-paint-verification.py prepare; session45026.
-static335/278 unchanged. KI0919 profile/PID wrapper log confirmed installed.
+Live QEMU4000869 retained; runner38961 failed Open check. KI0923 claimed.
+target/B3630-shared-paint-verification-debug/live.json; UART uart-4000812.log.
 KI0920: rapid click+pointer parking makes desktop deliver release outside
 Notepad; menu correctly exits before paint. Held click/release stays open.
 Evdev order correct; X RECORD shows release1004,748 after press168,156.
-Live attach3713935: File/Open clicked; Open dialog blank. Captions fail.
+Latest: labels/buttons visible; file list blank, filename1px then negative top.
 KI0920 fixed598ecf668;32 harness tests PASS, both old-path controls RED.
 Guest SSH localhost2222 oxide/oxide; DISPLAY=:0; XAUTH under /run/user/1000.
 KI0921 fixed18869d93e:110 compositor tests,4 controlsRED,both release builds.
