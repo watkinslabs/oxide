@@ -27,8 +27,17 @@ ordinary removal drain, window cleanup drain, filtered quit removal drain,
 or matching quit removal drain. Every mutation restored; final suites PASS.
 Logs /tmp/B3630-posted-status-{red,ipc,boundary,control-arrival,
 control-remove,control-cleanup,control-quit-peek,control-quit-take}.log.
-Both release/feature and frame/static-stack validation running.
+Runtime134d3bedc: both release builds/features/frame gates PASS. Static
+335x86/278ARM primary paths unchanged, none added or increased versus sent
+status baseline. Existing KI0019 static failures and exception7664/6368
+remain. Logs /tmp/B3630-posted-status-{build-x86_64,build-aarch64,feature,
+x86,arm,stack-x86,stack-arm,stack-compare}.log.
 
 Message retrieval still omits selected changed-mask acknowledgement
 (KI0913); flags KI0712, object acquisition/deadlines KI0912 and handle stride
 KI0844 remain open. No full wait or Notepad acceptance claim; no VM launched.
+
+x86: primary rows 335 -> 335; added={} growth=[]
+target/B3630-posted-status-x86_64.elf sha256=27815f46f8de7f49ae697d46ec833ce844da6f94cb157782bfa1cd37ec296ec9
+arm: primary rows 278 -> 278; added={} growth=[]
+target/B3630-posted-status-aarch64.elf sha256=4cdeb55b75dde252d287531d37c94b5468cbfb955cc0beafac243f5cfba4e415
