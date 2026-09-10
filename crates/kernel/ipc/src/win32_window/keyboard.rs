@@ -69,6 +69,7 @@ impl MessageQueue {
             return Some(message);
         }
         let entry = self.messages.remove(index)?;
+        self.clear_drained_posted();
         self.note_message_time(entry.time);
         self.note_message_pos(entry.pos);
         self.note_message_extra(0);

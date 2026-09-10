@@ -96,3 +96,12 @@ fn send_arriving_during_park_wakes_requested_class(){
     assert_eq!(boundary::wait_live::msg_wait(1,0,1,QS_SENDMESSAGE),1);
     assert_eq!(PARKS.load(Ordering::SeqCst),1);
 }
+
+#[test]
+fn public_status_reports_quit_arrival_and_reposting_after_acknowledgement(){
+    let _serial=SERIAL.lock().unwrap();setup();GUI.lock()[0].state.post_quit(2,1);
+    assert_eq!(boundary::status::queue_status_for_current(QS_POSTED),Some(0x01080108));
+    assert_eq!(boundary::status::queue_status_for_current(QS_POSTED),Some(0x01080000));
+    GUI.lock()[0].state.post_quit(2,2);
+    assert_eq!(boundary::status::queue_status_for_current(QS_POSTED),Some(0x01080108));
+}

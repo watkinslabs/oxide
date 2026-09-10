@@ -73,6 +73,10 @@ impl MessageQueue {
         let queued = self.messages.iter().fold(0, |bits, entry| bits | entry.bits);
         queued | if self.quit_pending() { QS_POSTED } else { 0 }
     }
+    /// Clear posted changes only when neither posted entries nor quit remain. # C: O(N_messages)
+    pub(super) fn clear_drained_posted(&mut self) {
+        if !self.quit_pending() && !self.messages.iter().any(|entry| entry.bits & QS_POSTED != 0) { self.changed &= !QS_POSTED; }
+    }
     /// # C: O(1)
     pub(super) fn changed_bits(&self) -> u32 { self.changed }
     /// # C: O(1)
@@ -123,3 +127,7 @@ impl WindowManager {
 #[cfg(test)]
 #[path = "tests/queue_status.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/posted_status.rs"]
+mod posted_tests;

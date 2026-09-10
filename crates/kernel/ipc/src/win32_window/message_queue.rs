@@ -41,6 +41,7 @@ impl MessageQueue {
     pub fn len(&self) -> usize { self.messages.len() }
     pub(super) fn cleanup_window(&mut self, id: WindowId) {
         self.messages.retain(|entry| entry.message.hwnd != Some(id));
+        self.clear_drained_posted();
         if self.caret.hwnd == Some(id) { self.caret.destroy(); self.caret_generation = self.caret_generation.saturating_add(1); }
     }
     /// Window that owns the caret and the rectangle it occupies. # C: O(1)
@@ -51,13 +52,13 @@ impl MessageQueue {
             bottom: self.caret.y.saturating_add(self.caret.height) }))
     }
     /// # C: O(1)
-    pub fn post_quit(&mut self, code: i32) { self.quit = Some(code); }
+    pub fn post_quit(&mut self, code: i32) { self.quit = Some(code); self.changed |= queue_status::QS_POSTED; }
     pub(super) fn quit_pending(&self) -> bool { self.quit.is_some() }
     pub(super) fn quit_message(&mut self, filter: MessageFilter, remove: bool, pos: u32) -> Option<WinMessage> {
         let code = self.quit?;
         let message = WinMessage { hwnd: None, message: WM_QUIT, wparam: code as u64, lparam: 0 };
         if !filter.matches(message) { return None; }
-        if remove { self.quit = None; }
+        if remove { self.quit = None; self.clear_drained_posted(); }
         self.note_message_time(msg_time::tick_ms());
         self.note_message_pos(pos);
         self.note_message_extra(0);
@@ -69,6 +70,7 @@ impl MessageQueue {
         let message = WinMessage { hwnd: None, message: WM_QUIT, wparam: code as u64, lparam: 0 };
         if !matches(message) { return None; }
         self.quit = None;
+        self.clear_drained_posted();
         self.note_message_time(msg_time::tick_ms());
         self.note_message_pos(pos);
         self.note_message_extra(0);
