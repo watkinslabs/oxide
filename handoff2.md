@@ -5,18 +5,21 @@ Worktree /home/nd/oxide/kernel-B3630; branch B3630-paint-region-collapse.
 Read CLAUDE.md. Main read-only afa38ce09. Draft PR7680.
 Goal: defect-free Notepad buttons/borders/Open/Save/menus/About; not complete.
 User requests visible boot when ready, inspection VM left running.
-No live QEMU. Latest verification Sept10 11:00:48UTC failed initial-token:
-overlapping Notepad windows, cursor trails, blank foreground edit area.
-No automatic dialogs ran. Run3595455 output target/B3630-queue-verification-debug;
-UART uart-3595455.log; evidence scratch/B3630-queue-desktop-validation.md.
-Launcher exited0 later; no helper shutdown, cause unknown. Audit3619138 FAIL:
-one later dialog readback mismatch16340/118680 pixels, two DC0 measurement refusals.
-Important: two PE starts59.015s/65.819s and two main HWND100001/200001;
-do not classify all overlap as stale scanout. Second launch cause unknown.
-KI0918 trace129a1d5a9 adds canonical tid/image; both target checks PASS;
-both release/features/frame PASS; static335/278 no growth. Live identity capture pending; fresh image prepare79876 running (/tmp/B3630-identity-verification.py).
-KI0919 wrapperb6a1c5a8f separates logs by profile/PID; old two-launch shell
-control RED, all4 wrapper tests GREEN. Fresh image must inject new wrapper.
+Live visible VM PID3672245; retained after failed first File check.
+Helper /tmp/B3630-identity-verification.py run; session82991; live.json in
+ target/B3630-identity-verification-debug; UART uart-3672188.log.
+One PE startup50.694s, tid13c7, image C:\windows\system32\notepad.exe;
+launcher932, PE951, compositor1000 in guest PID namespace. Token visible.
+KI0918 trace129a1d5a9 live verified; both builds/features/frame PASS;
+static335/278 unchanged. KI0919 profile/PID wrapper log confirmed installed.
+KI0920: rapid click+pointer parking makes desktop deliver release outside
+Notepad; menu correctly exits before paint. Held click/release stays open.
+Evdev order correct; X RECORD shows release1004,748 after press168,156.
+Capture /tmp/B3630-{pointer,record}-capture.log; screenshot menu-press2.png.
+Fix harness unintended post-click parking, test, run dialogs on SAME VM.
+Guest SSH localhost2222 oxide/oxide; DISPLAY=:0; XAUTH under /run/user/1000.
+strace attach failed PTRACE_LISTEN (KI0872); detached, compositor sleeping.
+Earlier run3595455 had two Notepad PE startups; cause remains unknown.
 Wine11.16-debug stamp000982e8e976863f0a29925ab7426d09808a3e61c125c18decc4cf77f27af5da.
 Previous caption/frame evidence remains in scratch/B3630-caption-origin-validation.md.
 KI0901 futex park_site repair9afaf5491 is diagnostic, not proven GNOME fix.

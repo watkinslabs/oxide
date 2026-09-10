@@ -75,3 +75,26 @@ records PE identities before input and refuses ambiguous multiple starts.
 This is an acceptance precondition, not a ban on multiple application instances.
 Image preparation79876 running; no live QEMU. Last branch push54d8d6e74
 verified remote; newer instrumentation/log commits not yet published.
+
+
+Identity live run3672188 (ISO eaa78fc48417325c34b0dc767a7031f5c6349672ec7beeda1ee161a39012d6a4):
+- GTK/KVM/GNOME, one PE startup50.694s, canonical tid13c7 and image
+  C:\windows\system32\notepad.exe. Guest PID951, wrapper932, compositor1000;
+  task IDs and guest namespace PIDs are different identifiers. KI0918 verified.
+- Installed wrapper reports windows-launch-debug-932.log; KI0919 live confirmed.
+- Initial document token oxide-b3630-identity visible. First automated File
+  click failed: HTMENU5, WM_NCLBUTTONDOWN delivered, popup HWND100004 created,
+  WM_UNINITMENUPOPUP and WM_EXITMENULOOP followed before popup paint.
+- Holding press before release opens File; stays open after release. Screens
+  /tmp/B3630-menu-{press2,release2}.png. No claim of full redraw correctness.
+- KI0920 cause: evdev capture /tmp/B3630-pointer-capture.log records press,
+  release, then pointer movement. X RECORD /tmp/B3630-record-capture.log sees
+  press at168,156, then movement1004,748 with button held, then release there.
+  Immediate post-click parking dismisses the menu under desktop event delivery.
+  Preserve pointer position while verifying click result; no timeout increase.
+- Read-only X observer could not see events during grabs; X RECORD supplied
+  device events. strace attach failed PTRACE_LISTEN with EIO (existing KI0872);
+  detached; compositor state S afterwards. No tracee/VM killed.
+- VM retained, live.json in target/B3630-identity-verification-debug; QEMU3672245,
+  original runner session82991. SSH bound localhost2222 only. Menu/dialog
+  acceptance remains open; no automatic dialog steps passed yet.
