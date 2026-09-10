@@ -61,3 +61,17 @@ No launch serialization or singleton restriction introduced.
 All four Notepad staging/wrapper tests PASS after per-launch path repair;
 logs /tmp/B3630-launch-logs-{red,green}.log. New image must actually inject
 updated wrapper; reusing an already-staged root would retain old log path.
+
+Identity trace release validation: both builds/features/frame gates PASS;
+static KI0019 baseline remains exit1,335x86/278ARM primary rows unchanged
+with no added/increased paths versus peek-classes. Final ELF SHA256:
+- x86_64:f3ef4be41e6e007ac4b010586954a069632b71ec108d80c2283b8f373fbc262d
+- aarch64:3b98275484c87713e791a17b5608aedc6bf9887c136f627635faa5676c65b104
+Logs /tmp/B3630-pe-identity-{build-x86,build-arm,feature,frame-x86,frame-arm,
+stack-x86,stack-arm}.log. KI0918 actual startup identity capture pending.
+Next helper /tmp/B3630-identity-verification.py prepare|run uses fresh identity
+image/output ID and new wrapper. Prepared process capture via local SSH;
+records PE identities before input and refuses ambiguous multiple starts.
+This is an acceptance precondition, not a ban on multiple application instances.
+Image preparation79876 running; no live QEMU. Last branch push54d8d6e74
+verified remote; newer instrumentation/log commits not yet published.

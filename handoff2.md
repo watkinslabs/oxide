@@ -14,7 +14,7 @@ one later dialog readback mismatch16340/118680 pixels, two DC0 measurement refus
 Important: two PE starts59.015s/65.819s and two main HWND100001/200001;
 do not classify all overlap as stale scanout. Second launch cause unknown.
 KI0918 trace129a1d5a9 adds canonical tid/image; both target checks PASS;
-full release/features/frame/static and live identity capture still pending.
+both release/features/frame PASS; static335/278 no growth. Live identity capture pending; fresh image prepare79876 running (/tmp/B3630-identity-verification.py).
 KI0919 wrapperb6a1c5a8f separates logs by profile/PID; old two-launch shell
 control RED, all4 wrapper tests GREEN. Fresh image must inject new wrapper.
 Wine11.16-debug stamp000982e8e976863f0a29925ab7426d09808a3e61c125c18decc4cf77f27af5da.
