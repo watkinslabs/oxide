@@ -40,6 +40,8 @@ drift between `kernel/src`, ad-hoc `crates/*`, and one-off folders.
    `message_queue/wait_live` uses `ready` for initial and parked mask admission.
    `nt_window/dispatch` calls `retrieval_status` after sent callbacks and before
    scanning; `ipc::win32_window` owns selected changed-bit acknowledgement.
+   `paint_damage/status` updates queue changes from canonical region/internal
+   transitions; pending paint derives from existing damage, without a copied counter.
    Default mouse activation and cursor handling use canonical pointer policy
    and the same Send continuation; each suspended parent reply retains its
    own fallback value or cursor step. Cursor installation follows parent refusal.

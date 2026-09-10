@@ -112,7 +112,7 @@ impl WindowManager {
         let paint = self.thread_has_pending_paint(tid);
         let Some((_, queue)) = self.queues.iter_mut().find(|(owner, _)| *owner == tid) else { return Some(0); };
         let wake = queue.wake_bits() | if paint { QS_PAINT } else { 0 };
-        let changed = queue.changed_bits() | if paint { QS_PAINT } else { 0 };
+        let changed = queue.changed_bits();
         queue.clear_changed(flags);
         Some(queue_status_result(changed, wake, flags))
     }
@@ -125,8 +125,8 @@ impl WindowManager {
     }
 
     /// # C: O(N_windows)
-    fn thread_has_pending_paint(&self, tid: u64) -> bool {
-        self.dirty_windows().into_iter().any(|id| self.get(id).is_some_and(|record| record.owner_tid == tid))
+    pub(super) fn thread_has_pending_paint(&self, tid: u64) -> bool {
+        self.dirty.iter().any(|(id, damage)| damage.pending() && self.get(*id).is_some_and(|record| record.owner_tid == tid))
     }
 
     /// Windows carrying undrawn damage. # C: O(N_dirty)

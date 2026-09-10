@@ -33,8 +33,9 @@ dispatcher tests PASS; final release/static validation still required.
 Logs /tmp/B3630-retrieval-status-{build-x86_64,build-aarch64,feature,
 frame-x86,stack-x86,path-x86,scalar-tests}.log.
 
-KI0913 remains in progress pending full paint-status observation: queue_status
-synthesizes QS_PAINT as changed while dirty (KI0915). Peek still treats any
+Paint lifecycle KI0915 now removes synthetic changed paint and preserves
+independent acknowledgement; actual Peek test PASS. Combined final validation
+in scratch/B3630-paint-status-validation.md; KI0913 remains pending that gate. Peek still treats any
 nonzero flags as removal and ignores queue-class selection (KI0914). Wait
 flags KI0712, object acquisition/deadlines KI0912 and handle stride KI0844
 remain open. No VM; full Notepad dialog/input/redraw acceptance outstanding.

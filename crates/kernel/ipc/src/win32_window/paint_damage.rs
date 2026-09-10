@@ -11,6 +11,9 @@ pub use region::PaintRegion;
 mod state;
 pub use state::*;
 
+// Status follows region/internal transitions in the canonical damage owner.
+#[path = "paint_damage/status.rs"]
+mod status;
 #[path = "paint_damage/owner.rs"]
 mod owner;
 #[path = "paint_damage/update.rs"]
@@ -27,3 +30,7 @@ mod visible;
 #[cfg(test)]
 #[path = "paint_damage/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "paint_damage/tests/status.rs"]
+mod status_tests;

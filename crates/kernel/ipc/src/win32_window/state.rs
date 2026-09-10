@@ -160,11 +160,13 @@ impl WindowManager {
     }
     pub(super) fn remove_window(&mut self, id: WindowId) -> Result<WindowRecord, WindowError> {
         let index = self.windows.iter().position(|(window, _)| *window == id).ok_or(WindowError::NoSuchWindow)?;
+        let before = self.paint_obligations(id);
         for (_, queue) in &mut self.queues { queue.cleanup_window(id); }
         self.timers.retain(|timer| timer.hwnd != Some(id));
         self.rects.retain(|(window, _)| *window != id);
         self.texts.retain(|(window, _)| *window != id);
         self.dirty.retain(|(window, _)| *window != id);
+        self.note_paint_change(id, before);
         self.icons.remove(id);
         self.painting.retain(|(window, _)| *window != id);
         self.destroying.retain(|window| *window != id);

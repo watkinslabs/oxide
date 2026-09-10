@@ -51,10 +51,12 @@ impl WindowManager {
         if !message_matches_in_windows(&self.windows, filter, message) { return None; }
         let id = message.hwnd?;
         if !remove { return Some(message); }
+        let before = self.paint_obligations(id);
         if let Some(index) = self.dirty.iter().position(|(window, _)| *window == id) {
             self.dirty[index].1.internal = false;
             if !self.dirty[index].1.pending() { self.dirty.remove(index); }
         }
+        self.note_paint_change(id, before);
         Some(message)
     }
     fn damage_pending(&self, id: WindowId) -> bool { self.dirty.iter().any(|(window, damage)| *window == id && damage.pending()) }
