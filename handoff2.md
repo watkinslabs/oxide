@@ -15,10 +15,10 @@ static335/278 unchanged. KI0919 profile/PID wrapper log confirmed installed.
 KI0920: rapid click+pointer parking makes desktop deliver release outside
 Notepad; menu correctly exits before paint. Held click/release stays open.
 Evdev order correct; X RECORD shows release1004,748 after press168,156.
-Capture /tmp/B3630-{pointer,record}-capture.log; screenshot menu-press2.png.
-Fix harness unintended post-click parking, test, run dialogs on SAME VM.
+Live attach3713935: File/Open clicked; Open dialog blank. Captions fail.
+KI0920 fixed598ecf668;32 harness tests PASS, both old-path controls RED.
 Guest SSH localhost2222 oxide/oxide; DISPLAY=:0; XAUTH under /run/user/1000.
-strace attach failed PTRACE_LISTEN (KI0872); detached, compositor sleeping.
+Frame refusals300x25 vs300x23,750x484 vs750x480; later size matches.
 Earlier run3595455 had two Notepad PE startups; cause remains unknown.
 Wine11.16-debug stamp000982e8e976863f0a29925ab7426d09808a3e61c125c18decc4cf77f27af5da.
 Previous caption/frame evidence remains in scratch/B3630-caption-origin-validation.md.

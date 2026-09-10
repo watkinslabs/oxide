@@ -98,3 +98,15 @@ Identity live run3672188 (ISO eaa78fc48417325c34b0dc767a7031f5c6349672ec7beeda1e
 - VM retained, live.json in target/B3630-identity-verification-debug; QEMU3672245,
   original runner session82991. SSH bound localhost2222 only. Menu/dialog
   acceptance remains open; no automatic dialog steps passed yet.
+
+KI0920 runtime598ecf668: removed post-click pointer parking in both menu drivers.
+32 Python harness tests PASS; logs /tmp/B3630-pointer-harness-green.log.
+Delayed-release regressions fail on old open_from_menu and drive_menu paths
+independently; /tmp/B3630-pointer-harness-red.log and pointer-drive-control.log.
+Same VM attach /tmp/B3630-dialog-attach.py (session50397, terminal exit1),
+screenshot prefix screen-3713935: File popup visible, Open item clicked,
+Open dialog created. Dialog acceptance FAIL: blank surfaces, captions absent.
+UART rejects frames300x25 against300x23 (HWND10000c) and750x484 against750x480
+(HWND10000a); later correctly sized readbacks match. These refusals alone do
+not explain all blank surfaces. Screenshot /tmp/B3630-open-dialog.png.
+No new kernel/image/boot for host harness changes; original VM retained.
