@@ -132,6 +132,5 @@ fn notify(event: u32, hwnd: u64, object_id: i32, child_id: i32) -> u64 {
     if hwnd == 0 { last_error(ERROR_INVALID_WINDOW_HANDLE); return 0; }
     let Some(caller) = caller() else { return 0; };
     if owner::hook_chain_count(win_event_id(), caller) == 0 { return 0; }
-    owner::hook_notify_win_event(event, hwnd, object_id, child_id, caller);
-    0
+    owner::hook_notify_win_event(event, hwnd, object_id, child_id, caller)
 }

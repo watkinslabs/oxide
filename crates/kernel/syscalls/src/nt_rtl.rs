@@ -746,7 +746,7 @@ fn begin_callback_with_payload(hwnd: u64, message: u64, wparam: u64, lparam: u64
 #[path = "nt_rtl/hook_callback.rs"]
 mod hook_callback;
 #[cfg(target_os = "oxide-kernel")]
-pub(crate) use hook_callback::{begin_hook_callback, begin_win_event_callback};
+pub(crate) use hook_callback::begin_hook_callback;
 
 /// Report a create callback that could not be started. Each of these returns a
 /// status the caller turns into a NULL window, and an application whose main

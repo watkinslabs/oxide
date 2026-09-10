@@ -58,11 +58,11 @@ pub(crate) fn hook_call(hook: Hook, code: i32, wparam: u64, lparam: u64) -> u64 
 /// Announce one accessibility event into the WinEvent chain. The procedure
 /// takes its hook handle, the event, the window, the two identifiers, the
 /// announcing thread and the time it happened. # C: O(N_hooks)
-pub(crate) fn hook_notify_win_event(event: u32, hwnd: u64, object_id: i32, child_id: i32, caller: HookThread) {
-    let Some(hook) = hook_first(ipc::win32_hook::WH_WINEVENT, caller, event) else { return; };
-    let time_ms = timekeeper::monotonic_ns().saturating_div(1_000_000);
-    let _ = crate::nt_rtl::begin_win_event_callback(hook.handle as u64, event as u64, hwnd,
-        object_id as u32 as u64, child_id as u32 as u64, caller.thread, time_ms, hook.proc_address);
+pub(crate) fn hook_notify_win_event(event: u32, hwnd: u64, object_id: i32, child_id: i32, caller: HookThread) -> u64 {
+    let Some(hook) = hook_first(ipc::win32_hook::WH_WINEVENT, caller, event) else { return 0; };
+    let notification = super::hook_event::Notification { event, hwnd, object_id, child_id,
+        thread: caller.thread as u32, time: timekeeper::monotonic_ns().saturating_div(1_000_000) as u32 };
+    super::hook_event::begin(&hook, notification, sched::nt_callback::Completion::NONE)
 }
 
 /// Drop every hook an exiting thread installed or targeted. # C: O(N_threads + N_hooks)
