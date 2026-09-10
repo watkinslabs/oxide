@@ -5,22 +5,23 @@ Worktree /home/nd/oxide/kernel-B3630; branch B3630-paint-region-collapse.
 Read CLAUDE.md. Main read-only afa38ce09. Draft PR7680.
 Goal: defect-free Notepad buttons/borders/Open/Save/menus/About; not complete.
 User requests visible boot when ready, inspection VM left running.
-No live QEMU. Latest final-verification boot Sept9 22:32:39UTC stalled before
-GNOME desktop appeared; user closed it because startup took too long.
-Launcher exited status0 at22:36:26UTC. No Notepad launched or menus clicked.
-Artifacts target/B3630-display-verification-debug; UART
- target/boot-logs/x86_64-20260909-223239.log. Kernel10b1ae09f staging, explicit
-Wine11.16-debug; compositor SHA9d2d07c8452d9035c73f44edf9dab9fc00caa54de5aa8c2310b8c04e884f6a3e.
-GNOME387 snapshot /tmp/B3630-display-guest-threads.json: syscall202 private
-wait expected2; poll wchan stale. KI0901 fixed9afaf5491: futex wait paths previously failed to
-refresh park_site. Repair records all five sleep publications;68 core,
-102 PI and1529 IPC library tests pass. Both builds/features/frame gates pass;
-static336x86/278ARM primary rows unchanged; KI0019 failures remain.
-Repair is diagnostic, not a proven KI0865 stall fix.
-SSH DisplayConfig query did not reach guest (connection refused after exit).
-Empty stack strings came from uid1000 reads; proc stack requires SYS_ADMIN.
-Next capture: privileged per-thread stack reads, record credentials first.
-Do not infer an unwinder defect from these unprivileged empty results.
+No live QEMU. Latest verification Sept10 01:09:04-01:12:20UTC reached GNOME
+and Notepad; About shows blank captions and horizontal stripes outside dialog.
+Exit0; no quit sent, exit cause unconfirmed. Artifacts
+ target/B3630-sizegrip-verification-debug; UART uart-2337193.log.
+Automated helper failed initial-token with About already open; no automated
+File/Open/Save check ran. Do not report menu acceptance. Kernel SHA
+ fd1c550d91647e63988ac4b4c57d9d1efb1a6350e560b385905e86a55c555239;
+Wine11.16-debug stamp000982e8e976863f0a29925ab7426d09808a3e61c125c18decc4cf77f27af5da.
+Compositor9d2d07c8452d9035c73f44edf9dab9fc00caa54de5aa8c2310b8c04e884f6a3e.
+Current diagnosis: valid About button DC text snapshots rejected during
+DrawState viewport translation. decode_text rejects nonzero origins; caption
+callback returns TRUE despite failed DrawText. Need admit and translate
+coordinates together; do not merely remove validation. Two Frame refusals
+HWND10000e seq216/221 InvalidCommand; stripe cause unproved.
+Prior Sept9 22:32 verification stalled before GNOME; user closed that VM.
+KI0901 repaired stale futex park_site diagnostics9afaf5491, not proven GNOME
+stall fix. Privileged capture wired below; foreign proc maps still KI0905.
 Consult local pinned primary sources first; Wine11.16 release/debug explicit.
 
 ## Current work
@@ -43,9 +44,9 @@ Consult local pinned primary sources first; Wine11.16 release/debug explicit.
   tests PASS; launch/poll hook removals RED. No debugger attachment.
 - Next visible verification helper /tmp/B3630-sizegrip-verification.py
   prepare|run; id B3630-sizegrip-verification-debug, Wine11.16-debug,
-  token oxide-b3630-verify. No VM launched yet. All new commits since
-  879b334df not yet pushed. After launch, actually click and verify menus and
-  DialogChecks; retain VM for user. Helper itself only launches/activates.
+  token oxide-b3630-verify. Latest run failed as above; no automatic reboot.
+  Source/docs through b0b1be76b pushed and remote-verified. Helper only
+  launches/activates; separate UI checker failed before DialogChecks.
 - Full refresh/callbacks KI0885/KI0904 remain; raw static harness KI0574 still
   fails its stale source needle. Foreign maps omit file identity/offsets/
   paths (newKI0905); captured user PCs cannot yet be assigned to ELF symbols.
