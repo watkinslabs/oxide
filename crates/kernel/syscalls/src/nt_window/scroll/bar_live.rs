@@ -82,8 +82,6 @@ fn store_flags(hwnd: u64, bar: i32, flags: u32) -> bool {
 
 /// Store the arrow-disable flags; a request that changes nothing reports so.
 /// # C: O(N_windows); # Sleeps: yes
-// Keep enable-state temporaries out of the shared router frame carried through ShowWindow.
-#[inline(never)]
 fn enable(hwnd: u64, bar: i32, flags: u32) -> u64 {
     let other_matched = if bar == ipc::win32_window::SB_BOTH {
         let matched = stored_flags(hwnd, SB_VERT) == Some(flags);
@@ -104,6 +102,8 @@ fn enable(hwnd: u64, bar: i32, flags: u32) -> u64 {
 /// Fill one `SCROLLBARINFO`: the bar's screen rectangle, its arrow and thumb
 /// metrics, and the accessibility state of each part.
 /// # C: O(N_windows); # Sleeps: yes
+// Accessibility snapshots and copyout buffers must not enlarge the ShowWindow dispatch frame.
+#[inline(never)]
 fn info(hwnd: u64, id: i32, output: u64) -> u64 {
     if defers_to_control(id) {
         return send::send_for_current(hwnd, SBM_GETSCROLLBARINFO, 0, output);

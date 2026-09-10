@@ -30,7 +30,10 @@ Consult local pinned primary sources first; Wine11.16 release/debug explicit.
   restored ShowWindow regression RED. Fixture uses canonical show to preserve
   WS_VISIBLE. Full callbacks/accessibility KI0904; control raster KI0885.
   scratch/B3630-scroll-enable-validation.md. Both builds/features PASS;
-  final-source build/frame/stack validation ongoing; not yet pushed.
+  current x86 router path grew16B (frame272->288); ARM unchanged.4ad3d553a
+  enable-only separation did not reduce it and was removed. Accessibility
+  query snapshot/copyout buffers now isolated; final build95432 running,
+  /tmp/B3630-sizegrip-final-build.log. Do not claim stack comparison passed.
 - KI0865 claimed8b4a842f2. Harness now captures reader credentials plus desktop
   process/thread status,syscall,wchan,stack during the real frame wait after30s.
   Command bounded10s; UART retains read errors/status. No debugger attachment.
@@ -56,8 +59,12 @@ Consult local pinned primary sources first; Wine11.16 release/debug explicit.
   /tmp/B3630-parent-handling-final-{build,feature}.log;
   parent-handling-{frame,stack}-{x86,arm}.log and stack-compare.log.
   ELFs target/B3630-parent-handling-{x86_64,aarch64}.elf; hashes in evidence.
+- KI0885 sizegrip input4ad3d553a: cursor preserves previous handle; click
+  sends canonical parent SC_SIZE with RTL edge and resumes0.26 real control
+  boundary tests PASS; cursor/click missing-route controls RED. Initial both
+  builds PASS; final info-frame separation build ongoing. All new commits since879b334df not yet pushed.
 - Next work: KI0885 full scrollbar procedure (control_proc/proc_abi). Existing
-  unhandled cases include sizegrip cursor/click, SBM state messages, keyboard,
+  unhandled cases include SBM state messages, keyboard,
   pointer tracking, focus/caret and accessibility. Primary procedure reviewed.
   Use existing scroll state/position/Send owners; full dialog acceptance stays
   required. No new boot until final verification; prepare privileged thread

@@ -26,3 +26,10 @@ these tests do not establish rendered pixels or full real User32 acceptance.
 Build/features/stack validation ongoing. Ordinary scrollbar tracking, focus,
 state messages and synchronous refresh remain KI0885; no full-procedure or
 Notepad completion claim. No new boot.
+
+Raw call-site audit: nt_wine_window/raw_callback.rs routes selector029a to
+control_proc::for_current before default-procedure fallback. The fixture
+exercises that control entry, not the raw selector codec itself.
+Existing static tools/test-windows-notepad-harness.sh still fails on its old
+raw-DC-routing source needle (KI0574); /tmp/B3630-sizegrip-harness.log, exit1.
+It is not a passing gate; executable Notepad Python tests are separate.

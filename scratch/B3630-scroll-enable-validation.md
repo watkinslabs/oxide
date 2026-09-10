@@ -34,3 +34,9 @@ router frame. Isolating enable as a non-inlined operation is under validation;
 no increased-path exception or successful final stack claim.
 /tmp/B3630-scroll-enable-{final-build,feature,frame-x86,frame-arm,stack-x86,stack-arm}.log;
 /tmp/B3630-scroll-enable-stack-paths-x86.log. No new boot.
+
+First stack separation (enable only) did not reduce the router frame; removed.
+The rebuilt router still owns accessibility snapshot/result/copyout storage,
+including the now-outlined owned_scroll_state call's return buffer. Isolating
+info keeps those temporaries off ShowWindow's recursive dispatch path; final
+measurement pending. /tmp/B3630-scroll-router-asm.txt records the prior frame.
