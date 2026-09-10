@@ -5,11 +5,12 @@ Worktree /home/nd/oxide/kernel-B3630; branch B3630-paint-region-collapse.
 Read CLAUDE.md. Main read-only afa38ce09. Draft PR7680.
 Goal: defect-free Notepad buttons/borders/Open/Save/menus/About; not complete.
 User requests visible boot when ready, inspection VM left running.
-Live visible VM PID3672245; retained after failed first File check.
+Live VM3672245 remains; new compositor18869d93e installed via SSH; Open still broken.
 Helper /tmp/B3630-identity-verification.py run; session82991; live.json in
  target/B3630-identity-verification-debug; UART uart-3672188.log.
-One PE startup50.694s, tid13c7, image C:\windows\system32\notepad.exe;
-launcher932, PE951, compositor1000 in guest PID namespace. Token visible.
+Initial PE startup50.694s tid13c7; later explicit relaunch after TERM951.
+Old PE951 terminated after broken No button; only test token. New wrapper1401,
+PE1418, compositor1421; OXIDE_COMPOSITOR_TRACE=1. Token/File popup visible.
 KI0918 trace129a1d5a9 live verified; both builds/features/frame PASS;
 static335/278 unchanged. KI0919 profile/PID wrapper log confirmed installed.
 KI0920: rapid click+pointer parking makes desktop deliver release outside
@@ -18,7 +19,8 @@ Evdev order correct; X RECORD shows release1004,748 after press168,156.
 Live attach3713935: File/Open clicked; Open dialog blank. Captions fail.
 KI0920 fixed598ecf668;32 harness tests PASS, both old-path controls RED.
 Guest SSH localhost2222 oxide/oxide; DISPLAY=:0; XAUTH under /run/user/1000.
-Frame refusals300x25 vs300x23,750x484 vs750x480; later size matches.
+KI0921 fixed18869d93e:110 compositor tests,4 controlsRED,both release builds.
+Open still mostly gray; see scratch/B3630-parent-replay-verification.md.
 Earlier run3595455 had two Notepad PE startups; cause remains unknown.
 Wine11.16-debug stamp000982e8e976863f0a29925ab7426d09808a3e61c125c18decc4cf77f27af5da.
 Previous caption/frame evidence remains in scratch/B3630-caption-origin-validation.md.
@@ -196,5 +198,3 @@ Consult local pinned primary sources first; Wine11.16 release/debug explicit.
   ARM compositor builds use existing target/B3630-arm-sysroot completed from
   cached Fedora RPMs. System sysroot unchanged; KI0421/KI0691 apply there.
 - PR body /tmp/B3630-pr-body.md. Explicit git add; no fmt/stash/reset/amend.
-  Push uses only proven KI0019 SKIP_LINT_RATCHET, SKIP_TEST_BUILD_GATE,
-  SKIP_STACK_GATE; never skip hosted/features or admit new stack growth.
