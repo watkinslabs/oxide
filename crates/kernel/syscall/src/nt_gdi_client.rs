@@ -153,6 +153,17 @@ pub fn encode_dc_attr(handle: u32, width: i32, height: i32, text: DcText) -> Res
 /// One copied record supplies authoritative text state. No pointer fields followed.
 /// Unsupported transforms must fail before a render/measure callback. # C: O(1)
 pub fn decode_text(bytes: &[u8], expected_handle: u32) -> Result<DcText, Error> {
+    decode_text_inner(bytes, expected_handle, false).map(|(text, _)| text)
+}
+
+/// MM_TEXT translation accompanies text state; lengths and current position remain logical.
+/// Origin subtraction uses wide coordinates so metadata never fails from translation overflow.
+/// # C: O(1)
+pub fn decode_text_with_origin(bytes: &[u8], expected_handle: u32) -> Result<(DcText, (i64, i64)), Error> {
+    decode_text_inner(bytes, expected_handle, true)
+}
+
+fn decode_text_inner(bytes: &[u8], expected_handle: u32, translated: bool) -> Result<(DcText, (i64, i64)), Error> {
     if bytes.len() != DC_ATTR_SIZE { return Err(Error::Length); }
     if get32(bytes, dc::HDC) != expected_handle || expected_handle & SLOT_MASK == 0
         || ((expected_handle >> 16) as u8 & BASE_TYPE_MASK) != 1 { return Err(Error::Handle); }
@@ -160,6 +171,7 @@ pub fn decode_text(bytes: &[u8], expected_handle: u32) -> Result<DcText, Error> 
     for (offset, expected) in [(dc::GRAPHICS_MODE, 1), (dc::MAP_MODE, 1), (dc::LAYOUT, 0), (dc::CHAR_EXTRA, 0),
         (dc::MAPPER_FLAGS, 0), (dc::WND_ORG, 0), (dc::WND_ORG + 4, 0), (dc::VPORT_ORG, 0), (dc::VPORT_ORG + 4, 0),
         (dc::WND_EXT, 1), (dc::WND_EXT + 4, 1), (dc::VPORT_EXT, 1), (dc::VPORT_EXT + 4, 1)] {
+        if translated && [dc::WND_ORG, dc::WND_ORG + 4, dc::VPORT_ORG, dc::VPORT_ORG + 4].contains(&offset) { continue; }
         if get32(bytes, offset) != expected { return Err(Error::UnsupportedTransform); }
     }
     let left = get32(bytes, dc::VIS_RECT) as i32; let top = get32(bytes, dc::VIS_RECT + 4) as i32;
@@ -170,7 +182,9 @@ pub fn decode_text(bytes: &[u8], expected_handle: u32) -> Result<DcText, Error> 
         alignment: get16(bytes, dc::TEXT_ALIGN) as u32, background_mode: get16(bytes, dc::BACKGROUND_MODE) as u32,
         current_position: (get32(bytes, dc::CUR_POS) as i32, get32(bytes, dc::CUR_POS + 4) as i32) };
     validate_text(text)?;
-    Ok(text)
+    let origin = (i64::from(get32(bytes, dc::VPORT_ORG) as i32) - i64::from(get32(bytes, dc::WND_ORG) as i32),
+        i64::from(get32(bytes, dc::VPORT_ORG + 4) as i32) - i64::from(get32(bytes, dc::WND_ORG + 4) as i32));
+    Ok((text, origin))
 }
 
 fn get16(bytes: &[u8], at: usize) -> u16 { u16::from_le_bytes([bytes[at], bytes[at + 1]]) }

@@ -14,10 +14,11 @@ File/Open/Save check ran. Do not report menu acceptance. Kernel SHA
  fd1c550d91647e63988ac4b4c57d9d1efb1a6350e560b385905e86a55c555239;
 Wine11.16-debug stamp000982e8e976863f0a29925ab7426d09808a3e61c125c18decc4cf77f27af5da.
 Compositor9d2d07c8452d9035c73f44edf9dab9fc00caa54de5aa8c2310b8c04e884f6a3e.
-Current diagnosis: valid About button DC text snapshots rejected during
-DrawState viewport translation. decode_text rejects nonzero origins; caption
-callback returns TRUE despite failed DrawText. Need admit and translate
-coordinates together; do not merely remove validation. Two Frame refusals
+Caption repair: shared text snapshots admit and carry MM_TEXT translation;
+native request maps run and active rectangle before callback. Actual binding
+regression RED Codec; real renderer pixel test GREEN and missing translation
+control RED.76 native GDI tests pass. Full gates pending; KI0906 pen underline
+translation is next. scratch/B3630-caption-origin-validation.md. Two Frame refusals
 HWND10000e seq216/221 InvalidCommand; stripe cause unproved.
 Prior Sept9 22:32 verification stalled before GNOME; user closed that VM.
 KI0901 repaired stale futex park_site diagnostics9afaf5491, not proven GNOME

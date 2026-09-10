@@ -1,6 +1,8 @@
 //! Versioned native text callback ABI (`31ge§2`).
 #[path = "nt_native_gdi/measure.rs"]
 mod measure;
+#[path = "nt_native_gdi/coordinates.rs"]
+mod coordinates;
 pub use measure::*;
 #[path = "nt_native_gdi/query.rs"]
 mod query;
