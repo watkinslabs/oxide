@@ -13,6 +13,9 @@ pub(crate) const WM_CREATE: u32 = 1;
 pub(crate) const WM_ERASEBKGND: u32 = 0x14;
 pub(crate) const WM_GETDLGCODE: u32 = 0x87;
 pub(crate) const DLGC_WANTARROWS: u64 = 1;
+pub(crate) const SC_SIZE: u64 = 0xf000;
+pub(crate) const WMSZ_BOTTOMLEFT: u64 = 7;
+pub(crate) const WMSZ_BOTTOMRIGHT: u64 = 8;
 pub(crate) const SM_CXVSCROLL: i32 = 2;
 pub(crate) const SM_CYHSCROLL: i32 = 3;
 
@@ -32,7 +35,7 @@ pub(crate) fn draw_record(hwnd: u64, dc: u64, rect: Rect, layout: ScrollLayout, 
 
 /// Reserved scrollbar messages return zero; the remaining procedure cases are KI-0885.
 pub(crate) const RESERVED_MESSAGES: &[u32] = &[0xe5, 0xe7, 0xe8, 0xec, 0xed, 0xee, 0xef];
-pub(crate) const PENDING_MESSAGES: &[u32] = &[0x7, 0x8, 0xa, 0x20, 0x3d, 0xa0, 0x100, 0x101,
+pub(crate) const PENDING_MESSAGES: &[u32] = &[0x7, 0x8, 0xa, 0x3d, 0xa0, 0x100, 0x101,
     0x118, 0x200, 0x201, 0x202, 0x203, 0x2a2, 0x2a3, 0xe0, 0xe1, 0xe2, 0xe3, 0xe4, 0xe6, 0xe9, 0xea, 0xeb];
 
 /// Creation alignment is in parent-client coordinates and requests no move without an alignment bit.

@@ -25,6 +25,10 @@ thread_local! {
     static POSITION: RefCell<Option<PositionWait>> = const { RefCell::new(None) };
     static POSITION_CALLS: Cell<usize> = const { Cell::new(0) };
     static RASTER: RefCell<Vec<(u64, i32, win32_window::ScrollState, bool)>> = const { RefCell::new(Vec::new()) };
+    static CURSOR_CALLS: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
+    static SEND_CALLS: RefCell<Vec<(u64,u32,u64,u64)>> = const { RefCell::new(Vec::new()) };
+    static SEND_PENDING: Cell<bool> = const { Cell::new(false) };
+    static SEND_CONT: RefCell<Option<nt_window::send::Continuation>> = const { RefCell::new(None) };
     static RASTER_FAIL: Cell<bool> = const { Cell::new(false) };
 }
 
@@ -90,6 +94,15 @@ pub mod nt_window {
     }
 
     pub mod send {
+        #[derive(Clone,Copy)] pub struct Continuation {pub token:u64,pub resume:fn(u64,Result<u64,()>)->u64}
+        pub enum SendOutcome {Complete(u64),Failed,Pending}
+        pub fn send_resumable_current(hwnd:u64,message:u32,wparam:u64,lparam:u64,caller:Continuation)->SendOutcome {
+            assert!(super::GUI.0.try_lock().is_ok());
+            crate::SEND_CALLS.with(|calls|calls.borrow_mut().push((hwnd,message,wparam,lparam)));
+            if crate::SEND_PENDING.with(|pending|pending.get()) {
+                crate::SEND_CONT.with(|pending|*pending.borrow_mut()=Some(caller));SendOutcome::Pending
+            } else {SendOutcome::Complete(u64::MAX)}
+        }
         pub fn send_for_current(_: u64, _: u32, _: u64, _: u64) -> u64 { panic!("scroll fixture does not model window-procedure sends") }
     }
 
@@ -135,6 +148,12 @@ pub mod nt_window {
 
     #[path = "."]
     pub(crate) mod scroll {
+        #[path = "proc_abi.rs"] pub(crate) mod proc_abi;
+        #[path = "control_input.rs"] pub(crate) mod control_input;
+        #[path = "control_proc.rs"] pub(crate) mod control_proc;
+        pub(crate) mod control_paint {
+            pub(crate) fn for_current(_:u64,_:u64)->u64 { panic!("control paint outside input fixture") }
+        }
         #[path = "bar_raw.rs"] pub(crate) mod bar_raw;
         #[path = "bar_live.rs"] pub(crate) mod bar_live;
         #[path = "pending.rs"]
@@ -158,6 +177,14 @@ pub mod nt_window {
 struct PositionWait { continuation: nt_window::position::Continuation, stage: usize }
 
 pub mod nt_wine_window {
+    pub mod cursor_raw {
+        pub enum SetCursorStep {OemCursor{id:u32,beep:bool}}
+        pub fn apply_default_step(step:SetCursorStep)->u64 {
+            assert!(crate::nt_window::GUI.0.try_lock().is_ok());
+            let SetCursorStep::OemCursor{id,beep}=step;assert!(!beep);
+            crate::CURSOR_CALLS.with(|calls|calls.borrow_mut().push(id));0x1234_5678_9abc_def0
+        }
+    }
     pub mod position {
         use ipc::win32_window::WindowRect;
         #[derive(Clone, Copy)] pub struct Request { pub hwnd: u64, pub rect: WindowRect, pub order: Option<()>, pub visible: Option<bool>, pub flags: u32 }
@@ -190,6 +217,8 @@ fn current(group: &Arc<thread_group::ThreadGroup>, tid: u64) {
     POSITION_CALLS.with(|c| c.set(0));
     RASTER.with(|r| r.borrow_mut().clear());
     RASTER_FAIL.with(|f| f.set(false));
+    CURSOR_CALLS.with(|calls|calls.borrow_mut().clear());SEND_CALLS.with(|calls|calls.borrow_mut().clear());
+    SEND_PENDING.with(|pending|pending.set(false));SEND_CONT.with(|pending|*pending.borrow_mut()=None);
 }
 
 fn setup() -> (Arc<thread_group::ThreadGroup>, u64) { setup_with_style(false) }
@@ -303,3 +332,5 @@ fn unchanged_redraw_and_arrow_only_refresh_reach_the_real_action_sink() {
 }
 
 #[path="tests/bar_visibility.rs"] mod bar_visibility;
+
+#[path="tests/sizegrip.rs"] mod sizegrip;

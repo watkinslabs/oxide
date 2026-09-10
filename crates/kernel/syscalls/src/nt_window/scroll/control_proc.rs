@@ -1,6 +1,7 @@
 //! Native scrollbar procedure; KI-0885 retains the still-unimplemented messages.
 use alloc::sync::Arc;
-use ipc::win32_window::{WindowId, WindowRect, WM_PAINT, WM_SETCURSOR};
+use ipc::win32_window::{WindowId, WindowRect, WM_PAINT, WM_SETCURSOR, WM_LBUTTONDOWN};
+use ipc::win32_window::hardware::WM_LBUTTONDBLCLK;
 use crate::nt_window::{GUI, position};
 use super::proc_abi::*;
 const STATUS_NOT_IMPLEMENTED: u64 = 0xc0000002;
@@ -15,11 +16,11 @@ const CREATE_PREFIX_BYTES: usize = 52;
 pub(crate) fn for_current(hwnd: u64, message: u32, wparam: u64, lparam: u64) -> Option<u64> {
     let Some(cur) = sched::live::current().filter(|cur| cur.is_nt_personality()) else { return Some(0); };
     let Some(window) = u32::try_from(hwnd).ok().and_then(WindowId::from_raw) else { return Some(0); };
-    let style = {
+    let (style, ex_style, parent) = {
         let entries = GUI.lock();
         let Some(entry) = entries.iter().find(|entry| entry.group.ptr_eq(&Arc::downgrade(&cur.thread_group))) else { return Some(0); };
         let Some(record) = entry.state.get(window) else { return Some(0); };
-        record.style
+        (record.style, record.ex_style, entry.state.relative_parent(window))
     };
     match message {
         WM_CREATE => Some(create(hwnd, lparam)),
@@ -27,6 +28,9 @@ pub(crate) fn for_current(hwnd: u64, message: u32, wparam: u64, lparam: u64) -> 
         WM_ERASEBKGND => Some(1),
         WM_GETDLGCODE => Some(DLGC_WANTARROWS),
         WM_SETCURSOR if style & SBS_SIZEGRIP == 0 => None,
+        WM_SETCURSOR => Some(super::control_input::sizegrip_cursor(ex_style)),
+        WM_LBUTTONDOWN | WM_LBUTTONDBLCLK if style & SBS_SIZEGRIP != 0 =>
+            Some(super::control_input::sizegrip_click(parent, ex_style, lparam)),
         message if RESERVED_MESSAGES.contains(&message) => Some(0),
         message if PENDING_MESSAGES.contains(&message) => { trace_missing(hwnd, message); Some(STATUS_NOT_IMPLEMENTED) }
         _ => None,

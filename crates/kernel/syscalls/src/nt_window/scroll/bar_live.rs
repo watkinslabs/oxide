@@ -82,6 +82,8 @@ fn store_flags(hwnd: u64, bar: i32, flags: u32) -> bool {
 
 /// Store the arrow-disable flags; a request that changes nothing reports so.
 /// # C: O(N_windows); # Sleeps: yes
+// Keep enable-state temporaries out of the shared router frame carried through ShowWindow.
+#[inline(never)]
 fn enable(hwnd: u64, bar: i32, flags: u32) -> u64 {
     let other_matched = if bar == ipc::win32_window::SB_BOTH {
         let matched = stored_flags(hwnd, SB_VERT) == Some(flags);
