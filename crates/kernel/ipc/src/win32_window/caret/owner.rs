@@ -14,9 +14,14 @@ fn owned_window(manager: &WindowManager, tid: u64, hwnd: WindowId) -> Result<(),
 
 impl WindowManager {
     pub fn create_caret(&mut self, tid: u64, hwnd: WindowId, width: i32, height: i32) -> Result<CaretCommit, CaretError> {
+        self.create_caret_pattern(tid,hwnd,width,height,super::CaretPattern::Solid)
+    }
+
+    /// Pattern belongs to the same queue state as caret geometry and visibility. # C: O(windows + queues)
+    pub fn create_caret_pattern(&mut self,tid:u64,hwnd:WindowId,width:i32,height:i32,pattern:super::CaretPattern)->Result<CaretCommit,CaretError>{
         owned_window(self, tid, hwnd)?;
         let queue = queue_mut(self, tid)?;
-        let transition = queue.caret.create(hwnd, width, height);
+        let transition = queue.caret.create_pattern(hwnd, width, height, pattern);
         queue.caret_generation = queue.caret_generation.wrapping_add(1);
         Ok(CaretCommit { transition, generation: queue.caret_generation })
     }

@@ -59,7 +59,7 @@ mod imc_assoc;
 mod paint_session;
 pub use paint_session::{PaintSession, PaintSessionError};
 pub use redraw::PaintChildren;
-pub use caret::{CaretState, CaretTransition, CaretCommit, CaretError};
+pub use caret::{CaretPattern, CaretState, CaretTransition, CaretCommit, CaretError};
 pub use scroll::owner as scroll_owner;
 pub use scroll::{ScrollInfo, ScrollState, ScrollAction, ScrollOutcome, ScrollError, SB_HORZ, SB_VERT, SB_CTL, SB_BOTH, ESB_ENABLE_BOTH, ESB_DISABLE_LTUP, ESB_DISABLE_RTDN, ESB_DISABLE_BOTH, SIF_RANGE, SIF_PAGE, SIF_POS, SIF_DISABLENOSCROLL, SIF_TRACKPOS, SIF_ALL, SIF_RETURNPREV, SCROLLINFO_BYTES, valid_bar};
 pub use property::{WindowProperties, WindowProperty, PropertyName, PropertyOrigin, MAX_PROPERTY_NAME};

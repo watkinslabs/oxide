@@ -49,10 +49,19 @@ fn sync_blink(state: &mut ipc::win32_window::WindowManager, tid: u64, commit: Ca
 }
 
 pub(crate) fn create_caret_for_current<S: CaretRenderSink + ?Sized>(hwnd: u64, width: i32, height: i32, sink: &mut S) -> u64 {
+    create_pattern_for_current(hwnd,width,height,ipc::win32_window::CaretPattern::Solid,sink)
+}
+
+/// Pattern survives queue transitions and is resolved into pixels by the canonical publisher. # C: O(windows + queues)
+pub(crate) fn create_pattern_for_current<S:CaretRenderSink+?Sized>(hwnd:u64,width:i32,height:i32,pattern:ipc::win32_window::CaretPattern,sink:&mut S)->u64{
+    let width=if width==0{1}else{width};let height=if height==0{1}else{height};
+    let(w,h)=(width.unsigned_abs(),height.unsigned_abs());
+    if w>syscall::nt_compositor::MAX_DIMENSION||h>syscall::nt_compositor::MAX_DIMENSION
+        ||w as u64*h as u64>(syscall::nt_compositor::caret::MAX_MASK_BYTES/4)as u64{return 0;}
     let Some(window) = window_id(hwnd) else { return 0; };
     let Some((group, tid)) = current() else { return 0; };
     let interval_ms = super::super::settings::snapshot_caret_blink_time();
-    let commit = { let mut entries = GUI.lock(); let Some(index) = entry_index(&entries, &group) else { return 0; }; let commit = entries[index].state.create_caret(tid, window, width, height).ok(); if let Some(commit) = commit { sync_blink(&mut entries[index].state, tid, commit, BlinkSync::Clear, interval_ms); Some(commit) } else { None } };
+    let commit = { let mut entries = GUI.lock(); let Some(index) = entry_index(&entries, &group) else { return 0; }; let commit = entries[index].state.create_caret_pattern(tid, window, width, height, pattern).ok(); if let Some(commit) = commit { sync_blink(&mut entries[index].state, tid, commit, BlinkSync::Clear, interval_ms); Some(commit) } else { None } };
     commit.map_or(0, |commit| publish_commit(sink, tid, commit))
 }
 

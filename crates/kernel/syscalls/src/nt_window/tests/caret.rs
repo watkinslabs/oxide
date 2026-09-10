@@ -17,7 +17,7 @@ impl super::CaretRenderSink for RenderLog {
         true
     }
 
-    fn paint_caret_pixels(&mut self, _: u64, _: u64, _: (i32, i32, i32, i32), _: u64) -> bool {
+    fn paint_caret_pixels(&mut self, _: u64, _: u64, _: (i32, i32, i32, i32), _: u64, _:ipc::win32_window::CaretPattern) -> bool {
         self.0.push("paint");
         true
     }
@@ -27,6 +27,7 @@ impl super::CaretRenderSink for RenderLog {
 fn committed_visible_move_erases_before_painting_new_pixels() {
     let hwnd = ipc::win32_window::WindowId::from_raw(9);
     let transition = ipc::win32_window::CaretTransition {
+        pattern:ipc::win32_window::CaretPattern::Solid,
         hwnd,
         old_hwnd: hwnd,
         old_visible: true,
@@ -44,9 +45,10 @@ fn failed_pixel_callback_is_reported() {
     struct Reject;
     impl super::CaretRenderSink for Reject {
         fn erase_caret_pixels(&mut self, _: u64, _: u64, _: (i32, i32, i32, i32), _: u64) -> bool { false }
-        fn paint_caret_pixels(&mut self, _: u64, _: u64, _: (i32, i32, i32, i32), _: u64) -> bool { true }
+        fn paint_caret_pixels(&mut self, _: u64, _: u64, _: (i32, i32, i32, i32), _: u64, _:ipc::win32_window::CaretPattern) -> bool { true }
     }
     let transition = ipc::win32_window::CaretTransition {
+        pattern:ipc::win32_window::CaretPattern::Solid,
         hwnd: ipc::win32_window::WindowId::from_raw(9),
         old_hwnd: ipc::win32_window::WindowId::from_raw(9),
         old_visible: true,

@@ -4,6 +4,7 @@ use win32_window::{WindowId,WM_KEYDOWN,WM_KEYUP};
 fn control(vertical:bool)->(u64,u64){
     let(_,parent)=setup();let id=WindowId::from_raw(parent as u32).unwrap();let mut entries=nt_window::GUI.lock();let state=&mut entries[0].state;
     let child=state.create(7,Some(id),0).unwrap();state.set_window_styles(child,win32_window::styles::WS_CHILD|vertical as u32,0).unwrap();
+    state.set_rect(child,win32_window::WindowRect{left:0,top:0,right:40,bottom:80}).unwrap();
     state.initialize_scroll_control(child).unwrap();state.create_caret(7,child,2,2).unwrap();state.show_caret(7,Some(child)).unwrap();
     (parent,child.raw()as u64)
 }

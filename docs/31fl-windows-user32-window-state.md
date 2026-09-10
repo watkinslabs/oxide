@@ -71,6 +71,7 @@ state.
 - Control SBM_GETPOS returns signed canonical position; SBM_GETRANGE copies optional minimum then maximum destinations and succeeds with both absent. SBM_GETSCROLLINFO uses the same validated SCROLLINFO codec and HWND-owned control state; size24 leaves the tracking tail untouched, absent control state fails without output. Queries do not draw or send another control message.
 - Control EnableScrollBar refresh and WM_ENABLE acquire a cached client DC, build the canonical drawing callback record, retain DC plus original result in the existing paint callback queue, and release after callback return. Nested callbacks retain distinct sender-owned tokens. DC/callback failures release resources and report diagnostics; void drawing cannot substitute its result for the original API result. Destruction may revoke cached DCs; terminal cleanup never recreates revoked objects.
 - WM_ENABLE synchronizes control arrow flags and refreshes without independently changing window visibility/style. Keyboard navigation sends synchronous WM_HSCROLL/WM_VSCROLL to the canonical parent with the control HWND in LPARAM; arrows report line movement, PageUp/PageDown page movement, Home/End endpoints. Discard parent LRESULT after completed Send; pending Send retains its continuation. First keydown (previous-state bit clear) hides caret, repeats do not hide again, and keyup shows caret. Unknown keys still follow caret ordering but send no scroll notification.
+- Scrollbar focus gain creates a gray thumb caret, sets its client position, then shows it. Focus loss hides it, invalidates the thumb rectangle without erase, then destroys the queue caret. Geometry uses canonical scrollbar state even when drawing is hidden; these messages return zero independently of individual caret-operation results.
 - Control drawing uses canonical visibility/ancestry eligibility without conflating drawable geometry with clipping; hidden controls and hidden/minimized ancestors suppress drawing. Full/arrow-only/interior-only selection is carried in the user drawing callback record.
 - Raw SetScrollInfo ordinal 0x1581 has four arguments. GetScrollInfo uses
   NtUserCallHwndParam method 7 and a 16-byte bar/pointer descriptor. All input
@@ -136,11 +137,18 @@ state.
   returns 1. The adapter has no HWND input and cannot use an invalid HWND as
   a substitute for current-queue lookup.
 - Uniform null-bitmap carets use the requested positive dimensions; zero width
-  or height selects one border pixel. Their canonical mask is RGB inversion.
+  or height selects one border pixel. Signed dimensions remain in queue geometry;
+  bitmap extent uses their absolute size, and equal signed source/destination
+  extents crop each negative axis at source zero to one drawable pixel. Their
+  canonical mask is RGB inversion.
   Client-to-frame coordinates subtract the window origin from stored client
   origin. A replacement carries old HWND separately so erase targets the old
-  backing surface. Bitmap and gray-pattern carets require their actual masks;
-  no uniform-mask substitution is permitted for those requests.
+  backing surface. Gray-pattern requests (bitmap1) retain their pattern in the
+  canonical queue and every visible transition; local mask pixel (0,0) is zero,
+  alternating RGB inversion horizontally and vertically. Move/blink/show never
+  phase-shift the pattern by client/frame origin. Hidden snapshots carry no
+  mask. Custom bitmap requests require their copied actual masks; no uniform
+  substitution is permitted.
 
 - A missing or non-canonical HWND is rejected before state access.
 - Text input is copied until its required UTF-16 terminator; unterminated

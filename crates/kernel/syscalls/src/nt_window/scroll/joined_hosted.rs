@@ -13,6 +13,13 @@ extern crate self as uaccess;
 pub mod nt_callback { #[derive(Clone,Copy,Debug)] pub struct Completion {pub kind:u64,pub argument:u64} }
 pub mod nt_user_callback {pub enum Input<'a>{Record(&'a[u8])}}
 pub mod nt_rtl {pub(crate) use crate::refresh_hosted::begin_user_callback;}
+pub mod nt_compositor {pub mod caret {
+    pub fn publish_current(hwnd:u64,snapshot:&syscall::nt_compositor::caret::Snapshot)->bool{
+        assert!(crate::nt_window::GUI.0.try_lock().is_ok());
+        crate::CARET_CALLS.with(|calls|calls.borrow_mut().push((hwnd,snapshot.visible)));
+        crate::CARET_SNAPSHOTS.with(|snapshots|snapshots.borrow_mut().push(snapshot.clone()));true
+    }
+}}
 
 pub use ipc_types::{win32_gdi, win32_window, win32_imc};
 
@@ -34,6 +41,7 @@ thread_local! {
     static SEND_PENDING: Cell<bool> = const { Cell::new(false) };
     static SEND_CONT: RefCell<Option<nt_window::send::Continuation>> = const { RefCell::new(None) };
     static RASTER_FAIL: Cell<bool> = const { Cell::new(false) };
+    static CARET_SNAPSHOTS:RefCell<Vec<syscall::nt_compositor::caret::Snapshot>>=const{RefCell::new(Vec::new())};
     static CARET_CALLS:RefCell<Vec<(u64,bool)>>=const{RefCell::new(Vec::new())};
 }
 
@@ -90,6 +98,7 @@ pub mod nt_window {
         pub(crate) state: win32_window::WindowManager,
         pub(crate) scroll_pending: scroll::pending::Queue,
         pub(crate) paint_callbacks:paint_callbacks::Queue,
+        pub(crate) wait:Wait,
     }
 
     pub(crate) static GUI: Lock<Vec<GuiEntry>> = Lock(Mutex::new(Vec::new()));
@@ -106,18 +115,13 @@ pub mod nt_window {
     pub fn nonclient_scroll_context_for_current(_:u64)->Option<crate::nt_gdi::nonclient_scroll::Context> {
         panic!("accessibility geometry is outside this fixture")
     }
-    pub(crate) mod caret {
-        pub mod publish {pub struct Current;}
-        pub mod live {
-            fn apply(hwnd:u64,show:bool)->u64{
-                assert!(super::super::GUI.0.try_lock().is_ok());crate::CARET_CALLS.with(|calls|calls.borrow_mut().push((hwnd,show)));
-                let tid=crate::live::current().unwrap().tid;let id=crate::win32_window::WindowId::from_raw(hwnd as u32);
-                let mut entries=super::super::GUI.lock();let state=&mut entries[0].state;
-                if show{state.show_caret(tid,id).is_ok()as u64}else{state.hide_caret(tid,id).is_ok()as u64}
-            }
-            pub fn hide_caret_for_current(hwnd:u64,_:&mut super::publish::Current)->u64{apply(hwnd,false)}
-            pub fn show_caret_for_current(hwnd:u64,_:&mut super::publish::Current)->u64{apply(hwnd,true)}
-        }
+    pub(crate) fn valid_window(hwnd:u64)->Option<win32_window::WindowId>{u32::try_from(hwnd).ok().and_then(win32_window::WindowId::from_raw)}
+    pub(crate) mod settings {pub fn snapshot_caret_blink_time()->u32{win32_window::DEFAULT_CARET_BLINK_MS}use super::win32_window;}
+    #[path="../caret.rs"] mod caret_contract;
+    #[path="../caret"] pub(crate) mod caret {
+        pub(crate) use super::caret_contract::*;
+        #[path="live.rs"]pub(crate) mod live;
+        #[path="publish.rs"]pub(crate) mod publish;
     }
 
     pub mod send {
@@ -182,6 +186,8 @@ pub mod nt_window {
         #[path = "proc_abi.rs"] pub(crate) mod proc_abi;
         #[path = "control_input.rs"] pub(crate) mod control_input;
         #[path = "control_query.rs"] pub(crate) mod control_query;
+        #[path="control_geometry.rs"]pub(crate) mod control_geometry;
+        #[path="control_focus.rs"]pub(crate) mod control_focus;
         #[path = "control_draw.rs"] pub(crate) mod control_draw;
         #[path = "control_refresh.rs"] pub(crate) mod control_refresh;
         #[path = "control_proc.rs"] pub(crate) mod control_proc;
@@ -256,7 +262,7 @@ fn current(group: &Arc<thread_group::ThreadGroup>, tid: u64) {
     CURSOR_CALLS.with(|calls|calls.borrow_mut().clear());SEND_CALLS.with(|calls|calls.borrow_mut().clear());
     SEND_PENDING.with(|pending|pending.set(false));SEND_CONT.with(|pending|*pending.borrow_mut()=None);
     refresh_hosted::reset();
-    CARET_CALLS.with(|calls|calls.borrow_mut().clear());
+    CARET_CALLS.with(|calls|calls.borrow_mut().clear());CARET_SNAPSHOTS.with(|snapshots|snapshots.borrow_mut().clear());
 }
 
 fn setup() -> (Arc<thread_group::ThreadGroup>, u64) { setup_with_style(false) }
@@ -269,7 +275,7 @@ fn setup_with_style(vertical_style: bool) -> (Arc<thread_group::ThreadGroup>, u6
     state.set_rect(hwnd, win32_window::WindowRect { left: 0, top: 0, right: 640, bottom: 480 }).unwrap();
     *nt_window::GUI.0.lock().unwrap() = vec![nt_window::GuiEntry {
         group: Arc::downgrade(&group), state, scroll_pending: nt_window::scroll::pending::Queue::default(),
-        paint_callbacks:nt_window::paint_callbacks::Queue::new(),
+        paint_callbacks:nt_window::paint_callbacks::Queue::new(),wait:nt_window::Wait,
     }];
     current(&group, 7);
     (group, hwnd.raw() as u64)
@@ -376,3 +382,5 @@ fn unchanged_redraw_and_arrow_only_refresh_reach_the_real_action_sink() {
 #[path="tests/control_query.rs"] mod control_query;
 #[path="tests/control_refresh.rs"] mod control_refresh;
 #[path="tests/control_keyboard.rs"] mod control_keyboard;
+
+#[path="tests/control_focus.rs"]mod control_focus;

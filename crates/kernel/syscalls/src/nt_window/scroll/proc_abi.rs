@@ -51,7 +51,7 @@ pub(crate) fn draw_record(hwnd: u64, dc: u64, rect: Rect, layout: ScrollLayout, 
 
 /// Reserved scrollbar messages return zero; the remaining procedure cases are KI-0885.
 pub(crate) const RESERVED_MESSAGES: &[u32] = &[0xe5, 0xe7, 0xe8, 0xec, 0xed, 0xee, 0xef];
-pub(crate) const PENDING_MESSAGES: &[u32] = &[0x7, 0x8, 0x3d, 0xa0,
+pub(crate) const PENDING_MESSAGES: &[u32] = &[0x3d, 0xa0,
     0x118, 0x200, 0x201, 0x202, 0x203, 0x2a2, 0x2a3, 0xe0, 0xe2, 0xe4, 0xe6, 0xe9, 0xeb];
 
 /// Creation alignment is in parent-client coordinates and requests no move without an alignment bit.

@@ -21,7 +21,7 @@ impl CaretPos {
 /// or fabricates a caret bitmap.
 pub(crate) trait CaretRenderSink {
     fn erase_caret_pixels(&mut self, owner_tid: u64, hwnd: u64, rect: (i32, i32, i32, i32), generation: u64) -> bool;
-    fn paint_caret_pixels(&mut self, owner_tid: u64, hwnd: u64, rect: (i32, i32, i32, i32), generation: u64) -> bool;
+    fn paint_caret_pixels(&mut self, owner_tid: u64, hwnd: u64, rect: (i32, i32, i32, i32), generation: u64, pattern:ipc::win32_window::CaretPattern) -> bool;
 }
 
 /// Publish one committed state transition in raster-safe order.  Erasing the
@@ -32,7 +32,7 @@ pub(crate) fn publish_transition<S: CaretRenderSink + ?Sized>(
     let hwnd = transition.hwnd.map(|value| value.raw() as u64).unwrap_or(0);
     let old_hwnd = transition.old_hwnd.map(|value| value.raw() as u64).unwrap_or(0);
     if transition.old_visible && !sink.erase_caret_pixels(owner_tid, old_hwnd, transition.old_rect, generation) { return false; }
-    if transition.new_visible && !sink.paint_caret_pixels(owner_tid, hwnd, transition.new_rect, generation) { return false; }
+    if transition.new_visible && !sink.paint_caret_pixels(owner_tid, hwnd, transition.new_rect, generation, transition.pattern) { return false; }
     true
 }
 

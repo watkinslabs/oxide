@@ -36,9 +36,10 @@ Consult local pinned primary sources first; Wine11.16 release/debug explicit.
   Enable harness OXIDE_NOTEPAD_READBACK=1. Both release builds PASS; evidence
   scratch/B3630-readback-validation.md. Stripe mechanism remains unproved.
 
-- Queries07d46966a; cached-DC refresh/keyboard51 tests PASS; adjacent redraw/paint
-  fixtures44/9/29 PASS. Both builds/features/frame gates PASS; static335/278
-  no added/increased path. scratch/B3630-control-refresh-validation.md; KI0885 open.
+- Refresh/keyboard a5c29407a; focus + gray/signed carets now56 scroll/10 caret
+  tests PASS; adjacent44/9/29 PASS. Both builds/features/frame gates PASS;
+  static335/278 no growth. scratch/B3630-caret-focus-validation.md. Custom
+  bitmap masks KI0398; pointer/setters/accessibility KI0885 still open.
 - KI0903 runtime13f9a59e9: control-owned arrow state and EnableWindow state
   helper preserve visibility. Closed after source37f740be7 validation.
 - KI0885 sizegrip input4ad3d553a: cursor preserves previous handle; click
@@ -58,7 +59,7 @@ Consult local pinned primary sources first; Wine11.16 release/debug explicit.
 - Next visible verification helper /tmp/B3630-sizegrip-verification.py
   prepare|run; id B3630-sizegrip-verification-debug, Wine11.16-debug,
   token oxide-b3630-verify. Latest run failed as above; no automatic reboot.
-  Source/docs through639db8261 pushed and remote-verified. Helper only
+  Helper only
   launches/activates; separate UI checker failed before DialogChecks.
 - Full control behavior/EnableWindow KI0885/KI0904 remain; raw static harness KI0574 still
   fails its stale source needle. Foreign maps omit file identity/offsets/
@@ -85,8 +86,8 @@ Consult local pinned primary sources first; Wine11.16 release/debug explicit.
   ELFs target/B3630-parent-handling-{x86_64,aarch64}.elf; hashes in evidence.
 - Next work: KI0885 full scrollbar procedure (control_proc/proc_abi). Existing
   unhandled cases include SBM setter messages,
-  pointer tracking, focus/caret and accessibility. Primary procedure reviewed.
-  Use existing scroll state/position/Send owners; full dialog acceptance stays
+  pointer tracking and accessibility. Focus/caret source repaired; masks tracked.
+  Next: KI0904 EnableWindow callbacks; then setters/tracking. Acceptance stays
   required. No new boot until final verification; prepare privileged thread
   stack capture for GNOME stall evidence before that next verification.
 

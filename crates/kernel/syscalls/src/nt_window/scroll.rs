@@ -63,3 +63,10 @@ pub(crate) mod control_draw;
 #[cfg(target_os = "oxide-kernel")]
 #[path = "scroll/control_refresh.rs"]
 pub(crate) mod control_refresh;
+
+#[cfg(target_os="oxide-kernel")]
+#[path="scroll/control_geometry.rs"]
+pub(crate) mod control_geometry;
+#[cfg(target_os="oxide-kernel")]
+#[path="scroll/control_focus.rs"]
+pub(crate) mod control_focus;
