@@ -43,3 +43,20 @@ for upper flags; target build and final desktop verification required.
 
 Final restored owner1559, syscall library3276 and dispatcher149 PASS.
 Builds/features running; stack comparison pending against retrieval-paint ELFs.
+
+Next desktop helper: /tmp/B3630-queue-verification.py prepare|run; fresh
+B3630-queue-verification-debug image/output ID, Wine debug, compositor/readback
+enabled. Launch then initial-token/document/dialog/menu checks happen in one
+process before announcing inspection readiness. Success/failure retains VM;
+live.json records check/audit result or verification error. Syntax checked;
+not executed. Existing canonical acceptance helpers provide the UI checks.
+
+Final runtime b94456156: both release builds/features/frame gates PASS.
+Static gates retain KI0019 baseline exit1: x86 335->335 and ARM278->278,
+no added primary rows or increased depths against retrieval-paint snapshots.
+Final ELF SHA256:
+- x86_64:effd81b325850ac25b16c989d26e51133b2e77cb42a964ecc27dcc0a9d141a99
+- aarch64:3b98275484c87713e791a17b5608aedc6bf9887c136f627635faa5676c65b104
+Logs /tmp/B3630-peek-classes-{build-x86,build-arm,feature,frame-x86,frame-arm,
+stack-x86,stack-arm}.log. KI0917 quit numeric/HWND filtering remains separate.
+Fresh debug image preparation session76901 running; no VM yet.
