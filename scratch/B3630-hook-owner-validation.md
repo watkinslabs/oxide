@@ -40,7 +40,7 @@ Logs /tmp/B3630-hook-owner-{adjacent,boundaries,send,null-paint,ipc,syscalls,
 control-post-route,control-pump,control-wake,control-sender,control-window,
 control-wait}.log.
 
-Both release builds/features/frame gates PASS. Static stack gates exit1 on
+Runtime63cca0de7: both release builds/features/frame gates PASS. Static stack gates exit1 on
 existing KI0019 failures; primary335x86/278ARM unchanged, no added/increased
 path vs chain baseline; exception7664/6368 unchanged. Logs
 /tmp/B3630-hook-owner-{build-x86_64,build-aarch64,feature,frame-x86,frame-arm,
