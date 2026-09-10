@@ -36,8 +36,9 @@ drift between `kernel/src`, ad-hoc `crates/*`, and one-off folders.
    GDI `backing` owns paint seeding/retention; `nt_gdi/paint_frame` serializes
    that retained surface. Queue-owned caret deadlines feed message waits;
    scroll continuations consume the existing position and Send owners.
-   Default mouse activation uses canonical pointer policy and the same Send
-   continuation; each suspended parent reply retains its own fallback value.
+   Default mouse activation and cursor handling use canonical pointer policy
+   and the same Send continuation; each suspended parent reply retains its
+   own fallback value or cursor step. Cursor installation follows parent refusal.
    Window `scroll/control` owns optional scrollbar-control state on the HWND;
    its lifetime is distinct from the same HWND’s standard nonclient bars.
    Syscalls `scroll/actions` consumes canonical scroll actions; hosted boundary

@@ -48,7 +48,7 @@ pub(crate) fn apply_set_cursor(step: SetCursorStep, class_cursor: impl FnOnce(u6
 #[path = "cursor_raw/kernel.rs"]
 mod kernel;
 #[cfg(target_os = "oxide-kernel")]
-pub(crate) use kernel::{default_set_cursor, route};
+pub(crate) use kernel::{apply_default_step, route};
 
 #[cfg(test)]
 #[path = "tests/cursor_raw.rs"]

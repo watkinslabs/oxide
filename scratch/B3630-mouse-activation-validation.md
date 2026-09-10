@@ -36,3 +36,13 @@ and preserve the distinction between immediate completion and pending work.
 
 No new boot; full Notepad runtime acceptance and GNOME startup cause remain
 open. Prior verification never displayed GNOME; user closed that VM.
+
+Final validation: make build and make feature-gate exit0 for both architectures;
+both frame gates exit0. Static stack gates exit1 on existing KI0019 failures,
+with336x86/278ARM primary rows unchanged and no added/increased path versus
+futex-site baseline; exception7664/6368 unchanged. Full stack gate not green.
+/tmp/B3630-parent-handling-final-{build,feature}.log;
+/tmp/B3630-parent-handling-{frame,stack}-{x86,arm}.log;
+/tmp/B3630-parent-handling-stack-compare.log. Current snapshots:
+x86_64: 3c6f28cfd0d10e49d7f22a29e9f7cb5050e34f5e173dd8efc538d07e4a81e512 target/B3630-parent-handling-x86_64.elf
+aarch64: da6783bb6bb2f7edf6fb4443401bc41404ac4ea8add84496fd4a794feb6e4a63 target/B3630-parent-handling-aarch64.elf

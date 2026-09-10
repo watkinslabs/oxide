@@ -5,7 +5,7 @@ use ipc::win32_window::hardware::{WM_MOUSEACTIVATE, MA_ACTIVATE, MA_NOACTIVATE};
 pub(super) struct Continuation { pub token:u64, pub resume:fn(u64,Result<u64,()>)->u64 }
 #[derive(Clone,Copy)]
 pub(super) enum SendOutcome { Complete(u64), Failed, Pending }
-static SEND:Mutex<(SendOutcome,Option<Continuation>,Vec<(u64,u32,u64,u64)>)> = Mutex::new((SendOutcome::Failed,None,Vec::new()));
+pub(super) static SEND:Mutex<(SendOutcome,Option<Continuation>,Vec<(u64,u32,u64,u64)>)> = Mutex::new((SendOutcome::Failed,None,Vec::new()));
 pub(super) fn send_resumable_current(hwnd:u64,message:u32,wparam:u64,lparam:u64,c:Continuation)->SendOutcome {
     assert!(nt_window::GUI.unlocked(), "parent procedure runs outside GUI lock");
     let mut state=SEND.lock().unwrap();state.1=Some(c);state.2.push((hwnd,message,wparam,lparam));state.0
@@ -15,8 +15,9 @@ fn run(hwnd:u64,hit:u16,message:u32)->Option<u64> {
         args:syscall::SyscallArgs{a0:hwnd,a1:WM_MOUSEACTIVATE as u64,a2:0xabc,
             a3:u64::from(hit)|(u64::from(message)<<16),a4:0,a5:0}})
 }
-fn windows(child_style:bool)->(u64,u64){
+pub(super) fn windows(child_style:bool)->(u64,u64){
     setup();let mut entries=nt_window::GUI.lock();let state=&mut entries[0].state;
+    *state=WindowManager::new_in_block(ipc::win32_window::handle_space::FIRST_OWNER_BLOCK);
     let root=state.create(41,None,0x1234).unwrap();
     let child=state.create(41,Some(root),0x5678).unwrap();
     state.set_style_bits(child,if child_style{ipc::win32_window::styles::WS_CHILD}else{0},

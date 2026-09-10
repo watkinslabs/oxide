@@ -25,16 +25,31 @@ Consult local pinned primary sources first; Wine11.16 release/debug explicit.
 
 ## Current work
 
-- KI0890 default activation repair under validation: parent Send continuation,
-  nonzero parent result preserved; caption left-down MA_NOACTIVATE, others
-  MA_ACTIVATE. IPC owns pointer policy.128 actual-dispatch tests and1529 IPC
-  library tests pass. Evidence scratch/B3630-mouse-activation-validation.md.
-- KI0462 cursor parent-first follow-up claimed with activation repair.
-  Next: use source-verified parent-first excluding resize border/desktop;
-  native default returns1 only for accepted parent, otherwise0 after applying
-  cursor. Current raw helper wrongly returns install/class result directly.
-  No extra pending registry: existing Send continuation owns completion.
-
+- KI0890 runtimee3a491288 committed: parent Send continuation, nonzero parent
+  result preserved; caption left-down MA_NOACTIVATE, others MA_ACTIVATE.
+  IPC owns policy; canonical relative_parent handles combined child/popup
+  ownership.128 dispatcher tests at this point; evidence
+  scratch/B3630-mouse-activation-validation.md. Not yet closed/pushed.
+- KI0462 cursor parent-first implemented, not committed: raw default selector
+  routes through DefaultProc; exact desktop and resize borders bypass parent;
+  accepted parent returns1; otherwise apply cursor and return0. Existing Send
+  continuation retains full class HWND/OEM step without another queue.
+ 139 dispatcher/cursor tests and3270 syscall library tests pass. Sound intent
+  retained but actual MessageBeep absent (newKI0902). Evidence
+  scratch/B3630-cursor-parent-validation.md. Raw selector source audited;
+  dispatcher fixture does not independently execute raw selector.
+- Final parent-handling builds/features/both frame gates PASS;
+  static336x86/278ARM primary rows unchanged, no added/increased path versus
+  futex-site baseline. KI0019 failures/7664+6368 exceptions remain.
+  /tmp/B3630-parent-handling-final-{build,feature}.log;
+  parent-handling-{frame,stack}-{x86,arm}.log and stack-compare.log.
+  ELFs target/B3630-parent-handling-{x86_64,aarch64}.elf; hashes in evidence.
+- Next work: KI0885 full scrollbar procedure (control_proc/proc_abi). Existing
+  unhandled cases include sizegrip cursor/click, SBM state messages, keyboard,
+  pointer tracking, focus/caret and accessibility. Primary procedure reviewed.
+  Use existing scroll state/position/Send owners; full dialog acceptance stays
+  required. No new boot until final verification; prepare privileged thread
+  stack capture for GNOME stall evidence before that next verification.
 
 - Pushed/remote-verified c11e7ea62: display stacking runtimea7d181ac3,
   KI-0897 closed. Backend sibling insertion means preceding HWND: BELOW,

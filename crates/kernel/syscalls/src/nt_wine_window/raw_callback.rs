@@ -89,7 +89,6 @@ pub(super) fn message_call(a: &[u64; 17]) -> u64 {
         // WM_NCHITTEST is not answered here: the canonical default window
         // procedure answers it, and it is the only one that knows about the
         // menu bar's band of the nonclient area.
-        if message == WM_SETCURSOR { return cursor_raw::default_set_cursor(wparam, lparam); }
         if message == WM_NCACTIVATE { return 1; }
         if message == WM_SETTEXT {
             return win_bool(native(NtService::SetWindowText, SyscallArgs { a0: hwnd, a1: lparam, a2: 0, a3: 0, a4: 0, a5: 0 }));
