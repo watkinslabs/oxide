@@ -55,7 +55,7 @@ Consult local pinned primary sources first; Wine11.16 release/debug explicit.
 - Next visible verification helper /tmp/B3630-sizegrip-verification.py
   prepare|run; id B3630-sizegrip-verification-debug, Wine11.16-debug,
   token oxide-b3630-verify. Latest run failed as above; no automatic reboot.
-  Source/docs through b0b1be76b pushed and remote-verified. Helper only
+  Source/docs through639db8261 pushed and remote-verified. Helper only
   launches/activates; separate UI checker failed before DialogChecks.
 - Full refresh/callbacks KI0885/KI0904 remain; raw static harness KI0574 still
   fails its stale source needle. Foreign maps omit file identity/offsets/
@@ -172,12 +172,6 @@ Consult local pinned primary sources first; Wine11.16 release/debug explicit.
   Exception7664/6368 unchanged. KI0019 baseline failures remain; never call
   full gate green. Compare primary rows before "Split the chain", not top20.
   Final ELFs target/B3630-scope-final-{x86,arm}.elf; hashes in scope evidence.
-
-## Prior preview
-
-- Sept9 16:39 run: blank About-like dialog/button, stale surfaces/trails.
-  target/B3630-click-preview-debug; full evidence in Notepad validation doc.
-  Superseded display/input repairs still require actual dialog acceptance.
 
 ## Open scope and companion repositories
 
