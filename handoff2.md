@@ -11,12 +11,12 @@ Helper /tmp/B3630-identity-verification.py run; session82991; live.json in
 KI0922: child/GetDC/BeginPaint/erase/nonclient paths now share containing backing.
 Hosted1560IPC+3276syscalls+278boundary tests PASS;3 source controls RED.
 b1a9c0feb release/features/frame PASS both; static334/277+exception unchanged.
-KI0924 namespace repair: real bootstrap path lacked WindowStations parent;4+104 tests PASS.
-Live QEMU4127880/runner25062 uses old namespace; UART target/B3630-measure-verification-debug/uart-4127818.log.
+KI0924 ca07ea578: canonical parent repaired;4+104+2029 tests, both builds/features/frame PASS.
+Old QEMU4127880 exited0; UART target/B3630-measure-verification-debug/uart-4127818.log.
 KI0920: rapid click+pointer parking makes desktop deliver release outside
 Notepad; menu correctly exits before paint. Held click/release stays open.
 Evdev order correct; X RECORD shows release1004,748 after press168,156.
-Next harness: OXIDE_NOTEPAD_GDI_TRACE=1; debug-wingeom records raw DC returns.
+Fresh helper /tmp/B3630-desktop-verification.py prepare|run; preparation session96540.
 KI0920 fixed598ecf668;32 harness tests PASS, both old-path controls RED.
 Guest SSH localhost2222 oxide/oxide; DISPLAY=:0; XAUTH under /run/user/1000.
 KI0921 fixed18869d93e:110 compositor tests,4 controlsRED,both release builds.
