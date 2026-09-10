@@ -2,8 +2,8 @@
 
 | Status | Branch | Item |
 |---|---|---|
-| IN-PROGRESS | B3630-paint-region-collapse | KI0890 |
-| CLAIMED | B3630-paint-region-collapse | KI0462 cursor follow-up |
+| FIXED e3a491288 | B3630-paint-region-collapse | KI0890 |
+| FIXED ca1c3c77f | B3630-paint-region-collapse | KI0462 cursor follow-up |
 
 Default mouse activation now forwards child requests to the canonical parent
 through the existing resumable Send owner, outside GUI ownership. Original

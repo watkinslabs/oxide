@@ -2,7 +2,7 @@
 
 | Status | Branch | Item |
 |---|---|---|
-| IN-PROGRESS | B3630-paint-region-collapse | KI0462 |
+| FIXED ca1c3c77f | B3630-paint-region-collapse | KI0462 |
 | OPEN | B3630-paint-region-collapse | KI0902 error-area sound |
 
 Raw default-procedure entry now reaches canonical default dispatch for

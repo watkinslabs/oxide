@@ -29,8 +29,8 @@ Consult local pinned primary sources first; Wine11.16 release/debug explicit.
   result preserved; caption left-down MA_NOACTIVATE, others MA_ACTIVATE.
   IPC owns policy; canonical relative_parent handles combined child/popup
   ownership.128 dispatcher tests at this point; evidence
-  scratch/B3630-mouse-activation-validation.md. Not yet closed/pushed.
-- KI0462 cursor parent-first implemented, not committed: raw default selector
+  scratch/B3630-mouse-activation-validation.md. KI0890 closed after validation.
+- KI0462 cursor parent-first runtimeca1c3c77f committed/closed: raw default selector
   routes through DefaultProc; exact desktop and resize borders bypass parent;
   accepted parent returns1; otherwise apply cursor and return0. Existing Send
   continuation retains full class HWND/OEM step without another queue.
