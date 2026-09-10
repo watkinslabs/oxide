@@ -3,7 +3,7 @@
 First command: `git status --short`
 Worktree /home/nd/oxide/kernel-B3630, branch B3630-paint-region-collapse.
 Read CLAUDE.md and scratch/B3630-reparent-validation.md before editing.
-Main read-only afa38ce09. Draft PR7680; do not merge or mark full goal complete.
+Main read-only afa38ce09. User authorized merging PR7680; full Notepad goal remains incomplete.
 User requires defect-free Notepad borders/buttons/Open/Save/About/dropdowns.
 Consult actual Wine11.16 source ../windows_reference/wine-source and Linux ../reference.
 Wine release/debug profiles explicit; do not fork/patch runtime source/catalog.

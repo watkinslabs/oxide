@@ -16,7 +16,7 @@ const KEY_FLAGS: u32 = KEY_EXTENDED | KEY_PREVIOUS;
 const POINTER_FLAGS: u32 = 0x007f;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct Snapshot { rect: wire::Rect, parent: u64, tree_parent:u64, title: Vec<u8>, visible: bool, ready: bool }
+pub(super) struct Snapshot { rect: wire::Rect, parent: u64, title: Vec<u8>, visible: bool, ready: bool }
 
 fn window(hwnd: u64) -> Option<WindowId> { WindowId::from_raw(u32::try_from(hwnd).ok()?) }
 
@@ -72,7 +72,7 @@ pub(super) fn snapshot(state: &WindowManager, hwnd: u64) -> Option<Snapshot> {
         (b"parent", parent_rects.map_or(own, |(window, _)| window)),
         (b"parentclient", parent_rects.map_or(own, |(_, client)| client))]);
     Some(Snapshot { rect: wire_rect(rect)?,
-        parent: record.parent.or(record.owner).map_or(0, |id| id.raw() as u64), tree_parent:record.parent.map_or(0,|id|id.raw() as u64), title, visible: record.visible, ready: record.presentation_ready })
+        parent: record.parent.or(record.owner).map_or(0, |id| id.raw() as u64), title, visible: record.visible, ready: record.presentation_ready })
 }
 
 fn update_snapshot(state: &WindowManager, hwnd: u64) -> Result<Option<Snapshot>, ()> {
@@ -86,11 +86,13 @@ fn create_snapshot(state: &mut WindowManager, hwnd: u64, style: u32, ex_style: u
     snapshot(state, hwnd)
 }
 
+fn reparent_payload(state:&WindowManager,hwnd:u64)->Option<Vec<u8>>{
+    let parent=state.get(window(hwnd)?)?.parent.map_or(0,|id|id.raw() as u64);
+    let mut payload=parent.to_le_bytes().to_vec();
+    payload.extend_from_slice(&snapshot(state,hwnd)?.rect.encode_window().ok()?);Some(payload)
+}
+
 impl Snapshot {
-    fn reparent_payload(&self)->Option<Vec<u8>>{
-        let mut payload=self.tree_parent.to_le_bytes().to_vec();
-        payload.extend_from_slice(&self.rect.encode_window().ok()?);Some(payload)
-    }
     fn create_payload(&self, style: u32, exstyle: u32) -> Option<Vec<u8>> {
         let mut payload = self.rect.encode_window().ok()?.to_vec();
         payload.extend_from_slice(&self.parent.to_le_bytes());
@@ -263,8 +265,16 @@ mod live {
 
     /// Publish canonical tree parent after SetParent and GUI unlock. # C: O(windows) + ACK; # Sleeps: yes
     pub(crate) fn publish_reparent_current(hwnd:u64)->Result<(),TransportError>{
-        let Some((group,value))=current_update(hwnd)?else{return Ok(());};
-        publish(&group,Opcode::Reparent,hwnd,value.reparent_payload().ok_or(TransportError::Invalid)?)
+        let cur=sched::live::current().ok_or(TransportError::Disconnected)?;
+        if !cur.is_nt_personality(){return Err(TransportError::Invalid);}
+        let group=Arc::clone(&cur.thread_group);
+        let payload={
+            let entries=super::super::GUI.lock();
+            let entry=entries.iter().find(|e|e.group.ptr_eq(&Arc::downgrade(&group))).ok_or(TransportError::Unknown)?;
+            if !entry.state.presentation_ready(window(hwnd).ok_or(TransportError::Invalid)?).ok_or(TransportError::Unknown)?{return Ok(());}
+            reparent_payload(&entry.state,hwnd).ok_or(TransportError::Invalid)?
+        };
+        publish(&group,Opcode::Reparent,hwnd,payload)
     }
     /// Invoke after canonical visibility mutation and GUI unlock. # C: O(windows) + ACK; # Sleeps: yes
     pub(crate) fn publish_visibility_current(hwnd: u64) -> Result<(), TransportError> {
