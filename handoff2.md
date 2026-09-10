@@ -10,8 +10,8 @@ Helper /tmp/B3630-identity-verification.py run; session82991; live.json in
  target/B3630-identity-verification-debug; UART uart-3672188.log.
 KI0922: child/GetDC/BeginPaint/erase/nonclient paths now share containing backing.
 Hosted1560IPC+3276syscalls+278boundary tests PASS;3 source controls RED.
-Release/frame/stack gates running: /tmp/B3630-shared-paint-build-stack.log.
-See scratch/B3630-shared-paint-validation.md; new kernel not booted yet.
+b1a9c0feb release/features/frame PASS both; static334/277+exception unchanged.
+New image preparing: /tmp/B3630-shared-paint-verification.py prepare; session45026.
 static335/278 unchanged. KI0919 profile/PID wrapper log confirmed installed.
 KI0920: rapid click+pointer parking makes desktop deliver release outside
 Notepad; menu correctly exits before paint. Held click/release stays open.
