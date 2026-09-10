@@ -37,4 +37,5 @@ mod nt_wine_window { pub(crate) mod cursor_raw {
     pub(crate) use crate::cursor_policy::{set_cursor_step,SetCursorStep};
     pub(crate) use crate::set_cursor_fixture::apply_default_step;
 }}
+#[path="nt_window_output_dispatch/retrieval_status.rs"]mod retrieval_status_fixture;
 include!("nt_window_output_dispatch/fixture.rs");

@@ -1,6 +1,7 @@
 use super::*;
 #[path="mouse_activate.rs"] mod mouse_activate;
 #[path="set_cursor.rs"] mod set_cursor;
+#[path="retrieval_status.rs"] mod retrieval_status;
 
 const WM_NCPAINT: u32 = 0x0085;
 const WM_NCCALCSIZE: u32 = 0x0083;
@@ -59,6 +60,7 @@ pub(super) fn dispatch_mode(call: NtCall, raw: bool) -> Option<u64> {
             crate::nt_gdi::flush_pending_for_current(false);
             let _ = caret::blink::expire_for_current(timekeeper::monotonic_ns());
             if let Some(result) = retrieval::pump(call, raw) { return Some(result); }
+            if let Some(result) = retrieval_status::acknowledge(&operation) { return Some(result); }
             // Activation, the cursor and the double click are decided here,
             // on the way out of the queue and inside the window procedure,
             // not by whatever posted the raw input.

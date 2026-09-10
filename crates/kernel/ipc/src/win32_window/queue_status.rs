@@ -83,7 +83,27 @@ impl MessageQueue {
     pub(super) fn clear_changed(&mut self, bits: u32) { self.changed &= !bits; }
 }
 
+/// Classes acknowledged by retrieval, independently of removal or HWND filtering. # C: O(1)
+pub const fn retrieval_clear_bits(flags:u32,first:u32,last:u32)->u32{
+    let classes=if flags>>16==0{QS_ALLINPUT}else{flags>>16};
+    let mut clear=0;
+    if classes&QS_POSTMESSAGE!=0{
+        clear|=QS_POSTMESSAGE|QS_HOTKEY|QS_TIMER;
+        if first==0&&(last==0||last==u32::MAX){clear|=QS_ALLPOSTMESSAGE;}
+    }
+    if classes&QS_INPUT!=0{clear|=QS_INPUT;}
+    if classes&QS_PAINT!=0{clear|=QS_PAINT;}
+    clear
+}
+
 impl WindowManager {
+    /// Acknowledge arrivals before a retrieval scan, including a scan that finds nothing. # C: O(N_queues)
+    pub fn acknowledge_retrieval(&mut self,tid:u64,flags:u32,filter:super::MessageFilter){
+        if let Some((_,queue))=self.queues.iter_mut().find(|(owner,_)|*owner==tid){
+            queue.clear_changed(retrieval_clear_bits(flags,filter.first,filter.last));
+        }
+    }
+
     /// Wake and changed bits for one thread's queue, clearing the reported
     /// changed bits. Answers zero when the flags name bits outside the query's
     /// admitted set. # C: O(N_queues + N_messages + N_windows)
@@ -131,3 +151,6 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/posted_status.rs"]
 mod posted_tests;
+
+#[cfg(test)]
+#[path="tests/retrieval_status.rs"]mod retrieval_tests;

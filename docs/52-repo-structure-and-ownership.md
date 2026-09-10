@@ -38,6 +38,8 @@ drift between `kernel/src`, ad-hoc `crates/*`, and one-off folders.
    scroll continuations consume the existing position and Send owners.
    `nt_window/user_input/queue_status` combines canonical posted/sent status;
    `message_queue/wait_live` uses `ready` for initial and parked mask admission.
+   `nt_window/dispatch` calls `retrieval_status` after sent callbacks and before
+   scanning; `ipc::win32_window` owns selected changed-bit acknowledgement.
    Default mouse activation and cursor handling use canonical pointer policy
    and the same Send continuation; each suspended parent reply retains its
    own fallback value or cursor step. Cursor installation follows parent refusal.

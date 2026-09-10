@@ -136,7 +136,7 @@ mod nt_window{
     fn valid_window(hwnd:u64)->Option<WindowId>{u32::try_from(hwnd).ok().and_then(WindowId::from_raw)}
     fn message_filter(state:&WindowManager,hwnd:u64,first:u32,last:u32)->Option<MessageFilter>{
         let hwnd=u32::try_from(hwnd).ok().and_then(WindowId::from_raw);state.validate_message_filter(hwnd).ok()?;Some(MessageFilter{hwnd,first,last})}
-    fn copy_message(_:syscall::UserPtr<NtWindowMessage>,message:ipc::win32_window::WinMessage)->Result<(),syscall::Errno>{crate::hardware_view_fixture::copy(message)}
+    fn copy_message(_:syscall::UserPtr<NtWindowMessage>,message:ipc::win32_window::WinMessage)->Result<(),syscall::Errno>{if crate::retrieval_status_fixture::copy(message){Ok(())}else{crate::hardware_view_fixture::copy(message)}}
     fn copy_rect(_:syscall::UserPtr<nt::NtWindowRect>,_:ipc::win32_window::WindowRect)->u64{panic!("unexpected rect")}
     fn read_rect(_:syscall::UserPtr<nt::NtWindowRect>)->Option<ipc::win32_window::WindowRect>{panic!("unexpected rect input")}
     struct CreateStructArgs;impl CreateStructArgs{fn empty(_:u64)->Self{Self}}
@@ -146,7 +146,7 @@ mod nt_window{
     mod erase_background{pub mod kernel{pub fn for_current(_:u32,_:u64,_:u64)->Option<u64>{None}}}
     mod desktop{pub fn resolve_for_current()->Option<u32>{Some(crate::set_cursor_fixture::desktop())}}
     mod default_paint{pub fn for_current(_:u64)->u64{0}}
-    mod retrieval{pub fn pump(_:super::NtCall,_:bool)->Option<u64>{None}}
+    mod retrieval{pub fn pump(_:super::NtCall,_:bool)->Option<u64>{crate::retrieval_status_fixture::pump()}}
     pub(super) mod paint{
         pub fn begin(_:u64,_:syscall::UserPtr<syscall::nt::NtWindowRect>)->u64{panic!("unexpected paint")}
         pub fn backing_for_current(hwnd:u32)->Option<ipc::win32_gdi::PaintBacking>{
