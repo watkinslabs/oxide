@@ -77,6 +77,7 @@ pub fn wait_requeue_pi(uaddr: u64, val: u32, bitset: u32, uaddr2: u64, private: 
                     tbl[index].push_waiter(waiter);
                 }
             }
+            sched::park_site::note(core::panic::Location::caller());
             me.set_sleep_state(sched::WaitState::Interruptible);
         }
         return match super::park::park_for_grant(&me, &grant, key1, vpid, deadline_ns) {

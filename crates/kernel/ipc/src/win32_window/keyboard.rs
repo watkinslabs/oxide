@@ -24,7 +24,7 @@ impl Default for KeyboardState { fn default() -> Self { Self { bytes: [0; KEY_CO
 #[derive(Clone, Copy)]
 pub(super) struct KeyTransition { key: u8, pressed: bool }
 #[derive(Clone, Copy)]
-pub(super) struct QueuedMessage { pub message: WinMessage, pub key: Option<KeyTransition>, pub bits: u32,
+pub(super) struct QueuedMessage { pub id: u64, pub message: WinMessage, pub key: Option<KeyTransition>, pub bits: u32,
     /// Tick count at which the message was queued, which its retrieval reports.
     pub time: u32,
     /// Packed desktop cursor position at which the message was queued, which
@@ -69,6 +69,7 @@ impl MessageQueue {
             return Some(message);
         }
         let entry = self.messages.remove(index)?;
+        self.clear_drained_posted();
         self.note_message_time(entry.time);
         self.note_message_pos(entry.pos);
         self.note_message_extra(0);
@@ -92,7 +93,7 @@ impl WindowManager {
         let transition = KeyTransition { key: sided(raw, message.lparam), pressed };
         message.wparam = generic(raw) as u64;
         queue.changed |= super::queue_status::QS_KEY;
-        queue.messages.push_back(QueuedMessage { message, key: Some(transition), bits: super::queue_status::QS_KEY, time: super::msg_time::tick_ms(), pos });
+        queue.messages.push_back(QueuedMessage { id: 0, message, key: Some(transition), bits: super::queue_status::QS_KEY, time: super::msg_time::tick_ms(), pos });
 
         self.keyboard.apply(transition, true);
         Ok(())

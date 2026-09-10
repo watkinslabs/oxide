@@ -1,6 +1,7 @@
 """Offline failure-path checks against the acceptance runner and emitted wrapper."""
 import importlib.util
 import io
+import os
 import re
 import socket
 import subprocess
@@ -10,6 +11,7 @@ import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from types import SimpleNamespace
 
 TOOLS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOOLS))
@@ -31,6 +33,29 @@ class FailureTests(unittest.TestCase):
         with patch("atexit.register"), patch.dict(
                 "os.environ", {"OXIDE_NOTEPAD_ACCEPTANCE_DIR": self.tmp.name}):
             spec.loader.exec_module(self.runner)
+
+    def test_failed_visible_vm_and_control_sockets_survive_cleanup(self):
+        r = self.runner
+        r.qemu = SimpleNamespace(pid=12345, poll=lambda: None, wait=lambda timeout: 0)
+        r.QMP.touch()
+        r.UART.touch()
+        with patch.object(r.os, "killpg") as kill, patch("sys.stderr", new=io.StringIO()):
+            r.cleanup()
+        kill.assert_not_called()
+        self.assertTrue(r.QMP.exists())
+        self.assertTrue(r.UART.exists())
+
+    def test_explicit_failure_cleanup_terminates_launcher_group(self):
+        r = self.runner
+        r.KEEP_ON_FAILURE = False
+        r.qemu = SimpleNamespace(pid=12345, poll=lambda: None, wait=lambda timeout: 0)
+        r.QMP.touch()
+        r.UART.touch()
+        with patch.object(r.os, "killpg") as kill:
+            r.cleanup()
+        kill.assert_called_once_with(12345, 15)
+        self.assertFalse(r.QMP.exists())
+        self.assertFalse(r.UART.exists())
 
     def test_fault_rejects_even_with_expected_marker_buffered(self):
         for text in (b"[BUG] broken\nready\n", b"ready\n[FAULT] broken\n"):
@@ -70,10 +95,17 @@ class FailureTests(unittest.TestCase):
         with patch.dict("os.environ", overrides, clear=True), \
              patch.object(Path, "is_file", lambda path: path == source), \
              patch.object(self.runner.subprocess, "run", return_value=result) as run, \
+             patch.object(self.runner, "load_win32u_ordinals", return_value={123: "guest_symbol"}) as ordinals, \
              patch("sys.stdout", new=io.StringIO()):
             self.runner.prepare_image()
+        ordinals.assert_called_once_with(self.runner.ROOT / "target" / "builds" / self.runner.BUILD_ID / "root-x86_64.img")
+        self.assertEqual(self.runner.WIN32U_ORDINALS, {123: "guest_symbol"})
         image = next(call for call in run.call_args_list if call.args[0][0] == "cargo")
         self.assertIn("image", image.args[0])
+        checks = [call.args[0] for call in run.call_args_list if "--profile-only" in call.args[0]]
+        self.assertEqual(len(checks), 2, "source and staged images must both be checked")
+        for command in checks:
+            self.assertEqual(command[command.index("--expected-wine-profile") + 1], overrides.get("OXIDE_WINE_PROFILE", "release"))
         return image.kwargs["env"]
 
     def test_plain_acceptance_passes_no_host_wine_path_to_the_image(self):
@@ -85,6 +117,43 @@ class FailureTests(unittest.TestCase):
         for name in ("OXIDE_WINE_NTDLL", "OXIDE_WINE_WIN32U", "OXIDE_WINE_NLS", "OXIDE_WINE_RUNTIME_ROOT"):
             self.assertNotIn(name, environment)
             self.assertNotIn(name, makefile)
+
+    def test_debug_profile_is_propagated_to_both_image_checks(self):
+        self.assertEqual(self.image_environment({"OXIDE_WINE_PROFILE": "debug"})["OXIDE_WINE_PROFILE"], "debug")
+
+    def test_uart_audit_uses_the_preboot_guest_mapping(self):
+        self.runner.WIN32U_ORDINALS = {0x123: "GuestOnlyCall"}
+        self.runner.UART_LOG.write_text("[WINDOWS-RAW-UNCLAIMED] ordinal=0123\n")
+        with patch.object(self.runner, "load_win32u_ordinals", side_effect=AssertionError("must not reread a running disk")), \
+             patch("sys.stdout", new=io.StringIO()):
+            result = self.runner.run_uart_audit()
+        self.assertFalse(result.passed)
+        self.assertIn("GuestOnlyCall", result.findings[0].detail)
+
+    def test_wrong_cached_profile_stops_before_image_build(self):
+        cached = self.runner.ROOT / "target" / "builds" / self.runner.BUILD_ID / "root-x86_64.img"
+        with patch.dict("os.environ", {"OXIDE_WINE_PROFILE": "debug"}, clear=True), \
+             patch.object(Path, "is_file", lambda path: path == cached), \
+             patch.object(self.runner.subprocess, "run", return_value=subprocess.CompletedProcess([], 1)) as run, \
+             patch("sys.stderr", new=io.StringIO()):
+            with self.assertRaises(SystemExit):
+                self.runner.prepare_image()
+        self.assertEqual(len(run.call_args_list), 1)
+        self.assertIn("--profile-only", run.call_args.args[0])
+        self.assertIn(str(cached), run.call_args.args[0])
+
+    def test_emitted_wrapper_refuses_mismatched_runtime_profile(self):
+        source = (TOOLS / "xtask/src/rootfs_disks/windows_notepad.rs").read_text()
+        guard = source.split('case "${OXIDE_WINE_PROFILE:-}" in', 1)[1].split('# The configuration', 1)[0]
+        guard = 'case "${OXIDE_WINE_PROFILE:-}" in' + guard
+        root = Path(self.tmp.name)
+        (root / "wine-profile").write_text("debug\n")
+        for selected, status in (("debug", 0), ("release", 11), ("deubg", 11)):
+            env = dict(os.environ, OXIDE_WINE_PROFILE=selected, OXIDE_WINDOWS_RUNTIME=str(root))
+            run = subprocess.run(["sh", "-ec", guard], env=env, text=True, capture_output=True)
+            self.assertEqual(run.returncode, status, run.stdout + run.stderr)
+            if status == 0:
+                self.assertIn("wine-profile=debug", run.stdout)
 
     def test_emitted_wrapper_reports_success_and_failure_under_errexit(self):
         source = (TOOLS / "xtask/src/rootfs_disks/windows_notepad.rs").read_text()
@@ -99,7 +168,7 @@ class FailureTests(unittest.TestCase):
         for status in (0, 7, 127):
             with self.subTest(status=status):
                 result = subprocess.run(
-                    ["sh", "-c", f"set -e\nmock_runtime() {{ return {status}; }}\n" + tail],
+                    ["sh", "-c", f"set -e\noxide_log=/dev/null\nfollower=\nmock_runtime() {{ return {status}; }}\n" + tail],
                     capture_output=True, text=True, timeout=2)
                 self.assertEqual(result.returncode, status)
                 self.assertEqual(result.stdout,

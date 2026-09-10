@@ -212,3 +212,38 @@ fn typed_token_raster_reaches_canonical_surface_on_same_pthread() {
         assert!(render::draw(&font, &request, &text, None, &mut sink).is_err());
     }).join().unwrap();
 }
+
+
+#[test]
+fn caption_origin_translates_glyphs_and_clip_without_changing_metrics() {
+    use syscall::nt_gdi_client as client;
+    let bytes = std::fs::read("/usr/share/fonts/liberation-mono-fonts/LiberationMono-Regular.ttf").unwrap();
+    let font = RasterFont::from_bytes(&bytes, 16.0).unwrap();
+    let text: Vec<u16> = "OK".encode_utf16().collect();
+    let metrics = font.measure_utf16(&text, i32::MAX).unwrap();
+    let mut images = Vec::new();
+    for (window, viewport) in [((0i32, 0i32), (0i32, 0i32)), ((3, -2), (59, 1))] {
+        let mut sink = Surface { owner: ipc::win32_gdi::GdiManager::new(), uploads: 0 };
+        let dc = sink.owner.create_dc(130, 28).unwrap();
+        let mut shared = client::encode_dc_attr(dc, 130, 28, client::DcText::default()).unwrap();
+        for (offset, value) in [(client::dc::WND_ORG, window.0), (client::dc::WND_ORG+4, window.1),
+            (client::dc::VPORT_ORG, viewport.0), (client::dc::VPORT_ORG+4, viewport.1)] {
+            shared[offset..offset+4].copy_from_slice(&value.to_le_bytes());
+        }
+        let (attributes, origin) = client::decode_text_with_origin(&shared, dc).unwrap();
+        let request = abi::TextRequest { dc: dc as u64, x: 0, y: 0, count: text.len() as u32,
+            foreground: 0xffffff, background: 0x123456, background_mode: abi::TRANSPARENT,
+            flags: abi::OPAQUE | abi::CLIPPED, rect: [0, 0, 17, 22],
+            current_x: attributes.current_position.0, current_y: attributes.current_position.1, ..request() }
+            .translated(origin).unwrap();
+        assert_eq!(font.measure_utf16(&text, i32::MAX).unwrap().cumulative, metrics.cumulative);
+        render::draw(&font, &request, &text, None, &mut sink).unwrap();
+        assert_eq!(sink.uploads, 1);
+        images.push(sink.owner.surface(dc).unwrap().2.to_vec());
+    }
+    assert!(images[0].iter().any(|pixel| *pixel != 0 && *pixel != 0x123456));
+    for y in 0..28 { for x in 0..130 {
+        let expected = if (56..73).contains(&x) && (3..25).contains(&y) { images[0][(y-3)*130+x-56] } else { 0 };
+        assert_eq!(images[1][y*130+x], expected, "pixel ({x},{y})");
+    }}
+}

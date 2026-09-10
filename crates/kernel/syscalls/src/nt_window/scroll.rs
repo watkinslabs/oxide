@@ -23,44 +23,9 @@ pub(crate) use raw::SCROLLINFO_BYTES;
 #[cfg(test)]
 pub(crate) use raw::{GetScrollInfoParams, SetScrollInfoArgs};
 
-pub trait ScrollActionSink {
-    fn show_scrollbar(&mut self, hwnd: u64, bar: i32) -> bool;
-    fn hide_scrollbar(&mut self, hwnd: u64, bar: i32) -> bool;
-    fn enable_scroll_arrows(&mut self, hwnd: u64, bar: i32) -> bool;
-    fn disable_scroll_arrows(&mut self, hwnd: u64, bar: i32) -> bool;
-    /// Complete SetWindowPos(..., SWP_FRAMECHANGED) through the resumable
-    /// position owner. `Some(0)` and `Some(STATUS_PENDING)` are valid results.
-    fn frame_changed(&mut self, hwnd: u64, bar: i32, token: u64) -> pending::Outcome;
-    fn repaint_scrollbar(&mut self, hwnd: u64, bar: i32) -> bool;
-    /// `None` is transport failure; `Some(0)` is a valid synchronous LRESULT.
-    /// The live owner supplies Curie's resumable send adapter here.
-    fn send_scrollbar_message(&mut self, hwnd: u64, message: u32, wparam: u64, lparam: u64) -> Option<u64>;
-}
-
-/// Consume the canonical action result. SB_CTL is a synchronous scrollbar
-/// window message, never a second nonclient scrollbar state.
-pub fn consume_actions<S: ScrollActionSink + ?Sized>(
-    sink: &mut S, hwnd: u64, bar: i32, info_ptr: u64, redraw: bool,
-    outcome: ipc::win32_window::ScrollOutcome, token: Option<u64>,
-) -> pending::Outcome {
-    let action = outcome.action;
-    if action.control_message && sink.send_scrollbar_message(hwnd, SBM_SETSCROLLINFO, redraw as u64, info_ptr).is_none() { return pending::Outcome::Failed; }
-    if bar == ipc::win32_window::SB_CTL { return pending::Outcome::Complete(0); }
-    if action.hide {
-        if !sink.hide_scrollbar(hwnd, bar) { return pending::Outcome::Failed; }
-        let Some(token) = token else { return pending::Outcome::Failed; };
-        match sink.frame_changed(hwnd, bar, token) { pending::Outcome::Complete(_) => {}, pending::Outcome::Pending => return pending::Outcome::Pending, pending::Outcome::Failed => return pending::Outcome::Failed }
-    }
-    if action.show {
-        if !sink.show_scrollbar(hwnd, bar) { return pending::Outcome::Failed; }
-        let Some(token) = token else { return pending::Outcome::Failed; };
-        match sink.frame_changed(hwnd, bar, token) { pending::Outcome::Complete(_) => {}, pending::Outcome::Pending => return pending::Outcome::Pending, pending::Outcome::Failed => return pending::Outcome::Failed }
-    }
-    if action.disable_arrows && !sink.disable_scroll_arrows(hwnd, bar) { return pending::Outcome::Failed; }
-    if action.enable_arrows && !sink.enable_scroll_arrows(hwnd, bar) { return pending::Outcome::Failed; }
-    if redraw && !action.hide && action.repaint && !sink.repaint_scrollbar(hwnd, bar) { return pending::Outcome::Failed; }
-    pending::Outcome::Complete(0)
-}
+#[path = "scroll/actions.rs"]
+mod actions;
+pub use actions::{ScrollActionSink, consume_actions};
 
 #[cfg(test)]
 #[path = "tests/scroll.rs"]
@@ -74,3 +39,34 @@ pub(crate) mod live;
 pub(crate) mod sink;
 #[path = "scroll/pending.rs"]
 pub(crate) mod pending;
+
+#[path = "scroll/proc_abi.rs"]
+pub(crate) mod proc_abi;
+#[cfg(target_os = "oxide-kernel")]
+#[path = "scroll/control_paint.rs"]
+pub(crate) mod control_paint;
+#[cfg(target_os = "oxide-kernel")]
+#[path = "scroll/control_proc.rs"]
+pub(crate) mod control_proc;
+
+#[cfg(target_os = "oxide-kernel")]
+#[path = "scroll/control_input.rs"]
+pub(crate) mod control_input;
+
+#[cfg(target_os = "oxide-kernel")]
+#[path = "scroll/control_query.rs"]
+pub(crate) mod control_query;
+
+#[cfg(target_os = "oxide-kernel")]
+#[path = "scroll/control_draw.rs"]
+pub(crate) mod control_draw;
+#[cfg(target_os = "oxide-kernel")]
+#[path = "scroll/control_refresh.rs"]
+pub(crate) mod control_refresh;
+
+#[cfg(target_os="oxide-kernel")]
+#[path="scroll/control_geometry.rs"]
+pub(crate) mod control_geometry;
+#[cfg(target_os="oxide-kernel")]
+#[path="scroll/control_focus.rs"]
+pub(crate) mod control_focus;

@@ -27,3 +27,13 @@ fn a_surface_only_survives_the_extent_it_was_captured_for() {
     assert!(!surface_survives((128, 128), (96, 64)));
     assert!(!surface_survives((96, 64), (96, 65)));
 }
+
+#[test]
+fn configure_serial_order_survives_request_counter_wrap() {
+    use super::obsolete_configure;
+    assert!(obsolete_configure(9, 10));
+    assert!(!obsolete_configure(10, 10));
+    assert!(!obsolete_configure(11, 10));
+    assert!(obsolete_configure(u32::MAX, 0));
+    assert!(!obsolete_configure(0, u32::MAX));
+}

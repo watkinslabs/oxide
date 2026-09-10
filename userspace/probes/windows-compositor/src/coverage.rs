@@ -56,6 +56,9 @@ impl Coverage {
         work.is_empty()
     }
 
+    /// Exact retained areas; gaps never become replayable pixels. # C: O(1)
+    pub(crate) fn areas(&self) -> &[Rect] { &self.areas }
+
     /// Nothing has been covered. # C: O(1)
     pub(crate) fn is_empty(&self) -> bool { self.areas.is_empty() }
 

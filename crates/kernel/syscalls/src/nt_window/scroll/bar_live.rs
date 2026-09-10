@@ -72,7 +72,8 @@ fn stored_flags(hwnd: u64, bar: i32) -> Option<u32> {
     entry.state.owned_scroll_state(window, bar).ok().map(|state| state.flags)
 }
 
-fn store_flags(hwnd: u64, bar: i32, flags: u32) -> bool {
+/// # C: O(processes + windows)
+pub(super) fn store_flags(hwnd: u64, bar: i32, flags: u32) -> bool {
     let Some(window) = u32::try_from(hwnd).ok().and_then(ipc::win32_window::WindowId::from_raw) else { return false; };
     let Some(cur) = sched::live::current().filter(|cur| cur.is_nt_personality()) else { return false; };
     let mut entries = GUI.lock();
@@ -86,22 +87,25 @@ fn enable(hwnd: u64, bar: i32, flags: u32) -> u64 {
     let other_matched = if bar == ipc::win32_window::SB_BOTH {
         let matched = stored_flags(hwnd, SB_VERT) == Some(flags);
         if !store_flags(hwnd, SB_VERT, flags) { return 0; }
-        if !matched { let mut sink = production(); sink.repaint_scrollbar(hwnd, SB_VERT); }
+        if !matched { let mut sink = production(); sink.repaint_scrollbar(hwnd, SB_VERT, true); }
         matched
     } else { false };
     let target = enable_target(bar);
     let Some(previous) = stored_flags(hwnd, target) else { return 0; };
     if !store_flags(hwnd, target, flags) { return 0; }
     if enable_unchanged(bar, other_matched, previous == flags) { return 0; }
-    if let Some(enabled) = control_window_enabled(target, flags) { show_window(hwnd, enabled); }
+    if let Some(enabled) = control_window_enabled(target, flags) { let _ = crate::nt_window::enable_window_for_current(hwnd, enabled); }
+    if target == SB_CTL { return super::control_refresh::for_current(hwnd, true, true, 1); }
     let mut sink = production();
-    sink.repaint_scrollbar(hwnd, target);
+    sink.repaint_scrollbar(hwnd, target, true);
     1
 }
 
 /// Fill one `SCROLLBARINFO`: the bar's screen rectangle, its arrow and thumb
 /// metrics, and the accessibility state of each part.
 /// # C: O(N_windows); # Sleeps: yes
+// Accessibility snapshots and copyout buffers must not enlarge the ShowWindow dispatch frame.
+#[inline(never)]
 fn info(hwnd: u64, id: i32, output: u64) -> u64 {
     if defers_to_control(id) {
         return send::send_for_current(hwnd, SBM_GETSCROLLBARINFO, 0, output);

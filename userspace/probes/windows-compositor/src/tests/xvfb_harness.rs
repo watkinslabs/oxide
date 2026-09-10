@@ -44,11 +44,14 @@ pub(crate) fn send(peer: &mut UnixStream, opcode: Opcode, seq: u64, hwnd: u64, p
 pub(crate) fn position(peer: &mut UnixStream, backend: &mut Backend, transport: &mut StreamTransport, seq: u64, hwnd: u64, after: u64, flags: u32) { let mut payload = Vec::new(); payload.extend_from_slice(&after.to_le_bytes()); payload.extend_from_slice(&flags.to_le_bytes()); payload.extend_from_slice(&0u32.to_le_bytes()); send(peer, Opcode::Position, seq, hwnd, payload); ack(peer, backend, transport, seq); }
 pub(crate) fn rect(x: i32, y: i32, w: u32, h: u32) -> Vec<u8> { wire::Rect { x, y, width: w, height: h }.encode().unwrap().to_vec() }
 pub(crate) fn ack(peer: &mut UnixStream, backend: &mut Backend, transport: &mut StreamTransport, seq: u64) {
+    ack_status(peer, backend, transport, seq, 0);
+}
+pub(crate) fn ack_status(peer: &mut UnixStream, backend: &mut Backend, transport: &mut StreamTransport, seq: u64, expected: u32) {
     for _ in 0..100 {
         let _ = backend.run_once(transport);
         let mut header = [0u8; wire::HEADER_LEN]; if peer.set_read_timeout(Some(Duration::from_millis(5))).is_ok() && peer.read_exact(&mut header).is_ok() {
             let header = wire::Header::decode(&header).unwrap(); let mut payload = vec![0u8; header.length as usize]; peer.read_exact(&mut payload).unwrap();
-            if header.opcode == Opcode::Ack && header.sequence == seq { assert_eq!(wire::u32_at(&payload, 0).unwrap(), 0); return; }
+            if header.opcode == Opcode::Ack && header.sequence == seq { assert_eq!(wire::u32_at(&payload, 0).unwrap(), expected); return; }
         }
         std::thread::sleep(Duration::from_millis(1));
     }

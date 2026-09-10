@@ -5,3 +5,8 @@ pub(crate) mod continuation;
 #[path = "nccalc.rs"]
 pub(crate) mod nccalc;
 pub(crate) use continuation::Outcome;
+
+#[path="compositor.rs"] mod compositor;
+pub(crate) use compositor::queue_compositor;
+#[path="work.rs"] mod work;
+pub(crate) use work::RemotePosition;

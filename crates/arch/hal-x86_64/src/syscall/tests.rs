@@ -70,3 +70,16 @@ fn the_synthesized_selectors_are_the_ring3_gdt_pair() {
     assert_eq!(USER_CS_SELECTOR & 3, 3);
     assert_eq!(USER_SS_SELECTOR & 3, 3);
 }
+
+#[test]
+fn native_entry_selectors_identify_a_64_bit_tracee() {
+    assert_eq!(USER_CS_SELECTOR, 0x33, "native debugger architecture discriminator");
+    assert_eq!(USER_SS_SELECTOR, 0x2b, "native user stack selector");
+    let star = syscall_msr_image(1, 2, true).star;
+    let entry_cs = (star >> 32) as u16 & !3;
+    let return_base = (star >> 48) as u16 & !3;
+    assert_eq!(entry_cs, 0x10);
+    assert_eq!(entry_cs + 8, crate::gdt::KERNEL_DS);
+    assert_eq!((return_base + 8) | 3, USER_SS_SELECTOR as u16);
+    assert_eq!((return_base + 16) | 3, USER_CS_SELECTOR as u16);
+}

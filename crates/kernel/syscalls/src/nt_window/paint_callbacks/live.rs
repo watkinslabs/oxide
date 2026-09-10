@@ -50,18 +50,23 @@ pub(crate) fn resume(token: u64, mut result: Result<u64, ()>) -> u64 {
         }
     }
 }
+// Inline terminal dispatch so a by-value completion frame does not survive nested redraw.
+#[inline(always)]
 fn finish(completion:Completion,result:Result<bool,()>)->u64{match completion{
     Completion::Callback{token,finish}=>finish(token,result),
     Completion::Paint(p)=>super::super::paint_prepare::finish_for_current(p,result),
     Completion::DefaultPaint(p)=>super::super::default_paint::finish_for_current(p,result),
+    Completion::ControlPaint(p)=>super::super::scroll::control_paint::finish_for_current(p,result),
+    Completion::ControlRefresh{dc,result,..}=>{super::super::scroll::control_refresh::discard(dc);result},
     Completion::Erase(p)=>super::super::redraw::erase::finish_for_current(p,result),
 }}
 /// After queue removal, release payload resources in the same process without invoking user continuations.
 /// # C: O(processes + windows + GDI objects)
 pub(crate) fn dispose_for_current(completion:Completion){
     match completion{
-        Completion::Paint(p)|Completion::DefaultPaint(p)=>super::super::paint_prepare::discard_for_current(p),
+        Completion::Paint(p)|Completion::DefaultPaint(p)|Completion::ControlPaint(p)=>super::super::paint_prepare::discard_for_current(p),
         Completion::Erase(p)=>super::super::redraw::erase::discard_for_current(p),
+        Completion::ControlRefresh{dc,..}=>super::super::scroll::control_refresh::discard(dc),
         Completion::Callback{..}=>{},
     }
 }
@@ -78,6 +83,8 @@ pub(crate) fn cancel_window_current(hwnd:u64){
 }
 /// Drain before canonical window/GDI/MM teardown; never resume user code on the retiring sender.
 /// # C: O(processes * preparations); no GUI lock across resource cleanup
+// Keep cancellation payload storage off the subsequent window-publication call chain.
+#[inline(never)]
 pub(crate) fn cancel_current_thread(){
     let Some(cur)=sched::live::current()else{return;};
     loop{

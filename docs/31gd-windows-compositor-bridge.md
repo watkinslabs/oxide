@@ -59,6 +59,15 @@ canonical kernel window owner. Configure, keyboard/text, pointer and close
 events return to that owner. A WM_DELETE_WINDOW request becomes a Windows close
 request, not an unconditional process kill. Stale handles/events are rejected.
 
+Reparent opcode9 carries canonical native-parent HWND u64 (zero means desktop)
+and parent-relative window Rect16. Canonical SetParent commits before publication
+after releasing GUI locks. Backend reparents the existing XID with a checked
+request, retains its surface/descendants and updates its presentation parent.
+Style bits cannot substitute for the current parent after creation. Failed X
+reparenting refuses acknowledgement; unknown parents never become desktop.
+Hosted real-X-server regression moves a combo list outside its former parent,
+checks actual server parentage and visible pixels, then reparents it back.
+
 ## Caret presentation
 
 Caret presentation uses outbound opcode 8: generation u64, window-frame Rect
@@ -124,6 +133,24 @@ catalog links and desktop/MIME launch targets. Native pair bytes must match the
 selected staging inputs; file presence or timestamps do not establish provenance.
 Any gate failure fails assembly before reporting the image ready.
 
+Destruction publication removes descendant display windows before ancestors;
+callback traversal remains parent-first. Thread-exit cleanup already supplies
+dependents first. A parent display Destroy removes its remaining X subtree.
+Show replays each exact retained coverage area before acknowledgement; gaps
+remain application-owned and exposure requests still reach the paint owner.
+Partial coverage alone never turns successful mapping into a refusal.
+New frame drawing includes visible native descendants; its exact clipped coverage
+updates their existing retained images using accepted native child geometry.
+Hidden child branches retain their previous pixels. Show, Expose and caret
+restoration clip children so ancestor replay cannot erase newer child drawing.
+Transient frame patches prepare storage before retained pixels change; no
+parallel window or paint-state registry.
+Image tiles use checked X11 requests submitted as one batch before completion.
+Every tile result is consumed before Frame acknowledgement; an earlier error
+cannot be hidden by a later success. A rejected draw returns failure with
+HWND/X11 sequence/resource/error/opcode diagnostics. Connection loss also
+fails completion. No per-tile submission wait or persistent request registry.
+
 ## Verification
 
 Position opcode 7 carries 16 bytes: insertion HWND u64, flags u32, reserved
@@ -131,7 +158,12 @@ u32=0. Flag 1 supplies insertion ordering, flag 2 requests activation; no other
 bits are valid. Without ordering, insertion is zero. Insertion values 0/1/-1/-2
 mean top/bottom/topmost/not-topmost; other values identify a canonical sibling.
 Kernel commits canonical ordering before sending; backend resolves only mapped
-XIDs and applies X11 sibling order or EWMH top-level state/activation.
+XIDs and places the window below its preceding sibling, or applies EWMH
+top-level state/activation. A top-level stacking BadMatch after decoration
+sends the original ConfigureRequest to the root window manager; other X11
+errors remain refusals. Backend diagnostics retain sequence/HWND/error,
+and stacking errors include XID/sibling/mode. Request handling lives in
+`windows-compositor/src/x11/position.rs`.
 Acknowledgement means request submission succeeded, not that the window manager
 granted focus. Actual focus remains an incoming Focus event.
 
@@ -160,3 +192,10 @@ Local Wine win32u window/message behavior, Linux AF_UNIX socket lifetime and
 backpressure, and installed XCB xcb.h/xproto.h APIs provide the implementation
 reference. EWMH desktop properties and X11 WM_PROTOCOLS govern the backend,
 without extending those properties into invented Windows semantics.
+
+## 10
+
+- `OXIDE_COMPOSITOR_READBACK=1` enables diagnostic X-server GetImage after each accepted Frame. Disabled by default; one read round trip and O(damage pixels) comparison per observed frame. Frame acceptance, pixels, coverage and input handling remain unchanged.
+- Compare RGB pixels with retained damage plus current caret overlay; ignore unused alpha bits. Match reports HWND/damage/pixel count; mismatch reports count and first (x,y,expected,actual). Unavailable/unmapped/unsupported-format reads report their error separately and never count as matches.
+- Readback establishes only the X drawable boundary at that frame, not later desktop composition or physical scanout. Occlusion can affect accessible pixels. Mismatches require investigation; unavailable diagnostics do not establish failed application drawing.
+- Hosted real-X-server checks exercise the actual accepted-Frame hook, disabled mode, mapped child drawable coverage, independent server pixel corruption, unheld coverage and unmapped windows. Removing the hook must fail observation counts.

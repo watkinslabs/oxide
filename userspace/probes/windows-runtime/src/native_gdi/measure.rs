@@ -37,14 +37,21 @@ pub(super) fn justify(font: &RasterFont, metrics: &[u8; abi::TEXTMETRIC_BYTES], 
 pub(super) unsafe fn callback(pointer: *const abi::MeasureRequest) -> bool {
     // SAFETY: caller selected the kernel-copied measurement header by its fixed ABI size.
     let request = unsafe { pointer.read_unaligned() };
-    if !request.valid() { return false; }
-    let Some(font) = super::native::selected_font_with_width(request.height, request.width, request.weight, request.italic) else { return false; };
+    if !request.valid() { trace(&request,"request",None,None);return false; }
+    let Some(font) = super::native::selected_font_with_width(request.height, request.width, request.weight, request.italic) else { trace(&request,"font",None,None);return false; };
     // SAFETY: kernel rewrites text to its aligned complete bounded UTF-16 stack copy, including empty text.
     let text = unsafe { std::slice::from_raw_parts(request.text as *const u16, request.count as usize) };
-    let Ok(mut measured) = measure(&font, &request, text) else { return false; };
+    let Ok(mut measured) = measure(&font, &request, text) else { trace(&request,"measure",None,None);return false; };
     measured.output.cumulative = measured.cumulative.as_ptr() as u64;
     // SAFETY: native result and cumulative allocation remain live through synchronous kernel copyout.
     let status = unsafe { libc::syscall(syscall::nt::NtService::QueryVirtualMemory.entry() as libc::c_long,
         abi::MEASURE_COPY, pointer as u64, abi::INFO_CLASS, &measured.output as *const abi::MeasureOutput as u64, 0u64, 0u64) };
-    status == 0
+    trace(&request,"copy",Some(&measured.output),Some(status));status == 0
+}
+
+fn trace(request:&abi::MeasureRequest,step:&str,output:Option<&abi::MeasureOutput>,status:Option<libc::c_long>){
+    if std::env::var_os("OXIDE_GDI_TRACE").as_deref()!=Some(std::ffi::OsStr::new("1")){return;}
+    eprintln!("windows-gdi: measure pid={} dc={:#x} kind={} count={} font={},{},{},{} step={} extent={:?} status={:?}",
+        std::process::id(),request.dc,request.kind,request.count,request.height,request.width,request.weight,request.italic,
+        step,output.map(|o|(o.width,o.height,o.fit)),status);
 }

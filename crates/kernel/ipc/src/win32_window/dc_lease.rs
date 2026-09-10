@@ -60,7 +60,12 @@ impl WindowManager {
         let origin = if logical_window { (0, 0) } else {
             (client.left.checked_sub(outer.left).ok_or(WindowError::InvalidParent)?, client.top.checked_sub(outer.top).ok_or(WindowError::InvalidParent)?)
         };
-        let backing = if flags & DCX_PARENTCLIP != 0 { parent.ok_or(WindowError::InvalidParent)? } else { hwnd };
+        let mut backing=hwnd;
+        let mut remaining=self.windows.len();
+        while let Some(parent)=self.get(backing).ok_or(WindowError::NoSuchWindow)?.parent{
+            remaining=remaining.checked_sub(1).ok_or(WindowError::InvalidParent)?;
+            backing=parent;
+        }
         let backing_outer = self.rect(backing).ok_or(WindowError::NoSuchWindow)?;
         let backing_client = self.get(backing).ok_or(WindowError::NoSuchWindow)?.client_rect.or_else(|| self.rect(backing)).ok_or(WindowError::NoSuchWindow)?;
         let backing_client_screen = self.client_screen_origin(backing)?;

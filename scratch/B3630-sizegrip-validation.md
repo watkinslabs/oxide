@@ -1,0 +1,42 @@
+# B3630 scrollbar sizegrip input
+
+| Status | Branch | Item |
+|---|---|---|
+| IN-PROGRESS | B3630-paint-region-collapse | KI0885 |
+
+Actual control procedure now handles sizegrip WM_SETCURSOR through the existing
+shared OEM cursor owner, choosing opposite diagonals for RTL and preserving
+the entire previous cursor return. Ordinary scrollbar cursor still delegates
+to the default procedure. Left-down/double-click sends canonical relative
+parent WM_SYSCOMMAND with bottom-left/bottom-right sizing command and original
+LPARAM. Existing resumable Send owns suspension; final control result is zero
+regardless of parent response/failure. GUI lock is released before either
+external owner runs. No parallel input/cursor/callback registry.
+
+Actual procedure entry initially returns STATUS_NOT_IMPLEMENTED for cursor
+(/tmp/B3630-sizegrip-red.log). Restoring missing click route also fails with
+STATUS_NOT_IMPLEMENTED versus0 (/tmp/B3630-sizegrip-click-red.log). Corrected
+joined boundary passes26 tests (/tmp/B3630-sizegrip-green.log), including
+both directions, both click numbers, full-width cursor and LPARAM values,
+suspended completion, failed callback, and ordinary cursor delegation.
+Cursor installation and Send execution are explicit seams; tests assert GUI
+is not held at either call. Existing real cursor/Send owners are reused;
+these tests do not establish rendered pixels or full real User32 acceptance.
+
+Final source37f740be7: both builds/features/frame gates PASS. Ordinary scrollbar tracking, focus,
+state messages and synchronous refresh remain KI0885; no full-procedure or
+Notepad completion claim. No new boot.
+
+Raw call-site audit: nt_wine_window/raw_callback.rs routes selector029a to
+control_proc::for_current before default-procedure fallback. The fixture
+exercises that control entry, not the raw selector codec itself.
+Existing static tools/test-windows-notepad-harness.sh still fails on its old
+raw-DC-routing source needle (KI0574); /tmp/B3630-sizegrip-harness.log, exit1.
+It is not a passing gate; executable Notepad Python tests are separate.
+
+Static gates retain existing KI0019 failures:336x86/278ARM primary rows,
+no added/increased path versus parent-handling; exception7664/6368 unchanged.
+Full gate not green. Final logs /tmp/B3630-sizegrip-final-{build,feature}.log,
+frame-{x86,arm}.log, stack-{x86,arm}.log and stack-compare.log. Snapshots:
+b12b3f926b857f9fef5768f72a7c4e7a56bda6b88e2834f4d7be4da9f15f4c79  target/B3630-sizegrip-final-x86_64.elf
+dbbb69659cbb5f130e4055fc4754584fff3ffd39f16db01b90c15d33793ac641  target/B3630-sizegrip-final-aarch64.elf

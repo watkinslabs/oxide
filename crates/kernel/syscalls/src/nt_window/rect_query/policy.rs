@@ -1,4 +1,4 @@
-//! Pure GetWindowRects policy. The live current-process wrapper is one level up.
+//! Canonical rectangle queries and geometry used by default window handling.
 
 /// Which rectangle a query names. The method decides it; no flag inside the
 /// caller's parameter record does.
@@ -47,6 +47,16 @@ fn offset(rect: ipc::win32_window::WindowRect, dx: i32, dy: i32) -> ipc::win32_w
     }
 }
 
+/// WM_NCHITTEST carries a screen point even for a child. Use the screen
+/// rectangle query so every ancestor contributes its client origin once.
+/// # C: O(N_windows)
+pub(crate) fn default_proc_state(state: &ipc::win32_window::WindowManager, hwnd: u32,
+    message: u32, lparam: i64) -> ipc::win32_window::DefaultWindowResult {
+    use ipc::win32_window::{default_window_proc, default_window_proc_for_rect, WindowId};
+    let rect = WindowId::from_raw(hwnd).and_then(|window| query_state(state, window, RectKind::Window, 0, 0));
+    rect.map_or_else(|| default_window_proc(message), |rect| default_window_proc_for_rect(message, rect, lparam))
+}
+
 /// Child rectangles are parent-client-relative, so a screen result adds the
 /// parent chain's client origin from the canonical mapping owner. A client
 /// result stays local `[0,width]x[0,height]` unless the screen form is asked
@@ -74,3 +84,7 @@ pub(crate) fn query_state(
 #[cfg(test)]
 #[path = "tests/policy.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/dispatch_pointer.rs"]
+mod dispatch_pointer_tests;

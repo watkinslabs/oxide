@@ -11,6 +11,7 @@ FROZEN 2026-08-31. Dep:`01`,`02`,`06`,`13`,`31d`,`52`,`53`. Provides: process-lo
 - Reusing a slot changes its generation, so a stale handle never resolves a new object.
 - Clone-threads share one table through `ThreadGroup`; forked processes receive a new table.
 - Object references use `Arc` lifetime ownership; subsystem state owns the object identity and behavior.
+- Namespace initialization publishes the permanent `\Windows\WindowStations` directory before interactive desktop attachment. Station creation still requires an existing directory parent; bootstrap uses the same canonical namespace and handle tables as later opens.
 - Each object counts handles across all process tables, independently of transient `Arc` references. Successful insertion/duplication increments once; close and table destruction decrement once. Protected/stale closes and failed insertions do not change the count. Object queries report this shared count.
 - Handle-count transitions and temporary-name unlink decisions serialize through the existing object namespace. Closing one process's last local handle cannot unlink an object still held by another process. Final global close unlinks temporary names; permanent names remain. Table destruction releases remaining handles outside its table lock.
 - File objects retain the canonical `Arc<vfs::File>` open description; NT
@@ -38,6 +39,7 @@ FROZEN 2026-08-31. Dep:`01`,`02`,`06`,`13`,`31d`,`52`,`53`. Provides: process-lo
 - close invalidates the old generation before slot reuse;
 - duplicate rejects access escalation and preserves the object reference;
 - the table is process-owned and is not the Linux fd table.
+- the actual interactive launch station path bootstraps two process tables onto the same station/desktop; desktop HWND resolution and a desktop DC lease succeed, and closing temporary station handles preserves the permanent parent directory.
 - a VFS-backed file handle preserves the shared open description through close;
   no second cursor or backend is created.
 - create/open file requests use the existing parent resolver and VFS create/open

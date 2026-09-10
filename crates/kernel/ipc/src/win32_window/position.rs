@@ -111,9 +111,11 @@ impl WindowManager {
         if p.notify_geometry&&moved {self.post_to_window(id,WinMessage {hwnd:Some(id),message:WM_MOVE,wparam:0,lparam:mouse_lparam(p.rect.left,p.rect.top)})?;}
         if p.notify_geometry&&resized {self.post_to_window(id,WinMessage {hwnd:Some(id),message:WM_SIZE,wparam:0,lparam:mouse_lparam(width,height)})?;}
         if let Some(damage)=damage{
+            let before=self.paint_obligations(id);
             if let Some(index)=self.dirty.iter().position(|(window,_)|*window==id){
                 if damage.pending(){self.dirty[index].1=damage;}else{self.dirty.remove(index);}
             }else if damage.pending(){self.dirty.push((id,damage));}
+            self.note_paint_change(id,before);
         }
         if activate {
             if child {self.post_to_window(id,WinMessage {hwnd:Some(id),message:WM_CHILDACTIVATE,wparam:0,lparam:0})?;}

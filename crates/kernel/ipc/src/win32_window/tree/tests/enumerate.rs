@@ -48,6 +48,27 @@ fn the_recursive_form_lists_descendants_and_the_sibling_form_starts_at_the_windo
 }
 
 #[test]
+fn dialog_control_lookup_from_first_child_reaches_every_identifier() {
+    let mut scene = Scene::new();
+    let dialog = scene.add(1, None, 0);
+    let other = scene.add(1, None, 0);
+    let mut controls = alloc::vec![];
+    for identifier in [0x470, 0x471, 0x440, 1, 2] {
+        let child = scene.add(1, Some(dialog), WS_CHILD);
+        scene.windows.set_control_id(child, identifier).unwrap();
+        controls.push((identifier, child));
+    }
+    let unrelated = scene.add(1, Some(other), WS_CHILD);
+    scene.windows.set_control_id(unrelated, 0x471).unwrap();
+    for (identifier, expected) in controls {
+        let first = scene.windows.window_relative(dialog, GW_CHILD).unwrap();
+        let found = scene.windows.hwnd_list(filter(Some(first), false, 0)).into_iter()
+            .find(|window| scene.windows.control_id(*window) == Some(identifier));
+        assert_eq!(found, Some(expected), "dialog control {identifier:#x}");
+    }
+}
+
+#[test]
 fn a_search_matches_a_class_atom_a_title_or_both() {
     let mut scene = Scene::new();
     let first = scene.add(1, None, 0);

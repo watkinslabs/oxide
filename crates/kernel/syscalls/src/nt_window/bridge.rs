@@ -86,6 +86,12 @@ fn create_snapshot(state: &mut WindowManager, hwnd: u64, style: u32, ex_style: u
     snapshot(state, hwnd)
 }
 
+fn reparent_payload(state:&WindowManager,hwnd:u64)->Option<Vec<u8>>{
+    let parent=state.get(window(hwnd)?)?.parent.map_or(0,|id|id.raw() as u64);
+    let mut payload=parent.to_le_bytes().to_vec();
+    payload.extend_from_slice(&snapshot(state,hwnd)?.rect.encode_window().ok()?);Some(payload)
+}
+
 impl Snapshot {
     fn create_payload(&self, style: u32, exstyle: u32) -> Option<Vec<u8>> {
         let mut payload = self.rect.encode_window().ok()?.to_vec();
@@ -125,7 +131,7 @@ pub(super) fn is_key_repeat(state: &WindowManager, record: &Record) -> bool {
 }
 
 pub(super) fn apply_event(
-    state: &mut WindowManager, keys: &mut SysKeyLatch, record: &Record,
+    state: &mut WindowManager, keys: &mut SysKeyLatch, positions: &mut Vec<crate::nt_window::position::RemotePosition>, record: &Record,
     pointer: impl FnOnce(&mut WindowManager, WindowId, i32, i32, u32, i32, i32) -> bool,
 ) -> bool {
     if record.validate().is_err() { return false; }
@@ -137,7 +143,7 @@ pub(super) fn apply_event(
             let Ok(rect) = wire::Rect::decode_window(p) else { return false; };
             let next = WindowRect { left: rect.x, top: rect.y,
                 right: rect.x + rect.width as i32, bottom: rect.y + rect.height as i32 };
-            state.configure_compositor_window(id, next).is_ok()
+            crate::nt_window::position::queue_compositor(state, positions, id, next)
         }
         // The display has lost pixels it cannot restore from what it retains.
         // The rectangle is stated in the window's own coordinates and becomes
@@ -257,6 +263,19 @@ mod live {
         result
     }
 
+    /// Publish canonical tree parent after SetParent and GUI unlock. # C: O(windows) + ACK; # Sleeps: yes
+    pub(crate) fn publish_reparent_current(hwnd:u64)->Result<(),TransportError>{
+        let cur=sched::live::current().ok_or(TransportError::Disconnected)?;
+        if !cur.is_nt_personality(){return Err(TransportError::Invalid);}
+        let group=Arc::clone(&cur.thread_group);
+        let payload={
+            let entries=super::super::GUI.lock();
+            let entry=entries.iter().find(|e|e.group.ptr_eq(&Arc::downgrade(&group))).ok_or(TransportError::Unknown)?;
+            if !entry.state.presentation_ready(window(hwnd).ok_or(TransportError::Invalid)?).ok_or(TransportError::Unknown)?{return Ok(());}
+            reparent_payload(&entry.state,hwnd).ok_or(TransportError::Invalid)?
+        };
+        publish(&group,Opcode::Reparent,hwnd,payload)
+    }
     /// Invoke after canonical visibility mutation and GUI unlock. # C: O(windows) + ACK; # Sleeps: yes
     pub(crate) fn publish_visibility_current(hwnd: u64) -> Result<(), TransportError> {
         let Some((group, value)) = current_update(hwnd)? else { return Ok(()); };
@@ -303,7 +322,7 @@ mod live {
             // A held key that repeats is a repeat only while the session wants
             // repeats; the first press and every release are never dropped.
             if is_key_repeat(&entry.state, record) && !super::super::keyboard_auto_repeat() { return false; }
-            let accepted = apply_event(&mut entry.state, &mut entry.sys_key, record, |state, id, x, y, buttons, wheel, hwheel| {
+            let accepted = apply_event(&mut entry.state, &mut entry.sys_key, &mut entry.remote_positions, record, |state, id, x, y, buttons, wheel, hwheel| {
                 state.post_compositor_pointer(id, x, y, buttons, wheel, hwheel).is_ok()
             });
             if accepted && record.header.opcode == Opcode::Focus { entry.foreground = entry.state.active_window().is_some(); }
@@ -324,7 +343,7 @@ mod live {
 
 #[cfg(target_os = "oxide-kernel")]
 pub(crate) use live::{handle_event, publish_create_current, publish_destroy_current,
-    publish_geometry_current, publish_position_current, publish_title_current, publish_visibility_current};
+    publish_geometry_current, publish_reparent_current, publish_position_current, publish_title_current, publish_visibility_current};
 
 #[cfg(test)]
 #[path = "bridge/tests/events.rs"]
@@ -335,3 +354,7 @@ mod key_tests;
 #[cfg(test)]
 #[path = "bridge/tests/focus.rs"]
 mod focus_tests;
+
+#[cfg(test)]
+#[path="bridge/tests/reparent.rs"]
+mod reparent_tests;

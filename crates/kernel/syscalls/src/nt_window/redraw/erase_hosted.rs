@@ -1,13 +1,9 @@
 //! Actual erase resource preparation/completion against canonical window and GDI owners.
 #![allow(dead_code,unused_imports,unexpected_cfgs)]
 extern crate alloc;
-extern crate self as ipc;
 extern crate self as sched;
 use std::sync::{Arc,Weak,Mutex,MutexGuard,LazyLock};
-#[path = "../../../../ipc/src/win32_imc.rs"] pub mod win32_imc;
-#[path="../../../../ipc/src/win32_window.rs"] pub mod win32_window;
-#[path="../../../../ipc/src/win32_sysparams.rs"] pub mod win32_sysparams;
-#[path="../../../../ipc/src/win32_gdi.rs"] pub mod win32_gdi;
+pub use ipc::{win32_imc,win32_window,win32_sysparams,win32_gdi};
 use win32_window::{WindowManager,WindowId,WindowRect,PaintRegion,RDW_INVALIDATE,RDW_ERASE,RDW_FRAME};
 use win32_gdi::{GdiManager,PaintBacking,Rect};
 struct Task{tid:u64,thread_group:Arc<()>}
@@ -47,6 +43,15 @@ static FAIL_CREATE:Mutex<bool>=Mutex::new(false);
 fn layout()->PaintBacking{PaintBacking{width:8,height:8,client:Rect{left:2,top:2,right:6,bottom:6}}}
 mod nt_gdi{
     use super::*;
+    pub fn get_dc_ex_for_current(hwnd:u32,region:u32,flags:u32)->u64{
+        if *FAIL_CREATE.lock().unwrap(){return 0;}
+        let c={let entries=nt_window::GUI.lock();entries[0].state.dc_lease_context(WindowId::from_raw(hwnd).unwrap(),flags).unwrap()};
+        let mut gdi=GDI.lock().unwrap();let backing=gdi.acquire_window_dc(c.backing_hwnd,c.backing_width,c.backing_height).unwrap();
+        gdi.acquire_dc_lease(win32_gdi::DcLeaseRequest{hwnd,backing_hwnd:c.backing_hwnd,backing,origin:c.origin,
+            screen_origin:c.screen_origin,width:c.logical_width,height:c.logical_height,visible:c.visible,
+            flags:c.flags,owner:c.owner,clip_handle:region}).map(u64::from).unwrap_or(0)
+    }
+
     pub fn create_region_for_current(r:PaintRegion)->Result<u32,()>{GDI.lock().unwrap().create_region(r).map_err(|_|())}
     pub fn create_paint_dc_for_current(w:i32,h:i32)->Result<u32,()>{
         if *FAIL_CREATE.lock().unwrap(){return Err(());}GDI.lock().unwrap().create_dc(w,h).map_err(|_|())
@@ -57,13 +62,16 @@ mod nt_gdi{
     pub fn set_paint_region_for_current(dc:u64,r:PaintRegion)->Result<(),()>{GDI.lock().unwrap().set_paint_region(dc as u32,r).map_err(|_|())}
     pub fn region_snapshot_for_current(h:u64)->Result<PaintRegion,()>{GDI.lock().unwrap().region_snapshot(h as u32).map_err(|_|())}
     pub fn retain_erase_for_current(hwnd:u32,dc:u32,r:&PaintRegion,l:PaintBacking)->Result<(),()>{GDI.lock().unwrap().retain_paint_region(hwnd,dc,r,l).map(|_|()).map_err(|_|())}
-    pub fn delete_paint_dc_current(dc:u32)->Result<(),()>{GDI.lock().unwrap().delete_object(dc).map_err(|_|())}
+    pub fn delete_paint_dc_current(dc:u32)->Result<(),()>{let mut gdi=GDI.lock().unwrap();
+        if gdi.lease_window(dc).is_some(){gdi.clear_paint_clip(dc).map_err(|_|())?;gdi.release_dc_lease(dc).map_err(|_|())}
+        else{gdi.delete_object(dc).map_err(|_|())}}
+
     pub fn delete_region_for_current(h:u64)->Result<(),()>{GDI.lock().unwrap().delete_region(h as u32).map_err(|_|())}
 }
 fn setup()->(u32,u32){
     *GDI.lock().unwrap()=GdiManager::new();*PENDING.lock().unwrap()=None;REPLIES.lock().unwrap().clear();*FAIL_CREATE.lock().unwrap()=false;
     let mut state=WindowManager::new();let id=state.create(7,None,1).unwrap();
-    state.set_visible(id,true).unwrap();state.set_rect(id,WindowRect{left:10,top:20,right:18,bottom:28}).unwrap();
+    state.set_visible(id,true).unwrap();state.set_window_styles(id,0x10000000,0).unwrap();state.set_rect(id,WindowRect{left:10,top:20,right:18,bottom:28}).unwrap();
     let position=win32_window::WindowPosition{rect:WindowRect{left:10,top:20,right:18,bottom:28},client:Some(WindowRect{left:12,top:22,right:16,bottom:26}),
         window:id,order:None,visible:None,flags:0x18,notify_geometry:false};
     // The fixture installs the same canonical client geometry through position commit.
@@ -89,7 +97,7 @@ fn erase_live_retains_only_exact_pixels_keeps_damage_and_releases_resources(){
     let g=GDI.lock().unwrap();for y in 0..8{for x in 0..8{
         assert_eq!(g.pixels(backing).unwrap()[y*8+x],if(x==2&&y==2)||(x==5&&y==5){0xffffff}else{0x123456});
     }}
-    for h in [p.dc,p.nc_region,p.client_region]{assert!(!g.contains_object(h));}drop(g);
+    assert!(g.validate_dc(p.dc).is_err());for h in [p.nc_region,p.client_region]{assert!(!g.contains_object(h));}drop(g);
     let id=WindowId::from_raw(hwnd).unwrap();let entries=nt_window::GUI.lock();
     assert!(entries[0].state.paint_session(id).is_err());assert!(entries[0].state.erase_damage(id).unwrap().delayed_erase);
     assert!(entries[0].state.pending_paint_message(7).is_some());
@@ -101,5 +109,5 @@ fn erase_live_failed_preparation_preserves_flags_and_cancel_releases_owned_handl
     assert!(nt_window::GUI.lock()[0].state.erase_damage(WindowId::from_raw(hwnd).unwrap()).unwrap().erase);
     *FAIL_CREATE.lock().unwrap()=false;assert_eq!(redraw::erase::begin_for_current(hwnd,72),0x103);
     let(_,p)=PENDING.lock().unwrap().take().unwrap();assert_eq!(redraw::erase::finish_for_current(p,Err(())),0);
-    let g=GDI.lock().unwrap();for h in [p.dc,p.nc_region,p.client_region]{assert!(!g.contains_object(h));}
+    let g=GDI.lock().unwrap();assert!(g.validate_dc(p.dc).is_err());for h in [p.nc_region,p.client_region]{assert!(!g.contains_object(h));}
 }

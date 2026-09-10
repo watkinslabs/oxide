@@ -1,15 +1,4 @@
-"""Typing must not be paced by the harness that measures it.
-
-Measured in one acceptance run, same guest, same control, three deliveries
-of the same eight characters: 76 ms per character over `send-key` at QEMU's
-default 100 ms hold, 74 ms over `send-key` at a 5 ms hold, and 11 ms over
-`input-send-event`. The hold is not what paces it -- the queue behind
-`send-key` is -- so text leaves that queue entirely and only chords, which
-are not on the measured path, still use it.
-
-Positive control: send the token's characters through `send-key` again and
-`test_typed_characters_do_not_go_through_the_paced_queue` fails.
-"""
+"""Complete input chords must precede text on the immediate QMP event path."""
 import importlib.util
 import sys
 from pathlib import Path
@@ -30,25 +19,39 @@ def record():
 
 
 class TypingRateTests(unittest.TestCase):
-    def test_typed_characters_do_not_go_through_the_paced_queue(self):
-        """Measured in the tgt-B3567 acceptance run: 74-76 ms per character
-        over `send-key` at either hold, 11 ms over `input-send-event`. The
-        hold is not what paces it, so shortening the hold is not the fix --
-        the characters have to leave the queue entirely."""
+    def test_token_chord_and_text_leave_no_delayed_modifier(self):
         sent, capture = record()
         with patch.object(runner, "qmp", capture):
             runner.type_token(Mock())
-        commands = [command for command, _ in sent]
-        self.assertEqual(commands.count("input-send-event"), len(runner.TOKEN))
-        # Only the select-all chord ahead of the text stays on send-key.
-        self.assertEqual(commands.count("send-key"), 1)
+        self.assertEqual(len(sent), len(runner.TOKEN) + 1)
+        held = set()
+        typed = []
+        for command, arguments in sent:
+            self.assertEqual(command, "input-send-event", "delayed key releases must not race following text")
+            for event in arguments["events"]:
+                data = event["data"]
+                key = data["key"]["data"]
+                if data["down"]:
+                    if key == "a" and "ctrl" in held:
+                        typed.clear()
+                    elif key != "ctrl":
+                        self.assertNotIn("ctrl", held, "text would invoke a shortcut")
+                        typed.append("-" if key == "minus" else key)
+                    held.add(key)
+                else:
+                    self.assertIn(key, held)
+                    held.remove(key)
+            self.assertFalse(held, "each completed chord must have released every key")
+        self.assertEqual("".join(typed), runner.TOKEN)
 
-    def test_chords_carry_an_explicit_short_hold(self):
+    def test_chords_complete_in_one_transaction(self):
         sent, capture = record()
         with patch.object(runner, "qmp", capture):
             runner.keys(Mock(), "ctrl", "a")
-        self.assertEqual(sent[0][1].get("hold-time"), runner.KEY_HOLD_MS)
-        self.assertLess(runner.KEY_HOLD_MS, 100)
+        self.assertEqual(sent, [("input-send-event", {"events": [
+            {"type": "key", "data": {"down": down, "key": {"type": "qcode", "data": name}}}
+            for down, name in [(True, "ctrl"), (True, "a"), (False, "a"), (False, "ctrl")]
+        ]})])
 
     def test_the_immediate_path_presses_and_releases_in_one_transaction(self):
         sent, capture = record()
@@ -60,27 +63,12 @@ class TypingRateTests(unittest.TestCase):
         self.assertEqual([(event["data"]["down"], event["data"]["key"]["data"]) for event in arguments["events"]],
                          [(True, "ctrl"), (True, "a"), (False, "a"), (False, "ctrl")])
 
-    def test_the_probe_types_every_delivery_shape_and_pauses_between_them(self):
-        sent, capture = record()
-        slept = []
-        with patch.object(runner, "qmp", capture), patch.object(runner.time, "sleep", slept.append):
-            runner.probe_cadence(Mock())
-        typed = [arguments for command, arguments in sent if command == "send-key"]
-        # One phase is deliberately typed at QEMU's default hold: it is the
-        # control the other phases are compared against.
-        self.assertIn(None, [arguments.get("hold-time") for arguments in typed])
-        self.assertIn(runner.KEY_HOLD_MS, [arguments.get("hold-time") for arguments in typed])
-        self.assertEqual(len([1 for command, _ in sent if command == "input-send-event"]), 8)
-        self.assertEqual(slept, [runner.notepad_cadence.PHASE_PAUSE_SECONDS] * len(runner.CADENCE_PHASES))
-
-    def test_the_cadence_report_names_every_phase_and_the_token(self):
+    def test_the_cadence_report_names_the_actual_token_input(self):
         reader = Mock()
         reader.text.return_value = ""
         written = {}
         with patch.object(runner, "CADENCE_MD", Mock(write_text=lambda text: written.setdefault("text", text))):
             runner.report_cadence(reader)
-        for label, _, _ in runner.CADENCE_PHASES:
-            self.assertIn(label, written["text"])
         self.assertIn("token", written["text"])
 
 

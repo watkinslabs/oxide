@@ -19,6 +19,8 @@ import guest_powerdown
 from uart_reader import UartReader
 from notepad_fault_drain import drain as drain_fault
 import notepad_cadence
+from notepad_dialogs import DialogChecks
+from notepad_desktop_diagnostics import DesktopDiagnostics
 from screenshot_evidence import screenshot_completed, record_screenshot
 from notepad_evidence import token_in_notepad_window, locate_notepad_window, image_size, crop_image, menu_bar_word
 from gnome_overview import overview_showing, pill_stats, window_activated
@@ -28,7 +30,7 @@ from notepad_uart_audit import audit as uart_audit, render_table as uart_audit_t
 ROOT = Path(__file__).resolve().parents[1]
 IMAGES = ROOT.parent / "images"
 RUN = str(os.getpid())
-BUILD_ID = os.environ.get("OXIDE_NOTEPAD_BUILD_ID", f"notepad-{RUN}")
+BUILD_ID = os.environ.get("OXIDE_NOTEPAD_BUILD_ID", f"notepad-{os.environ.get('OXIDE_WINE_PROFILE', 'release')}-{RUN}")
 OUT = Path(os.environ.get("OXIDE_NOTEPAD_ACCEPTANCE_DIR", ROOT / "target/windows-notepad-acceptance"))
 OUT.mkdir(parents=True, exist_ok=True)
 UART = OUT / f"uart-{RUN}.sock"
@@ -71,10 +73,16 @@ DESKTOP_LAUNCH = (b'set -- $(pgrep -x gnome-shell); if [ "$#" -eq 1 ]; then '
                   b'/usr/local/bin/windows-notepad-smoke; '
                   b'else echo "[WINDOWS-NOTEPAD] runtime-exit status=11 desktop-session-ambiguous"; fi\n')
 qemu = None
+WIN32U_ORDINALS = {}
+run_succeeded = False
+KEEP_ON_FAILURE = os.environ.get("OXIDE_NOTEPAD_KEEP_ON_FAILURE", "1") == "1"
 
 
 def cleanup():
     if qemu is not None and qemu.poll() is None:
+        if KEEP_ON_FAILURE and not run_succeeded:
+            print(f"windows-notepad-acceptance: retained failed VM launcher={qemu.pid} QMP={QMP} UART={UART}", file=sys.stderr)
+            return
         try:
             os.killpg(qemu.pid, 15)
             qemu.wait(timeout=3)
@@ -140,12 +148,14 @@ def desktop_ready_text(text):
     return re.search(r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}\s+\d{1,2}:\d{2}\b", text) is not None
 
 
-def wait_for_rendered_desktop(conn, deadline):
+def wait_for_rendered_desktop(conn, deadline, diagnostics=None):
     """Require two OCR-confirmed GNOME frames before launching the PE."""
     probe = Path(f"{SCREEN}-gnome-probe.ppm")
     ocr_probe = Path(f"{SCREEN}-gnome-probe-ocr.png")
     stable = 0
     while time.monotonic() < deadline:
+        if diagnostics is not None:
+            diagnostics.poll()
         probe.unlink(missing_ok=True)
         ocr_probe.unlink(missing_ok=True)
         qmp(conn, "screendump", {"filename": str(probe)})
@@ -205,22 +215,9 @@ def wait_marker(reader, marker, deadline, guest=None):
     die(f"missing guest marker {marker}")
 
 
-# QEMU delays the key-up of a `send-key` by `hold-time`, which defaults to
-# 100 ms, and the input queue that carries it is serial, so consecutive
-# default `send-key` commands reach the guest about a tenth of a second apart
-# however fast they are issued -- the QMP command itself returns in about half
-# a millisecond. A harness that types with the default therefore reports its
-# own pacing as the guest's typing cadence. Everything typed for a result
-# names its own hold; the cadence probe types one phase with the default on
-# purpose, to measure what that costs.
-KEY_HOLD_MS = 5
-
-
-def keys(conn, *names, hold_ms=KEY_HOLD_MS):
-    arguments = {"keys": [{"type": "qcode", "data": name} for name in names]}
-    if hold_ms is not None:
-        arguments["hold-time"] = hold_ms
-    qmp(conn, "send-key", arguments)
+def keys(conn, *names):
+    """Deliver a complete chord before any following command's input."""
+    keys_immediate(conn, *names)
 
 
 def keys_immediate(conn, *names):
@@ -268,37 +265,26 @@ def type_token(conn):
     type_text(conn, TOKEN)
 
 
-# One phase per way of delivering a keystroke, typed into the same control in
-# the same run so the comparison is not across boots. Each phase is the same
-# length and they are separated by an idle pause the log analysis segments on.
-CADENCE_PHASES = (
-    ("send-key default hold", "aaaaaaaa", lambda conn, name: keys(conn, name, hold_ms=None)),
-    (f"send-key hold {KEY_HOLD_MS}ms", "bbbbbbbb", keys),
-    ("input-send-event", "cccccccc", keys_immediate),
-)
-
-
-def probe_cadence(conn):
-    """Type each phase, leaving the control empty and the buffer selected.
-
-    Which side owns the per-character interval is not something the guest's
-    trace can say on its own: it stamps when it retrieved a character, not
-    when the character was sent. Typing the same text three ways in one run
-    makes the sender's contribution the only thing that differs.
-    """
-    for _, text, send in CADENCE_PHASES:
-        keys(conn, "ctrl", "a")
-        type_text(conn, text, send)
-        time.sleep(notepad_cadence.PHASE_PAUSE_SECONDS)
+def desktop_launch_command(readback=False, gdi_trace=False):
+    settings = []
+    if readback:
+        settings.append(b'OXIDE_COMPOSITOR_READBACK=1')
+    if gdi_trace:
+        settings.append(b'OXIDE_GDI_TRACE=1')
+    if not settings:
+        return DESKTOP_LAUNCH
+    return DESKTOP_LAUNCH.replace(b'/usr/local/bin/windows-notepad-smoke',
+                                 b'env ' + b' '.join(settings) + b' /usr/local/bin/windows-notepad-smoke')
 
 
 def launch_on_desktop(uart, reader, qmp_sock, deadline, guest=None):
     wait_marker(reader, "sh-5.2#", deadline, guest)
     wait_marker(reader, "Entering running state", deadline, guest)
-    wait_for_rendered_desktop(qmp_sock, deadline)
+    wait_for_rendered_desktop(qmp_sock, deadline, DesktopDiagnostics(uart))
     leave_overview(qmp_sock, deadline, "launch")
     screenshot(qmp_sock, "gnome-before-notepad")
-    uart.sendall(DESKTOP_LAUNCH)
+    uart.sendall(desktop_launch_command(os.environ.get("OXIDE_NOTEPAD_READBACK", "0") == "1",
+                                       os.environ.get("OXIDE_NOTEPAD_GDI_TRACE", "0") == "1"))
 
 
 def ocr_raw(path):
@@ -392,14 +378,28 @@ def image_build_env(base=None):
                      OXIDE_SERIAL_SHELL="1")
     # The Windows runtime reaches the guest through the oxide-wine package the
     # compose installs. There is no host adapter path to point staging at.
+    profile = build_env.get("OXIDE_WINE_PROFILE", "release")
+    if profile not in ("release", "debug"):
+        raise ValueError("OXIDE_WINE_PROFILE must be release or debug")
+    build_env["OXIDE_WINE_PROFILE"] = profile
     return build_env
+
+
+def verify_image_wine_profile(image, profile):
+    result = subprocess.run(["python3", str(ROOT / "tools/windows-rootfs-payload-check.py"),
+                             "--image", str(image), "--expected-wine-version", (ROOT / "tools/wine-version").read_text().strip(),
+                             "--expected-wine-profile", profile, "--profile-only"], cwd=ROOT)
+    if result.returncode:
+        die(f"Wine profile {profile} does not match {image}")
 
 
 def prepare_image():
     """Compose the current Oxide profile before staging the kernel image."""
+    global WIN32U_ORDINALS
     build_env = image_build_env()
     cached_root = ROOT / "target" / "builds" / BUILD_ID / "root-x86_64.img"
     if cached_root.is_file() and os.environ.get("OXIDE_REBUILD_ROOTFS", "0") != "1":
+        verify_image_wine_profile(cached_root, build_env["OXIDE_WINE_PROFILE"])
         build_env["OXIDE_SKIP_ROOTFS"] = "1"
     if os.environ.get("OXIDE_REBUILD_SOURCE_IMAGE", "0") == "1":
         with QEMU_LOG.open("wb") as log:
@@ -412,6 +412,7 @@ def prepare_image():
     source = IMAGES / "output/gnome-x86_64-root.img"
     if not source.is_file():
         die(f"missing composed Oxide source image {source}")
+    verify_image_wine_profile(source, build_env["OXIDE_WINE_PROFILE"])
     repo_meta = ROOT.parent / "packages/repo/x86_64/repodata/repomd.xml"
     if repo_meta.is_file() and source.stat().st_mtime < repo_meta.stat().st_mtime:
         die(f"composed source image {source} predates Oxide RPM metadata; rebuild with OXIDE_REBUILD_SOURCE_IMAGE=1")
@@ -434,6 +435,8 @@ def prepare_image():
                                 stdout=log, stderr=subprocess.STDOUT)
     if result.returncode:
         die(f"kernel image preparation failed; see {QEMU_LOG}")
+    verify_image_wine_profile(cached_root, build_env["OXIDE_WINE_PROFILE"])
+    WIN32U_ORDINALS = load_win32u_ordinals(cached_root)
 
 
 def run_uart_audit():
@@ -444,7 +447,7 @@ def run_uart_audit():
     one (KI: unclaimed win32u ordinals and refused loads/callbacks were only
     ever noticed by a human reading the log)."""
     text = UART_LOG.read_bytes().decode("utf-8", "replace") if UART_LOG.is_file() else ""
-    result = uart_audit(text, load_win32u_ordinals())
+    result = uart_audit(text, WIN32U_ORDINALS)
     print(uart_audit_table(result))
     AUDIT_MD.write_text(uart_audit_markdown(RUN, result))
     return result
@@ -453,7 +456,7 @@ def run_uart_audit():
 
 def report_cadence(reader):
     """Print and retain the per-character interval of every typing phase."""
-    labels = [label for label, _, _ in CADENCE_PHASES] + ["token"]
+    labels = ["token"]
     rows = notepad_cadence.summarise(reader.text(), labels)
     table = notepad_cadence.render(rows)
     print("windows-notepad-acceptance: typing cadence by phase")
@@ -480,7 +483,7 @@ MENU_ITEMS = ("new", "open", "save", "exit")
 
 
 def drive_menu(conn):
-    """A6: press File on the menu bar and read the dropdown that opens.
+    """A6: click File on the menu bar and read the dropdown that opens.
 
     A menu that opens nothing looks exactly like a menu bar that was never
     clicked, so this is checked by what is on the screen under the item and
@@ -499,12 +502,13 @@ def drive_menu(conn):
     box = (max(0, left - 30), max(0, top - 12), min(width, left + MENU_CROP_WIDTH), min(height, top + MENU_CROP_HEIGHT))
     pointer_to(conn, centre[0], centre[1], width, height)
     button(conn, True)
+    button(conn, False)
+    # Keep the release on its target until the resulting menu is observed.
     time.sleep(1.5)
     opened, _ = screenshot(conn, "menu-open")
     crop = Path(f"{SCREEN}-menu-open-crop.png")
     crop_image(opened, box, crop)
     text = " ".join(ocr_raw(crop).split())
-    button(conn, False)
     print(f"menu: item={item} crop={crop} text={text!r}")
     missing = [name for name in MENU_ITEMS if name not in text]
     if missing:
@@ -524,7 +528,6 @@ def run_desktop_checks(uart, reader, qmp_sock, deadline, guest=None):
     # reopened overview) before any input is typed into it (KI-0472).
     ensure_notepad_active(qmp_sock, deadline)
     _, before = screenshot(qmp_sock, "before-token")
-    probe_cadence(qmp_sock)
     type_token(qmp_sock)
     # The guest paints a typed character in its own time, so a fixed wait
     # cannot tell a slow paint from a control that never draws: poll until
@@ -549,18 +552,9 @@ def run_desktop_checks(uart, reader, qmp_sock, deadline, guest=None):
     if not found:
         die(f"token not painted inside the Notepad window {rect} within {TOKEN_SECONDS}s; retained {after_path}")
     print("windows-notepad-acceptance: A1/A2/A3 PASS (PE, window, present, token)")
-    drive_menu(qmp_sock)
     report_cadence(reader)
-    # This fixture is an untitled scratch document. Delete our own token
-    # through real input before testing close. Notepad's DoCloseFile prompts
-    # to save a nonempty modified buffer; waiting for exit at that prompt
-    # would test the wrong state and eventually time out.
-    keys(qmp_sock, "ctrl", "a")
-    keys(qmp_sock, "backspace")
-    time.sleep(1)
-    cleared_path, cleared = screenshot(qmp_sock, "cleared-token")
-    if cleared == after or TOKEN in ocr(cleared_path):
-        die("scratch token did not clear before close")
+    DialogChecks(sys.modules[__name__], qmp_sock, deadline, guest).run()
+    drive_menu(qmp_sock)
     keys(qmp_sock, "alt", "f4")
     wait_marker(reader, "[WINDOWS-NOTEPAD] runtime-exit status=", deadline, guest)
     if "[WINDOWS-NOTEPAD] runtime-exit status=0" not in reader.text():
@@ -574,7 +568,7 @@ def run_desktop_checks(uart, reader, qmp_sock, deadline, guest=None):
 
 
 def main():
-    global qemu
+    global qemu, run_succeeded
     if not re.fullmatch(r"[a-z0-9-]{4,64}", TOKEN):
         die("OXIDE_NOTEPAD_TOKEN must contain lowercase letters, digits, and hyphens")
     print(f"windows-notepad-acceptance: output={OUT} token={TOKEN} attempts=1")
@@ -620,11 +614,11 @@ def main():
         qemu.wait(timeout=SHUTDOWN_TIMEOUT)
         print("windows-notepad-acceptance: shutdown=powered-off")
     except subprocess.TimeoutExpired:
-        print(f"windows-notepad-acceptance: shutdown=killed — guest did not power off "
-              f"within {SHUTDOWN_TIMEOUT}s; the root image is left unclean", file=sys.stderr)
+        die(f"guest did not power off within {SHUTDOWN_TIMEOUT}s")
     result = run_uart_audit()
     if not result.passed:
         die(f"unclaimed or refused Windows call(s) in the UART log; see the table above and {AUDIT_MD}")
+    run_succeeded = True
     print(f"windows-notepad-acceptance: PASS — evidence retained in {OUT}")
 
 

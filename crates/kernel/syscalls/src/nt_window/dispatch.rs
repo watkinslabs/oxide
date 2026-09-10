@@ -1,4 +1,7 @@
 use super::*;
+#[path="mouse_activate.rs"] mod mouse_activate;
+#[path="set_cursor.rs"] mod set_cursor;
+#[path="retrieval_status.rs"] mod retrieval_status;
 
 const WM_NCPAINT: u32 = 0x0085;
 const WM_NCCALCSIZE: u32 = 0x0083;
@@ -15,6 +18,8 @@ pub(super) fn dispatch_mode(call: NtCall, raw: bool) -> Option<u64> {
     let cur = sched::live::current()?;
     if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
     if let NtWindowCall::DefaultProc { hwnd, message, wparam, lparam } = operation {
+        if message == ipc::win32_window::WM_SETCURSOR { return Some(set_cursor::for_current(hwnd, wparam, lparam)); }
+        if message == ipc::win32_window::hardware::WM_MOUSEACTIVATE { return Some(mouse_activate::for_current(hwnd, wparam, lparam)); }
         if let Some(result) = control_color::for_current(message, wparam) { return Some(result); }
         if let Some(result) = erase_background::kernel::for_current(message, hwnd, wparam) { return Some(result); }
         if message == ipc::win32_window::WM_PAINT { return Some(default_paint::for_current(hwnd)); }
@@ -50,17 +55,30 @@ pub(super) fn dispatch_mode(call: NtCall, raw: bool) -> Option<u64> {
     }
     let group = Arc::clone(&cur.thread_group);
     loop {
+        let mut scanned = 0;
         if matches!(operation, NtWindowCall::Peek { .. } | NtWindowCall::Get { .. }) {
             crate::nt_gdi::flush_pending_for_current(false);
             let _ = caret::blink::expire_for_current(timekeeper::monotonic_ns());
             if let Some(result) = retrieval::pump(call, raw) { return Some(result); }
+            let acknowledged = match operation {
+                NtWindowCall::Peek { hwnd, first, last, remove, .. } => retrieval_status::acknowledge(hwnd, first, last, remove),
+                NtWindowCall::Get { hwnd, first, last, .. } => retrieval_status::acknowledge(hwnd, first, last, 0),
+                _ => None,
+            };
+            if let Some(result) = acknowledged { return Some(result); }
             // Activation, the cursor and the double click are decided here,
             // on the way out of the queue and inside the window procedure,
             // not by whatever posted the raw input.
             match hardware::process_for_current(call, raw, operation) {
                 hardware::Stage::Pending(status) => return Some(status),
-                hardware::Stage::Again => continue,
+                hardware::Stage::Again | hardware::Stage::Next(_) => continue,
                 hardware::Stage::Ready => {}
+                hardware::Stage::Drained(mark) => scanned = mark,
+                hardware::Stage::Prepared(selected) => {
+                    let hardware::Selected { id, message } = *selected;
+                    if let Some(status) = hardware::deliver_for_current(operation, id, message) { return Some(status); }
+                    continue;
+                }
             }
         }
         let (result, wake, sleep, cleanup, atoms, paint_dcs) = {
@@ -75,8 +93,7 @@ pub(super) fn dispatch_mode(call: NtCall, raw: bool) -> Option<u64> {
             let outcome = match operation {
                 NtWindowCall::DefaultProc { hwnd, message, wparam: _, lparam } => {
                     if hwnd > u32::MAX as u64 { return Some(STATUS_INVALID_HANDLE); }
-                    let rect = ipc::win32_window::WindowId::from_raw(hwnd as u32).and_then(|window| state.rect(window));
-                    let result = match rect.map_or_else(|| ipc::win32_window::default_window_proc(message), |rect| ipc::win32_window::default_window_proc_for_rect(message, rect, lparam)) {
+                    let result = match rect_query::default_proc_state(state, hwnd as u32, message, lparam) {
                         ipc::win32_window::DefaultWindowResult::Return(value) => value as u64,
                         // WM_PAINT is answered before this lock by the real
                         // BeginPaint/EndPaint sequence (default_paint).
@@ -88,7 +105,7 @@ pub(super) fn dispatch_mode(call: NtCall, raw: bool) -> Option<u64> {
                                 paint_dcs.extend(windows.iter().filter_map(|window| state.paint_session(*window).ok().map(|session| session.dc).filter(|dc| *dc != 0)));
                                 let Ok((_, released)) = state.destroy_with_property_atoms(window) else { return Some(STATUS_INVALID_HANDLE); };
                                 atoms.extend(released);
-                                cleanup.extend(windows.into_iter().map(|window| window.raw()));
+                                cleanup.extend(windows.into_iter().rev().map(|window| window.raw()));
                             }
                             STATUS_SUCCESS
                         }
@@ -127,7 +144,7 @@ pub(super) fn dispatch_mode(call: NtCall, raw: bool) -> Option<u64> {
                     let windows = state.destruction_order(window).unwrap_or_default();
                     paint_dcs.extend(windows.iter().filter_map(|window| state.paint_session(*window).ok().map(|session| session.dc).filter(|dc| *dc != 0)));
                     let result = match state.destroy_with_property_atoms(window) {
-                        Ok((_, released)) => { atoms.extend(released); cleanup.extend(windows.into_iter().map(|window| window.raw())); STATUS_SUCCESS },
+                        Ok((_, released)) => { atoms.extend(released); cleanup.extend(windows.into_iter().rev().map(|window| window.raw())); STATUS_SUCCESS },
                         Err(_) => STATUS_INVALID_HANDLE,
                     };
                     (Some(result), None, None)
@@ -141,28 +158,23 @@ pub(super) fn dispatch_mode(call: NtCall, raw: bool) -> Option<u64> {
                 NtWindowCall::Peek { message, hwnd, first, last, remove } => {
                     let Some(filter) = message_filter(state, hwnd, first, last) else { return Some(STATUS_INVALID_HANDLE); };
                     state.note_queue_access(cur.tid as u64, timekeeper::monotonic_ns());
-                    if let Some(found) = state.peek_for_thread(cur.tid as u64, filter, false) {
+                    if let Some(found) = state.peek_posted_with_flags(cur.tid as u64, filter, remove & !ipc::win32_window::queue_status::PM_REMOVE) {
                         if copy_message(message, found).is_err() { return Some(STATUS_INVALID_PARAMETER); }
-                        if remove != 0 { let _ = state.peek_for_thread(cur.tid as u64, filter, true); }
+                        if remove & ipc::win32_window::queue_status::PM_REMOVE != 0 { let _ = state.peek_posted_with_flags(cur.tid as u64, filter, remove); }
                         (Some(STATUS_SUCCESS), None, None)
                     } else { (Some(STATUS_NO_MORE_ENTRIES), None, None) }
                 }
                 NtWindowCall::Get { message, hwnd, first, last } => {
                     let Some(filter) = message_filter(state, hwnd, first, last) else { return Some(STATUS_INVALID_HANDLE); };
                     state.note_queue_access(cur.tid as u64, timekeeper::monotonic_ns());
-                    match state.take_for_thread(cur.tid as u64, filter) {
+                    match state.take_posted_for_thread(cur.tid as u64, filter) {
                         ipc::win32_window::QueueResult::Message(found) => {
                             // Which message a pump is handed decides everything
                             // downstream: an application that never receives
                             // WM_PAINT never calls BeginPaint and never draws,
                             // which is indistinguishable from one that received
                             // it and ignored it.
-                            super::pump_profile::note_retrieval();
-                            klog::write_raw(b"[WINDOWS-GETMESSAGE] hwnd=");
-                            klog::write_hex_u64(found.hwnd.map(|w| w.raw() as u64).unwrap_or(0));
-                            klog::write_raw(b" msg=");
-                            klog::write_hex_u64(found.message as u64);
-                            klog::write_raw(b"\n");
+                            hardware::note_get(found);
                             if copy_message(message, found).is_err() { return Some(STATUS_INVALID_PARAMETER); }
                             (Some(STATUS_SUCCESS), None, None)
                         }
@@ -389,7 +401,7 @@ pub(super) fn dispatch_mode(call: NtCall, raw: bool) -> Option<u64> {
                 .is_some_and(|entry| {
                     entry.remote_positions.iter().any(|work| work.targets(cur.tid as u64))
                         || entry.sent.has_for_tid(cur.tid as u64)
-                        || entry.state.has_message_for_thread(cur.tid as u64, filter)
+                        || entry.state.has_message_since(cur.tid as u64, filter, Some(scanned))
                         || entry.state.quit_pending(cur.tid as u64)
                 })
         }) };

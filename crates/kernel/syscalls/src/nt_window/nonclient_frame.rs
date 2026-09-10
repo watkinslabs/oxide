@@ -62,12 +62,12 @@ pub(crate) fn nc_paint_for_current(hwnd: u64) -> Option<()> {
     client_edge_ops(inside, ex_style, &mut ops);
     if ops.is_empty() { return None; }
     let window = u32::try_from(hwnd).ok()?;
-    let dc = crate::nt_gdi::acquire_window_dc_for_current(window, width, height);
+    let dc = crate::nt_gdi::get_dc_ex_for_current(window,0,ipc::win32_gdi::DCX_WINDOW|ipc::win32_gdi::DCX_USESTYLE);
     let handle = u32::try_from(dc).ok().filter(|handle| *handle != 0)?;
     for op in &ops {
         if let ipc::win32_menu::draw::MenuDrawOp::Fill { rect, color } = op { super::menu_draw::fill(dc, *rect, *color); }
     }
-    let _ = crate::nt_gdi::release_window_dc_for_current(window, handle);
+    let _ = crate::nt_gdi::release_dc_lease_for_current(handle);
     Some(())
 }
 

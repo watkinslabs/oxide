@@ -43,3 +43,10 @@ def test_token_outside_located_window_fails(tmp_path):
     found, _ = token_in_notepad_window(FIXTURES / "notepad-token-outside-window.png", "oxide-fixture-elsewhere",
                                        crop_path=tmp_path / "crop.png")
     assert found is False
+
+
+def test_failed_run_keeps_missing_token_failure_with_correct_frame(tmp_path):
+    found, rect = token_in_notepad_window(FIXTURES / "ki0880-notepad-edit-border.png", "oxide-b3630-final",
+                                         crop_path=tmp_path / "crop.png")
+    assert rect == (148, 122, 877, 692)
+    assert found is False

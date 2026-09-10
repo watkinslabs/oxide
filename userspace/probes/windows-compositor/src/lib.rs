@@ -134,3 +134,15 @@ mod xvfb_windows;
 #[cfg(test)]
 #[path = "tests/xvfb_partial.rs"]
 mod xvfb_partial;
+
+#[cfg(test)]
+#[path = "tests/xvfb_empty.rs"]
+mod xvfb_empty;
+
+#[cfg(test)]
+#[path = "tests/xvfb_stacking.rs"]
+mod xvfb_stacking;
+
+#[cfg(test)]
+#[path = "tests/xvfb_reparent.rs"]
+mod xvfb_reparent;

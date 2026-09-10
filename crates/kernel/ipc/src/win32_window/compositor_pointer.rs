@@ -29,7 +29,7 @@ impl WindowManager {
     /// retrieval sends `WM_NCHITTEST` on the screen point and translates to
     /// client coordinates only for the answers that name the client area.
     /// Queue capacity is admitted before any cursor/button/message mutation.
-    /// # C: O(windows + queues); # Sleeps: no
+    /// # C: O(windows³ + queues); # Sleeps: no
     pub fn post_compositor_pointer(&mut self, source: WindowId, x: i32, y: i32, buttons: u32, wheel_delta: i32, hwheel_delta: i32) -> Result<(), WindowError> {
         self.get(source).ok_or(WindowError::NoSuchWindow)?;
         let origin = self.rect(source).ok_or(WindowError::NoSuchWindow)?;
@@ -47,8 +47,13 @@ impl WindowManager {
         };
         let screen = (ancestors.0.checked_add(origin.left).and_then(|left| left.checked_add(x)).ok_or(WindowError::InvalidParent)?,
             ancestors.1.checked_add(origin.top).and_then(|top| top.checked_add(y)).ok_or(WindowError::InvalidParent)?);
-        let target = self.capture.unwrap_or(source);
-        let owner = self.get(target).ok_or(WindowError::NoSuchWindow)?.owner_tid;
+        // Native child surfaces supply coordinates, not the hit-test boundary.
+        // Retain the whole top-level scope so a transparent child can yield
+        // to a sibling. Queue ownership follows the innermost point candidate.
+        let target = self.capture.or_else(|| self.ancestor(source, GA_ROOT)).ok_or(WindowError::NoSuchWindow)?;
+        let recipient = if self.capture.is_some() { target }
+            else { self.input_window_from_point(target, screen.0, screen.1).unwrap_or(target) };
+        let owner = self.get(recipient).ok_or(WindowError::NoSuchWindow)?.owner_tid;
         let buttons = buttons as u16;
         let mut flags = (self.buttons & BUTTONS) | (buttons & MODIFIERS);
         let mut messages = [WinMessage { hwnd: Some(target), message: 0, wparam: 0, lparam: 0 }; MAX_MESSAGES];
@@ -75,7 +80,11 @@ impl WindowManager {
             append(WM_MOUSEHWHEEL, buttons as u64 | (((hwheel_delta as i16 as u16) as u64) << 16), screen);
         }
         if !self.queue_has_capacity(owner, count) { return Err(WindowError::QueueFull); }
-        for message in &messages[..count] { self.post_to_window_with_bits(target, *message, super::queue_status::hardware_bit(message.message))?; }
+        let pos = msg_pos::pack_pos(screen.0, screen.1);
+        let queue = &mut self.queues.iter_mut().find(|(tid, _)| *tid == owner).ok_or(WindowError::NoSuchWindow)?.1;
+        for message in &messages[..count] {
+            queue.post_with_bits(*message, queue_status::hardware_bit(message.message), pos).map_err(|_| WindowError::QueueFull)?;
+        }
 
         self.cursor = screen; self.buttons = buttons;
         Ok(())

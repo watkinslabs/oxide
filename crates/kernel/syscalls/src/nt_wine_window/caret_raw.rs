@@ -33,13 +33,12 @@ pub(crate) fn dispatch_with_copyout(ordinal: u64, args: [u64; 4], copyout: impl 
     let mut sink = Current;
     Some(match ordinal {
         caret::CREATE_CARET_ORDINAL => {
-            if args[1] != 0 { return Some(0); }
-            let width = if args[2] as i32 == 0 { 1 } else { args[2] as i32 };
-            let height = if args[3] as i32 == 0 { 1 } else { args[3] as i32 };
-            if width <= 0 || height <= 0 || width as u32 > syscall::nt_compositor::MAX_DIMENSION
-                || height as u32 > syscall::nt_compositor::MAX_DIMENSION
-                || width as u64 * height as u64 > (syscall::nt_compositor::caret::MAX_MASK_BYTES / 4) as u64 { return Some(0); }
-            live::create_caret_for_current(args[0], width, height, &mut sink)
+            let pattern=match args[1]{0=>ipc::win32_window::CaretPattern::Solid,1=>ipc::win32_window::CaretPattern::Gray,_=>return Some(0)};
+            let(width,height)=(args[2]as i32,args[3]as i32);
+            match pattern {
+                ipc::win32_window::CaretPattern::Solid=>live::create_caret_for_current(args[0], width, height, &mut sink),
+                ipc::win32_window::CaretPattern::Gray=>live::create_pattern_for_current(args[0], width, height, pattern, &mut sink),
+            }
         }
         caret::DESTROY_CARET_ORDINAL => live::destroy_caret_for_current(&mut sink),
         caret::SET_CARET_POS_ORDINAL => live::set_caret_pos_for_current(args[0] as i32, args[1] as i32, &mut sink),

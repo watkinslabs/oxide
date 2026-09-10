@@ -235,7 +235,13 @@ pub fn mark_done(task: &Task) {
 fn exit_notify(task: &Task) {
     let Some(task) = crate::registry::lookup(task.tid) else { return };
     let group = alloc::sync::Arc::clone(&task.thread_group);
-    match group.finish_exit(task) {
+    let disposition = group.finish_exit(alloc::sync::Arc::clone(&task));
+    if !matches!(disposition, crate::thread_group::ExitDisposition::AlreadyRetired)
+        && !task.pid.is_group_leader() && task.traced_by.load(Ordering::Acquire) != 0
+    {
+        super::super::zombies::enqueue_zombie(task);
+    }
+    match disposition {
         crate::thread_group::ExitDisposition::WaitableLeader(leader) => {
             super::super::zombies::enqueue_zombie(leader);
         }

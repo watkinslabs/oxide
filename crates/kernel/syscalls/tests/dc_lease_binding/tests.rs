@@ -59,13 +59,30 @@ fn actual_first_publication_of_empty_dc_keeps_valid_shared_metadata(){
         req.width=width;req.height=height;req.visible=PaintRegion::default();
         let dc=g.acquire_dc_lease(req).unwrap();
         projection::acquire(&binding,dc,1,g.text_state(dc).unwrap(),false).unwrap();
-        assert_eq!(binding.text_snapshot(dc).unwrap(),abi::DcText::default());
+        assert_eq!(binding.text_snapshot(dc).unwrap().0,abi::DcText::default());
         let address=abi::entry_address(binding.table_base,dc&0xffff).unwrap();
         let mut entry=[0u8;abi::ENTRY_SIZE];copy_from_user(&mut entry,address).unwrap();
         assert_eq!(abi::HandleEntry::decode(&entry).unwrap().user_pointer,binding.dc_attr_address(dc).unwrap());
         assert!(g.text_metrics(dc).is_ok());assert!(g.pending_outputs().unwrap().is_empty());
         let reset=g.dc_lease_resets_on_release(dc).unwrap();
         projection::release(&binding,dc,1,g.release_dc_lease_state(dc).unwrap(),reset).unwrap();
-        assert_eq!(binding.text_snapshot(dc).unwrap(),abi::DcText::default());
+        assert_eq!(binding.text_snapshot(dc).unwrap().0,abi::DcText::default());
+    }
+}
+
+#[test]
+fn caption_viewport_shift_keeps_metrics_and_text_attributes_available(){
+    let(mut g,backing,binding)=fixture();let dc=g.acquire_dc_lease(request(backing,LeaseOwner::Cached,DCX_CACHE)).unwrap();
+    projection::acquire(&binding,dc,1,g.text_state(dc).unwrap(),false).unwrap();
+    let base=binding.text_snapshot(dc).unwrap().0;let metrics=g.text_metrics(dc).unwrap();
+    let address=binding.dc_attr_address(dc).unwrap();
+    for(x,y)in[(56i32,3i32),(14,2),(-17,29),(0,0)]{
+        copy_to_user(address+abi::dc::VPORT_ORG as u64,&x.to_le_bytes()).unwrap();
+        copy_to_user(address+(abi::dc::VPORT_ORG+4)as u64,&y.to_le_bytes()).unwrap();
+        assert_eq!(binding.text_snapshot(dc).unwrap().0,base);
+        assert_eq!(binding.text_snapshot(dc).unwrap().1,(i64::from(x),i64::from(y)));
+        assert_eq!(g.text_metrics(dc).unwrap(),metrics);
+        assert_eq!(binding.set_text_attribute(dc,0,base.foreground).unwrap(),base.foreground);
+        assert_eq!(binding.set_text_position(dc,base.current_position).unwrap(),base.current_position);
     }
 }

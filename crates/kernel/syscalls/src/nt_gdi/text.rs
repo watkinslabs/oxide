@@ -26,7 +26,8 @@ pub(crate) fn text_snapshot_for_current(dc: u64) -> Result<TextState, u64> {
     let _gate = lifecycle::ClientGate::acquire_current().map_err(|_| STATUS_INVALID_HANDLE)?;
     let (mut state, binding) = snapshot_binding(dc)?;
     if let Some(binding) = binding {
-        let shared = binding.text_snapshot(dc as u32).map_err(|_| STATUS_INVALID_PARAMETER)?;
+        let (shared, origin) = binding.text_snapshot(dc as u32).map_err(|_| STATUS_INVALID_PARAMETER)?;
+        state.origin = origin;
         state.attributes = ipc::win32_gdi::TextAttributes { foreground: shared.foreground, background: shared.background,
             background_mode: shared.background_mode, alignment: shared.alignment, current_position: shared.current_position };
     }

@@ -5,6 +5,7 @@
 //! - `ids.rs`     — hook identifiers, chain index mapping, event bounds.
 //! - `install.rs` — installation admission ladder (global-only, module rules).
 //! - `chain.rs`   — chain insertion, removal and the ordered walk.
+//! - `lifetime.rs`— active walks retain removed cursor records.
 //! - `tests/`     — admission and chain-order contracts.
 
 use alloc::vec::Vec;
@@ -67,7 +68,7 @@ pub struct HookRequest<'a> {
 
 /// Chains for one scope. A desktop owns one global table; each thread owns its own.
 #[derive(Default)]
-pub struct HookTable { hooks: Vec<Hook>, next_handle: u32 }
+pub struct HookTable { hooks: Vec<Hook>, next_handle: u32, active: [u32; NB_HOOKS] }
 
 #[path = "win32_hook/install.rs"]
 mod install;
@@ -77,7 +78,9 @@ mod chain;
 pub use chain::{runs_in_owner_thread, runs_in_thread, HookThread};
 #[path = "win32_hook/registry.rs"]
 mod registry;
-pub use registry::{HookLocation, HookRegistry};
+pub use registry::{ChainLease, HookLocation, HookRegistry};
+#[path = "win32_hook/lifetime.rs"]
+mod lifetime;
 
 #[cfg(test)]
 #[path = "win32_hook/tests/install.rs"]
@@ -85,3 +88,7 @@ mod install_tests;
 #[cfg(test)]
 #[path = "win32_hook/tests/chain.rs"]
 mod chain_tests;
+
+#[cfg(test)]
+#[path = "win32_hook/tests/lifetime.rs"]
+mod lifetime_tests;

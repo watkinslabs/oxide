@@ -161,3 +161,21 @@ fn pinned_c_headers_match_every_offset_and_encoded_bytes() {
         }
     }
 }
+
+#[test]
+fn translated_text_snapshot_preserves_logical_state_and_rejects_other_invalid_modes() {
+    let handle = TYPE_DC | 64;
+    let mut bytes = encode_dc_attr(handle, 130, 28, DcText::default()).unwrap();
+    for (offset, value) in [(dc::WND_ORG, 3i32), (dc::WND_ORG+4, -2),
+        (dc::VPORT_ORG, 59), (dc::VPORT_ORG+4, 1)] { put32(&mut bytes, offset, value as u32); }
+    assert_eq!(decode_text_with_origin(&bytes, handle), Ok((DcText::default(), (56, 3))));
+    assert_eq!(decode_text(&bytes, handle), Err(Error::UnsupportedTransform));
+    for (offset, value) in [(dc::MAP_MODE, 2), (dc::GRAPHICS_MODE, 2), (dc::LAYOUT, 1),
+        (dc::CHAR_EXTRA, 1), (dc::WND_EXT, 2), (dc::VPORT_EXT+4, 2)] {
+        let mut invalid = bytes; put32(&mut invalid, offset, value);
+        assert_eq!(decode_text_with_origin(&invalid, handle), Err(Error::UnsupportedTransform));
+    }
+    put32(&mut bytes, dc::WND_ORG, i32::MIN as u32);
+    put32(&mut bytes, dc::VPORT_ORG, i32::MAX as u32);
+    assert_eq!(decode_text_with_origin(&bytes, handle).unwrap().1, (u32::MAX as i64, 3));
+}

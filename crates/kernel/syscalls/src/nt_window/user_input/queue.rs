@@ -3,12 +3,6 @@
 use ipc::win32_window::{MouseTracking, ThreadState, WindowId};
 use super::super::owner::{current_tid, with_state, with_state_mut, with_state_waking};
 
-/// # C: O(N_nt_processes + N_queues + N_messages)
-pub(crate) fn queue_status_for_current(flags: u32) -> Option<u32> {
-    let tid = current_tid()?;
-    with_state_mut(|state| state.queue_status(tid, flags))?
-}
-
 /// Answer one thread-state class. The default IME window class answers zero
 /// because no thread owns one until an IME window is created; the foreground
 /// class answers zero, as an unsupported class does. # C: O(N_nt_processes)

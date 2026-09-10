@@ -71,11 +71,18 @@ impl ClientBinding {
     /// path used by render/measure consumers, so PE writes are observed rather
     /// than replaced by a cached kernel-side text state.
     pub fn read_dc_attr(&self, handle: u32) -> Result<[u8; abi::DC_ATTR_SIZE], ClientError> {
+        let bytes = self.read_text_attr(handle)?;
+        abi::decode_text(&bytes, handle).map_err(|_| ClientError::Codec)?;
+        Ok(bytes)
+    }
+
+    /// Text consumers carry MM_TEXT origin separately from logical attributes.
+    pub fn read_text_attr(&self, handle: u32) -> Result<[u8; abi::DC_ATTR_SIZE], ClientError> {
         self.validate_current()?;
         let address = self.dc_attr_address(handle)?;
         let mut bytes = [0u8; abi::DC_ATTR_SIZE];
         uaccess::copy_from_user(&mut bytes, address).map_err(|_| ClientError::UserCopy)?;
-        abi::decode_text(&bytes, handle).map_err(|_| ClientError::Codec)?;
+        abi::decode_text_with_origin(&bytes, handle).map_err(|_| ClientError::Codec)?;
         Ok(bytes)
     }
 
@@ -90,8 +97,8 @@ impl ClientBinding {
         memory::write(address, bytes)
     }
 
-    /// Snapshot shared text fields after validating the complete DC_ATTR.
-    pub fn text_snapshot(&self, handle: u32) -> Result<abi::DcText, ClientError> {
+    /// One shared read supplies text attributes and their device translation.
+    pub fn text_snapshot(&self, handle: u32) -> Result<(abi::DcText, (i64, i64)), ClientError> {
         text::snapshot(*self, handle)
     }
 

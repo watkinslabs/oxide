@@ -118,8 +118,7 @@ fn group_nr_without_leader(t: &Task, ns: &NamespaceRef) -> Option<u32> {
     Some(if vtgid != 0 { vtgid } else { t.tgid.load(Ordering::Acquire) })
 }
 
-/// `tgid_nr_in` for a task already known to be its group's leader, which every
-/// zombie and every wait candidate is. Touches no registry entry, so it is the
+/// `tgid_nr_in` for a task already known to be its group's leader. Touches no registry entry, so it is the
 /// form callers holding the registry lock must use. # C: O(depth)
 pub fn leader_tgid_nr_in(t: &Task, ns: &NamespaceRef) -> Option<u32> {
     use core::sync::atomic::Ordering;
@@ -308,11 +307,19 @@ pub fn nr_chain_in(t: &Task, reader: &NamespaceRef) -> Vec<u32> {
 }
 
 /// The PROCESS number `t` carries as `viewer`'s pid namespace numbers it — the
-/// value every `si_pid` must hold, because a signal's pid field is read by the
-/// RECEIVER, in the receiver's namespace. 0 when the viewer's namespace does
+/// value a process-directed sender identity carries in the receiver's namespace.
+/// 0 when the viewer's namespace does
 /// not number `t` at all. # C: O(log N_tasks + depth)
 pub fn tgid_nr_seen_by(t: &Task, viewer: &Task) -> u32 {
     let ns = viewer.namespace_owner(NamespaceKind::Pid)
         .unwrap_or_else(|| namespace_identity::initial(NamespaceKind::Pid));
     tgid_nr_in(t, &ns).unwrap_or(0)
+}
+
+/// Task identity as numbered in the viewer's PID namespace; zero if invisible.
+/// # C: O(depth)
+pub fn tid_nr_seen_by(t: &Task, viewer: &Task) -> u32 {
+    let ns = viewer.namespace_owner(NamespaceKind::Pid)
+        .unwrap_or_else(|| namespace_identity::initial(NamespaceKind::Pid));
+    vnr_in(t, &ns).unwrap_or(0)
 }

@@ -14,6 +14,7 @@ pub const WM_APPCOMMAND: u32 = 0x0319;
 /// The `WM_APPCOMMAND` device word naming the keyboard as the source.
 pub const FAPPCOMMAND_KEY: u32 = 0;
 
+pub const HTCAPTION: u16 = 2;
 pub const MA_ACTIVATE: u64 = 1;
 pub const MA_ACTIVATEANDEAT: u64 = 2;
 pub const MA_NOACTIVATE: u64 = 3;

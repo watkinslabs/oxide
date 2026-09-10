@@ -2,6 +2,14 @@
 use super::*;
 use ipc::win32_gdi::{PaintBacking, ScrollColors, ScrollDrawOutcome, ScrollMetrics, ScrollPart};
 use ipc::win32_window::{ScrollState, SB_VERT};
+use syscall::nt_compositor::{Damage,Record,FRAME_HEADER_BYTES};
+
+fn carried(frame:&Record,damage:Damage)->Vec<u32>{
+    frame.validate().unwrap();
+    assert_eq!(Damage::decode(&frame.payload[16..FRAME_HEADER_BYTES]).unwrap(),damage);
+    assert_eq!(u32::from_le_bytes(frame.payload[8..12].try_into().unwrap()),((damage.right-damage.left)*4)as u32);
+    frame.payload[FRAME_HEADER_BYTES..].chunks_exact(4).map(|b|u32::from_le_bytes(b.try_into().unwrap())).collect()
+}
 
 #[path = "../nonclient_scroll.rs"]
 mod scroll_adapter;
@@ -28,9 +36,8 @@ fn retaining_gdi(service: NtService, args: SyscallArgs) -> u64 {
     let pixels = state.gdi.pixels(backing).unwrap();
     assert_eq!(pixels[0], OLD);
     assert_eq!(pixels[2 * 4 + 1], NEW);
-    let word = |index: usize| u32::from_le_bytes(frame.payload[16 + index * 4..20 + index * 4].try_into().unwrap());
-    assert_eq!(word(0), OLD | 0xff000000);
-    assert_eq!(word(9), NEW | 0xff000000);
+    // Only the damaged backing pixel travels; unchanged pixels remain in the backing above.
+    assert_eq!(carried(&frame,Damage{left:1,top:2,right:2,bottom:3}),vec![NEW|0xff000000]);
     state.presents += 1;
     STATUS_SUCCESS
 }
@@ -42,6 +49,7 @@ fn end_paint_retains_offset_damage_then_nonclient_keeps_every_client_pixel() {
     let backing = {
         let mut state = STATE.lock().unwrap();
         state.seed_layout = Some(LAYOUT);
+        let id=state.window;state.windows.set_client_rect(id,region(1,1,3,4)).unwrap();
         let backing = state.gdi.acquire_window_dc(HWND as u32, 4, 4).unwrap();
         state.gdi.fill_rect(backing, OUTER, OLD).unwrap();
         backing
@@ -54,11 +62,11 @@ fn end_paint_retains_offset_damage_then_nonclient_keeps_every_client_pixel() {
         state.gdi.fill_rect(paint as u32, OUTER, NEW).unwrap();
         // Seed precedes drawing; old client pixels survive outside admitted damage.
         assert_eq!(state.seed_calls, 1);
-        assert_eq!(state.gdi.pixels(paint as u32).unwrap()[0], OLD);
+        assert_eq!(state.gdi.dc_backing_surface(paint as u32).unwrap().2[0], OLD);
     }
     assert_eq!(production::end_paint(&args, native, retaining_gdi), 1);
     let mut state = STATE.lock().unwrap();
-    assert!(!state.gdi.contains_object(paint as u32));
+    assert!(state.gdi.validate_dc(paint as u32).is_err());
     assert_eq!(state.gdi.window_dc(HWND as u32), Some(backing));
     let before = state.gdi.pixels(backing).unwrap().to_vec();
     for (index, pixel) in before.iter().enumerate() { assert_eq!(*pixel, if index == 9 { NEW } else { OLD }); }
@@ -81,6 +89,7 @@ fn production_seed_preserves_transparent_and_app_clipped_pixels_inside_damage() 
     *STATE.lock().unwrap() = State::new(region(0, 0, 2, 3));
     let backing = {
         let mut state = STATE.lock().unwrap(); state.seed_layout = Some(LAYOUT);
+        let id=state.window;state.windows.set_client_rect(id,region(1,1,3,4)).unwrap();
         let dc = state.gdi.acquire_window_dc(HWND as u32, 4, 4).unwrap();
         state.gdi.fill_rect(dc, OUTER, OLD).unwrap(); dc
     };
@@ -89,9 +98,8 @@ fn production_seed_preserves_transparent_and_app_clipped_pixels_inside_damage() 
         let mut state = STATE.lock().unwrap();
         let region = state.windows.paint_region(state.window).unwrap();
         let frame = paint_frame::capture_region(&mut state.gdi, args.a0 as u32, args.a1 as u32, &region, LAYOUT).unwrap();
-        let word = |index: usize| u32::from_le_bytes(frame.payload[16 + index * 4..20 + index * 4].try_into().unwrap());
-        assert_eq!(word(5), NEW | 0xff000000);
-        assert_eq!(word(6), OLD | 0xff000000);
+        assert_eq!(carried(&frame,Damage{left:1,top:1,right:3,bottom:4}),
+            vec![NEW|0xff000000,OLD|0xff000000,OLD|0xff000000,OLD|0xff000000,OLD|0xff000000,OLD|0xff000000]);
         state.presents += 1; STATUS_SUCCESS
     };
     let mut args = [0; 17]; args[0] = HWND; args[1] = PS;
@@ -110,11 +118,11 @@ fn production_seed_preserves_transparent_and_app_clipped_pixels_inside_damage() 
     for (index, pixel) in state.gdi.pixels(backing).unwrap().iter().enumerate() {
         assert_eq!(*pixel, if index == 5 { NEW } else { OLD });
     }
-    assert!(!state.gdi.contains_object(paint as u32));
+    assert!(state.gdi.validate_dc(paint as u32).is_err());
 }
 
 #[test]
-fn production_exact_paint_clip_and_capture_preserve_hole_even_with_poisoned_source_gap() {
+fn production_paint_clip_preserves_holes_and_end_keeps_later_backing_drawing() {
     let _serial = TEST_LOCK.lock().unwrap();
     let mut initial = State::new(region(0, 0, 0, 0));
     initial.region = Some(region(0, 0, 4, 4));
@@ -130,9 +138,10 @@ fn production_exact_paint_clip_and_capture_preserve_hole_even_with_poisoned_sour
         assert_eq!(coverage.rects().len(), 2);
         let frame = paint_frame::capture_region(&mut state.gdi, args.a0 as u32, args.a1 as u32, &coverage,
             PaintBacking { width: 4, height: 4, client: OUTER }).unwrap();
-        for index in 0..16 {
-            let pixel = u32::from_le_bytes(frame.payload[16 + index * 4..20 + index * 4].try_into().unwrap());
-            assert_eq!(pixel, (if index % 4 == 0 || index % 4 == 3 { NEW } else { OLD }) | 0xff000000);
+        let pixels=carried(&frame,Damage{left:0,top:0,right:4,bottom:4});
+        assert_eq!(pixels.len(),16);
+        for (index,pixel) in pixels.into_iter().enumerate() {
+            assert_eq!(pixel, (if index % 4 == 0 || index % 4 == 3 { NEW } else { 0xff00ff }) | 0xff000000);
         }
         state.presents += 1; STATUS_SUCCESS
     };
@@ -143,14 +152,13 @@ fn production_exact_paint_clip_and_capture_preserve_hole_even_with_poisoned_sour
         let mut state = STATE.lock().unwrap();
         state.gdi.fill_rect(paint as u32, OUTER, NEW).unwrap();
         for index in 0..16 {
-            assert_eq!(state.gdi.pixels(paint as u32).unwrap()[index], if index % 4 == 0 || index % 4 == 3 { NEW } else { OLD });
+            assert_eq!(state.gdi.dc_backing_surface(paint as u32).unwrap().2[index], if index % 4 == 0 || index % 4 == 3 { NEW } else { OLD });
         }
-        // Deliberately make source holes differ: exact capture must not trust the enclosing box.
-        state.gdi.set_paint_clip(paint as u32, OUTER).unwrap();
-        state.gdi.fill_rect(paint as u32, Rect { left: 1, top: 0, right: 3, bottom: 4 }, 0xff00ff).unwrap();
+        // A different DC writes after BeginPaint; EndPaint must not restore an older snapshot.
+        state.gdi.fill_rect(backing, Rect { left: 1, top: 0, right: 3, bottom: 4 }, 0xff00ff).unwrap();
     }
     assert_eq!(production::end_paint(&args, native, capture), 1);
     let state = STATE.lock().unwrap();
-    assert!(!state.gdi.contains_object(paint as u32));
-    for index in 0..16 { assert_eq!(state.gdi.pixels(backing).unwrap()[index], if index % 4 == 0 || index % 4 == 3 { NEW } else { OLD }); }
+    assert!(state.gdi.validate_dc(paint as u32).is_err());
+    for index in 0..16 { assert_eq!(state.gdi.pixels(backing).unwrap()[index], if index % 4 == 0 || index % 4 == 3 { NEW } else { 0xff00ff }); }
 }

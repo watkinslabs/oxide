@@ -9,6 +9,9 @@ impl GdiManager {
     /// Initialize a temporary client-origin paint surface from retained window pixels.
     /// Storage copy preserves attributes and ignores drawing clips. # C: O(DCs + client pixels)
     pub fn seed_paint(&mut self, hwnd: u32, paint_dc: u32, layout: PaintBacking) -> Result<(), GdiError> {
+        if let Some(window)=self.lease_window(paint_dc){
+            return if window==hwnd{Ok(())}else{Err(GdiError::NoSuchObject)};
+        }
         let backing = self.window_dc(hwnd).ok_or(GdiError::NoSuchObject)?;
         let src = self.dcs.iter().position(|(dc, _)| *dc == backing).ok_or(GdiError::NoSuchObject)?;
         let dst = self.dcs.iter().position(|(dc, _)| *dc == paint_dc).ok_or(GdiError::NoSuchObject)?;
@@ -47,6 +50,16 @@ impl GdiManager {
     }
 
     fn retain_paint_rects(&mut self, hwnd: u32, paint_dc: u32, damage: &[WindowRect], layout: PaintBacking) -> Result<u32, GdiError> {
+        if let Some((_,state))=self.dcs.iter().find(|(id,_)|*id==paint_dc){
+            if let Some(lease)=state.lease.as_ref(){
+                if !lease.active||lease.hwnd!=hwnd{return Err(GdiError::NoSuchObject);}
+                let cw=layout.client.right.checked_sub(layout.client.left).ok_or(GdiError::InvalidDimensions)?;
+                let ch=layout.client.bottom.checked_sub(layout.client.top).ok_or(GdiError::InvalidDimensions)?;
+                if (state.width,state.height)!=(cw,ch){return Err(GdiError::InvalidDimensions);}
+                for r in damage{if r.left<0||r.top<0||r.right<=r.left||r.bottom<=r.top||r.right>cw||r.bottom>ch{return Err(GdiError::InvalidDimensions);}}
+                return Ok(lease.backing);
+            }
+        }
         let backing = self.window_dc(hwnd).ok_or(GdiError::NoSuchObject)?;
         let src = self.dcs.iter().position(|(dc, _)| *dc == paint_dc).ok_or(GdiError::NoSuchObject)?;
         if self.dcs[src].1.lease.is_some() { return Err(GdiError::InvalidDimensions); }

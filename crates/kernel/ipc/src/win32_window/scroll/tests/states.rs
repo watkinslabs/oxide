@@ -3,7 +3,7 @@ use super::super::super::*;
 use super::{scrollbar_states, STATE_SYSTEM_INVISIBLE, STATE_SYSTEM_OFFSCREEN, STATE_SYSTEM_PRESSED, STATE_SYSTEM_UNAVAILABLE};
 
 fn scrollable() -> ScrollState {
-    ScrollState { min: 0, max: 100, page: 10, pos: 50, track_pos: 50, tracking: false, visible: true, disabled: false, flags: ESB_ENABLE_BOTH }
+    ScrollState { min: 0, max: 100, page: 10, pos: 50, track_pos: 50, tracking: false, visible: true, flags: ESB_ENABLE_BOTH }
 }
 
 #[test]

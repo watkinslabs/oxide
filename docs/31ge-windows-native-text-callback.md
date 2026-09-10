@@ -4,6 +4,7 @@ FROZEN 2026-09-06. Dep:`31fk`,`31n`,`31l`,`52`,`53`,`54`.
 
 ## 1
 
+- MM_TEXT text output translates the run origin and active opaque/clipping rectangle by viewport origin minus window origin before callback submission. Font dimensions, advances, justification and metrics retain logical lengths. Signed device-coordinate overflow fails before callback/pixel mutation; inactive coordinates are ignored. Lease-to-backing translation remains in the pixel owner and applies once after this page-to-device translation.
 - Raw `NtGdiExtTextOutW` adapter snapshots logical font height/width/weight/italic, XRGB text/background colors and DC handle from canonical GDI owner, drops owner lock, invokes native callback.
 - Callback registration resides in existing process callback registrations; continuation resides in existing Task callback stack. No second DC, thread or TLS registry.
 - Bootstrap registers after native NTDLL attachment and native thread factory installation. Child callbacks require Running native attachment; initial Task requires registered native factory. FS/TPIDR_EL0 remain libc-owned, GS/x18 remain TEB-owned.

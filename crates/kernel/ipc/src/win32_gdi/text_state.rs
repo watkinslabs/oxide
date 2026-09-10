@@ -22,7 +22,9 @@ impl Default for TextAttributes {
 pub struct TextState { pub font: Option<Font>, pub attributes: TextAttributes, pub width: i32, pub height: i32,
     /// Justification amount per break character and the remainder distributed
     /// one unit at a time over the leading break characters.
-    pub break_extra: i32, pub break_rem: i32 }
+    pub break_extra: i32, pub break_rem: i32,
+    /// Snapshot-only MM_TEXT translation; never another mutable DC attribute owner.
+    pub origin: (i64, i64) }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TextAttribute { Foreground, Background, BackgroundMode, Alignment }
@@ -34,7 +36,7 @@ impl GdiManager {
         let (_, state) = self.dcs.iter().find(|(handle, _)| *handle == dc).ok_or(GdiError::NoSuchObject)?;
         state.ensure_active()?;
         Ok(TextState { font: self.font_for(dc)?, attributes: state.text, width: state.width, height: state.height,
-            break_extra: state.justification.0, break_rem: state.justification.1 })
+            break_extra: state.justification.0, break_rem: state.justification.1, origin: (0, 0) })
     }
 
     /// Return the previous value; invalid input leaves the DC unchanged.

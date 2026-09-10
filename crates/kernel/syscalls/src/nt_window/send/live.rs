@@ -35,6 +35,22 @@ fn send(hwnd:u64,message:u32,wparam:u64,lparam:u64,continuation:Option<Continuat
     wait.wake_all();
     if same{match pump(Resume::Direct,Some(token)){Some(Outcome::Pending)=>SendOutcome::Pending,_=>SendOutcome::Failed}}else{wait_outcome(reply)}
 }
+/// Post onto the hook owner's existing queue, including another process's queue.
+/// # C: O(processes + queues + windows); # Sleeps: no
+pub(crate) fn post_event(hook:ipc::win32_hook::Hook,event:super::super::HookNotification)->bool{
+    let target=hook.owner;
+    let wait={
+        let mut entries=GUI.lock();
+        let window=u32::try_from(event.hwnd).ok().and_then(WindowId::from_raw);
+        let window_thread=window.and_then(|id|entries.iter().find_map(|entry|entry.state.get(id).map(|record|record.owner_tid)));
+        let Some(entry)=entries.iter_mut().find(|entry|entry.group.upgrade().is_some()&&entry.state.has_thread_queue(target))else{return false;};
+        let message=Message{hwnd:event.hwnd,message:event.event,wparam:event.object_id as u32 as u64,lparam:event.child_id as u32 as u64};
+        let payload=super::work::Event{hook,thread:event.thread,time:event.time,cancel_on_destroy:window_thread==Some(target)};
+        if entry.sent.admit_event(target,message,payload).is_none(){return false;}
+        Arc::clone(&entry.wait)
+    };
+    wait.wake_all();true
+}
 fn raw_send(outcome:SendOutcome)->u64{match outcome{SendOutcome::Pending=>STATUS_PENDING,SendOutcome::Complete(value)=>value,SendOutcome::Failed=>0}}
 /// Acquires GUI; do not call from GUI-locked predicates. # C: O(processes + sends)
 pub(crate) fn has_current()->bool{
@@ -53,7 +69,7 @@ fn pump(resume:Resume,token:Option<u64>)->Option<Outcome>{
             .and_then(|id|e.state.get(id)).filter(|r|r.owner_tid==cur.tid as u64).map(|r|r.wndproc);
         (work,wndproc)
     };
-    let result=if work.reply.result().is_some(){0}else{wndproc.filter(|p|*p!=0).map_or(0,|wndproc|install(&work,wndproc))};
+    let result=if work.reply.result().is_some(){0}else if work.event.is_some(){install_event(&work)}else{wndproc.filter(|p|*p!=0).map_or(0,|wndproc|install(&work,wndproc))};
     if result==STATUS_PENDING{return Some(Outcome::Pending);}
     let _=finish(work.token,None);Some(Outcome::Complete(0))
 }
@@ -61,6 +77,12 @@ fn install(work:&Work,wndproc:u64)->u64{
     let m=work.message;
     crate::nt_rtl::begin_wndproc_callback_with_completion(m.hwnd,m.message as u64,m.wparam,m.lparam,wndproc,
         sched::nt_callback::Completion{kind:CALLBACK_SEND,argument:work.token})
+}
+fn install_event(work:&Work)->u64{
+    let Some(event)=&work.event else{return 0;};let message=work.message;
+    let notification=super::super::HookNotification{event:message.message,hwnd:message.hwnd,
+        object_id:message.wparam as u32 as i32,child_id:message.lparam as u32 as i32,thread:event.thread,time:event.time};
+    super::super::hook_deliver_queued(&event.hook,notification,sched::nt_callback::Completion{kind:CALLBACK_SEND,argument:work.token})
 }
 fn finish(token:u64,result:Option<u64>)->Option<(Resume,Arc<Reply>)>{
     let cur=sched::live::current()?;

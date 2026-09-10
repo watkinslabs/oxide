@@ -34,19 +34,27 @@ pub(crate) fn pump_position_current()->Option<u64> {
 }
 /// Preserve the shared reply while a position callback interrupts a GUI wait. # C: O(requests + windows)
 pub(crate) fn pump_for_reply(reply:Arc<work::Reply>)->Option<u64>{pump(Some(reply))}
+enum Prepared {
+    Complete(u64),
+    Position{request:crate::nt_wine_window::position::Request,reply:Option<Arc<work::Reply>>,compositor:bool},
+}
 fn pump(resume_send:Option<Arc<work::Reply>>)->Option<u64> {
-    let cur=sched::live::current()?;
-    let work={
-        let mut entries=GUI.lock();let e=entries.iter_mut().find(|e|e.group.ptr_eq(&Arc::downgrade(&cur.thread_group)))?;
-        work::take(&mut e.remote_positions,cur.tid as u64)?
-    };
-    let reply=work.reply.clone();
-    let result=match crate::nt_wine_window::position::plan_current(&work.args){
-        Err(())=>0,Ok(None)=>1,Ok(Some(request))=>super::live::start(request,true,reply.clone(),resume_send)
-    };
+    let (request,reply,compositor)=match prepare_current()?{Prepared::Complete(result)=>return Some(result),Prepared::Position{request,reply,compositor}=>(request,reply,compositor)};
+    let result=super::live::start_queued(request,compositor,reply.clone(),resume_send);
     if result!=super::super::STATUS_PENDING{finish_reply(reply.as_ref(),result);}
     Some(result)
 }
+// Raw arguments and planning temporaries end before the callback chain begins.
+#[inline(never)]
+fn prepare_current()->Option<Prepared> {
+    let work::RemotePosition{mut args,reply,compositor,..}=take_current()?;
+    if compositor {match prepare_compositor(&mut args){Some(true)=>{},Some(false)=>return Some(Prepared::Complete(1)),None=>return Some(Prepared::Complete(0))}}
+    let result=match crate::nt_wine_window::position::plan_current(&args){
+        Err(())=>0,Ok(None)=>1,Ok(Some(request))=>return Some(Prepared::Position{request,reply,compositor}),
+    };
+    finish_reply(reply.as_ref(),result);Some(Prepared::Complete(result))
+}
+
 pub(super) fn finish_reply(reply:Option<&Arc<work::Reply>>,result:u64){
     let Some(reply)=reply else{return;};reply.complete(result);
     let Some(cur)=sched::live::current()else{return;};
@@ -75,4 +83,20 @@ pub(crate) fn cancel_position_window(group:&Arc<sched::thread_group::ThreadGroup
         work::cancel_window(&mut e.remote_positions,hwnd);
         let wait=Arc::clone(&e.wait);drop(entries);wait.wake_all();
     }
+}
+
+// Keep the context snapshot off the long-lived stack that enters window callbacks.
+#[inline(never)]
+fn prepare_compositor(args:&mut [u64;7])->Option<bool>{
+    let context=super::live::position_context_for_current(args[0])?;
+    Some(super::compositor::plan(args,context.rect))
+}
+
+// Queue extraction completes before callbacks; its lock and removal temporaries
+// must not occupy the callback chain's stack frame.
+#[inline(never)]
+fn take_current()->Option<work::RemotePosition>{
+    let cur=sched::live::current()?;
+    let mut entries=GUI.lock();let e=entries.iter_mut().find(|e|e.group.ptr_eq(&Arc::downgrade(&cur.thread_group)))?;
+    work::take(&mut e.remote_positions,cur.tid as u64)
 }

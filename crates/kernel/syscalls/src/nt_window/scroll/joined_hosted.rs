@@ -1,7 +1,7 @@
 //! Joined hosted scroll boundary.
 //!
-//! This embeds the production raw adapter, live path and concrete sink.  Only
-//! the scheduler, user-copy and Curie position callback boundary are hosted.
+//! Production raw adapter, live state path, action consumer and concrete sink.
+//! Scheduler, usercopy, position completion and raster observation are fixture seams.
 #![allow(dead_code, unused_imports, unexpected_cfgs)]
 
 extern crate alloc;
@@ -9,15 +9,22 @@ extern crate ipc as ipc_types;
 extern crate self as ipc;
 extern crate self as sched;
 extern crate self as uaccess;
+#[path="refresh_hosted.rs"] mod refresh_hosted;
+pub mod nt_callback { #[derive(Clone,Copy,Debug)] pub struct Completion {pub kind:u64,pub argument:u64} }
+pub mod nt_user_callback {pub enum Input<'a>{Record(&'a[u8])}}
+pub mod nt_rtl {pub(crate) use crate::refresh_hosted::begin_user_callback;}
+pub mod nt_compositor {pub mod caret {
+    pub fn publish_current(hwnd:u64,snapshot:&syscall::nt_compositor::caret::Snapshot)->bool{
+        assert!(crate::nt_window::GUI.0.try_lock().is_ok());
+        crate::CARET_CALLS.with(|calls|calls.borrow_mut().push((hwnd,snapshot.visible)));
+        crate::CARET_SNAPSHOTS.with(|snapshots|snapshots.borrow_mut().push(snapshot.clone()));true
+    }
+}}
 
-pub use ipc_types::win32_gdi;
+pub use ipc_types::{win32_gdi, win32_window, win32_imc};
 
 use std::cell::{Cell, RefCell};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
-
-#[path = "../../../../ipc/src/win32_imc.rs"] pub mod win32_imc;
-#[path = "../../../../ipc/src/win32_window.rs"]
-pub mod win32_window;
 
 pub mod thread_group { pub struct ThreadGroup; }
 
@@ -28,8 +35,14 @@ thread_local! {
     static CURRENT: RefCell<Option<&'static Task>> = const { RefCell::new(None) };
     static POSITION: RefCell<Option<PositionWait>> = const { RefCell::new(None) };
     static POSITION_CALLS: Cell<usize> = const { Cell::new(0) };
-    static RASTER: RefCell<Vec<(u64, i32, win32_window::ScrollState)>> = const { RefCell::new(Vec::new()) };
+    static RASTER: RefCell<Vec<(u64, i32, win32_window::ScrollState, bool)>> = const { RefCell::new(Vec::new()) };
+    static CURSOR_CALLS: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
+    static SEND_CALLS: RefCell<Vec<(u64,u32,u64,u64)>> = const { RefCell::new(Vec::new()) };
+    static SEND_PENDING: Cell<bool> = const { Cell::new(false) };
+    static SEND_CONT: RefCell<Option<nt_window::send::Continuation>> = const { RefCell::new(None) };
     static RASTER_FAIL: Cell<bool> = const { Cell::new(false) };
+    static CARET_SNAPSHOTS:RefCell<Vec<syscall::nt_compositor::caret::Snapshot>>=const{RefCell::new(Vec::new())};
+    static CARET_CALLS:RefCell<Vec<(u64,bool)>>=const{RefCell::new(Vec::new())};
 }
 
 // `setup` replaces the hosted GUI vector, while CURRENT is thread-local. A
@@ -38,6 +51,10 @@ thread_local! {
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 pub mod live { pub fn current() -> Option<&'static super::Task> { super::CURRENT.with(|c| *c.borrow()) } }
+
+pub fn get_user_u32(address:u64)->Result<u32,()> {
+    let mut bytes=[0;4];copy_from_user(&mut bytes,address)?;Ok(u32::from_le_bytes(bytes))
+}
 
 pub fn copy_from_user(dst: &mut [u8], address: u64) -> Result<(), ()> {
     if address == 0 { return Err(()); }
@@ -58,11 +75,22 @@ impl<T> Lock<T> {
     pub(crate) fn lock(&self) -> MutexGuard<'_, T> { self.0.lock().unwrap() }
 }
 
+#[path = "."]
 pub mod nt_window {
     use super::*;
 
     pub const STATUS_PENDING: u64 = 0x103;
     pub const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
+    const CALLBACK_INIT_BUILTIN_CLASSES:u64=0x10;
+    const CALLBACK_WIN_EVENT:u64=0x82;
+    fn hook_complete_event(_:crate::nt_callback::Completion,_:u64)->u64{panic!("hook completion belongs to the hook-chain fixture")}
+    mod create {pub fn complete_callback(_:crate::nt_callback::Completion,_:u64)->u64{panic!("unexpected create completion")}}
+    #[path="../callbacks.rs"] mod callbacks;
+    pub(crate) use callbacks::complete_callback;
+    #[path="../paint_prepare.rs"] pub(crate) mod paint_prepare;
+    #[path="../paint_callbacks.rs"] pub(crate) mod paint_callbacks;
+    #[path="../redraw/erase.rs"] pub(crate) mod erase;
+    pub(crate) mod redraw {pub(crate) use super::erase;}
 
     pub struct Wait;
     impl Wait { pub fn wake_all(&self) {} }
@@ -71,15 +99,51 @@ pub mod nt_window {
         pub(crate) group: Weak<thread_group::ThreadGroup>,
         pub(crate) state: win32_window::WindowManager,
         pub(crate) scroll_pending: scroll::pending::Queue,
+        pub(crate) paint_callbacks:paint_callbacks::Queue,
+        pub(crate) wait:Wait,
     }
 
     pub(crate) static GUI: Lock<Vec<GuiEntry>> = Lock(Mutex::new(Vec::new()));
 
+    pub fn dispatch(call:syscall::nt::NtCall)->Option<u64> {
+        assert_eq!(call.service,syscall::nt::NtService::ShowWindow);
+        let id=win32_window::WindowId::from_raw(call.args.a0 as u32)?;
+        GUI.lock()[0].state.show(7,id,call.args.a1!=0).ok()?;Some(0)
+    }
+    pub fn enable_window_for_current(hwnd:u64,enabled:bool)->Option<win32_window::EnableOutcome> {
+        let id=win32_window::WindowId::from_raw(hwnd as u32)?;
+        GUI.lock()[0].state.enable_window(id,enabled).ok()
+    }
+    pub fn nonclient_scroll_context_for_current(_:u64)->Option<crate::nt_gdi::nonclient_scroll::Context> {
+        panic!("accessibility geometry is outside this fixture")
+    }
+    pub(crate) fn valid_window(hwnd:u64)->Option<win32_window::WindowId>{u32::try_from(hwnd).ok().and_then(win32_window::WindowId::from_raw)}
+    pub(crate) mod settings {pub fn snapshot_caret_blink_time()->u32{win32_window::DEFAULT_CARET_BLINK_MS}use super::win32_window;}
+    #[path="../caret.rs"] mod caret_contract;
+    #[path="../caret"] pub(crate) mod caret {
+        pub(crate) use super::caret_contract::*;
+        #[path="live.rs"]pub(crate) mod live;
+        #[path="publish.rs"]pub(crate) mod publish;
+    }
+
     pub mod send {
-        pub fn send_for_current(_: u64, _: u32, _: u64, _: u64) -> u64 { 0 }
+        pub fn handles_callback(_:u64)->bool{false}
+        pub fn complete_callback(_:crate::nt_callback::Completion,_:u64)->u64{panic!("unexpected send completion")}
+        #[derive(Clone,Copy)] pub struct Continuation {pub token:u64,pub resume:fn(u64,Result<u64,()>)->u64}
+        pub enum SendOutcome {Complete(u64),Failed,Pending}
+        pub fn send_resumable_current(hwnd:u64,message:u32,wparam:u64,lparam:u64,caller:Continuation)->SendOutcome {
+            assert!(super::GUI.0.try_lock().is_ok());
+            crate::SEND_CALLS.with(|calls|calls.borrow_mut().push((hwnd,message,wparam,lparam)));
+            if crate::SEND_PENDING.with(|pending|pending.get()) {
+                crate::SEND_CONT.with(|pending|*pending.borrow_mut()=Some(caller));SendOutcome::Pending
+            } else {SendOutcome::Complete(u64::MAX)}
+        }
+        pub fn send_for_current(_: u64, _: u32, _: u64, _: u64) -> u64 { panic!("scroll fixture does not model window-procedure sends") }
     }
 
     pub mod position {
+        pub fn handles_callback(_:u64)->bool{false}
+        pub fn complete_position_callback(_:crate::nt_callback::Completion,_:u64)->u64{panic!("unexpected position completion")}
         use super::*;
         use ipc::win32_window::WindowRect;
 
@@ -100,9 +164,8 @@ pub mod nt_window {
         }
 
         pub fn position_apply_resumable_for_current(_: crate::nt_wine_window::position::Request, caller: Option<Continuation>) -> Outcome {
-            // Curie's hosted position fixture has the real three-stage
-            // changing -> NCCALCSIZE -> changed boundary; retain only the
-            // caller continuation until its terminal stage.
+            // The position seam retains completion; these tests exercise
+            // scrollbar suspension, not the position callback algorithm.
             POSITION.with(|pending| *pending.borrow_mut() = caller.map(|continuation| PositionWait { continuation, stage: 0 }));
             Outcome::Pending
         }
@@ -120,50 +183,36 @@ pub mod nt_window {
         }
     }
 
+    #[path = "."]
     pub(crate) mod scroll {
-        #[path = "/home/nd/oxide/kernel/crates/kernel/syscalls/src/nt_window/scroll/pending.rs"]
+        #[path = "proc_abi.rs"] pub(crate) mod proc_abi;
+        #[path = "control_input.rs"] pub(crate) mod control_input;
+        #[path = "control_query.rs"] pub(crate) mod control_query;
+        #[path="control_geometry.rs"]pub(crate) mod control_geometry;
+        #[path="control_focus.rs"]pub(crate) mod control_focus;
+        #[path = "control_draw.rs"] pub(crate) mod control_draw;
+        #[path = "control_refresh.rs"] pub(crate) mod control_refresh;
+        #[path = "control_proc.rs"] pub(crate) mod control_proc;
+        pub(crate) mod control_paint {
+            pub(crate) fn for_current(_:u64,_:u64)->u64 { panic!("control paint outside input fixture") }
+            pub(crate) fn complete_callback(_:crate::nt_callback::Completion,_:u64)->u64 {panic!("unexpected paint completion")}
+        }
+        #[path = "bar_raw.rs"] pub(crate) mod bar_raw;
+        #[path = "bar_live.rs"] pub(crate) mod bar_live;
+        #[path = "pending.rs"]
         pub(crate) mod pending;
         pub(crate) const SBM_SETSCROLLINFO: u32 = 0x00e9;
-        pub(crate) trait ScrollActionSink {
-            fn show_scrollbar(&mut self, hwnd: u64, bar: i32) -> bool;
-            fn hide_scrollbar(&mut self, hwnd: u64, bar: i32) -> bool;
-            fn enable_scroll_arrows(&mut self, hwnd: u64, bar: i32) -> bool;
-            fn disable_scroll_arrows(&mut self, hwnd: u64, bar: i32) -> bool;
-            fn frame_changed(&mut self, hwnd: u64, bar: i32, token: u64) -> pending::Outcome;
-            fn repaint_scrollbar(&mut self, hwnd: u64, bar: i32) -> bool;
-            fn send_scrollbar_message(&mut self, hwnd: u64, message: u32, wparam: u64, lparam: u64) -> Option<u64>;
-        }
-        pub(crate) fn consume_actions<S: ScrollActionSink + ?Sized>(
-            sink: &mut S, hwnd: u64, bar: i32, info_ptr: u64, redraw: bool,
-            outcome: ipc::win32_window::ScrollOutcome, token: Option<u64>,
-        ) -> pending::Outcome {
-            let action = outcome.action;
-            if action.control_message && sink.send_scrollbar_message(hwnd, SBM_SETSCROLLINFO, redraw as u64, info_ptr).is_none() { return pending::Outcome::Failed; }
-            if bar == ipc::win32_window::SB_CTL { return pending::Outcome::Complete(0); }
-            if action.hide {
-                if !sink.hide_scrollbar(hwnd, bar) { return pending::Outcome::Failed; }
-                let Some(token) = token else { return pending::Outcome::Failed; };
-                match sink.frame_changed(hwnd, bar, token) { pending::Outcome::Complete(_) => {}, pending::Outcome::Pending => return pending::Outcome::Pending, pending::Outcome::Failed => return pending::Outcome::Failed }
-            }
-            if action.show {
-                if !sink.show_scrollbar(hwnd, bar) { return pending::Outcome::Failed; }
-                let Some(token) = token else { return pending::Outcome::Failed; };
-                match sink.frame_changed(hwnd, bar, token) { pending::Outcome::Complete(_) => {}, pending::Outcome::Pending => return pending::Outcome::Pending, pending::Outcome::Failed => return pending::Outcome::Failed }
-            }
-            if action.disable_arrows && !sink.disable_scroll_arrows(hwnd, bar) { return pending::Outcome::Failed; }
-            if action.enable_arrows && !sink.enable_scroll_arrows(hwnd, bar) { return pending::Outcome::Failed; }
-            if redraw && !action.hide && action.repaint && !sink.repaint_scrollbar(hwnd, bar) { return pending::Outcome::Failed; }
-            pending::Outcome::Complete(0)
-        }
-        #[path = "/home/nd/oxide/kernel/crates/kernel/syscalls/src/nt_window/scroll/raw.rs"]
+        #[path = "actions.rs"] mod actions;
+        pub(crate) use actions::{ScrollActionSink, consume_actions};
+        #[path = "raw.rs"]
         pub(crate) mod raw;
-        #[path = "/home/nd/oxide/kernel/crates/kernel/syscalls/src/nt_window/scroll/kernel.rs"]
+        #[path = "kernel.rs"]
         pub(crate) mod kernel;
         pub(crate) use kernel::dispatch;
         pub(crate) use raw::{decode_scroll_info, encode_scroll_info, SCROLLINFO_BYTES};
-        #[path = "/home/nd/oxide/kernel/crates/kernel/syscalls/src/nt_window/scroll/live.rs"]
+        #[path = "live.rs"]
         pub(crate) mod live;
-        #[path = "/home/nd/oxide/kernel/crates/kernel/syscalls/src/nt_window/scroll/sink.rs"]
+        #[path = "sink.rs"]
         pub(crate) mod sink;
     }
 }
@@ -171,6 +220,14 @@ pub mod nt_window {
 struct PositionWait { continuation: nt_window::position::Continuation, stage: usize }
 
 pub mod nt_wine_window {
+    pub mod cursor_raw {
+        pub enum SetCursorStep {OemCursor{id:u32,beep:bool}}
+        pub fn apply_default_step(step:SetCursorStep)->u64 {
+            assert!(crate::nt_window::GUI.0.try_lock().is_ok());
+            let SetCursorStep::OemCursor{id,beep}=step;assert!(!beep);
+            crate::CURSOR_CALLS.with(|calls|calls.borrow_mut().push(id));0x1234_5678_9abc_def0
+        }
+    }
     pub mod position {
         use ipc::win32_window::WindowRect;
         #[derive(Clone, Copy)] pub struct Request { pub hwnd: u64, pub rect: WindowRect, pub order: Option<()>, pub visible: Option<bool>, pub flags: u32 }
@@ -179,8 +236,15 @@ pub mod nt_wine_window {
 
 pub mod nt_gdi {
     use super::*;
-    pub fn repaint_nonclient_scroll_for_current(hwnd: u64, bar: i32, state: win32_window::ScrollState) -> bool {
-        RASTER.with(|r| r.borrow_mut().push((hwnd, bar, state)));
+    pub(crate) use crate::refresh_hosted::{get_dc_ex_for_current,release_dc_lease_for_current};
+    pub mod nonclient_scroll {
+        #[derive(Clone,Copy)] pub struct Context {pub metrics:ipc::win32_gdi::ScrollMetrics}
+        pub fn bounds(_:Context,_:i32)->Result<Option<ipc::win32_gdi::Rect>,()> {
+            panic!("accessibility geometry is outside this fixture")
+        }
+    }
+    pub fn repaint_nonclient_scroll_for_current(hwnd: u64, bar: i32, state: win32_window::ScrollState, interior: bool) -> bool {
+        RASTER.with(|r| r.borrow_mut().push((hwnd, bar, state, interior)));
         !RASTER_FAIL.with(|f| f.get())
     }
 }
@@ -197,6 +261,10 @@ fn current(group: &Arc<thread_group::ThreadGroup>, tid: u64) {
     POSITION_CALLS.with(|c| c.set(0));
     RASTER.with(|r| r.borrow_mut().clear());
     RASTER_FAIL.with(|f| f.set(false));
+    CURSOR_CALLS.with(|calls|calls.borrow_mut().clear());SEND_CALLS.with(|calls|calls.borrow_mut().clear());
+    SEND_PENDING.with(|pending|pending.set(false));SEND_CONT.with(|pending|*pending.borrow_mut()=None);
+    refresh_hosted::reset();
+    CARET_CALLS.with(|calls|calls.borrow_mut().clear());CARET_SNAPSHOTS.with(|snapshots|snapshots.borrow_mut().clear());
 }
 
 fn setup() -> (Arc<thread_group::ThreadGroup>, u64) { setup_with_style(false) }
@@ -209,6 +277,7 @@ fn setup_with_style(vertical_style: bool) -> (Arc<thread_group::ThreadGroup>, u6
     state.set_rect(hwnd, win32_window::WindowRect { left: 0, top: 0, right: 640, bottom: 480 }).unwrap();
     *nt_window::GUI.0.lock().unwrap() = vec![nt_window::GuiEntry {
         group: Arc::downgrade(&group), state, scroll_pending: nt_window::scroll::pending::Queue::default(),
+        paint_callbacks:nt_window::paint_callbacks::Queue::new(),wait:nt_window::Wait,
     }];
     current(&group, 7);
     (group, hwnd.raw() as u64)
@@ -227,8 +296,7 @@ fn joined_visible_scroll_runs_raw_state_three_position_callbacks_then_raster_and
     assert_eq!(set([hwnd, win32_window::SB_VERT as u64, info, 1]), nt_window::STATUS_PENDING);
     assert_eq!(POSITION_CALLS.with(|c| c.get()), 0);
     assert!(RASTER.with(|r| r.borrow().is_empty()));
-    // Curie's changing, NCCALCSIZE and changed callbacks all precede the
-    // terminal continuation.
+    // Intermediate position completions must not resume the scroll caller.
     POSITION.with(|p| assert!(p.borrow().is_some()));
     assert_eq!(nt_window::position::complete_position(nt_window::position::Outcome::Pending), nt_window::STATUS_PENDING);
     assert_eq!(POSITION_CALLS.with(|c| c.get()), 1);
@@ -277,7 +345,7 @@ fn joined_foreign_thread_is_allowed_and_deleted_root_never_resumes_saved_result(
 
     current(&group, 7);
     assert_eq!(set([hwnd, win32_window::SB_VERT as u64, info, 1]), 0);
-    assert!(RASTER.with(|r| r.borrow().is_empty()));
+    assert_eq!(RASTER.with(|r| r.borrow().len()), 1);
 
     let (_group, hwnd) = setup();
     let info = user_info(win32_window::ScrollInfo { cb_size: 28, mask: win32_window::SIF_RANGE | win32_window::SIF_PAGE, min: 0, max: 100, page: 10, pos: 0, track_pos: 0 });
@@ -288,3 +356,33 @@ fn joined_foreign_thread_is_allowed_and_deleted_root_never_resumes_saved_result(
     assert_eq!(nt_window::position::complete_position(nt_window::position::Outcome::Complete(true)), 0);
     assert!(RASTER.with(|r| r.borrow().is_empty()));
 }
+
+#[test]
+fn unchanged_redraw_and_arrow_only_refresh_reach_the_real_action_sink() {
+    let _serial = TEST_LOCK.lock().unwrap();
+    let (_group, hwnd) = setup_with_style(true);
+    let id = win32_window::WindowId::from_raw(hwnd as u32).unwrap();
+    let initial = win32_window::ScrollInfo { cb_size: 28, mask: win32_window::SIF_ALL,
+        min: 0, max: 100, page: 10, pos: 50, track_pos: 0 };
+    nt_window::GUI.lock()[0].state.set_owned_scroll_info(id, win32_window::SB_VERT, initial, false).unwrap();
+    let info = user_info(initial);
+    assert_eq!(set([hwnd, win32_window::SB_VERT as u64, info, 1]), 50);
+    assert_eq!(RASTER.with(|r| r.borrow().len()), 1);
+    assert!(RASTER.with(|r| r.borrow()[0].3));
+    RASTER.with(|r| r.borrow_mut().clear());
+    nt_window::GUI.lock()[0].state.set_scroll_flags(id, win32_window::SB_VERT, win32_window::ESB_DISABLE_BOTH).unwrap();
+    let info = user_info(win32_window::ScrollInfo { mask: win32_window::SIF_RANGE | win32_window::SIF_POS, pos: 70, ..initial });
+    assert_eq!(set([hwnd, win32_window::SB_VERT as u64, info, 0]), 70);
+    RASTER.with(|r| { let calls = r.borrow(); assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].2.flags, win32_window::ESB_ENABLE_BOTH); assert!(!calls[0].3); });
+    assert_eq!(POSITION_CALLS.with(|c| c.get()), 0);
+}
+
+#[path="tests/bar_visibility.rs"] mod bar_visibility;
+
+#[path="tests/sizegrip.rs"] mod sizegrip;
+#[path="tests/control_query.rs"] mod control_query;
+#[path="tests/control_refresh.rs"] mod control_refresh;
+#[path="tests/control_keyboard.rs"] mod control_keyboard;
+
+#[path="tests/control_focus.rs"]mod control_focus;

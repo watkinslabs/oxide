@@ -68,7 +68,7 @@ fn trace_message_call(hwnd: u64, message: u64, callback_type: u64) {
 /// # C: O(1) plus bounded usercopy
 pub(super) fn message_call(a: &[u64; 17]) -> u64 {
     let Some((callback_type, ansi)) = crate::nt_message_call_abi::tail(a[5], |index| a.get(index).copied()) else { return STATUS_INVALID_PARAMETER; };
-    let callback_type = callback_type as u64;
+    let mut callback_type = callback_type as u64;
     trace_message_call(a[0], a[1], callback_type);
     let hwnd = a[0];
     let message = a[1];
@@ -79,13 +79,16 @@ pub(super) fn message_call(a: &[u64; 17]) -> u64 {
     if callback_type == WINE_POPUP_MENU_WND_PROC {
         return crate::nt_window::menu_raw::popup_menu_window_proc(hwnd, message as u32, wparam, lparam);
     }
+    if callback_type == crate::nt_window::scroll::proc_abi::WNDPROC_SELECTOR {
+        if let Some(result) = crate::nt_window::scroll::control_proc::for_current(hwnd, message as u32, wparam, lparam) { return result; }
+        callback_type = WINE_DEF_WINDOW_PROC;
+    }
     if callback_type == WINE_DEF_WINDOW_PROC {
         if message == WM_NCCREATE { return (lparam != 0) as u64; }
         if message == WM_NCDESTROY { return STATUS_SUCCESS; }
         // WM_NCHITTEST is not answered here: the canonical default window
         // procedure answers it, and it is the only one that knows about the
         // menu bar's band of the nonclient area.
-        if message == WM_SETCURSOR { return cursor_raw::default_set_cursor(wparam, lparam); }
         if message == WM_NCACTIVATE { return 1; }
         if message == WM_SETTEXT {
             return win_bool(native(NtService::SetWindowText, SyscallArgs { a0: hwnd, a1: lparam, a2: 0, a3: 0, a4: 0, a5: 0 }));

@@ -1,0 +1,1155 @@
+stack-depth-gate: target/builds/B3630-dialogs/x86_64-unknown-oxide-kernel/release/oxide-x86_64 (x86_64)
+  functions scanned  : 19807
+  unresolved indirect: 5215 function(s) — their true depth is larger than reported
+  dispatch resolved  : 1 edge(s) from tools/entry-edges-x86_64.tsv — interrupt handlers the walker would otherwise stop at
+  stack switches     : 1 verified edge(s) from tools/stack-switches-x86_64.tsv — caller/callee use distinct stacks
+  recursive          : 10677 function(s) — depth is a lower bound
+  blocking tail      : 3808 B charged once to every path reaching _RNvNtNtNtNtCsgQvq5HOqpuz_5sched4live8schedule6switch5round13schedule_once
+  >= ceiling (13000B): 338
+  deepest 20:
+      20168  oxide_syscall_entry   [recursive,+indirect]
+            +   352  oxide_syscall_dispatch
+            +   448  syscalls::dispatch::core::dispatch_routed_syscall
+            +   416  syscalls::s322_execveat::sys_execveat
+            +  1584  syscalls::s059_execve::x86_64::execve_inner
+            +     8  syscalls::pe_exec::try_commit
+            +   608  syscalls::pe_exec::commit_x86
+            +  3104  syscalls::pe_exec::prepare_pe_process
+            +  4624  syscalls::pe_exec::map_nt_runtime_box
+            +  4928  elf_load::pe_loader::map_nt_runtime
+            +   112  <vmm::address_space::AddressSpace>::mmap_with_may_at
+            +   448  <vmm::address_space::AddressSpace>::mmap_with_may_at_inner_locked
+            +    64  fs::selinux::perm::mmap_addr
+            +  1184  selinux_runtime::check::has_perm
+            +    64  selinux_runtime::check::report
+            +   192  selinux_runtime::check::record_body
+            +  1200  selinux_runtime::check::push_context
+            +    64  <alloc::raw_vec::RawVecInner<_>>::reserve::do_reserve_and_handle::<alloc::alloc::Global>
+            +    80  <alloc::raw_vec::RawVecInner>::finish_grow
+            +   256  <kalloc::state::KAlloc as core::alloc::global::GlobalAlloc>::alloc
+            +    96  <kalloc::state::KAlloc>::grow_and_alloc
+            +    64  <kalloc::state::KAlloc>::shrink_classes_and_alloc
+            +    48  arch_irq::call_fn::service
+            +    40  sched::ldt::apply
+      20136  syscalls::nt_dispatch::dispatch_service   [recursive,+indirect]
+            +  1888  syscalls::nt_process_create::dispatch
+            +  3104  syscalls::pe_exec::prepare_pe_process
+            +  4624  syscalls::pe_exec::map_nt_runtime_box
+            +  4928  elf_load::pe_loader::map_nt_runtime
+            +   112  <vmm::address_space::AddressSpace>::mmap_with_may_at
+            +   448  <vmm::address_space::AddressSpace>::mmap_with_may_at_inner_locked
+            +    64  fs::selinux::perm::mmap_addr
+            +  1184  selinux_runtime::check::has_perm
+            +    64  selinux_runtime::check::report
+            +   192  selinux_runtime::check::record_body
+            +  1200  selinux_runtime::check::push_context
+            +    64  <alloc::raw_vec::RawVecInner<_>>::reserve::do_reserve_and_handle::<alloc::alloc::Global>
+            +    80  <alloc::raw_vec::RawVecInner>::finish_grow
+            +   256  <kalloc::state::KAlloc as core::alloc::global::GlobalAlloc>::alloc
+            +    96  <kalloc::state::KAlloc>::grow_and_alloc
+            +    64  <kalloc::state::KAlloc>::shrink_classes_and_alloc
+            +    48  arch_irq::call_fn::service
+            +    40  sched::ldt::apply
+      20064  kmain::kmain::entry::kernel_init   [recursive,+indirect]
+            +   144  kmain::kmain::rootfs::init
+            +  1504  kmain::kmain::rootfs::mount_root
+            +  2432  <ext4::rootfs::state::RootfsState>::open
+            +  2176  <ext4::mount::Mount>::open_with_behaviour
+            +   864  <ext4::mount::Mount>::recover_journal
+            +   320  <ext4::mount::Mount>::read_inode
+            +    80  <ext4::mount::Mount>::prefetch_metadata_blocks_async
+            +    32  <alloc::sync::Arc<ext4::mount::Mount>>::drop_slow
+            +   592  <ext4::mount::Mount>::commit_batch_for
+            +   176  ext4::rootfs::framecache::dirty::writeback_dirty_inner
+            +   368  <ext4::rootfs::framecache::Ext4FrameStore>::writeback_idxs
+            +   224  <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::rootfs::framecache::Ext4FrameStore>::writeback_idxs::{closure#1}>
+            +   224  <ext4::rootfs::framecache::Ext4FrameStore>::writeback_idxs::{closure#1}
+            +   128  <ext4::mount::Mount>::run_batch_handle::<(), <ext4::mount::Mount>::write_at::{closure#0}>
+            +   224  <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::write_at::{closure#0}>
+            +  1216  <ext4::mount::Mount>::write_at_inner
+            +   496  <ext4::mount::Mount>::rollback_allocated_logical_blocks
+            +    48  <ext4::mount::Mount>::run_journaled::<(), <ext4::mount::Mount>::punch_hole_inode::{closure#0}>
+            +   224  <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::punch_hole_inode::{closure#0}>
+            +   816  <ext4::mount::Mount>::punch_hole_inner
+            +   288  <ext4::mount::Mount>::convert_inline_data
+            +   352  <ext4::mount::Mount>::insert_logical_block_with_inode_bytes
+            +   432  <ext4::mount::Mount>::insert_into_inline_root
+      20048  kmain::kmain::rootfs::init   [recursive,+indirect]
+            +  1504  kmain::kmain::rootfs::mount_root
+            +  2432  <ext4::rootfs::state::RootfsState>::open
+            +  2176  <ext4::mount::Mount>::open_with_behaviour
+            +   864  <ext4::mount::Mount>::recover_journal
+            +   320  <ext4::mount::Mount>::read_inode
+            +    80  <ext4::mount::Mount>::prefetch_metadata_blocks_async
+            +    32  <alloc::sync::Arc<ext4::mount::Mount>>::drop_slow
+            +   592  <ext4::mount::Mount>::commit_batch_for
+            +   176  ext4::rootfs::framecache::dirty::writeback_dirty_inner
+            +   368  <ext4::rootfs::framecache::Ext4FrameStore>::writeback_idxs
+            +   224  <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::rootfs::framecache::Ext4FrameStore>::writeback_idxs::{closure#1}>
+            +   224  <ext4::rootfs::framecache::Ext4FrameStore>::writeback_idxs::{closure#1}
+            +   128  <ext4::mount::Mount>::run_batch_handle::<(), <ext4::mount::Mount>::write_at::{closure#0}>
+            +   224  <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::write_at::{closure#0}>
+            +  1216  <ext4::mount::Mount>::write_at_inner
+            +   496  <ext4::mount::Mount>::rollback_allocated_logical_blocks
+            +    48  <ext4::mount::Mount>::run_journaled::<(), <ext4::mount::Mount>::punch_hole_inode::{closure#0}>
+            +   224  <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::punch_hole_inode::{closure#0}>
+            +   816  <ext4::mount::Mount>::punch_hole_inner
+            +   288  <ext4::mount::Mount>::convert_inline_data
+            +   352  <ext4::mount::Mount>::insert_logical_block_with_inode_bytes
+            +   432  <ext4::mount::Mount>::insert_into_inline_root
+            +   224  <ext4::mount::Mount>::alloc_blocks_goal_sized
+      19984  oxide_syscall_dispatch   [recursive,+indirect]
+            +   448  syscalls::dispatch::core::dispatch_routed_syscall
+            +   416  syscalls::s322_execveat::sys_execveat
+            +  1584  syscalls::s059_execve::x86_64::execve_inner
+            +     8  syscalls::pe_exec::try_commit
+            +   608  syscalls::pe_exec::commit_x86
+            +  3104  syscalls::pe_exec::prepare_pe_process
+            +  4624  syscalls::pe_exec::map_nt_runtime_box
+            +  4928  elf_load::pe_loader::map_nt_runtime
+            +   112  <vmm::address_space::AddressSpace>::mmap_with_may_at
+            +   448  <vmm::address_space::AddressSpace>::mmap_with_may_at_inner_locked
+            +    64  fs::selinux::perm::mmap_addr
+            +  1184  selinux_runtime::check::has_perm
+            +    64  selinux_runtime::check::report
+            +   192  selinux_runtime::check::record_body
+            +  1200  selinux_runtime::check::push_context
+            +    64  <alloc::raw_vec::RawVecInner<_>>::reserve::do_reserve_and_handle::<alloc::alloc::Global>
+            +    80  <alloc::raw_vec::RawVecInner>::finish_grow
+            +   256  <kalloc::state::KAlloc as core::alloc::global::GlobalAlloc>::alloc
+            +    96  <kalloc::state::KAlloc>::grow_and_alloc
+            +    64  <kalloc::state::KAlloc>::shrink_classes_and_alloc
+            +    48  arch_irq::call_fn::service
+            +    40  sched::ldt::apply
+      19904  kmain::kmain::rootfs::mount_root   [recursive,+indirect]
+            +  2432  <ext4::rootfs::state::RootfsState>::open
+            +  2176  <ext4::mount::Mount>::open_with_behaviour
+            +   864  <ext4::mount::Mount>::recover_journal
+            +   320  <ext4::mount::Mount>::read_inode
+            +    80  <ext4::mount::Mount>::prefetch_metadata_blocks_async
+            +    32  <alloc::sync::Arc<ext4::mount::Mount>>::drop_slow
+            +   592  <ext4::mount::Mount>::commit_batch_for
+            +   176  ext4::rootfs::framecache::dirty::writeback_dirty_inner
+            +   368  <ext4::rootfs::framecache::Ext4FrameStore>::writeback_idxs
+            +   224  <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::rootfs::framecache::Ext4FrameStore>::writeback_idxs::{closure#1}>
+            +   224  <ext4::rootfs::framecache::Ext4FrameStore>::writeback_idxs::{closure#1}
+            +   128  <ext4::mount::Mount>::run_batch_handle::<(), <ext4::mount::Mount>::write_at::{closure#0}>
+            +   224  <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::write_at::{closure#0}>
+            +  1216  <ext4::mount::Mount>::write_at_inner
+            +   496  <ext4::mount::Mount>::rollback_allocated_logical_blocks
+            +    48  <ext4::mount::Mount>::run_journaled::<(), <ext4::mount::Mount>::punch_hole_inode::{closure#0}>
+            +   224  <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::punch_hole_inode::{closure#0}>
+            +   816  <ext4::mount::Mount>::punch_hole_inner
+            +   288  <ext4::mount::Mount>::convert_inline_data
+            +   352  <ext4::mount::Mount>::insert_logical_block_with_inode_bytes
+            +   432  <ext4::mount::Mount>::insert_into_inline_root
+            +   224  <ext4::mount::Mount>::alloc_blocks_goal_sized
+            +   256  <ext4::mount::Mount>::run_journaled_inner::<alloc::vec::Vec<u64>, <ext4::mount::Mount>::alloc_blocks_goal_sized::{closure#0}>
+      19904  <ext4::rootfs::inode::special::Ext4StatInodeOps as vfs::inode_ops::InodeOps>::mkdir_unchecked   [recursive,+indirect]
+            +  1296  <ext4::rootfs::inode::special::Ext4StatInodeOps>::mkdir_impl
+            +   480  <ext4::mount::Mount>::create_dir_inode_inner
+            +   416  <ext4::mount::Mount>::run_journaled_inner::<(u32, ext4::inode::Inode), <ext4::mount::Mount>::create_dir_inode_inner::{closure#0}>
+            +   672  <ext4::mount::Mount>::create_dir_inode_inner::{closure#0}
+            +   416  <ext4::mount::Mount>::dir_link_in_transaction
+            +   528  <ext4::mount::Mount>::dir_link_inner_with_inode
+            +   768  <ext4::mount::Mount>::htree_create
+            +   240  <ext4::mount::Mount>::htree_insert
+            +   624  <ext4::mount::Mount>::htree_split
+            +   160  <ext4::mount::Mount>::htree_grow_root
+            +   224  <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::htree_grow_root::{closure#0}>
+            +   112  <ext4::mount::Mount>::htree_grow_root::{closure#0}
+            +   288  <ext4::mount::Mount>::metadata_write
+            +   720  <ext4::mount::Mount>::commit_metadata_deferred
+            +   320  <ext4::mount::Mount>::read_inode
+            +    80  <ext4::mount::Mount>::prefetch_metadata_blocks_async
+            +    32  <alloc::sync::Arc<ext4::mount::Mount>>::drop_slow
+            +   592  <ext4::mount::Mount>::commit_batch_for
+            +   176  ext4::rootfs::framecache::dirty::writeback_dirty_inner
+            +   368  <ext4::rootfs::framecache::Ext4FrameStore>::writeback_idxs
+            +   224  <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::rootfs::framecache::Ext4FrameStore>::writeback_idxs::{closure#1}>
+            +   224  <ext4::rootfs::framecache::Ext4FrameStore>::writeback_idxs::{closure#1}
+            +   128  <ext4::mount::Mount>::run_batch_handle::<(), <ext4::mount::Mount>::write_at::{closure#0}>
+      19904  <ext4::rootfs::inode::special::Ext4StatInodeOps as vfs::inode_ops::InodeOps>::mkdir   [recursive,+indirect]
+            +  1296  <ext4::rootfs::inode::special::Ext4StatInodeOps>::mkdir_impl
+            +   480  <ext4::mount::Mount>::create_dir_inode_inner
+            +   416  <ext4::mount::Mount>::run_journaled_inner::<(u32, ext4::inode::Inode), <ext4::mount::Mount>::create_dir_inode_inner::{closure#0}>
+            +   672  <ext4::mount::Mount>::create_dir_inode_inner::{closure#0}
+            +   416  <ext4::mount::Mount>::dir_link_in_transaction
+            +   528  <ext4::mount::Mount>::dir_link_inner_with_inode
+            +   768  <ext4::mount::Mount>::htree_create
+            +   240  <ext4::mount::Mount>::htree_insert
+            +   624  <ext4::mount::Mount>::htree_split
+            +   160  <ext4::mount::Mount>::htree_grow_root
+            +   224  <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::htree_grow_root::{closure#0}>
+            +   112  <ext4::mount::Mount>::htree_grow_root::{closure#0}
+            +   288  <ext4::mount::Mount>::metadata_write
+            +   720  <ext4::mount::Mount>::commit_metadata_deferred
+            +   320  <ext4::mount::Mount>::read_inode
+            +    80  <ext4::mount::Mount>::prefetch_metadata_blocks_async
+            +    32  <alloc::sync::Arc<ext4::mount::Mount>>::drop_slow
+            +   592  <ext4::mount::Mount>::commit_batch_for
+            +   176  ext4::rootfs::framecache::dirty::writeback_dirty_inner
+            +   368  <ext4::rootfs::framecache::Ext4FrameStore>::writeback_idxs
+            +   224  <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::rootfs::framecache::Ext4FrameStore>::writeback_idxs::{closure#1}>
+            +   224  <ext4::rootfs::framecache::Ext4FrameStore>::writeback_idxs::{closure#1}
+            +   128  <ext4::mount::Mount>::run_batch_handle::<(), <ext4::mount::Mount>::write_at::{closure#0}>
+      19872  <ext4::rootfs::inode::special::Ext4StatInodeOps>::mkdir_impl   [recursive,+indirect]
+            +   480  <ext4::mount::Mount>::create_dir_inode_inner
+            +   416  <ext4::mount::Mount>::run_journaled_inner::<(u32, ext4::inode::Inode), <ext4::mount::Mount>::create_dir_inode_inner::{closure#0}>
+            +   672  <ext4::mount::Mount>::create_dir_inode_inner::{closure#0}
+            +   416  <ext4::mount::Mount>::dir_link_in_transaction
+            +   528  <ext4::mount::Mount>::dir_link_inner_with_inode
+            +   768  <ext4::mount::Mount>::htree_create
+            +   240  <ext4::mount::Mount>::htree_insert
+            +   624  <ext4::mount::Mount>::htree_split
+            +   160  <ext4::mount::Mount>::htree_grow_root
+            +   224  <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::htree_grow_root::{closure#0}>
+            +   112  <ext4::mount::Mount>::htree_grow_root::{closure#0}
+            +   288  <ext4::mount::Mount>::metadata_write
+            +   720  <ext4::mount::Mount>::commit_metadata_deferred
+            +   320  <ext4::mount::Mount>::read_inode
+            +    80  <ext4::mount::Mount>::prefetch_metadata_blocks_async
+            +    32  <alloc::sync::Arc<ext4::mount::Mount>>::drop_slow
+            +   592  <ext4::mount::Mount>::commit_batch_for
+            +   176  ext4::rootfs::framecache::dirty::writeback_dirty_inner
+            +   368  <ext4::rootfs::framecache::Ext4FrameStore>::writeback_idxs
+            +   224  <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::rootfs::framecache::Ext4FrameStore>::writeback_idxs::{closure#1}>
+            +   224  <ext4::rootfs::framecache::Ext4FrameStore>::writeback_idxs::{closure#1}
+            +   128  <ext4::mount::Mount>::run_batch_handle::<(), <ext4::mount::Mount>::write_at::{closure#0}>
+            +   224  <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::write_at::{closure#0}>
+      19632  syscalls::dispatch::core::dispatch_routed_syscall   [recursive,+indirect]
+            +   416  syscalls::s322_execveat::sys_execveat
+            +  1584  syscalls::s059_execve::x86_64::execve_inner
+            +     8  syscalls::pe_exec::try_commit
+            +   608  syscalls::pe_exec::commit_x86
+            +  3104  syscalls::pe_exec::prepare_pe_process
+            +  4624  syscalls::pe_exec::map_nt_runtime_box
+            +  4928  elf_load::pe_loader::map_nt_runtime
+            +   112  <vmm::address_space::AddressSpace>::mmap_with_may_at
+            +   448  <vmm::address_space::AddressSpace>::mmap_with_may_at_inner_locked
+            +    64  fs::selinux::perm::mmap_addr
+            +  1184  selinux_runtime::check::has_perm
+            +    64  selinux_runtime::check::report
+            +   192  selinux_runtime::check::record_body
+            +  1200  selinux_runtime::check::push_context
+            +    64  <alloc::raw_vec::RawVecInner<_>>::reserve::do_reserve_and_handle::<alloc::alloc::Global>
+            +    80  <alloc::raw_vec::RawVecInner>::finish_grow
+            +   256  <kalloc::state::KAlloc as core::alloc::global::GlobalAlloc>::alloc
+            +    96  <kalloc::state::KAlloc>::grow_and_alloc
+            +    64  <kalloc::state::KAlloc>::shrink_classes_and_alloc
+            +    48  arch_irq::call_fn::service
+            +    40  sched::ldt::apply
+      19184  syscalls::s322_execveat::sys_execveat   [recursive,+indirect]
+            +  1584  syscalls::s059_execve::x86_64::execve_inner
+            +     8  syscalls::pe_exec::try_commit
+            +   608  syscalls::pe_exec::commit_x86
+            +  3104  syscalls::pe_exec::prepare_pe_process
+            +  4624  syscalls::pe_exec::map_nt_runtime_box
+            +  4928  elf_load::pe_loader::map_nt_runtime
+            +   112  <vmm::address_space::AddressSpace>::mmap_with_may_at
+            +   448  <vmm::address_space::AddressSpace>::mmap_with_may_at_inner_locked
+            +    64  fs::selinux::perm::mmap_addr
+            +  1184  selinux_runtime::check::has_perm
+            +    64  selinux_runtime::check::report
+            +   192  selinux_runtime::check::record_body
+            +  1200  selinux_runtime::check::push_context
+            +    64  <alloc::raw_vec::RawVecInner<_>>::reserve::do_reserve_and_handle::<alloc::alloc::Global>
+            +    80  <alloc::raw_vec::RawVecInner>::finish_grow
+            +   256  <kalloc::state::KAlloc as core::alloc::global::GlobalAlloc>::alloc
+            +    96  <kalloc::state::KAlloc>::grow_and_alloc
+            +    64  <kalloc::state::KAlloc>::shrink_classes_and_alloc
+            +    48  arch_irq::call_fn::service
+            +    40  sched::ldt::apply
+      19168  syscalls::nt_wine_window::chain::kernel::legacy::route   [recursive,+indirect]
+            +   240  syscalls::nt_wine_window::placement::policy::apply::<syscalls::nt_wine_window::placement::kernel::Current>
+            +  1152  syscalls::nt_window::dispatch::dispatch_mode
+            +   976  syscalls::nt_window::hardware::live::drive
+            +   496  syscalls::nt_window::hardware::live::enter
+            +   176  syscalls::nt_window::send::live::send
+            +   112  syscalls::nt_window::send::live::wait_outcome
+            +   224  syscalls::nt_window::position::remote::pump
+            +   416  syscalls::nt_window::position::live::start_inner
+            +   336  syscalls::nt_window::position::live::after_changing
+            +   336  syscalls::nt_window::position::live::commit
+            +   144  syscalls::nt_window::bridge::live::publish_geometry_current
+            +   144  syscalls::nt_window::bridge::live::publish
+            +    64  syscalls::nt_compositor::binding::retire
+            +    32  <alloc::sync::Arc<syscalls::nt_compositor::binding::Binding>>::drop_slow
+            +    32  <alloc::sync::Arc<net::sock::types::InetSocket>>::drop_slow
+            +    32  core::ptr::drop_in_place::<net::sock::types::InetSocket>
+            +   112  <net::sock::types::InetSocket>::release_file
+            +   432  <net::mcast_filter::SocketMcast>::release
+            +   784  <net::stack::types::net_stack::NetStack>::drive_mld_reports
+            +   448  <net::stack::types::net_stack::NetStack>::emit_mld_body
+            +   608  <net::netdev::tx_dispatch::TxDispatch>::enqueue
+            +   400  <net::netdev::tx_dispatch::TxJob>::transmit
+            +  1024  net::netfilter_hook::nf_hook_packet_in
+      19120  <ext4::rootfs::inode::special::Ext4StatInodeOps as vfs::inode_ops::InodeOps>::rename   [recursive,+indirect]
+            +   768  ext4::rootfs::inode::rename::rename_sides
+            +   224  <ext4::mount::Mount>::run_journaled_inner::<(), ext4::rootfs::inode::rename::plain_rename::{closure#4}>
+            +   448  ext4::rootfs::inode::rename::plain_rename::{closure#4}
+            +   464  <ext4::mount::Mount>::create_mknod_in_transaction_with_parent
+            +   112  <ext4::acl::Inherited>::store
+            +   128  <ext4::mount::Mount>::store_xattrs
+            +   224  <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::store_xattrs::{closure#0}>
+            +   720  <ext4::mount::Mount>::store_xattrs::{closure#0}
+            +    64  <ext4::mount::Mount>::put_ea_inode
+            +   224  <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::put_ea_inode::{closure#0}>
+            +   112  <ext4::mount::Mount>::put_ea_inode::{closure#0}
+            +   128  <ext4::mount::Mount>::truncate_inode_for_deletion
+            +   224  <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::truncate_inode_for_deletion::{closure#0}>
+            +   800  <ext4::mount::Mount>::truncate_inode_inner
+            +   176  <ext4::mount::Mount>::prune_legacy_node
+            +   288  <ext4::mount::Mount>::metadata_write
+            +   720  <ext4::mount::Mount>::commit_metadata_deferred
+            +   320  <ext4::mount::Mount>::read_inode
+            +    80  <ext4::mount::Mount>::prefetch_metadata_blocks_async
+            +    32  <alloc::sync::Arc<ext4::mount::Mount>>::drop_slow
+            +   592  <ext4::mount::Mount>::commit_batch_for
+            +   176  ext4::rootfs::framecache::dirty::writeback_dirty_inner
+            +   368  <ext4::rootfs::framecache::Ext4FrameStore>::writeback_idxs
+      18944  <ext4::rootfs::inode::special::Ext4StatInodeOps as vfs::inode_ops::InodeOps>::create_unchecked   [recursive,+indirect]
+            +  1008  <ext4::rootfs::inode::special::Ext4StatInodeOps>::create_impl
+            +   416  <ext4::mount::Mount>::run_journaled_inner::<(u32, ext4::inode::Inode), <ext4::mount::Mount>::create_file_inode_inner::{closure#0}>
+            +   640  <ext4::mount::Mount>::create_file_inode_inner::{closure#0}
+            +   112  <ext4::acl::Inherited>::store
+            +   128  <ext4::mount::Mount>::store_xattrs
+            +   224  <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::store_xattrs::{closure#0}>
+            +   720  <ext4::mount::Mount>::store_xattrs::{closure#0}
+            +    64  <ext4::mount::Mount>::put_ea_inode
+            +   224  <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::put_ea_inode::{closure#0}>
+            +   112  <ext4::mount::Mount>::put_ea_inode::{closure#0}
+            +   128  <ext4::mount::Mount>::truncate_inode_for_deletion
+            +   224  <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::truncate_inode_for_deletion::{closure#0}>
+            +   800  <ext4::mount::Mount>::truncate_inode_inner
+            +   176  <ext4::mount::Mount>::prune_legacy_node
+            +   288  <ext4::mount::Mount>::metadata_write
+            +   720  <ext4::mount::Mount>::commit_metadata_deferred
+            +   320  <ext4::mount::Mount>::read_inode
+            +    80  <ext4::mount::Mount>::prefetch_metadata_blocks_async
+            +    32  <alloc::sync::Arc<ext4::mount::Mount>>::drop_slow
+            +   592  <ext4::mount::Mount>::commit_batch_for
+            +   176  ext4::rootfs::framecache::dirty::writeback_dirty_inner
+            +   368  <ext4::rootfs::framecache::Ext4FrameStore>::writeback_idxs
+            +   224  <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::rootfs::framecache::Ext4FrameStore>::writeback_idxs::{closure#1}>
+      18944  <ext4::rootfs::inode::special::Ext4StatInodeOps as vfs::inode_ops::InodeOps>::create   [recursive,+indirect]
+            +  1008  <ext4::rootfs::inode::special::Ext4StatInodeOps>::create_impl
+            +   416  <ext4::mount::Mount>::run_journaled_inner::<(u32, ext4::inode::Inode), <ext4::mount::Mount>::create_file_inode_inner::{closure#0}>
+            +   640  <ext4::mount::Mount>::create_file_inode_inner::{closure#0}
+            +   112  <ext4::acl::Inherited>::store
+            +   128  <ext4::mount::Mount>::store_xattrs
+            +   224  <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::store_xattrs::{closure#0}>
+            +   720  <ext4::mount::Mount>::store_xattrs::{closure#0}
+            +    64  <ext4::mount::Mount>::put_ea_inode
+            +   224  <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::put_ea_inode::{closure#0}>
+            +   112  <ext4::mount::Mount>::put_ea_inode::{closure#0}
+            +   128  <ext4::mount::Mount>::truncate_inode_for_deletion
+            +   224  <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::truncate_inode_for_deletion::{closure#0}>
+            +   800  <ext4::mount::Mount>::truncate_inode_inner
+            +   176  <ext4::mount::Mount>::prune_legacy_node
+            +   288  <ext4::mount::Mount>::metadata_write
+            +   720  <ext4::mount::Mount>::commit_metadata_deferred
+            +   320  <ext4::mount::Mount>::read_inode
+            +    80  <ext4::mount::Mount>::prefetch_metadata_blocks_async
+            +    32  <alloc::sync::Arc<ext4::mount::Mount>>::drop_slow
+            +   592  <ext4::mount::Mount>::commit_batch_for
+            +   176  ext4::rootfs::framecache::dirty::writeback_dirty_inner
+            +   368  <ext4::rootfs::framecache::Ext4FrameStore>::writeback_idxs
+            +   224  <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::rootfs::framecache::Ext4FrameStore>::writeback_idxs::{closure#1}>
+      18912  <syscalls::fsmount_common::registry::register::register_filesystems::{closure#0} as core::ops::function::FnOnce<(alloc::sync::Arc<dyn vfs::superblock::ops::FileSystemType>, core::option::Option<&str>, &str, &str, u64, &[vfs::fs::fs_context::types::FsParameter])>>::call_once::{shim:vtable#0}   [recursive,+indirect]
+            +  2560  syscalls::fsmount_common::registry::register::register_filesystems::{closure#0}
+            +    32  <alloc::sync::Arc<ext4::rootfs::ops::mountfs::Ext4Mount>>::drop_slow
+            +   256  <ext4::rootfs::ops::mountfs::Ext4Mount as core::ops::drop::Drop>::drop
+            +   272  <ext4::rootfs::state::RootfsState>::free_orphan_inode
+            +    96  <ext4::mount::Mount>::free_orphan_inode
+            +   224  <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::free_orphan_inode::{closure#0}>
+            +   128  <ext4::mount::Mount>::free_orphan_inode::{closure#0}
+            +   128  <ext4::mount::Mount>::truncate_inode_for_deletion
+            +   224  <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::truncate_inode_for_deletion::{closure#0}>
+            +   800  <ext4::mount::Mount>::truncate_inode_inner
+            +   176  <ext4::mount::Mount>::prune_legacy_node
+            +   288  <ext4::mount::Mount>::metadata_write
+            +   720  <ext4::mount::Mount>::commit_metadata_deferred
+            +   320  <ext4::mount::Mount>::read_inode
+            +    80  <ext4::mount::Mount>::prefetch_metadata_blocks_async
+            +    32  <alloc::sync::Arc<ext4::mount::Mount>>::drop_slow
+            +   592  <ext4::mount::Mount>::commit_batch_for
+            +   176  ext4::rootfs::framecache::dirty::writeback_dirty_inner
+            +   368  <ext4::rootfs::framecache::Ext4FrameStore>::writeback_idxs
+            +   224  <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::rootfs::framecache::Ext4FrameStore>::writeback_idxs::{closure#1}>
+            +   224  <ext4::rootfs::framecache::Ext4FrameStore>::writeback_idxs::{closure#1}
+            +   128  <ext4::mount::Mount>::run_batch_handle::<(), <ext4::mount::Mount>::write_at::{closure#0}>
+            +   224  <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::write_at::{closure#0}>
+      18912  <ext4::rootfs::inode::special::Ext4StatInodeOps>::create_impl   [recursive,+indirect]
+            +   416  <ext4::mount::Mount>::run_journaled_inner::<(u32, ext4::inode::Inode), <ext4::mount::Mount>::create_file_inode_inner::{closure#0}>
+            +   640  <ext4::mount::Mount>::create_file_inode_inner::{closure#0}
+            +   112  <ext4::acl::Inherited>::store
+            +   128  <ext4::mount::Mount>::store_xattrs
+            +   224  <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::store_xattrs::{closure#0}>
+            +   720  <ext4::mount::Mount>::store_xattrs::{closure#0}
+            +    64  <ext4::mount::Mount>::put_ea_inode
+            +   224  <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::put_ea_inode::{closure#0}>
+            +   112  <ext4::mount::Mount>::put_ea_inode::{closure#0}
+            +   128  <ext4::mount::Mount>::truncate_inode_for_deletion
+            +   224  <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::truncate_inode_for_deletion::{closure#0}>
+            +   800  <ext4::mount::Mount>::truncate_inode_inner
+            +   176  <ext4::mount::Mount>::prune_legacy_node
+            +   288  <ext4::mount::Mount>::metadata_write
+            +   720  <ext4::mount::Mount>::commit_metadata_deferred
+            +   320  <ext4::mount::Mount>::read_inode
+            +    80  <ext4::mount::Mount>::prefetch_metadata_blocks_async
+            +    32  <alloc::sync::Arc<ext4::mount::Mount>>::drop_slow
+            +   592  <ext4::mount::Mount>::commit_batch_for
+            +   176  ext4::rootfs::framecache::dirty::writeback_dirty_inner
+            +   368  <ext4::rootfs::framecache::Ext4FrameStore>::writeback_idxs
+            +   224  <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::rootfs::framecache::Ext4FrameStore>::writeback_idxs::{closure#1}>
+            +   224  <ext4::rootfs::framecache::Ext4FrameStore>::writeback_idxs::{closure#1}
+      18848  syscalls::s059_execve::entry::sys_execve   [recursive,+indirect]
+            +  1584  syscalls::s059_execve::x86_64::execve_inner
+            +     8  syscalls::pe_exec::try_commit
+            +   608  syscalls::pe_exec::commit_x86
+            +  3104  syscalls::pe_exec::prepare_pe_process
+            +  4624  syscalls::pe_exec::map_nt_runtime_box
+            +  4928  elf_load::pe_loader::map_nt_runtime
+            +   112  <vmm::address_space::AddressSpace>::mmap_with_may_at
+            +   448  <vmm::address_space::AddressSpace>::mmap_with_may_at_inner_locked
+            +    64  fs::selinux::perm::mmap_addr
+            +  1184  selinux_runtime::check::has_perm
+            +    64  selinux_runtime::check::report
+            +   192  selinux_runtime::check::record_body
+            +  1200  selinux_runtime::check::push_context
+            +    64  <alloc::raw_vec::RawVecInner<_>>::reserve::do_reserve_and_handle::<alloc::alloc::Global>
+            +    80  <alloc::raw_vec::RawVecInner>::finish_grow
+            +   256  <kalloc::state::KAlloc as core::alloc::global::GlobalAlloc>::alloc
+            +    96  <kalloc::state::KAlloc>::grow_and_alloc
+            +    64  <kalloc::state::KAlloc>::shrink_classes_and_alloc
+            +    48  arch_irq::call_fn::service
+            +    40  sched::ldt::apply
+      18848  syscalls::nt_wine_window::window_raw::kernel::route   [recursive,+indirect]
+            +    96  syscalls::nt_wine_window::placement::kernel::apply_internal
+            +   240  syscalls::nt_wine_window::placement::policy::apply::<syscalls::nt_wine_window::placement::kernel::Current>
+            +  1152  syscalls::nt_window::dispatch::dispatch_mode
+            +   976  syscalls::nt_window::hardware::live::drive
+            +   496  syscalls::nt_window::hardware::live::enter
+stack-depth-gate: FAIL — 338 static path(s) reach >= 13000 B on a 16384 B kernel stack:
+      20168  NEW       oxide_syscall_entry
+             (symbol oxide_syscall_entry)
+      20136  NEW       syscalls::nt_dispatch::dispatch_service
+             (symbol _RNvNtCs5yPvcvPmZDY_8syscalls11nt_dispatch16dispatch_service)
+      20064  NEW       kmain::kmain::entry::kernel_init
+             (symbol _RNvNtNtCsdqtZz9iRFOC_5kmain5kmain5entry11kernel_init)
+      20048  NEW       kmain::kmain::rootfs::init
+             (symbol _RNvNtNtCsdqtZz9iRFOC_5kmain5kmain6rootfs4init)
+      19984  NEW       oxide_syscall_dispatch
+             (symbol oxide_syscall_dispatch)
+      19904  NEW       kmain::kmain::rootfs::mount_root
+             (symbol _RNvNtNtCsdqtZz9iRFOC_5kmain5kmain6rootfs10mount_root)
+      19904  NEW       <ext4::rootfs::inode::special::Ext4StatInodeOps as vfs::inode_ops::InodeOps>::mkdir_unchecked
+             (symbol _RNvXs_NtNtNtCseeW9w82xjDW_4ext46rootfs5inode7specialNtB4_16Ext4StatInodeOpsNtNtCs4QxBzzlLWre_3vfs9inode_ops8InodeOps15mkdir_unchecked)
+      19904  NEW       <ext4::rootfs::inode::special::Ext4StatInodeOps as vfs::inode_ops::InodeOps>::mkdir
+             (symbol _RNvXs_NtNtNtCseeW9w82xjDW_4ext46rootfs5inode7specialNtB4_16Ext4StatInodeOpsNtNtCs4QxBzzlLWre_3vfs9inode_ops8InodeOps5mkdir)
+      19872  NEW       <ext4::rootfs::inode::special::Ext4StatInodeOps>::mkdir_impl
+             (symbol _RNvMNtNtNtCseeW9w82xjDW_4ext46rootfs5inode7specialNtB2_16Ext4StatInodeOps10mkdir_impl)
+      19632  NEW       syscalls::dispatch::core::dispatch_routed_syscall
+             (symbol _RNvNtNtCs5yPvcvPmZDY_8syscalls8dispatch4core23dispatch_routed_syscall)
+      19184  NEW       syscalls::s322_execveat::sys_execveat
+             (symbol _RNvNtCs5yPvcvPmZDY_8syscalls13s322_execveat12sys_execveat)
+      19168  NEW       syscalls::nt_wine_window::chain::kernel::legacy::route
+             (symbol _RNvNtNtNtNtCs5yPvcvPmZDY_8syscalls14nt_wine_window5chain6kernel6legacy5route)
+      19120  NEW       <ext4::rootfs::inode::special::Ext4StatInodeOps as vfs::inode_ops::InodeOps>::rename
+             (symbol _RNvXs_NtNtNtCseeW9w82xjDW_4ext46rootfs5inode7specialNtB4_16Ext4StatInodeOpsNtNtCs4QxBzzlLWre_3vfs9inode_ops8InodeOps6rename)
+      18944  NEW       <ext4::rootfs::inode::special::Ext4StatInodeOps as vfs::inode_ops::InodeOps>::create_unchecked
+             (symbol _RNvXs_NtNtNtCseeW9w82xjDW_4ext46rootfs5inode7specialNtB4_16Ext4StatInodeOpsNtNtCs4QxBzzlLWre_3vfs9inode_ops8InodeOps16create_unchecked)
+      18944  NEW       <ext4::rootfs::inode::special::Ext4StatInodeOps as vfs::inode_ops::InodeOps>::create
+             (symbol _RNvXs_NtNtNtCseeW9w82xjDW_4ext46rootfs5inode7specialNtB4_16Ext4StatInodeOpsNtNtCs4QxBzzlLWre_3vfs9inode_ops8InodeOps6create)
+      18912  NEW       <syscalls::fsmount_common::registry::register::register_filesystems::{closure#0} as core::ops::function::FnOnce<(alloc::sync::Arc<dyn vfs::superblock::ops::FileSystemType>, core::option::Option<&str>, &str, &str, u64, &[vfs::fs::fs_context::types::FsParameter])>>::call_once::{shim:vtable#0}
+             (symbol _RNSNvYNCNvNtNtNtCs5yPvcvPmZDY_8syscalls14fsmount_common8registry8register20register_filesystems0INtNtNtCs9x0FMdDHyuf_4core3ops8function6FnOnceTINtNtCsdrD4wSIDh9q_5alloc4sync3ArcDNtNtNtCs4QxBzzlLWre_3vfs10superblock3ops14FileSystemTypeEL_EINtNtB1D_6option6OptionReEB4b_B4b_yRSNtNtNtNtB2W_2fs10fs_context5types11FsParameterEE9call_once6vtableBe_)
+      18912  NEW       <ext4::rootfs::inode::special::Ext4StatInodeOps>::create_impl
+             (symbol _RNvMNtNtNtCseeW9w82xjDW_4ext46rootfs5inode7specialNtB2_16Ext4StatInodeOps11create_impl)
+      18848  NEW       syscalls::s059_execve::entry::sys_execve
+             (symbol _RNvNtNtCs5yPvcvPmZDY_8syscalls11s059_execve5entry10sys_execve)
+      18848  NEW       syscalls::nt_wine_window::window_raw::kernel::route
+             (symbol _RNvNtNtNtCs5yPvcvPmZDY_8syscalls14nt_wine_window10window_raw6kernel5route)
+      18832  NEW       syscalls::fsmount_common::registry::register::register_filesystems::{closure#0}
+             (symbol _RNCNvNtNtNtCs5yPvcvPmZDY_8syscalls14fsmount_common8registry8register20register_filesystems0B9_)
+      18816  NEW       <syscalls::nt_wine_window::chain::kernel::binding::{closure#51} as core::ops::function::FnOnce<(u64, &[u64; 17])>>::call_once
+             (symbol _RNvYNCNvNtNtNtCs5yPvcvPmZDY_8syscalls14nt_wine_window5chain6kernel7bindingsN_0INtNtNtCs9x0FMdDHyuf_4core3ops8function6FnOnceTyRAyj11_EE9call_onceBc_)
+      18768  NEW       syscalls::s059_execve::x86_64::execve_inner
+             (symbol _RNvNtNtCs5yPvcvPmZDY_8syscalls11s059_execve6x86_6412execve_inner)
+      18752  NEW       ext4::rootfs::inode::rename::rename_sides
+             (symbol _RNvNtNtNtCseeW9w82xjDW_4ext46rootfs5inode6rename12rename_sides)
+      18656  NEW       <ext4::rootfs::inode::special::Ext4StatInodeOps as vfs::inode_ops::InodeOps>::tmpfile
+             (symbol _RNvXs_NtNtNtCseeW9w82xjDW_4ext46rootfs5inode7specialNtB4_16Ext4StatInodeOpsNtNtCs4QxBzzlLWre_3vfs9inode_ops8InodeOps7tmpfile)
+      18608  NEW       kmain::kmain::rootfs::mount_boot_filesystems
+             (symbol _RNvNtNtCsdqtZz9iRFOC_5kmain5kmain6rootfs22mount_boot_filesystems)
+      18576  NEW       <ext4::mount::Mount>::create_dir_inode_inner
+             (symbol _RNvMNtNtCseeW9w82xjDW_4ext46ialloc6createNtNtB6_5mount5Mount22create_dir_inode_inner)
+      18456  NEW       syscalls::nt_process_create::dispatch
+             (symbol _RNvNtCs5yPvcvPmZDY_8syscalls17nt_process_create8dispatch)
+      18400  NEW       <ext4::rootfs::state::RootfsState>::open
+             (symbol _RNvMNtNtCseeW9w82xjDW_4ext46rootfs5stateNtB2_11RootfsState4open)
+      18384  NEW       kmain::kmain::rootfs::load_keymap
+             (symbol _RNvNtNtCsdqtZz9iRFOC_5kmain5kmain6rootfs11load_keymap)
+      18176  NEW       <ext4::rootfs::inode::special::Ext4StatInodeOps as vfs::inode_ops::InodeOps>::mknod_unchecked
+             (symbol _RNvXs_NtNtNtCseeW9w82xjDW_4ext46rootfs5inode7specialNtB4_16Ext4StatInodeOpsNtNtCs4QxBzzlLWre_3vfs9inode_ops8InodeOps15mknod_unchecked)
+      18176  NEW       <ext4::rootfs::inode::special::Ext4StatInodeOps as vfs::inode_ops::InodeOps>::mknod
+             (symbol _RNvXs_NtNtNtCseeW9w82xjDW_4ext46rootfs5inode7specialNtB4_16Ext4StatInodeOpsNtNtCs4QxBzzlLWre_3vfs9inode_ops8InodeOps5mknod)
+      18144  NEW       <ext4::rootfs::inode::special::Ext4StatInodeOps>::mknod_impl
+             (symbol _RNvMs0_NtNtNtCseeW9w82xjDW_4ext46rootfs5inode7specialNtB5_16Ext4StatInodeOps10mknod_impl)
+      18096  NEW       <ext4::mount::Mount>::run_journaled_inner::<(u32, ext4::inode::Inode), <ext4::mount::Mount>::create_dir_inode_inner::{closure#0}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_innerTmNtNtB9_5inode5InodeENCNvMNtNtB9_6ialloc6createBQ_22create_dir_inode_inner0EB9_)
+      17984  NEW       <ext4::mount::Mount>::run_journaled_inner::<(), ext4::rootfs::inode::rename::plain_rename::{closure#4}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_inneruNCNvNtNtNtB9_6rootfs5inode6rename12plain_renames2_0EB9_)
+      17984  NEW       <ext4::rootfs::inode::special::Ext4StatInodeOps as vfs::inode_ops::InodeOps>::symlink_unchecked
+             (symbol _RNvXs_NtNtNtCseeW9w82xjDW_4ext46rootfs5inode7specialNtB4_16Ext4StatInodeOpsNtNtCs4QxBzzlLWre_3vfs9inode_ops8InodeOps17symlink_unchecked)
+      17984  NEW       <ext4::rootfs::inode::special::Ext4StatInodeOps as vfs::inode_ops::InodeOps>::symlink
+             (symbol _RNvXs_NtNtNtCseeW9w82xjDW_4ext46rootfs5inode7specialNtB4_16Ext4StatInodeOpsNtNtCs4QxBzzlLWre_3vfs9inode_ops8InodeOps7symlink)
+      17952  NEW       <ext4::rootfs::inode::special::Ext4StatInodeOps>::symlink_impl
+             (symbol _RNvMs0_NtNtNtCseeW9w82xjDW_4ext46rootfs5inode7specialNtB5_16Ext4StatInodeOps12symlink_impl)
+      17904  NEW       <ext4::mount::Mount>::run_journaled_inner::<(u32, ext4::inode::Inode), <ext4::mount::Mount>::create_file_inode_inner::{closure#0}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_innerTmNtNtB9_5inode5InodeENCNvMNtNtB9_6ialloc6createBQ_23create_file_inode_inner0EB9_)
+      17888  NEW       <ext4::mount::Mount>::run_journaled_inner::<(u32, ext4::inode::Inode), <ext4::mount::Mount>::create_anonymous_inode_inner::{closure#0}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_innerTmNtNtB9_5inode5InodeENCNvMNtNtB9_6ialloc9anonymousBQ_28create_anonymous_inode_inner0EB9_)
+      17776  NEW       <ext4::rootfs::inode::special::Ext4StatInodeOps as vfs::inode_ops::InodeOps>::link
+             (symbol _RNvXs_NtNtNtCseeW9w82xjDW_4ext46rootfs5inode7specialNtB4_16Ext4StatInodeOpsNtNtCs4QxBzzlLWre_3vfs9inode_ops8InodeOps4link)
+      17760  NEW       ext4::rootfs::inode::rename::plain_rename::{closure#4}
+             (symbol _RNCNvNtNtNtCseeW9w82xjDW_4ext46rootfs5inode6rename12plain_renames2_0B9_)
+      17696  NEW       <ext4::mount::Mount>::run_journaled_inner::<(u32, ext4::inode::Inode), <ext4::mount::Mount>::create_file_inode_with_acl_parent::{closure#0}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_innerTmNtNtB9_5inode5InodeENCNvMNtNtB9_6ialloc6createBQ_33create_file_inode_with_acl_parent0EB9_)
+      17680  NEW       <ext4::mount::Mount>::create_dir_inode_inner::{closure#0}
+             (symbol _RNCNvMNtNtCseeW9w82xjDW_4ext46ialloc6createNtNtB8_5mount5Mount22create_dir_inode_inner0B8_)
+      17640  NEW       syscalls::nt_exec::dispatch
+             (symbol _RNvNtCs5yPvcvPmZDY_8syscalls7nt_exec8dispatch)
+      17568  NEW       oxide_fault_body
+             (symbol oxide_fault_body)
+      17568  NEW       oxide_irq_common
+             (symbol oxide_irq_common)
+      17560  NEW       oxide_irq_exit_to_user
+             (symbol oxide_irq_exit_to_user)
+      17536  NEW       <ext4::mount::Mount>::run_journaled_inner::<u32, <ext4::mount::Mount>::create_mknod_inner::{closure#0}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_innermNCNvMNtNtB9_6ialloc6createBQ_18create_mknod_inner0EB9_)
+      17536  NEW       <ext4::mount::Mount>::run_journaled_inner::<u32, <ext4::mount::Mount>::create_mknod_with_acl_parent::{closure#0}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_innermNCNvMNtNtB9_6ialloc6createBQ_28create_mknod_with_acl_parent0EB9_)
+      17504  NEW       <ext4::mount::Mount>::run_journaled_deferred::<(), <ext4::rootfs::inode::special::Ext4StatInodeOps as vfs::inode_ops::InodeOps>::link::{closure#0}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount22run_journaled_deferreduNCNvXs_NtNtNtB9_6rootfs5inode7specialNtB1x_16Ext4StatInodeOpsNtNtCs4QxBzzlLWre_3vfs9inode_ops8InodeOps4link0EB9_)
+      17488  NEW       <ext4::mount::Mount>::create_file_inode_inner::{closure#0}
+             (symbol _RNCNvMNtNtCseeW9w82xjDW_4ext46ialloc6createNtNtB8_5mount5Mount23create_file_inode_inner0B8_)
+      17472  NEW       <ext4::mount::Mount>::create_anonymous_inode_inner::{closure#0}
+             (symbol _RNCNvMNtNtCseeW9w82xjDW_4ext46ialloc9anonymousNtNtB8_5mount5Mount28create_anonymous_inode_inner0B8_)
+      17464  NEW       syscalls::exit_to_user::irqentry_exit
+             (symbol _RNvNtCs5yPvcvPmZDY_8syscalls12exit_to_user13irqentry_exit)
+      17456  NEW       <ext4::mount::Mount>::create_symlink_inner
+             (symbol _RNvMNtNtCseeW9w82xjDW_4ext46ialloc6createNtNtB6_5mount5Mount20create_symlink_inner)
+      17456  NEW       syscalls::exit_to_user::exit_to_user_mode_loop
+             (symbol _RNvNtCs5yPvcvPmZDY_8syscalls12exit_to_user22exit_to_user_mode_loop)
+      17312  NEW       <ext4::mount::Mount>::create_mknod_in_transaction_with_parent
+             (symbol _RNvMNtNtCseeW9w82xjDW_4ext46ialloc6createNtNtB6_5mount5Mount39create_mknod_in_transaction_with_parent)
+      17312  NEW       <ext4::mount::Mount>::run_journaled_inner::<u32, <ext4::mount::Mount>::create_symlink_inner::{closure#0}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_innermNCNvMNtNtB9_6ialloc6createBQ_20create_symlink_inner0EB9_)
+      17280  NEW       <ext4::mount::Mount>::create_file_inode_with_acl_parent::{closure#0}
+             (symbol _RNCNvMNtNtCseeW9w82xjDW_4ext46ialloc6createNtNtB8_5mount5Mount33create_file_inode_with_acl_parent0B8_)
+      17280  NEW       <ext4::mount::Mount>::run_journaled_inner::<(), ext4::rootfs::inode::rename::cross_rename::{closure#2}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_inneruNCNvNtNtNtB9_6rootfs5inode6rename12cross_renames0_0EB9_)
+      17272  NEW       syscalls::pe_exec::try_commit_with_catalog_and_environment_and_bootstrap
+             (symbol _RNvNtCs5yPvcvPmZDY_8syscalls7pe_exec53try_commit_with_catalog_and_environment_and_bootstrap)
+      17184  NEW       syscalls::pe_exec::try_commit
+             (symbol _RNvNtCs5yPvcvPmZDY_8syscalls7pe_exec10try_commit)
+      17176  NEW       syscalls::pe_exec::commit_x86
+             (symbol _RNvNtCs5yPvcvPmZDY_8syscalls7pe_exec10commit_x86)
+      17088  NEW       <ext4::mount::Mount>::create_symlink_inner::{closure#0}
+             (symbol _RNCNvMNtNtCseeW9w82xjDW_4ext46ialloc6createNtNtB8_5mount5Mount20create_symlink_inner0B8_)
+      17072  NEW       <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::rootfs::inode::special::Ext4StatInodeOps as vfs::inode_ops::InodeOps>::link::{closure#0}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_inneruNCNvXs_NtNtNtB9_6rootfs5inode7specialNtB1u_16Ext4StatInodeOpsNtNtCs4QxBzzlLWre_3vfs9inode_ops8InodeOps4link0EB9_)
+      17056  NEW       ext4::rootfs::inode::rename::cross_rename::{closure#2}
+             (symbol _RNCNvNtNtNtCseeW9w82xjDW_4ext46rootfs5inode6rename12cross_renames0_0B9_)
+      17024  NEW       ext4::rootfs::inode::data::set_inode_xattr
+             (symbol _RNvNtNtNtCseeW9w82xjDW_4ext46rootfs5inode4data15set_inode_xattr)
+      17008  NEW       <ext4::mount::Mount>::dir_link_in_transaction
+             (symbol _RNvMNtNtCseeW9w82xjDW_4ext45mount4dirsNtB4_5Mount23dir_link_in_transaction)
+      16960  NEW       ext4::rootfs::inode::data::remove_inode_xattr
+             (symbol _RNvNtNtNtCseeW9w82xjDW_4ext46rootfs5inode4data18remove_inode_xattr)
+      16848  NEW       <ext4::acl::Inherited>::store
+             (symbol _RNvMNtCseeW9w82xjDW_4ext43aclNtB2_9Inherited5store)
+      16832  NEW       ext4::rootfs::inode::data::persist_xattr_entries
+             (symbol _RNvNtNtNtCseeW9w82xjDW_4ext46rootfs5inode4data21persist_xattr_entries)
+      16800  NEW       <ext4::quota::backend::Ext4QuotaOps as vfs::quota::ops::DquotOperations>::mark_dirty
+             (symbol _RNvXs0_NtNtCseeW9w82xjDW_4ext45quota7backendNtB5_12Ext4QuotaOpsNtNtNtCs4QxBzzlLWre_3vfs5quota3ops15DquotOperations10mark_dirty)
+      16736  NEW       <ext4::mount::Mount>::store_xattrs
+             (symbol _RNvMNtCseeW9w82xjDW_4ext45xattrNtNtB4_5mount5Mount12store_xattrs)
+      16624  NEW       <ext4::quota::backend::Ext4QuotaOps as vfs::quota::ops::DquotOperations>::write_dquot
+             (symbol _RNvXs0_NtNtCseeW9w82xjDW_4ext45quota7backendNtB5_12Ext4QuotaOpsNtNtNtCs4QxBzzlLWre_3vfs5quota3ops15DquotOperations11write_dquot)
+      16608  NEW       <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::store_xattrs::{closure#0}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_inneruNCNvMNtB9_5xattrBQ_12store_xattrs0EB9_)
+      16608  NEW       <ext4::quota::backend::Ext4QuotaOps as vfs::quota::ops::DquotOperations>::release_dquot
+             (symbol _RNvXs0_NtNtCseeW9w82xjDW_4ext45quota7backendNtB5_12Ext4QuotaOpsNtNtNtCs4QxBzzlLWre_3vfs5quota3ops15DquotOperations13release_dquot)
+      16592  NEW       <ext4::mount::Mount>::dir_link_inner_with_inode
+             (symbol _RNvMNtNtCseeW9w82xjDW_4ext45mount4dirsNtB4_5Mount25dir_link_inner_with_inode)
+      16568  NEW       syscalls::pe_exec::prepare_pe_process
+             (symbol _RNvNtCs5yPvcvPmZDY_8syscalls7pe_exec18prepare_pe_process)
+      16560  NEW       <ext4::mount::Mount>::run_journaled_inner::<(), ext4::quota::blocks::journaled<(), <ext4::quota::backend::Ext4QuotaOps as vfs::quota::ops::DquotOperations>::write_dquot::{closure#0}>::{closure#0}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_inneruNCINvNtNtB9_5quota6blocks9journaleduNCNvXs0_NtB1u_7backendNtB25_12Ext4QuotaOpsNtNtNtCs4QxBzzlLWre_3vfs5quota3ops15DquotOperations11write_dquot0E0EB9_)
+      16544  NEW       syscalls::nt_rtl::callback_return
+             (symbol _RNvNtCs5yPvcvPmZDY_8syscalls6nt_rtl15callback_return)
+      16448  NEW       <ext4::rootfs::inode::special::Ext4StatInodeOps>::unlink_impl
+             (symbol _RNvMNtNtNtCseeW9w82xjDW_4ext46rootfs5inode7specialNtB2_16Ext4StatInodeOps11unlink_impl)
+      16432  NEW       <ext4::mount::Mount>::run_journaled_inner::<(), ext4::quota::blocks::journaled<(), <ext4::quota::backend::Ext4QuotaOps as vfs::quota::ops::DquotOperations>::release_dquot::{closure#0}>::{closure#0}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_inneruNCINvNtNtB9_5quota6blocks9journaleduNCNvXs0_NtB1u_7backendNtB25_12Ext4QuotaOpsNtNtNtCs4QxBzzlLWre_3vfs5quota3ops15DquotOperations13release_dquot0E0EB9_)
+      16432  NEW       <ext4::rootfs::inode::special::Ext4StatInodeOps>::rmdir_impl
+             (symbol _RNvMNtNtNtCseeW9w82xjDW_4ext46rootfs5inode7specialNtB2_16Ext4StatInodeOps10rmdir_impl)
+      16384  NEW       <ext4::mount::Mount>::store_xattrs::{closure#0}
+             (symbol _RNCNvMNtCseeW9w82xjDW_4ext45xattrNtNtB6_5mount5Mount12store_xattrs0B6_)
+      16336  NEW       ext4::quota::blocks::journaled::<(), <ext4::quota::backend::Ext4QuotaOps as vfs::quota::ops::DquotOperations>::write_dquot::{closure#0}>::{closure#0}
+             (symbol _RNCINvNtNtCseeW9w82xjDW_4ext45quota6blocks9journaleduNCNvXs0_NtB6_7backendNtBX_12Ext4QuotaOpsNtNtNtCs4QxBzzlLWre_3vfs5quota3ops15DquotOperations11write_dquot0E0B8_)
+      16272  NEW       core::ptr::drop_in_place::<ext4::rootfs::ops::mountfs::Ext4Mount>
+             (symbol _RINvNtCs9x0FMdDHyuf_4core3ptr13drop_in_placeNtNtNtNtCseeW9w82xjDW_4ext46rootfs3ops7mountfs9Ext4MountECs5yPvcvPmZDY_8syscalls)
+      16272  NEW       <alloc::sync::Arc<ext4::rootfs::ops::mountfs::Ext4Mount>>::drop_slow
+             (symbol _RNvMsn_NtCsdrD4wSIDh9q_5alloc4syncINtB5_3ArcNtNtNtNtCseeW9w82xjDW_4ext46rootfs3ops7mountfs9Ext4MountE9drop_slowBO_)
+      16240  NEW       <ext4::rootfs::ops::mountfs::Ext4Mount as core::ops::drop::Drop>::drop
+             (symbol _RNvXs2_NtNtNtCseeW9w82xjDW_4ext46rootfs3ops7mountfsNtB5_9Ext4MountNtNtNtCs9x0FMdDHyuf_4core3ops4drop4Drop4drop)
+      16208  NEW       ext4::quota::blocks::journaled::<(), <ext4::quota::backend::Ext4QuotaOps as vfs::quota::ops::DquotOperations>::release_dquot::{closure#0}>::{closure#0}
+             (symbol _RNCINvNtNtCseeW9w82xjDW_4ext45quota6blocks9journaleduNCNvXs0_NtB6_7backendNtBX_12Ext4QuotaOpsNtNtNtCs4QxBzzlLWre_3vfs5quota3ops15DquotOperations13release_dquot0E0B8_)
+      16080  NEW       <ext4::rootfs::ops::mountfs::Ext4SuperOps as vfs::superblock::ops::SuperOps>::evict_inode
+             (symbol _RNvXs_NtNtNtCseeW9w82xjDW_4ext46rootfs3ops7mountfsNtB4_12Ext4SuperOpsNtNtNtCs4QxBzzlLWre_3vfs10superblock3ops8SuperOps11evict_inode)
+      16064  NEW       <ext4::mount::Mount>::htree_create
+             (symbol _RNvMNtCseeW9w82xjDW_4ext45htreeNtNtB4_5mount5Mount12htree_create)
+      15984  NEW       <ext4::mount::Mount>::run_journaled_deferred::<u32, <ext4::rootfs::inode::special::Ext4StatInodeOps>::rmdir_impl::{closure#3}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount22run_journaled_deferredmNCNvMNtNtNtB9_6rootfs5inode7specialNtB1v_16Ext4StatInodeOps10rmdir_impls1_0EB9_)
+      15984  NEW       <ext4::rootfs::state::RootfsState>::free_orphan_inode
+             (symbol _RNvMNtNtCseeW9w82xjDW_4ext46rootfs3opsNtNtB4_5state11RootfsState17free_orphan_inode)
+      15968  NEW       <ext4::mount::Mount>::open_with_behaviour
+             (symbol _RNvMNtNtNtCseeW9w82xjDW_4ext45mount4core4openNtB6_5Mount19open_with_behaviour)
+      15936  NEW       <ext4::mount::Mount>::run_journaled_inner::<u32, <ext4::rootfs::inode::special::Ext4StatInodeOps>::rmdir_impl::{closure#3}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_innermNCNvMNtNtNtB9_6rootfs5inode7specialNtB1s_16Ext4StatInodeOps10rmdir_impls1_0EB9_)
+      15920  NEW       <ext4::rootfs::state::RootfsState>::set_sb
+             (symbol _RNvMNtNtCseeW9w82xjDW_4ext46rootfs5stateNtB2_11RootfsState6set_sb)
+      15856  NEW       <syscalls::nt_wine_window::chain::kernel::binding::{closure#9} as core::ops::function::FnOnce<(u64, &[u64; 17])>>::call_once
+             (symbol _RNvYNCNvNtNtNtCs5yPvcvPmZDY_8syscalls14nt_wine_window5chain6kernel7bindings7_0INtNtNtCs9x0FMdDHyuf_4core3ops8function6FnOnceTyRAyj11_EE9call_onceBc_)
+      15712  NEW       <ext4::mount::Mount>::rmdir
+             (symbol _RNvMs_NtCseeW9w82xjDW_4ext46iallocNtNtB6_5mount5Mount5rmdir)
+      15712  NEW       <ext4::quota::backend::Ext4QuotaOps>::rollback_released_dquot
+             (symbol _RNvMs_NtNtCseeW9w82xjDW_4ext45quota7backendNtB4_12Ext4QuotaOps23rollback_released_dquot)
+      15712  NEW       <ext4::mount::Mount>::free_orphan_inode
+             (symbol _RNvMs_NtNtCseeW9w82xjDW_4ext46ialloc6orphanNtNtB8_5mount5Mount17free_orphan_inode)
+      15664  NEW       <ext4::mount::Mount>::put_ea_inode
+             (symbol _RNvMNtNtCseeW9w82xjDW_4ext45xattr8ea_inodeNtNtB6_5mount5Mount12put_ea_inode)
+      15632  NEW       <ext4::quota::backend::Ext4QuotaOps>::rollback_inserted_dquot
+             (symbol _RNvMs_NtNtCseeW9w82xjDW_4ext45quota7backendNtB4_12Ext4QuotaOps23rollback_inserted_dquot)
+      15616  NEW       <ext4::mount::Mount>::run_journaled_inner::<u32, <ext4::mount::Mount>::rmdir::{closure#0}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_innermNCNvMs_NtB9_6iallocBQ_5rmdir0EB9_)
+      15616  NEW       <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::free_orphan_inode::{closure#0}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_inneruNCNvMs_NtNtB9_6ialloc6orphanBQ_17free_orphan_inode0EB9_)
+      15616  NEW       ext4::rootfs::inode::meta::ext4_setattr
+             (symbol _RNvNtNtNtCseeW9w82xjDW_4ext46rootfs5inode4meta12ext4_setattr)
+      15616  NEW       <ext4::quota::backend::Ext4QuotaOps as vfs::quota::ops::DquotOperations>::write_info
+             (symbol _RNvXs0_NtNtCseeW9w82xjDW_4ext45quota7backendNtB5_12Ext4QuotaOpsNtNtNtCs4QxBzzlLWre_3vfs5quota3ops15DquotOperations10write_info)
+      15600  NEW       <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::put_ea_inode::{closure#0}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_inneruNCNvMNtNtB9_5xattr8ea_inodeBQ_12put_ea_inode0EB9_)
+      15600  NEW       <syscalls::nt_wine_window::chain::kernel::binding::{closure#23} as core::ops::function::FnOnce<(u64, &[u64; 17])>>::call_once
+             (symbol _RNvYNCNvNtNtNtCs5yPvcvPmZDY_8syscalls14nt_wine_window5chain6kernel7bindingsl_0INtNtNtCs9x0FMdDHyuf_4core3ops8function6FnOnceTyRAyj11_EE9call_onceBc_)
+      15568  NEW       syscalls::nt_window::hardware::live::resume
+             (symbol _RNvNtNtNtCs5yPvcvPmZDY_8syscalls9nt_window8hardware4live6resume)
+      15520  NEW       <ext4::mount::Mount>::run_journaled_inner::<(), ext4::quota::blocks::journaled<(), <ext4::quota::backend::Ext4QuotaOps as vfs::quota::ops::DquotOperations>::write_info::{closure#0}>::{closure#0}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_inneruNCINvNtNtB9_5quota6blocks9journaleduNCNvXs0_NtB1u_7backendNtB25_12Ext4QuotaOpsNtNtNtCs4QxBzzlLWre_3vfs5quota3ops15DquotOperations10write_info0E0EB9_)
+      15504  NEW       <ext4::mount::Mount>::append_block
+             (symbol _RNvMNtNtCseeW9w82xjDW_4ext49extent_rw6appendNtNtB6_5mount5Mount12append_block)
+      15488  NEW       <ext4::mount::Mount>::run_journaled_inner::<ext4::ialloc::UnlinkOutcome, <ext4::rootfs::inode::special::Ext4StatInodeOps>::unlink_impl::{closure#3}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_innerNtNtB9_6ialloc13UnlinkOutcomeNCNvMNtNtNtB9_6rootfs5inode7specialNtB1U_16Ext4StatInodeOps11unlink_impls1_0EB9_)
+      15472  NEW       syscalls::nt_wine_window::placement::kernel::apply_internal
+             (symbol _RNvNtNtNtCs5yPvcvPmZDY_8syscalls14nt_wine_window9placement6kernel14apply_internal)
+      15456  NEW       <drv_rtl8125::imp::Rtl8125Driver as drv::model::driver::Driver>::probe
+             (symbol _RNvXs4_NtCsdgk3bHimT0B_11drv_rtl81253impNtB5_13Rtl8125DriverNtNtNtCsgL31lptn0Kx_3drv5model6driver6Driver5probe)
+      15408  NEW       <ext4::mount::Mount>::run_journaled_inner::<u32, <ext4::mount::Mount>::append_block_with_inode::{closure#0}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_innermNCNvMNtNtB9_9extent_rw6appendBQ_23append_block_with_inode0EB9_)
+      15408  NEW       <ext4::mount::Mount>::run_journaled_inner::<u32, <ext4::mount::Mount>::append_block::{closure#0}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_innermNCNvMNtNtB9_9extent_rw6appendBQ_12append_block0EB9_)
+      15408  NEW       <syscalls::nt_wine_window::chain::kernel::binding::{closure#21} as core::ops::function::FnOnce<(u64, &[u64; 17])>>::call_once
+             (symbol _RNvYNCNvNtNtNtCs5yPvcvPmZDY_8syscalls14nt_wine_window5chain6kernel7bindingsj_0INtNtNtCs9x0FMdDHyuf_4core3ops8function6FnOnceTyRAyj11_EE9call_onceBc_)
+      15392  NEW       <ext4::mount::Mount>::rmdir_in_transaction
+             (symbol _RNvMs_NtCseeW9w82xjDW_4ext46iallocNtNtB6_5mount5Mount20rmdir_in_transaction)
+      15392  NEW       <ext4::mount::Mount>::free_orphan_inode::{closure#0}
+             (symbol _RNCNvMs_NtNtCseeW9w82xjDW_4ext46ialloc6orphanNtNtBa_5mount5Mount17free_orphan_inode0Ba_)
+      15392  NEW       <ext4::rootfs::inode::regular::Ext4RegInodeOps as vfs::inode_ops::InodeOps>::truncate
+             (symbol _RNvXNtNtNtCseeW9w82xjDW_4ext46rootfs5inode7regularNtB2_15Ext4RegInodeOpsNtNtCs4QxBzzlLWre_3vfs9inode_ops8InodeOps8truncate)
+      15376  NEW       <ext4::mount::Mount>::put_ea_inode::{closure#0}
+             (symbol _RNCNvMNtNtCseeW9w82xjDW_4ext45xattr8ea_inodeNtNtB8_5mount5Mount12put_ea_inode0B8_)
+      15376  NEW       syscalls::nt_wine_window::placement::policy::apply::<syscalls::nt_wine_window::placement::kernel::Current>
+             (symbol _RINvNtNtNtCs5yPvcvPmZDY_8syscalls14nt_wine_window9placement6policy5applyNtNtB4_6kernel7CurrentEB8_)
+      15376  NEW       <ext4::rootfs::inode::regular::Ext4RegFileOps as vfs::file_ops::FileOps>::write_iter_file
+             (symbol _RNvYNtNtNtNtCseeW9w82xjDW_4ext46rootfs5inode7regular14Ext4RegFileOpsNtNtCs4QxBzzlLWre_3vfs8file_ops7FileOps15write_iter_fileBa_)
+      15296  NEW       <ext4::mount::Mount>::htree_insert
+             (symbol _RNvMNtCseeW9w82xjDW_4ext45htreeNtNtB4_5mount5Mount12htree_insert)
+      15296  NEW       ext4::quota::blocks::journaled::<(), <ext4::quota::backend::Ext4QuotaOps as vfs::quota::ops::DquotOperations>::write_info::{closure#0}>::{closure#0}
+             (symbol _RNCINvNtNtCseeW9w82xjDW_4ext45quota6blocks9journaleduNCNvXs0_NtB6_7backendNtBX_12Ext4QuotaOpsNtNtNtCs4QxBzzlLWre_3vfs5quota3ops15DquotOperations10write_info0E0B8_)
+      15296  NEW       <ext4::rootfs::inode::regular::Ext4RegFileOps as vfs::file_ops::FileOps>::write
+             (symbol _RNvXs_NtNtNtCseeW9w82xjDW_4ext46rootfs5inode7regularNtB4_14Ext4RegFileOpsNtNtCs4QxBzzlLWre_3vfs8file_ops7FileOps5write)
+      15280  NEW       <ext4::mount::Mount>::truncate_inode
+             (symbol _RNvMNtNtCseeW9w82xjDW_4ext49extent_rw8truncateNtNtB6_5mount5Mount14truncate_inode)
+      15264  NEW       <ext4::mount::Mount>::truncate_inode_for_deletion
+             (symbol _RNvMNtNtCseeW9w82xjDW_4ext49extent_rw8truncateNtNtB6_5mount5Mount27truncate_inode_for_deletion)
+      15248  NEW       <ext4::mount::Mount>::unlink
+             (symbol _RNvMs_NtCseeW9w82xjDW_4ext46iallocNtNtB6_5mount5Mount6unlink)
+      15248  NEW       ext4::quota::insert::do_insert_tree
+             (symbol _RNvNtNtCseeW9w82xjDW_4ext45quota6insert14do_insert_tree)
+      15216  NEW       syscalls::nt_window::menu_raw::track_effects::post
+             (symbol _RNvNtNtNtCs5yPvcvPmZDY_8syscalls9nt_window8menu_raw13track_effects4post)
+      15200  NEW       ext4::quota::delete::remove_tree
+             (symbol _RNvNtNtCseeW9w82xjDW_4ext45quota6delete11remove_tree)
+      15184  NEW       <ext4::mount::Mount>::append_block_inner
+             (symbol _RNvMNtNtCseeW9w82xjDW_4ext49extent_rw6appendNtNtB6_5mount5Mount18append_block_inner)
+      15168  NEW       <ext4::rootfs::inode::regular::Ext4RegFileOps as vfs::file_ops::FileOps>::submit_direct
+             (symbol _RNvXs_NtNtNtCseeW9w82xjDW_4ext46rootfs5inode7regularNtB4_14Ext4RegFileOpsNtNtCs4QxBzzlLWre_3vfs8file_ops7FileOps13submit_direct)
+      15152  NEW       <ext4::mount::Mount>::run_journaled_inner::<ext4::ialloc::UnlinkOutcome, <ext4::mount::Mount>::unlink::{closure#0}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_innerNtNtB9_6ialloc13UnlinkOutcomeNCNvMs_B1o_BQ_6unlink0EB9_)
+      15136  NEW       <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::truncate_inode_for_deletion::{closure#0}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_inneruNCNvMNtNtB9_9extent_rw8truncateBQ_27truncate_inode_for_deletion0EB9_)
+      15136  NEW       <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::truncate_inode::{closure#0}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_inneruNCNvMNtNtB9_9extent_rw8truncateBQ_14truncate_inode0EB9_)
+      15136  NEW       <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::truncate_inode_with_meta::{closure#0}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_inneruNCNvMNtNtB9_9extent_rw8truncateBQ_24truncate_inode_with_meta0EB9_)
+      15136  NEW       syscalls::nt_window::dispatch::dispatch_mode
+             (symbol _RNvNtNtCs5yPvcvPmZDY_8syscalls9nt_window8dispatch13dispatch_mode)
+      15056  NEW       <ext4::mount::Mount>::htree_split
+             (symbol _RNvMNtCseeW9w82xjDW_4ext45htreeNtNtB4_5mount5Mount11htree_split)
+      15024  NEW       ext4::quota::insert::remove_free_dqentry
+             (symbol _RNvNtNtCseeW9w82xjDW_4ext45quota6insert19remove_free_dqentry)
+      14976  NEW       ext4::quota::delete::insert_free_dqentry
+             (symbol _RNvNtNtCseeW9w82xjDW_4ext45quota6delete19insert_free_dqentry)
+      14976  NEW       ext4::quota::insert::get_free_qblk
+             (symbol _RNvNtNtCseeW9w82xjDW_4ext45quota6insert13get_free_qblk)
+      14976  NEW       ext4::quota::insert::write_existing_dquot
+             (symbol _RNvNtNtCseeW9w82xjDW_4ext45quota6insert20write_existing_dquot)
+      14960  NEW       ext4::quota::delete::put_free_qblk
+             (symbol _RNvNtNtCseeW9w82xjDW_4ext45quota6delete13put_free_qblk)
+      14944  NEW       <ext4::rootfs::ops::mountfs::Ext4SuperOps as vfs::superblock::ops::SuperOps>::remount_fs
+             (symbol _RNvXs_NtNtNtCseeW9w82xjDW_4ext46rootfs3ops7mountfsNtB4_12Ext4SuperOpsNtNtNtCs4QxBzzlLWre_3vfs10superblock3ops8SuperOps10remount_fs)
+      14912  NEW       <ext4::mount::Mount>::unlink_in_transaction
+             (symbol _RNvMs_NtCseeW9w82xjDW_4ext46iallocNtNtB6_5mount5Mount21unlink_in_transaction)
+      14912  NEW       <ext4::mount::Mount>::truncate_inode_inner
+             (symbol _RNvMNtNtCseeW9w82xjDW_4ext49extent_rw8truncateNtNtB6_5mount5Mount20truncate_inode_inner)
+      14880  NEW       ext4::quota::blocks::write_file_bytes
+             (symbol _RNvNtNtCseeW9w82xjDW_4ext45quota6blocks16write_file_bytes)
+      14864  NEW       <ext4::rootfs::state::RootfsState>::enable_mount_quotas
+             (symbol _RNvMNtNtCseeW9w82xjDW_4ext46rootfs5stateNtB2_11RootfsState19enable_mount_quotas)
+      14800  NEW       <ext4::mount::Mount>::dir_unlink_inner
+             (symbol _RNvMNtNtCseeW9w82xjDW_4ext45mount4dirsNtB4_5Mount16dir_unlink_inner)
+      14768  NEW       <ext4::mount::Mount>::orphan_del
+             (symbol _RNvMs_NtNtCseeW9w82xjDW_4ext46ialloc6orphanNtNtB8_5mount5Mount10orphan_del)
+      14752  NEW       <ext4::mount::Mount>::orphan_add
+             (symbol _RNvMs_NtNtCseeW9w82xjDW_4ext46ialloc6orphanNtNtB8_5mount5Mount10orphan_add)
+      14752  NEW       <ext4::mount::Mount>::run_journaled_inner::<(), ext4::quota::blocks::write_file_bytes::{closure#0}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_inneruNCNvNtNtB9_5quota6blocks16write_file_bytes0EB9_)
+      14720  NEW       <ext4::mount::Mount>::set_dotdot_inner
+             (symbol _RNvMNtNtCseeW9w82xjDW_4ext45mount4dirsNtB4_5Mount16set_dotdot_inner)
+      14704  NEW       <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::orphan_del::{closure#0}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_inneruNCNvMs_NtNtB9_6ialloc6orphanBQ_10orphan_del0EB9_)
+      14688  NEW       <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::orphan_add::{closure#0}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_inneruNCNvMs_NtNtB9_6ialloc6orphanBQ_10orphan_add0EB9_)
+      14608  NEW       <ext4::mount::Mount>::run_journaled::<bool, <ext4::mount::Mount>::claim_prealloc_block::{closure#0}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount13run_journaledbNCNvMNtNtB9_6balloc8preallocBQ_20claim_prealloc_block0EB9_)
+      14560  NEW       <ext4::mount::Mount>::run_journaled_inner::<bool, <ext4::mount::Mount>::claim_prealloc_block::{closure#0}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_innerbNCNvMNtNtB9_6balloc8preallocBQ_20claim_prealloc_block0EB9_)
+      14544  NEW       <ext4::mount::Mount>::free_inode
+             (symbol _RNvMs_NtCseeW9w82xjDW_4ext46iallocNtNtB6_5mount5Mount10free_inode)
+      14544  NEW       ext4::commit_timer::tick
+             (symbol _RNvNtCseeW9w82xjDW_4ext412commit_timer4tick)
+      14544  NEW       <ext4::rootfs::inode::regular::Ext4RegInodeOps as vfs::inode_ops::InodeOps>::fallocate
+             (symbol _RNvXNtNtNtCseeW9w82xjDW_4ext46rootfs5inode7regularNtB2_15Ext4RegInodeOpsNtNtCs4QxBzzlLWre_3vfs9inode_ops8InodeOps9fallocate)
+      14528  NEW       ext4::quota::blocks::write_file_bytes::{closure#0}
+             (symbol _RNCNvNtNtCseeW9w82xjDW_4ext45quota6blocks16write_file_bytes0B7_)
+      14528  NEW       syscalls::io_uring::sqpoll::thread::sq_thread
+             (symbol _RNvNtNtNtCs5yPvcvPmZDY_8syscalls8io_uring6sqpoll6thread9sq_thread)
+      14480  NEW       <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::free_inode::{closure#0}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_inneruNCNvMs_NtB9_6iallocBQ_10free_inode0EB9_)
+      14480  NEW       <ext4::mount::Mount>::orphan_del::{closure#0}
+             (symbol _RNCNvMs_NtNtCseeW9w82xjDW_4ext46ialloc6orphanNtNtBa_5mount5Mount10orphan_del0Ba_)
+      14464  NEW       <ext4::mount::Mount>::orphan_add::{closure#0}
+             (symbol _RNCNvMs_NtNtCseeW9w82xjDW_4ext46ialloc6orphanNtNtBa_5mount5Mount10orphan_add0Ba_)
+      14464  NEW       syscalls::execve_common::resolve_shebang_chain
+             (symbol _RNvNtCs5yPvcvPmZDY_8syscalls13execve_common21resolve_shebang_chain)
+      14464  NEW       ext4::rootfs::inode::meta::ext4_fileattr_set
+             (symbol _RNvNtNtNtCseeW9w82xjDW_4ext46rootfs5inode4meta17ext4_fileattr_set)
+      14432  NEW       <ext4::mount::Mount>::htree_grow_root
+             (symbol _RNvMNtCseeW9w82xjDW_4ext45htreeNtNtB4_5mount5Mount15htree_grow_root)
+      14424  NEW       <ext4::rootfs::inode::regular::Ext4RegFileOps as vfs::file_ops::FileOps>::mmap_page_mkwrite
+             (symbol _RNvXs_NtNtNtCseeW9w82xjDW_4ext46rootfs5inode7regularNtB4_14Ext4RegFileOpsNtNtCs4QxBzzlLWre_3vfs8file_ops7FileOps17mmap_page_mkwrite)
+      14400  NEW       syscalls::io_uring::iowq::worker::worker
+             (symbol _RNvNtNtNtCs5yPvcvPmZDY_8syscalls8io_uring4iowq6worker6worker)
+      14400  NEW       <ext4::rootfs::inode::special::Ext4StatFileOps as vfs::file_ops::FileOps>::unlocked_ioctl
+             (symbol _RNvXs1_NtNtNtCseeW9w82xjDW_4ext46rootfs5inode7specialNtB5_15Ext4StatFileOpsNtNtCs4QxBzzlLWre_3vfs8file_ops7FileOps14unlocked_ioctl)
+      14384  NEW       <ext4::mount::Mount>::alloc_inode_in_transaction
+             (symbol _RNvMs_NtCseeW9w82xjDW_4ext46iallocNtNtB6_5mount5Mount26alloc_inode_in_transaction)
+      14384  NEW       <drv_rtl8125::imp::Controller>::start
+             (symbol _RNvMs_NtCsdgk3bHimT0B_11drv_rtl81253impNtB4_10Controller5start)
+      14368  NEW       <ext4::mount::Mount>::run_journaled::<(), <ext4::mount::Mount>::htree_split::{closure#2}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount13run_journaleduNCNvMNtB9_5htreeBQ_11htree_splits0_0EB9_)
+      14368  NEW       syscalls::s426_io_uring_enter::sys_io_uring_enter
+             (symbol _RNvNtCs5yPvcvPmZDY_8syscalls19s426_io_uring_enter18sys_io_uring_enter)
+      14352  NEW       modules::linux_firmware::async_worker_entry
+             (symbol _RNvNtCsfKrnklUlemQ_7modules14linux_firmware18async_worker_entry)
+      14352  NEW       <ext4::rootfs::inode::special::Ext4StatInodeOps as vfs::inode_ops::InodeOps>::lookup
+             (symbol _RNvXs_NtNtNtCseeW9w82xjDW_4ext46rootfs5inode7specialNtB4_16Ext4StatInodeOpsNtNtCs4QxBzzlLWre_3vfs9inode_ops8InodeOps6lookup)
+      14336  NEW       ext4::rootfs::inode::meta::ext4_setfslabel
+             (symbol _RNvNtNtNtCseeW9w82xjDW_4ext46rootfs5inode4meta15ext4_setfslabel)
+      14328  NEW       ext4::rootfs::inode::dax::prepare_page_locked
+             (symbol _RNvNtNtNtCseeW9w82xjDW_4ext46rootfs5inode3dax19prepare_page_locked)
+      14320  NEW       <ext4::mount::Mount>::claim_prealloc_block::{closure#0}
+             (symbol _RNCNvMNtNtCseeW9w82xjDW_4ext46balloc8preallocNtNtB8_5mount5Mount20claim_prealloc_block0B8_)
+      14320  NEW       <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::htree_split::{closure#2}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_inneruNCNvMNtB9_5htreeBQ_11htree_splits0_0EB9_)
+      14320  NEW       <ext4::mount::Mount>::alloc_inode_inner
+             (symbol _RNvMs_NtCseeW9w82xjDW_4ext46iallocNtNtB6_5mount5Mount17alloc_inode_inner)
+      14320  NEW       <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::htree_grow::{closure#0}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_inneruNCNvMNtB9_5htreeBQ_10htree_grow0EB9_)
+      14320  NEW       <ext4::mount::Mount>::write_state
+             (symbol _RNvMNtNtCseeW9w82xjDW_4ext45mount9lifecycleNtB4_5Mount11write_state)
+      14320  NEW       <ext4::mount::Mount>::fallocate_inode
+             (symbol _RNvMNtNtCseeW9w82xjDW_4ext49extent_rw5writeNtNtB6_5mount5Mount15fallocate_inode)
+      14320  NEW       modules::linux_firmware::request_partial_firmware_into_buf
+             (symbol _RNvNtCsfKrnklUlemQ_7modules14linux_firmware33request_partial_firmware_into_buf)
+      14304  NEW       <ext4::rootfs::inode::dio::submit::{closure#1} as core::ops::function::FnOnce<(block::blockdev::BlockRequest, core::result::Result<(), block::types::BlockError>)>>::call_once::{shim:vtable#0}
+             (symbol _RNSNvYNCNvNtNtNtCseeW9w82xjDW_4ext46rootfs5inode3dio6submits_0INtNtNtCs9x0FMdDHyuf_4core3ops8function6FnOnceTNtNtCsbzrhmgIvgK0_5block8blockdev12BlockRequestINtNtB15_6result6ResultuNtNtB1N_5types10BlockErrorEEE9call_once6vtableBe_)
+      14304  NEW       modules::linux_firmware::request_firmware_impl
+             (symbol _RNvNtCsfKrnklUlemQ_7modules14linux_firmware21request_firmware_impl)
+      14288  NEW       <ext4::mount::Mount>::run_journaled_inner::<u32, <ext4::mount::Mount>::htree_grow::{closure#1}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_innermNCNvMNtB9_5htreeBQ_10htree_grows_0EB9_)
+      14288  NEW       modules::linux_firmware::firmware_request_cache
+             (symbol _RNvNtCsfKrnklUlemQ_7modules14linux_firmware22firmware_request_cache)
+      14272  NEW       <ext4::mount::Mount>::write_dir_block
+             (symbol _RNvMNtNtCseeW9w82xjDW_4ext45mount4dirsNtB4_5Mount15write_dir_block)
+      14272  NEW       <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::htree_create::{closure#1}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_inneruNCNvMNtB9_5htreeBQ_12htree_creates_0EB9_)
+      14272  NEW       <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::htree_grow_root::{closure#0}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_inneruNCNvMNtB9_5htreeBQ_15htree_grow_root0EB9_)
+      14272  NEW       syscalls::execve_common::open_exec_image
+             (symbol _RNvNtCs5yPvcvPmZDY_8syscalls13execve_common15open_exec_image)
+      14256  NEW       <ext4::mount::Mount>::free_inode::{closure#0}
+             (symbol _RNCNvMs_NtCseeW9w82xjDW_4ext46iallocNtNtB8_5mount5Mount10free_inode0B8_)
+      14256  NEW       <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::init_inode_table::{closure#0}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_inneruNCNvMNtB9_11itable_initBQ_16init_inode_table0EB9_)
+      14256  NEW       ext4::quota::enable::quota_on_journalled
+             (symbol _RNvNtNtCseeW9w82xjDW_4ext45quota6enable19quota_on_journalled)
+      14256  NEW       <drv_igc::driver::IgcDriver as drv::model::driver::Driver>::probe
+             (symbol _RNvXs1_NtCsbhyEIAtF5A0_7drv_igc6driverNtB5_9IgcDriverNtNtNtCsgL31lptn0Kx_3drv5model6driver6Driver5probe)
+      14256  NEW       <ext4::rootfs::ops::mountfs::Ext4SuperOps as vfs::superblock::ops::SuperOps>::quota_on
+             (symbol _RNvXs_NtNtNtCseeW9w82xjDW_4ext46rootfs3ops7mountfsNtB4_12Ext4SuperOpsNtNtNtCs4QxBzzlLWre_3vfs10superblock3ops8SuperOps8quota_on)
+      14240  NEW       <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::write_state::{closure#0}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_inneruNCNvMNtB7_9lifecycleBQ_11write_state0EB9_)
+      14240  NEW       <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::persist_fs_label::{closure#0}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_inneruNCNvMNtNtB9_9extent_rw4metaBQ_16persist_fs_label0EB9_)
+      14240  NEW       syscalls::io_uring::submit::submit_sqes
+             (symbol _RNvNtNtCs5yPvcvPmZDY_8syscalls8io_uring6submit11submit_sqes)
+      14240  NEW       <ext4::quota::backend::Ext4QuotaOps as vfs::quota::ops::DquotOperations>::free_file_info
+             (symbol _RNvXs0_NtNtCseeW9w82xjDW_4ext45quota7backendNtB5_12Ext4QuotaOpsNtNtNtCs4QxBzzlLWre_3vfs5quota3ops15DquotOperations14free_file_info)
+      14208  NEW       modules::linux_firmware::load_firmware_bytes
+             (symbol _RNvNtCsfKrnklUlemQ_7modules14linux_firmware19load_firmware_bytes)
+      14192  NEW       <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::fallocate_inode::{closure#0}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_inneruNCNvMNtNtB9_9extent_rw5writeBQ_15fallocate_inode0EB9_)
+      14192  NEW       ext4::rootfs::inode::meta::ext4_fileattr_setproject
+             (symbol _RNvNtNtNtCseeW9w82xjDW_4ext46rootfs5inode4meta24ext4_fileattr_setproject)
+      14176  NEW       syscalls::io_uring::iowq::run::issue
+             (symbol _RNvNtNtNtCs5yPvcvPmZDY_8syscalls8io_uring4iowq3run5issue)
+      14160  NEW       <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::write_dir_block::{closure#0}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_inneruNCNvMNtB7_4dirsBQ_15write_dir_block0EB9_)
+      14160  NEW       <ext4::rootfs::inode::dio::DioState>::complete
+             (symbol _RNvMNtNtNtCseeW9w82xjDW_4ext46rootfs5inode3dioNtB2_8DioState8complete)
+      14160  NEW       ext4::rootfs::inode::regular::ext4_sync_file
+             (symbol _RNvNtNtNtCseeW9w82xjDW_4ext46rootfs5inode7regular14ext4_sync_file)
+      14144  NEW       <ext4::mount::Mount>::free_external_xattr_for_deletion
+             (symbol _RNvMNtNtCseeW9w82xjDW_4ext45xattr9lifecycleNtNtB6_5mount5Mount32free_external_xattr_for_deletion)
+      14112  NEW       <ext4::mount::Mount>::prune_legacy_node
+             (symbol _RNvMNtNtCseeW9w82xjDW_4ext49extent_rw6legacyNtNtB6_5mount5Mount17prune_legacy_node)
+      14112  NEW       <ext4::rootfs::inode::regular::Ext4RegInodeOps as vfs::inode_ops::InodeOps>::update_time
+             (symbol _RNvXNtNtNtCseeW9w82xjDW_4ext46rootfs5inode7regularNtB2_15Ext4RegInodeOpsNtNtCs4QxBzzlLWre_3vfs9inode_ops8InodeOps11update_time)
+      14096  NEW       <ext4::mount::Mount>::htree_split::{closure#2}
+             (symbol _RNCNvMNtCseeW9w82xjDW_4ext45htreeNtNtB6_5mount5Mount11htree_splits0_0B6_)
+      14096  NEW       <ext4::mount::Mount>::htree_grow::{closure#0}
+             (symbol _RNCNvMNtCseeW9w82xjDW_4ext45htreeNtNtB6_5mount5Mount10htree_grow0B6_)
+      14096  NEW       ext4::quota::blocks::stage_file_bytes
+             (symbol _RNvNtNtCseeW9w82xjDW_4ext45quota6blocks16stage_file_bytes)
+      14096  NEW       <ext4::rootfs::inode::dio::DioState>::finish
+             (symbol _RNvMNtNtNtCseeW9w82xjDW_4ext46rootfs5inode3dioNtB2_8DioState6finish)
+      14080  NEW       ext4::rootfs::read_file
+             (symbol _RNvNtCseeW9w82xjDW_4ext46rootfs9read_file)
+      14080  NEW       ext4::rootfs::inode::dio::run_finish
+             (symbol _RNvNtNtNtCseeW9w82xjDW_4ext46rootfs5inode3dio10run_finish)
+      14064  NEW       <ext4::mount::Mount>::htree_grow::{closure#1}
+             (symbol _RNCNvMNtCseeW9w82xjDW_4ext45htreeNtNtB6_5mount5Mount10htree_grows_0B6_)
+      14048  NEW       <ext4::mount::Mount>::htree_create::{closure#1}
+             (symbol _RNCNvMNtCseeW9w82xjDW_4ext45htreeNtNtB6_5mount5Mount12htree_creates_0B6_)
+      14048  NEW       <ext4::mount::Mount>::htree_grow_root::{closure#0}
+             (symbol _RNCNvMNtCseeW9w82xjDW_4ext45htreeNtNtB6_5mount5Mount15htree_grow_root0B6_)
+      14048  NEW       <ext4::rootfs::inode::dio::DioState>::finish_process
+             (symbol _RNvMNtNtNtCseeW9w82xjDW_4ext46rootfs5inode3dioNtB2_8DioState14finish_process)
+      14048  NEW       <ext4::mount::Mount>::persist_inode_meta
+             (symbol _RNvMs_NtNtCseeW9w82xjDW_4ext49extent_rw4metaNtNtB8_5mount5Mount18persist_inode_meta)
+      14032  NEW       <ext4::mount::Mount>::xattr_block_get
+             (symbol _RNvMNtCseeW9w82xjDW_4ext45xattrNtNtB4_5mount5Mount15xattr_block_get)
+      14032  NEW       <ext4::mount::Mount>::init_inode_table::{closure#0}
+             (symbol _RNCNvMNtCseeW9w82xjDW_4ext411itable_initNtNtB6_5mount5Mount16init_inode_table0B6_)
+      14032  NEW       ext4::rootfs::inode::meta::ext4_setversion
+             (symbol _RNvNtNtNtCseeW9w82xjDW_4ext46rootfs5inode4meta15ext4_setversion)
+      14016  NEW       <ext4::mount::Mount>::persist_sb_free_blocks_meta
+             (symbol _RNvMNtCseeW9w82xjDW_4ext46ballocNtNtB4_5mount5Mount27persist_sb_free_blocks_meta)
+      14016  NEW       <ext4::mount::Mount>::set_orphan_present
+             (symbol _RNvMNtNtCseeW9w82xjDW_4ext46ialloc6orphanNtNtB6_5mount5Mount18set_orphan_present)
+      14016  NEW       <ext4::mount::Mount>::set_sb_last_orphan
+             (symbol _RNvMs_NtNtCseeW9w82xjDW_4ext46ialloc6orphanNtNtB8_5mount5Mount18set_sb_last_orphan)
+      14016  NEW       <ext4::mount::Mount>::xattr_block_put
+             (symbol _RNvMNtCseeW9w82xjDW_4ext45xattrNtNtB4_5mount5Mount15xattr_block_put)
+      14016  NEW       <ext4::mount::Mount>::persist_sb_free_inodes_meta
+             (symbol _RNvMs_NtCseeW9w82xjDW_4ext46iallocNtNtB6_5mount5Mount27persist_sb_free_inodes_meta)
+      14016  NEW       <ext4::mount::Mount>::write_state::{closure#0}
+             (symbol _RNCNvMNtNtCseeW9w82xjDW_4ext45mount9lifecycleNtB6_5Mount11write_state0B8_)
+      14016  NEW       <ext4::mount::Mount>::persist_fs_label::{closure#0}
+             (symbol _RNCNvMNtNtCseeW9w82xjDW_4ext49extent_rw4metaNtNtB8_5mount5Mount16persist_fs_label0B8_)
+      14000  NEW       <syscalls::nt_wine_window::chain::kernel::binding::{closure#22} as core::ops::function::FnOnce<(u64, &[u64; 17])>>::call_once
+             (symbol _RNvYNCNvNtNtNtCs5yPvcvPmZDY_8syscalls14nt_wine_window5chain6kernel7bindingsk_0INtNtNtCs9x0FMdDHyuf_4core3ops8function6FnOnceTyRAyj11_EE9call_onceBc_)
+      13984  NEW       syscalls::nt_window::hardware::live::drive
+             (symbol _RNvNtNtNtCs5yPvcvPmZDY_8syscalls9nt_window8hardware4live5drive)
+      13984  NEW       <ext4::mount::Mount>::persist_inode_flags
+             (symbol _RNvMNtNtCseeW9w82xjDW_4ext49extent_rw4metaNtNtB6_5mount5Mount19persist_inode_flags)
+      13968  NEW       <ext4::mount::Mount>::fallocate_inode::{closure#0}
+             (symbol _RNCNvMNtNtCseeW9w82xjDW_4ext49extent_rw5writeNtNtB8_5mount5Mount15fallocate_inode0B8_)
+      13968  NEW       <ext4::mount::Mount>::persist_inode_flags_only
+             (symbol _RNvMNtNtCseeW9w82xjDW_4ext49extent_rw4metaNtNtB6_5mount5Mount24persist_inode_flags_only)
+      13968  NEW       <ext4::mount::Mount>::insert_range_inode
+             (symbol _RNvMNtNtCseeW9w82xjDW_4ext49extent_rw5shiftNtNtB6_5mount5Mount18insert_range_inode)
+      13968  NEW       <ext4::mount::Mount>::collapse_range_inode
+             (symbol _RNvMNtNtCseeW9w82xjDW_4ext49extent_rw5shiftNtNtB6_5mount5Mount20collapse_range_inode)
+      13952  NEW       <ext4::rootfs::inode::regular::Ext4RegFileOps as vfs::file_ops::FileOps>::direct_write_file
+             (symbol _RNvXs_NtNtNtCseeW9w82xjDW_4ext46rootfs5inode7regularNtB4_14Ext4RegFileOpsNtNtCs4QxBzzlLWre_3vfs8file_ops7FileOps17direct_write_file)
+      13936  NEW       <ext4::mount::Mount>::metadata_write
+             (symbol _RNvMs0_NtNtNtCseeW9w82xjDW_4ext45mount4core8metadataNtB9_5Mount14metadata_write)
+      13936  NEW       <ext4::mount::Mount>::adjust_nlink
+             (symbol _RNvMNtNtCseeW9w82xjDW_4ext49extent_rw5nlinkNtNtB6_5mount5Mount12adjust_nlink)
+      13872  NEW       <ext4::mount::Mount>::run_journaled_inner::<u16, <ext4::mount::Mount>::adjust_nlink::{closure#0}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_innertNCNvMNtNtB9_9extent_rw5nlinkBQ_12adjust_nlink0EB9_)
+      13872  NEW       <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::persist_inode_flags::{closure#0}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_inneruNCNvMNtNtB9_9extent_rw4metaBQ_19persist_inode_flags0EB9_)
+      13872  NEW       <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::persist_inode_project::{closure#0}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_inneruNCNvMNtNtB9_9extent_rw4metaBQ_21persist_inode_project0EB9_)
+      13872  NEW       <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::persist_inode_flags_only::{closure#0}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_inneruNCNvMNtNtB9_9extent_rw4metaBQ_24persist_inode_flags_only0EB9_)
+      13872  NEW       <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::persist_inode_generation::{closure#0}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_inneruNCNvMNtNtB9_9extent_rw4metaBQ_24persist_inode_generation0EB9_)
+      13872  NEW       <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::persist_inode_flags_mctime::{closure#0}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_inneruNCNvMNtNtB9_9extent_rw4metaBQ_26persist_inode_flags_mctime0EB9_)
+      13872  NEW       <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::insert_range_inode::{closure#0}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_inneruNCNvMNtNtB9_9extent_rw5shiftBQ_18insert_range_inode0EB9_)
+      13872  NEW       <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::collapse_range_inode::{closure#0}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_inneruNCNvMNtNtB9_9extent_rw5shiftBQ_20collapse_range_inode0EB9_)
+      13872  NEW       <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::prepare_nodelalloc::{closure#0}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_inneruNCNvMNtNtB9_9extent_rw5writeBQ_18prepare_nodelalloc0EB9_)
+      13872  NEW       <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::convert_unwritten_range::{closure#0}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_inneruNCNvMNtNtB9_9extent_rw7convertBQ_23convert_unwritten_range0EB9_)
+      13872  NEW       <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::persist_inode_meta::{closure#0}>
+             (symbol _RINvMNtNtNtCseeW9w82xjDW_4ext45mount4core11transactionNtB7_5Mount19run_journaled_inneruNCNvMs_NtNtB9_9extent_rw4metaBQ_18persist_inode_meta0EB9_)
+      13856  NEW       syscalls::s307_sendmmsg::sys_sendmmsg
+             (symbol _RNvNtCs5yPvcvPmZDY_8syscalls13s307_sendmmsg12sys_sendmmsg)
+      13832  NEW       syscalls::s435_clone3::sys_clone3
+             (symbol _RNvNtCs5yPvcvPmZDY_8syscalls11s435_clone310sys_clone3)
+      13824  NEW       <virtio::resources::child::driver::VirtioChildDriver<pci_boot::virtio_child::PciVirtioChildBus, pci_boot::virtio_child::VirtioNetOps> as drv::model::driver::Driver>::probe
+             (symbol _RNvXs_NtNtNtCshveDIZxq2tO_6virtio9resources5child6driverINtB4_17VirtioChildDriverNtNtCs4rue1FbiuuD_8pci_boot12virtio_child17PciVirtioChildBusNtB1j_12VirtioNetOpsENtNtNtCsgL31lptn0Kx_3drv5model6driver6Driver5probeB1l_)
+      13792  NEW       <ext4::mount::Mount>::recover_journal
+             (symbol _RNvMNtCseeW9w82xjDW_4ext47journalNtNtB4_5mount5Mount15recover_journal)
+      13768  NEW       <syscalls::nt_wine_window::chain::kernel::binding::{closure#18} as core::ops::function::FnOnce<(u64, &[u64; 17])>>::call_once
+             (symbol _RNvYNCNvNtNtNtCs5yPvcvPmZDY_8syscalls14nt_wine_window5chain6kernel7bindingsg_0INtNtNtCs9x0FMdDHyuf_4core3ops8function6FnOnceTyRAyj11_EE9call_onceBc_)
+      13736  NEW       <syscalls::nt_wine_window::chain::kernel::binding::{closure#20} as core::ops::function::FnOnce<(u64, &[u64; 17])>>::call_once
+             (symbol _RNvYNCNvNtNtNtCs5yPvcvPmZDY_8syscalls14nt_wine_window5chain6kernel7bindingsi_0INtNtNtCs9x0FMdDHyuf_4core3ops8function6FnOnceTyRAyj11_EE9call_onceBc_)
+      13728  NEW       <ext4::rootfs::state::RootfsState>::wrap_any_ino
+             (symbol _RNvMNtNtCseeW9w82xjDW_4ext46rootfs3opsNtNtB4_5state11RootfsState12wrap_any_ino)
+      13712  NEW       syscalls::nt_window::scroll::dc_live::invalidate
+             (symbol _RNvNtNtNtCs5yPvcvPmZDY_8syscalls9nt_window6scroll7dc_live10invalidate)
+      13696  NEW       <ext4::rootfs::inode::regular::Ext4RegInodeOps as vfs::inode_ops::InodeOps>::swapfile_backing
+             (symbol _RNvXNtNtNtCseeW9w82xjDW_4ext46rootfs5inode7regularNtB2_15Ext4RegInodeOpsNtNtCs4QxBzzlLWre_3vfs9inode_ops8InodeOps16swapfile_backing)
+      13680  NEW       <syscalls::nt_wine_window::chain::kernel::binding::{closure#3} as core::ops::function::FnOnce<(u64, &[u64; 17])>>::call_once
+             (symbol _RNvYNCNvNtNtNtCs5yPvcvPmZDY_8syscalls14nt_wine_window5chain6kernel7bindings1_0INtNtNtCs9x0FMdDHyuf_4core3ops8function6FnOnceTyRAyj11_EE9call_onceBc_)
+      13672  NEW       syscalls::nt_wine_window::no_param::kernel::display_mode_changed
+             (symbol _RNvNtNtNtCs5yPvcvPmZDY_8syscalls14nt_wine_window8no_param6kernel20display_mode_changed)
+      13648  NEW       <ext4::mount::Mount>::commit_metadata_deferred
+             (symbol _RNvMNtCseeW9w82xjDW_4ext47journalNtNtB4_5mount5Mount24commit_metadata_deferred)
+      13648  NEW       syscalls::nt_rtl::dispatch
+             (symbol _RNvNtCs5yPvcvPmZDY_8syscalls6nt_rtl8dispatch)
+      13648  NEW       syscalls::aio::submit::sys_io_submit
+             (symbol _RNvNtNtCs5yPvcvPmZDY_8syscalls3aio6submit13sys_io_submit)
+      13632  NEW       <ext4::mount::Mount>::lookup_path_from
+             (symbol _RNvMNtNtCseeW9w82xjDW_4ext45mount4dirsNtB4_5Mount16lookup_path_from)
+      13592  NEW       syscalls::nt_wine_window::builtin_classes::kernel::get_desktop_window
+             (symbol _RNvNtNtNtCs5yPvcvPmZDY_8syscalls14nt_wine_window15builtin_classes6kernel18get_desktop_window)
+      13584  NEW       ext4::quota::enable::quota_on_inode
+             (symbol _RNvNtNtCseeW9w82xjDW_4ext45quota6enable14quota_on_inode)
+      13560  NEW       <syscalls::nt_wine_window::chain::kernel::binding::{closure#37} as core::ops::function::FnOnce<(u64, &[u64; 17])>>::call_once
+             (symbol _RNvYNCNvNtNtNtCs5yPvcvPmZDY_8syscalls14nt_wine_window5chain6kernel7bindingsz_0INtNtNtCs9x0FMdDHyuf_4core3ops8function6FnOnceTyRAyj11_EE9call_onceBc_)
+      13552  NEW       syscalls::nt_window::redraw::live::for_current
+             (symbol _RNvNtNtNtCs5yPvcvPmZDY_8syscalls9nt_window6redraw4live11for_current)
+      13520  NEW       <ext4::quota::backend::Ext4QuotaOps as vfs::quota::ops::DquotOperations>::acquire_dquot
+             (symbol _RNvXs0_NtNtCseeW9w82xjDW_4ext45quota7backendNtB5_12Ext4QuotaOpsNtNtNtCs4QxBzzlLWre_3vfs5quota3ops15DquotOperations13acquire_dquot)
+      13504  NEW       syscalls::io_uring::dispatch::net_ops::accept
+             (symbol _RNvNtNtNtCs5yPvcvPmZDY_8syscalls8io_uring8dispatch7net_ops6accept)
+      13504  NEW       <drv_e1000::e1000e::E1000eDriver as drv::model::driver::Driver>::probe
+             (symbol _RNvXNtCsa709ZBn8ddz_9drv_e10006e1000eNtB2_12E1000eDriverNtNtNtCsgL31lptn0Kx_3drv5model6driver6Driver5probe)
+      13488  NEW       <ext4::mount::Mount>::convert_unwritten_range::{closure#0}
+             (symbol _RNCNvMNtNtCseeW9w82xjDW_4ext49extent_rw7convertNtNtB8_5mount5Mount23convert_unwritten_range0B8_)
+      13480  NEW       syscalls::fsmount_common::registry::register::register_filesystems::{closure#6}
+             (symbol _RNCNvNtNtNtCs5yPvcvPmZDY_8syscalls14fsmount_common8registry8register20register_filesystemss4_0B9_)
+      13480  NEW       <syscalls::fsmount_common::registry::register::register_filesystems::{closure#6} as core::ops::function::FnOnce<(alloc::sync::Arc<dyn vfs::superblock::ops::FileSystemType>, core::option::Option<&str>, &str, &str, u64, &[vfs::fs::fs_context::types::FsParameter])>>::call_once::{shim:vtable#0}
+             (symbol _RNSNvYNCNvNtNtNtCs5yPvcvPmZDY_8syscalls14fsmount_common8registry8register20register_filesystemss4_0INtNtNtCs9x0FMdDHyuf_4core3ops8function6FnOnceTINtNtCsdrD4wSIDh9q_5alloc4sync3ArcDNtNtNtCs4QxBzzlLWre_3vfs10superblock3ops14FileSystemTypeEL_EINtNtB1G_6option6OptionReEB4e_B4e_yRSNtNtNtNtB2Z_2fs10fs_context5types11FsParameterEE9call_once6vtableBe_)
+      13472  NEW       drv_e1000::imp::probe_common
+             (symbol _RNvNtCsa709ZBn8ddz_9drv_e10003imp12probe_common)
+      13472  NEW       <ext4::rootfs::inode::regular::Ext4RegFileOps as vfs::file_ops::FileOps>::read
+             (symbol _RNvXs_NtNtNtCseeW9w82xjDW_4ext46rootfs5inode7regularNtB4_14Ext4RegFileOpsNtNtCs4QxBzzlLWre_3vfs8file_ops7FileOps4read)
+      13464  NEW       syscalls::pe_exec::map_nt_runtime_box
+             (symbol _RNvNtCs5yPvcvPmZDY_8syscalls7pe_exec18map_nt_runtime_box)
+      13464  NEW       syscalls::clone::sys_clone_dispatch
+             (symbol _RNvNtCs5yPvcvPmZDY_8syscalls5clone18sys_clone_dispatch)
+      13456  NEW       <ext4::rootfs::swapfile::SwapFileDevice>::new
+             (symbol _RNvMs_NtNtCseeW9w82xjDW_4ext46rootfs8swapfileNtB4_14SwapFileDevice3new)
+      13456  NEW       <ext4::rootfs::inode::special::Ext4StatFileOps as vfs::file_ops::FileOps>::iterate
+             (symbol _RNvXs1_NtNtNtCseeW9w82xjDW_4ext46rootfs5inode7specialNtB5_15Ext4StatFileOpsNtNtCs4QxBzzlLWre_3vfs8file_ops7FileOps7iterate)
+      13440  NEW       <ext4::mount::Mount>::orphan_file_entries
+             (symbol _RNvMNtNtCseeW9w82xjDW_4ext46ialloc6orphanNtNtB6_5mount5Mount19orphan_file_entries)
+      13440  NEW       <ext4::rootfs::inode::special::Ext4StatInodeOps as vfs::inode_ops::InodeOps>::get_link
+             (symbol _RNvYNtNtNtNtCseeW9w82xjDW_4ext46rootfs5inode7special16Ext4StatInodeOpsNtNtCs4QxBzzlLWre_3vfs9inode_ops8InodeOps8get_linkBa_)
+      13432  NEW       syscalls::fsmount_common::registry::register::register_filesystems::f2fs_fill
+             (symbol _RNvNvNtNtNtCs5yPvcvPmZDY_8syscalls14fsmount_common8registry8register20register_filesystems9f2fs_fill)
+      13424  NEW       syscalls::s043_accept::accept_common
+             (symbol _RNvNtCs5yPvcvPmZDY_8syscalls11s043_accept13accept_common)
+      13408  NEW       <ext4::mount::Mount>::collapse_range_inode::{closure#0}
+             (symbol _RNCNvMNtNtCseeW9w82xjDW_4ext49extent_rw5shiftNtNtB8_5mount5Mount20collapse_range_inode0B8_)
+      13408  NEW       <ext4::rootfs::state::RootfsState>::lookup_child_ino
+             (symbol _RNvMNtNtCseeW9w82xjDW_4ext46rootfs5stateNtB2_11RootfsState16lookup_child_ino)
+      13408  NEW       <ext4::rootfs::state::RootfsState>::lookup_child_ino_result
+             (symbol _RNvMNtNtCseeW9w82xjDW_4ext46rootfs5stateNtB2_11RootfsState23lookup_child_ino_result)
+      13408  NEW       syscalls::aio::submit::prepare_and_run
+             (symbol _RNvNtNtCs5yPvcvPmZDY_8syscalls3aio6submit15prepare_and_run)
+      13408  NEW       <ext4::rootfs::inode::regular::Ext4RegFileOps as vfs::file_ops::FileOps>::direct_read_file
+             (symbol _RNvXs_NtNtNtCseeW9w82xjDW_4ext46rootfs5inode7regularNtB4_14Ext4RegFileOpsNtNtCs4QxBzzlLWre_3vfs8file_ops7FileOps16direct_read_file)
+      13392  NEW       <ext4::mount::Mount>::configure_journal_checksum
+             (symbol _RNvMNtCseeW9w82xjDW_4ext47journalNtNtB4_5mount5Mount26configure_journal_checksum)
+      13392  NEW       syscalls::s046_sendmsg::sys_sendmsg
+             (symbol _RNvNtCs5yPvcvPmZDY_8syscalls12s046_sendmsg11sys_sendmsg)
+      13392  NEW       syscalls::io_uring::dispatch::bundle_io::run
+             (symbol _RNvNtNtNtCs5yPvcvPmZDY_8syscalls8io_uring8dispatch9bundle_io3run)
+      13392  NEW       <ext4::rootfs::inode::special::Ext4StatInodeOps as vfs::inode_ops::InodeOps>::readlink
+             (symbol _RNvXs_NtNtNtCseeW9w82xjDW_4ext46rootfs5inode7specialNtB4_16Ext4StatInodeOpsNtNtCs4QxBzzlLWre_3vfs9inode_ops8InodeOps8readlink)
+      13376  NEW       syscalls::io_uring::dispatch::net_ops::socket
+             (symbol _RNvNtNtNtCs5yPvcvPmZDY_8syscalls8io_uring8dispatch7net_ops6socket)
+      13376  NEW       <ext4::rootfs::inode::regular::Ext4RegInodeOps as vfs::inode_ops::InodeOps>::fiemap
+             (symbol _RNvXNtNtNtCseeW9w82xjDW_4ext46rootfs5inode7regularNtB2_15Ext4RegInodeOpsNtNtCs4QxBzzlLWre_3vfs9inode_ops8InodeOps6fiemap)
+      13376  NEW       <ext4::quota::backend::Ext4QuotaOps as vfs::quota::ops::DquotOperations>::get_next_id
+             (symbol _RNvXs0_NtNtCseeW9w82xjDW_4ext45quota7backendNtB5_12Ext4QuotaOpsNtNtNtCs4QxBzzlLWre_3vfs5quota3ops15DquotOperations11get_next_id)
+      13376  NEW       <ext4::rootfs::inode::regular::Ext4RegFileOps as vfs::file_ops::FileOps>::mmap_dax_frame
+             (symbol _RNvXs_NtNtNtCseeW9w82xjDW_4ext46rootfs5inode7regularNtB4_14Ext4RegFileOpsNtNtCs4QxBzzlLWre_3vfs8file_ops7FileOps14mmap_dax_frame)
+      13360  NEW       <ext4::rootfs::inode::data::Ext4FileData>::refresh_inode_usage
+             (symbol _RNvMs1_NtNtNtCseeW9w82xjDW_4ext46rootfs5inode4dataNtB5_12Ext4FileData19refresh_inode_usage)
+      13360  NEW       ext4::rootfs::inode::dax::physical_at
+             (symbol _RNvNtNtNtCseeW9w82xjDW_4ext46rootfs5inode3dax11physical_at)
+      13344  NEW       <ext4::mount::Mount>::insert_range_inode::{closure#0}
+             (symbol _RNCNvMNtNtCseeW9w82xjDW_4ext49extent_rw5shiftNtNtB8_5mount5Mount18insert_range_inode0B8_)
+      13344  NEW       <ext4::rootfs::inode::regular::Ext4RegInodeOps as vfs::inode_ops::InodeOps>::bmap
+             (symbol _RNvXNtNtNtCseeW9w82xjDW_4ext46rootfs5inode7regularNtB2_15Ext4RegInodeOpsNtNtCs4QxBzzlLWre_3vfs9inode_ops8InodeOps4bmap)
+      13344  NEW       <ext4::quota::backend::Ext4QuotaOps as vfs::quota::ops::DquotOperations>::file_stat
+             (symbol _RNvXs0_NtNtCseeW9w82xjDW_4ext45quota7backendNtB5_12Ext4QuotaOpsNtNtNtCs4QxBzzlLWre_3vfs5quota3ops15DquotOperations9file_stat)
+      13328  NEW       <ext4::mount::Mount>::append_hint_group
+             (symbol _RNvMNtNtCseeW9w82xjDW_4ext49extent_rw6appendNtNtB6_5mount5Mount17append_hint_group)
+      13312  NEW       _start_rust
+             (symbol _start_rust)
+      13296  NEW       syscalls::s041_socket::sys_socket
+             (symbol _RNvNtCs5yPvcvPmZDY_8syscalls11s041_socket10sys_socket)
+      13296  NEW       net::net_ns::teardown::namespace_reaper
+             (symbol _RNvNtNtCsd2XcCW2yf6v_3net6net_ns8teardown16namespace_reaper)
+      13296  NEW       kmain::kmain::entry::kernel_main
+             (symbol _RNvNtNtCsdqtZz9iRFOC_5kmain5kmain5entry11kernel_main)
+      13280  NEW       syscalls::aio::submit::run_rw
+             (symbol _RNvNtNtCs5yPvcvPmZDY_8syscalls3aio6submit6run_rw)
+      13264  NEW       <drv_atlantic::imp::AtlanticDriver as drv::model::driver::Driver>::probe
+             (symbol _RNvXs1_NtCs7Lqd0zyjSvr_12drv_atlantic3impNtB5_14AtlanticDriverNtNtNtCsgL31lptn0Kx_3drv5model6driver6Driver5probe)
+      13248  NEW       <ext4::rootfs::inode::regular::Ext4RegFileOps as vfs::file_ops::FileOps>::seek_hole_data
+             (symbol _RNvXs_NtNtNtCseeW9w82xjDW_4ext46rootfs5inode7regularNtB4_14Ext4RegFileOpsNtNtCs4QxBzzlLWre_3vfs8file_ops7FileOps14seek_hole_data)
+      13216  NEW       syscalls::dispatch::core::syscall_entry_work
+             (symbol _RNvNtNtCs5yPvcvPmZDY_8syscalls8dispatch4core18syscall_entry_work)
+      13200  NEW       <ext4::rootfs::inode::regular::Ext4RegInodeOps as vfs::inode_ops::InodeOps>::fileattr_get
+             (symbol _RNvXNtNtNtCseeW9w82xjDW_4ext46rootfs5inode7regularNtB2_15Ext4RegInodeOpsNtNtCs4QxBzzlLWre_3vfs9inode_ops8InodeOps12fileattr_get)
+      13184  NEW       <ext4::mount::Mount>::append_dir_block
+             (symbol _RNvMNtNtCseeW9w82xjDW_4ext45mount4dirsNtB4_5Mount16append_dir_block)
+      13184  NEW       net::net_ns::teardown::drain_final_drops_into
+             (symbol _RNvNtNtCsd2XcCW2yf6v_3net6net_ns8teardown22drain_final_drops_into)
+      13168  NEW       <core::slice::iter::Iter<u32> as core::iter::traits::iterator::Iterator>::try_fold::<u32, <ext4::mount::Mount>::store_xattrs::{closure#0}::{closure#4}, core::result::Result<u32, ext4::mount::MountError>>
+             (symbol _RINvYINtNtNtCs9x0FMdDHyuf_4core5slice4iter4ItermENtNtNtNtBa_4iter6traits8iterator8Iterator8try_foldmNCNCNvMNtCseeW9w82xjDW_4ext45xattrNtNtB1J_5mount5Mount12store_xattrs0s2_0INtNtBa_6result6ResultmNtB2a_10MountErrorEEB1J_)
+      13168  NEW       ext4::rootfs::inode::meta::ext4_getversion
+             (symbol _RNvNtNtNtCseeW9w82xjDW_4ext46rootfs5inode4meta15ext4_getversion)
+      13168  NEW       ext4::rootfs::inode::meta::ext4_fileattr_get
+             (symbol _RNvNtNtNtCseeW9w82xjDW_4ext46rootfs5inode4meta17ext4_fileattr_get)
+      13152  NEW       ext4::rootfs::ops::project_inherit_allows_child
+             (symbol _RNvNtNtCseeW9w82xjDW_4ext46rootfs3ops28project_inherit_allows_child)
+      13152  NEW       ext4::rootfs::quota::release_new_inode_charge
+             (symbol _RNvNtNtCseeW9w82xjDW_4ext46rootfs5quota24release_new_inode_charge)
+      13152  NEW       <ext4::rootfs::ops::mountfs::Ext4SuperOps as vfs::superblock::ops::SuperOps>::fh_to_dentry
+             (symbol _RNvXs_NtNtNtCseeW9w82xjDW_4ext46rootfs3ops7mountfsNtB4_12Ext4SuperOpsNtNtNtCs4QxBzzlLWre_3vfs10superblock3ops8SuperOps12fh_to_dentry)
+      13136  NEW       <ext4::rootfs::inode::data::Ext4StatData>::refresh_namespace_size
+             (symbol _RNvMs2_NtNtNtCseeW9w82xjDW_4ext46rootfs5inode4dataNtB5_12Ext4StatData22refresh_namespace_size)
+      13128  NEW       syscalls::nt_window::menu_raw::bar::default_proc_for_current
+             (symbol _RNvNtNtNtCs5yPvcvPmZDY_8syscalls9nt_window8menu_raw3bar24default_proc_for_current)
+      13120  NEW       syscalls::s296_pwritev::do_pwritev
+             (symbol _RNvNtCs5yPvcvPmZDY_8syscalls12s296_pwritev10do_pwritev)
+      13120  NEW       syscalls::nt_window::redraw::live::resume
+             (symbol _RNvNtNtNtCs5yPvcvPmZDY_8syscalls9nt_window6redraw4live6resume)
+      13112  NEW       <f2fs::mount::sb::F2fsSuperOps as vfs::superblock::ops::SuperOps>::remount_fs
+             (symbol _RNvXNtNtCsd6gwb9BUK2v_4f2fs5mount2sbNtB2_12F2fsSuperOpsNtNtNtCs4QxBzzlLWre_3vfs10superblock3ops8SuperOps10remount_fs)
+      13072  NEW       syscalls::nt_debug::dispatch
+             (symbol _RNvNtCs5yPvcvPmZDY_8syscalls8nt_debug8dispatch)
+      13072  NEW       syscalls::misc::s169_reboot::sys_reboot
+             (symbol _RNvNtNtCs5yPvcvPmZDY_8syscalls4misc11s169_reboot10sys_reboot)
+      13040  NEW       syscalls::s020_writev::sys_writev
+             (symbol _RNvNtCs5yPvcvPmZDY_8syscalls11s020_writev10sys_writev)
+      13024  NEW       net::sock::ops::accept
+             (symbol _RNvNtNtCsd2XcCW2yf6v_3net4sock3ops6accept)
+      13008  NEW       syscalls::nt_window::hardware::live::enter
+             (symbol _RNvNtNtNtCs5yPvcvPmZDY_8syscalls9nt_window8hardware4live5enter)
+      13000  NEW       syscalls::nt_window::menu_raw::bar::track_for_current
+             (symbol _RNvNtNtNtCs5yPvcvPmZDY_8syscalls9nt_window8menu_raw3bar17track_for_current)
+
+Split the chain so the big frames overlap instead of summing (Linux `noinline_for_stack`), move the data off-stack, or — if the path is genuinely this deep — add it to the allowlist WITH a reason.
+
+            +   176  syscalls::nt_window::send::live::send
+            +   112  syscalls::nt_window::send::live::wait_outcome
+            +   224  syscalls::nt_window::position::remote::pump
+            +   416  syscalls::nt_window::position::live::start_inner
+            +   336  syscalls::nt_window::position::live::after_changing
+            +   336  syscalls::nt_window::position::live::commit
+            +   144  syscalls::nt_window::bridge::live::publish_geometry_current
+            +   144  syscalls::nt_window::bridge::live::publish
+            +    64  syscalls::nt_compositor::binding::retire
+            +    32  <alloc::sync::Arc<syscalls::nt_compositor::binding::Binding>>::drop_slow
+            +    32  <alloc::sync::Arc<net::sock::types::InetSocket>>::drop_slow
+            +    32  core::ptr::drop_in_place::<net::sock::types::InetSocket>
+            +   112  <net::sock::types::InetSocket>::release_file
+            +   432  <net::mcast_filter::SocketMcast>::release
+            +   784  <net::stack::types::net_stack::NetStack>::drive_mld_reports
+            +   448  <net::stack::types::net_stack::NetStack>::emit_mld_body
+            +   608  <net::netdev::tx_dispatch::TxDispatch>::enqueue
+            +   400  <net::netdev::tx_dispatch::TxJob>::transmit
+      18832  syscalls::fsmount_common::registry::register::register_filesystems::{closure#0}   [recursive,+indirect]
+            +    32  <alloc::sync::Arc<ext4::rootfs::ops::mountfs::Ext4Mount>>::drop_slow
+            +   256  <ext4::rootfs::ops::mountfs::Ext4Mount as core::ops::drop::Drop>::drop
+            +   272  <ext4::rootfs::state::RootfsState>::free_orphan_inode
+            +    96  <ext4::mount::Mount>::free_orphan_inode
+            +   224  <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::free_orphan_inode::{closure#0}>
+            +   128  <ext4::mount::Mount>::free_orphan_inode::{closure#0}
+            +   128  <ext4::mount::Mount>::truncate_inode_for_deletion
+            +   224  <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::truncate_inode_for_deletion::{closure#0}>
+            +   800  <ext4::mount::Mount>::truncate_inode_inner
+            +   176  <ext4::mount::Mount>::prune_legacy_node
+            +   288  <ext4::mount::Mount>::metadata_write
+            +   720  <ext4::mount::Mount>::commit_metadata_deferred
+            +   320  <ext4::mount::Mount>::read_inode
+            +    80  <ext4::mount::Mount>::prefetch_metadata_blocks_async
+            +    32  <alloc::sync::Arc<ext4::mount::Mount>>::drop_slow
+            +   592  <ext4::mount::Mount>::commit_batch_for
+            +   176  ext4::rootfs::framecache::dirty::writeback_dirty_inner
+            +   368  <ext4::rootfs::framecache::Ext4FrameStore>::writeback_idxs
+            +   224  <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::rootfs::framecache::Ext4FrameStore>::writeback_idxs::{closure#1}>
+            +   224  <ext4::rootfs::framecache::Ext4FrameStore>::writeback_idxs::{closure#1}
+            +   128  <ext4::mount::Mount>::run_batch_handle::<(), <ext4::mount::Mount>::write_at::{closure#0}>
+            +   224  <ext4::mount::Mount>::run_journaled_inner::<(), <ext4::mount::Mount>::write_at::{closure#0}>
+            +  1216  <ext4::mount::Mount>::write_at_inner

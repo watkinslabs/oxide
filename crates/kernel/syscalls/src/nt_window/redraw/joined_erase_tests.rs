@@ -12,7 +12,7 @@ fn raw_erasenow_first_use_retains_pixels_without_beginpaint() {
     GDI.lock().unwrap().fill_rect(dc as u32,win32_gdi::Rect{left:0,top:0,right:10,bottom:10},0xabcdef).unwrap();
     let callback=CALLBACK.with(|c|c.take().unwrap());
     assert_eq!(send::complete_callback(callback,1),1);
-    assert!(!GDI.lock().unwrap().contains_object(dc as u32));
+    assert!(GDI.lock().unwrap().validate_dc(dc as u32).is_err());
     let backing=nt_gdi::acquire_window_dc_for_current(1,10,10) as u32;
     assert!(GDI.lock().unwrap().pixels(backing).unwrap().iter().all(|p|*p==0xabcdef));
     assert_eq!(nt_gdi::release_window_dc_for_current(1,backing),0);
@@ -34,7 +34,7 @@ fn raw_erasenow_cross_thread_runs_recipient_then_returns_sender_bool() {
     let callback=CALLBACK.with(|c|c.take().unwrap());
     assert_eq!(send::complete_callback(callback,0),0x777);
     assert_eq!(sender.join().unwrap(),1);
-    assert!(!GDI.lock().unwrap().contains_object(calls[0].3 as u32));
+    assert!(GDI.lock().unwrap().validate_dc(calls[0].3 as u32).is_err());
     assert!(GUI.lock()[0].state.erase_damage(WindowId::from_raw(1).unwrap()).unwrap().delayed_erase);
 }
 
@@ -82,7 +82,7 @@ fn raw_erase_cancel_keeps_live_dc_until_callback_returns_then_fails() {
     assert!(GDI.lock().unwrap().contains_object(dc));
     let callback=CALLBACK.with(|c|c.take().unwrap());
     assert_eq!(send::complete_callback(callback,1),0);
-    assert!(!GDI.lock().unwrap().contains_object(dc));
+    assert!(GDI.lock().unwrap().validate_dc(dc).is_err());
 }
 
 #[test]
@@ -93,5 +93,5 @@ fn raw_erase_geometry_change_rejects_old_surface_and_cleans_resources() {
     GUI.lock()[0].state.set_rect(WindowId::from_raw(1).unwrap(),win32_window::WindowRect{left:0,top:0,right:20,bottom:20}).unwrap();
     let callback=CALLBACK.with(|c|c.take().unwrap());
     assert_eq!(send::complete_callback(callback,1),0);
-    assert!(!GDI.lock().unwrap().contains_object(dc));
+    assert!(GDI.lock().unwrap().validate_dc(dc).is_err());
 }

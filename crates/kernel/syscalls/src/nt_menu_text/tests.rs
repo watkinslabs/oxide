@@ -41,7 +41,7 @@ fn notepad_bar_from(labels: &[&[u8]; 5]) -> (MenuManager, ipc::win32_menu::MenuI
 
 fn stock_state() -> TextState {
     TextState { font: None, attributes: TextAttributes::default(), width: FRAME_WIDTH, height: 768,
-        break_extra: 0, break_rem: 0 }
+        break_extra: 0, break_rem: 0, origin: (0, 0) }
 }
 
 /// Every text run of the bar plan, as the nonclient painter issues them.

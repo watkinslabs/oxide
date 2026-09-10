@@ -19,7 +19,7 @@ const SWP_NOZORDER: u32 = 0x0004;
 const SWP_NOACTIVATE: u32 = 0x0010;
 const SWP_FRAMECHANGED: u32 = 0x0020;
 
-pub(crate) type NonclientRepaint = fn(hwnd: u64, bar: i32, state: ScrollState) -> bool;
+pub(crate) type NonclientRepaint = fn(hwnd: u64, bar: i32, state: ScrollState, interior: bool) -> bool;
 pub(crate) type ScrollSend = fn(hwnd: u64, message: u32, wparam: u64, lparam: u64) -> Option<u64>;
 pub(crate) type FrameResume = fn(token: u64, outcome: PositionOutcome) -> u64;
 
@@ -91,9 +91,9 @@ impl super::ScrollActionSink for ScrollSink {
     fn enable_scroll_arrows(&mut self, _: u64, _: i32) -> bool { true }
     fn disable_scroll_arrows(&mut self, _: u64, _: i32) -> bool { true }
     fn frame_changed(&mut self, hwnd: u64, _: i32, token: u64) -> Outcome { self.frame_changed(hwnd, token) }
-    fn repaint_scrollbar(&mut self, hwnd: u64, bar: i32) -> bool {
+    fn repaint_scrollbar(&mut self, hwnd: u64, bar: i32, interior: bool) -> bool {
         let Some(state) = self.state(hwnd, bar) else { return false; };
-        (self.repaint)(hwnd, bar, state)
+        (self.repaint)(hwnd, bar, state, interior)
     }
     fn send_scrollbar_message(&mut self, hwnd: u64, message: u32, wparam: u64, lparam: u64) -> Option<u64> {
         (self.send)(hwnd, message, wparam, lparam)

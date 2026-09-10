@@ -90,7 +90,7 @@ impl MessageQueue {
         let old = self.caret;
         self.caret.on = !self.caret.on;
         let rect = |state: CaretState| (state.x, state.y, state.x.saturating_add(state.width), state.y.saturating_add(state.height));
-        let transition = CaretTransition { old_hwnd: old.hwnd, hwnd: self.caret.hwnd.or(old.hwnd), old_visible: old.visible(), new_visible: self.caret.visible(), old_rect: rect(old), new_rect: rect(self.caret) };
+        let transition = CaretTransition { old_hwnd: old.hwnd, hwnd: self.caret.hwnd.or(old.hwnd), old_visible: old.visible(), new_visible: self.caret.visible(), old_rect: rect(old), new_rect: rect(self.caret), pattern: self.caret.pattern };
         self.caret_generation = self.caret_generation.wrapping_add(1);
         self.caret_blink.generation = self.caret_generation;
         Some(CaretCommit { transition, generation: self.caret_generation })

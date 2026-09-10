@@ -19,6 +19,14 @@ impl GdiManager {
         self.window_dcs.iter().find(|(window, _)| *window == hwnd).map(|(_, dc)| *dc)
     }
 
+    /// Presentation identity comes from the same live DC backing association. # C: O(DCs + windows)
+    pub fn dc_presentation_owner(&self,dc:u32)->Option<(u32,u32)>{
+        let state=&self.dcs.iter().find(|(id,_)|*id==dc)?.1;
+        state.ensure_active().ok()?;if state.bitmap.is_some(){return None;}
+        let backing=state.lease.as_ref().map_or(dc,|lease|lease.backing);
+        self.window_dcs.iter().find(|(_,id)|*id==backing).copied()
+    }
+
     /// Object liveness derives only from canonical storage, including retained selections. # C: O(objects)
     pub fn contains_object(&self, handle: u32) -> bool {
         self.stock_description(handle).is_some() || self.dcs.iter().any(|(id, _)| *id == handle)

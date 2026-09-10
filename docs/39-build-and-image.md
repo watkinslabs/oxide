@@ -129,3 +129,44 @@ otherwise per-launch port.
 ## 12 Cross-spec
 
 `07` (toolchain + targets), `29` (userspace), `36` (bootloader handoff), `40` (CI uses xtask).
+
+## 13
+
+| Contract | Value |
+|---|---|
+| Selection | `OXIDE_WINE_PROFILE=release\|debug`; unset selects `release`; other values fail before build/install |
+| Source/version | Both profiles use `tools/wine-version`, identical pinned inputs and functional patches |
+| Release | Optimized compilation; button-paint diagnostics disabled |
+| Debug | Debug information, unoptimized compilation, bounded button-paint diagnostics enabled |
+| Build isolation | `target/wine/{wine,build,dest}-<version>-<profile>`; profile-specific extracted headers |
+| Artifact catalog | `target/artifacts/wine/x86_64-<profile>`; `wine-version`, `wine-profile`, `wine-build-id` stamps |
+| Package | `oxide-wine-release` or `oxide-wine-debug`; package identity and stamps agree |
+| Guest catalogs | `/usr/local/lib/oxide/windows-<profile>` and `/usr/local/share/oxide/windows-<profile>/nls` |
+| Selected aliases | `/usr/local/lib/oxide/windows` and `/usr/local/share/oxide/windows` point to the selected suffixed catalog |
+| Image install | Profile flag selects the package and aliases; an existing unqualified RPM does not satisfy selection |
+| Staging | Verify requested profile, packaged stamp, alias targets and Wine version before launch payload injection |
+| Cached launch | `OXIDE_SKIP_ROOTFS` and `--run-existing` validate the selected payload before build/boot when Windows staging or a Wine profile is requested |
+| Acceptance | Propagate profile into composition/staging; reject a cached image with another profile |
+| Provenance | Report selected profile and build id; same-version DLLs alone do not establish profile identity |
+
+Build example: `OXIDE_WINE_PROFILE=debug tools/build-wine-runtime.sh`.
+Package/image/acceptance commands use the same flag. Release and debug artifacts
+may coexist; selecting one never overwrites the other's build directory.
+
+`wine-build-id` identifies preparation inputs (source, headers, patch set,
+recipe and profile); it is not a claim that module bytes were measured in a
+running guest. `OXIDE_WINE_PROFILE` is independent of kernel `PROFILE`.
+
+Visible Notepad acceptance selects File → Open before broad menu checks,
+requires rendered dialog controls, and audits window-creation and compositor
+refusals even when a visual check fails. Failed runs retain the live VM and
+print its launcher PID and QMP/UART socket paths for inspection by default.
+`OXIDE_NOTEPAD_KEEP_ON_FAILURE=0` requests automatic termination on failure.
+Successful runs require guest power-off; shutdown timeout is a failure.
+
+`OXIDE_NOTEPAD_READBACK=1` adds the compositor pixel observer to the guest
+session-user launch command; it is independent of kernel and Wine profiles.
+Default0 leaves observation disabled. `OXIDE_COMPOSITOR_READBACK=1` enables
+the same observer for direct runtime/compositor launches. Matched X pixels do
+not prove desktop scanout; unavailable reads stay explicitly unverified.
+Readback mismatches fail the Notepad UART audit. Contract: `31gd§10`.

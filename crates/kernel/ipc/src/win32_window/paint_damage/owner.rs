@@ -35,6 +35,7 @@ impl WindowManager {
     /// # C: O(windows + region operations)
     pub fn redraw_damage(&mut self, id: WindowId, region: Option<&PaintRegion>, flags: u32, nested: bool) -> Result<(), WindowError> {
         self.get(id).ok_or(WindowError::NoSuchWindow)?;
+        let before = self.paint_obligations(id);
         let cropped = self.visible_paint_rect(id, false).zip(self.visible_paint_rect(id, true));
         let index = self.dirty.iter().position(|(window, _)| *window == id);
         let mut next = match index { Some(index) => self.dirty[index].1.try_copy()?, None => PaintDamage::default() };
@@ -51,6 +52,7 @@ impl WindowManager {
         if !next.pending() { if let Some(index) = index { self.dirty.remove(index); } }
         else if let Some(index) = index { self.dirty[index].1 = next; }
         else { self.dirty.try_reserve(1).map_err(|_| WindowError::NoMemory)?; self.dirty.push((id, next)); }
+        self.note_paint_change(id, before);
         Ok(())
     }
     /// Transfer exact damage into the existing canonical paint session. # C: O(windows + dirty + region)
@@ -58,6 +60,7 @@ impl WindowManager {
         let client = self.client_rect(id).ok_or(WindowError::NoSuchWindow)?;
         if self.painting.iter().any(|(window, _)| *window == id) { return Err(WindowError::PaintActive); }
         let index = self.dirty.iter().position(|(window, _)| *window == id);
+        let before = self.paint_obligations(id);
         let pending = match index { Some(index) => self.dirty[index].1.try_copy()?, None => PaintDamage::default() };
         let damage = pending.region.clipped(client)?.bounds();
         let parents = self.paint_parent_validation(id, &pending.region)?;
@@ -65,9 +68,12 @@ impl WindowManager {
         self.painting.push((id, PaintSession { damage, dc: 0, region: pending.region,
             erase: pending.erase, delayed_erase: pending.delayed_erase, nonclient: pending.nonclient }));
         if let Some(index) = index { self.dirty.remove(index); }
+        self.note_paint_change(id, before);
         for (parent, damage) in parents {
+            let before = self.paint_obligations(parent);
             if let Some(index) = self.dirty.iter().position(|(window, _)| *window == parent) {
                 if damage.pending() { self.dirty[index].1 = damage; } else { self.dirty.remove(index); }
+                self.note_paint_change(parent, before);
             }
         }
         Ok(damage)
@@ -88,12 +94,14 @@ impl WindowManager {
     pub fn take_erase_damage(&mut self, id: WindowId) -> Result<PaintDamage, WindowError> {
         let client = self.client_rect(id).ok_or(WindowError::NoSuchWindow)?;
         let Some(index) = self.dirty.iter().position(|(window, _)| *window == id) else { return Ok(PaintDamage::default()); };
+        let before = self.paint_obligations(id);
         let snapshot = self.dirty[index].1.try_copy()?;
         let clipped = if snapshot.nonclient { Some(snapshot.region.clipped(client)?) } else { None };
         let damage = &mut self.dirty[index].1;
         if let Some(clipped) = clipped { damage.region = clipped; }
         damage.erase = false; damage.nonclient = false; damage.delayed_erase = false;
         if !damage.pending() { self.dirty.remove(index); }
+        self.note_paint_change(id, before);
         Ok(snapshot)
     }
     /// Merge delayed erase only; never copy an old callback snapshot onto live damage. # C: O(dirty)

@@ -24,16 +24,34 @@ drift between `kernel/src`, ad-hoc `crates/*`, and one-off folders.
 4. Native GUI state remains in `ipc::win32_window`: `class` owns registration
    and class-bound creation, `extra` owns per-HWND extra/scalar storage inside
    the canonical window vector, `state` owns window/message work, and
-   `thread_exit` revokes the canonical ownership closure. GDI `font` owns
+   `thread_exit` revokes the canonical ownership closure. `message_queue` owns
+   queue insertion, class-filtered selection from canonical origins, and stable
+   entry retirement; `state` shares Get/Peek selection and paint-before-timer
+   fallback; hardware retrieval
+   returns a translated view without overwriting the raw queued event. GDI `font` owns
    complete logical records and selected-object lifetime. Syscalls children
    adapt raw ABI/usercopy and process lifetime gates; no parallel object table.
    `nt_window/paint` releases GUI ownership before usercopy; raw window `paint`
    owns HDC admission/presentation sequencing, consuming canonical paint bounds.
    Syscalls `nt_manifest` includes personality declarations in the root namespace;
    `hosted_contracts` groups ordinary hosted adapter policy modules.
-   GDI `backing` owns paint seeding/retention; `nt_gdi/paint_frame` serializes
-   that retained surface. Queue-owned caret deadlines feed message waits;
+   `win32_window/dc_lease` resolves containing presentation geometry; GDI leases
+   draw directly into that backing. `backing` validates lease completion and
+   explicit memory-DC storage copies; `nt_gdi/output` owns acknowledged publication. Queue-owned caret deadlines feed message waits;
    scroll continuations consume the existing position and Send owners.
+   `nt_window/user_input/queue_status` combines canonical posted/sent status;
+   `message_queue/wait_live` uses `ready` for initial and parked mask admission.
+   `nt_window/dispatch` calls `retrieval_status` after sent callbacks and before
+   scanning; `ipc::win32_window` owns selected changed-bit acknowledgement.
+   `paint_damage/status` updates queue changes from canonical region/internal
+   transitions; pending paint derives from existing damage, without a copied counter.
+   Default mouse activation and cursor handling use canonical pointer policy
+   and the same Send continuation; each suspended parent reply retains its
+   own fallback value or cursor step. Cursor installation follows parent refusal.
+   Window `scroll/control` owns optional scrollbar-control state on the HWND;
+   its lifetime is distinct from the same HWND’s standard nonclient bars.
+   Syscalls `scroll/actions` consumes canonical scroll actions; hosted boundary
+   fixtures import that module and the worktree’s live adapters directly.
    Window `dc_lease` snapshots canonical visibility; GDI `dc_lease` retains
    HDC attributes and maps raster operations to existing backing storage.
    GDI `pen` owns selected pen lifetime. Paint preparation resources remain
@@ -50,7 +68,7 @@ drift between `kernel/src`, ad-hoc `crates/*`, and one-off folders.
    canonical database operations (`registry`), durable session ownership (`store`),
    framed request transport (`wire`) and concurrent listener admission (`service`).
    All clients share the same RegistryStore; transport owns no registry copy.
-6. Kernel smoke probes, the separately-targeted Windows launcher and its desktop-independent compositor bridge (`31gd`) live under `userspace/`; `tools/xtask/src/rootfs_disks/probe_artifact.rs` resolves Cargo-owned target directories through `tools/probe-target-directory.py`. `rootfs_disks/windows_notepad/payload.rs` invokes read-only `tools/windows-rootfs-payload-check.py` after runtime staging. The boot userspace image is composed by the sibling `../images` repo,
+6. Kernel smoke probes, the separately-targeted Windows launcher and its desktop-independent compositor bridge (`31gd`) live under `userspace/`; compositor `x11/position.rs` owns stacking projection and window-manager requests, `x11/requests.rs` completes checked image batches, `x11/retention.rs` keeps existing descendant images coherent with parent drawing; `tools/xtask/src/rootfs_disks/probe_artifact.rs` resolves Cargo-owned target directories through `tools/probe-target-directory.py`. `rootfs_disks/windows_notepad/payload.rs` invokes read-only `tools/windows-rootfs-payload-check.py` after runtime staging. The boot userspace image is composed by the sibling `../images` repo,
    never in kernel subsystem crates. This repo contains no general userspace runtime code — no libc, loader, NSS, PAM,
    package manager, or service manager (`29a§2`).
 
@@ -328,6 +346,14 @@ must use grouped paths from day one.
     `syscalls` owns the ABI shim (decode, handle checks, user-memory copy) and
     the backend that maps reservations onto the NT virtual-memory owner. No
     other crate keeps heap block state.
+
+26. `exec::vdso` owns complete auxiliary ELF image publication through `vmm`;
+    `syscalls::vdso` supplies the current address space, native image and data
+    page. `elf` owns parsing; syscall tests inspect both shipped image backings.
+
+27. `sched::live::ptrace_attach` owns authorized trace relationship publication
+    and initial attach signal routing through the canonical signal sender;
+    syscall adapters validate credentials, target eligibility and options.
 
 ## 6
 

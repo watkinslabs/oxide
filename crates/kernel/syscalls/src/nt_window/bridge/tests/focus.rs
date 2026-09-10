@@ -21,7 +21,7 @@ fn drain(state: &mut WindowManager, tid: u64) -> Vec<WinMessage> {
 }
 fn focus(state: &mut WindowManager, id: WindowId, active: bool) -> bool {
     let record = Record::new(Opcode::Focus, 1, id.raw() as u64, (active as u32).to_le_bytes().to_vec()).unwrap();
-    apply_event(state, &mut SysKeyLatch::default(), &record, |_, _, _, _, _, _, _| false)
+    apply_event(state, &mut SysKeyLatch::default(), &mut Vec::new(), &record, |_, _, _, _, _, _, _| false)
 }
 
 #[test]

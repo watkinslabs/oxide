@@ -183,8 +183,29 @@ def check_wine_provenance(image, expected):
             raise Failure(f"only {agreeing} staged modules name a Wine version; the stamp is unbacked")
 
 
-def check_image(path, expected_wine_version):
+def check_wine_profile(image, expected):
+    """The image selector, both aliases and the selected package must agree."""
+    if expected not in ('release', 'debug'):
+        raise Failure('Wine profile must be release or debug')
+    for alias in (WINDOWS_ROOT, '/usr/local/share/oxide/windows'):
+        target = image.link_target(alias)
+        if target != 'windows-' + expected:
+            raise Failure(f'{alias} selects {target!r}, expected windows-{expected}')
+    with tempfile.TemporaryDirectory(prefix='oxide-wine-profile-') as tmp:
+        tmpdir = Path(tmp)
+        selected = image.dump('/etc/oxide/wine-profile', tmpdir).read_text().strip()
+        actual = image.dump(f'{WINDOWS_ROOT}-{expected}/wine-profile', tmpdir).read_text().strip()
+        if selected != expected or actual != expected:
+            raise Failure(f'Wine profile mismatch: requested={expected} selected={selected} package={actual}')
+        build_id = image.dump(f'{WINDOWS_ROOT}-{expected}/wine-build-id', tmpdir).read_text().strip()
+        if not re.fullmatch(r'[0-9a-fA-F]{64}', build_id):
+            raise Failure('Wine package has no valid build identity')
+    return build_id
+
+
+def check_image(path, expected_wine_version, expected_wine_profile="release"):
     image = Image(path)
+    check_wine_profile(image, expected_wine_profile)
     missing = []
     for guest_path in REQUIRED_FILES:
         try:
@@ -224,6 +245,9 @@ def check_image(path, expected_wine_version):
                 int.from_bytes(notepad[pe + 4:pe + 6], "little") != 0x8664 or
                 int.from_bytes(notepad[pe + 24:pe + 26], "little") != 0x20B):
             raise Failure("staged Notepad is not PE32+ AMD64")
+        config = image.dump("/etc/oxide/windows-runtime.conf", tmpdir).read_text()
+        if f"OXIDE_WINE_PROFILE={expected_wine_profile}" not in config.splitlines():
+            raise Failure("launch configuration does not name the selected Wine profile")
         desktop = image.dump("/usr/share/applications/oxide-notepad.desktop", tmpdir).read_text()
         mimeapps = image.dump("/etc/xdg/mimeapps.list", tmpdir).read_text()
         if "Exec=/usr/local/bin/windows-notepad-smoke" not in desktop:
@@ -259,9 +283,21 @@ def main(argv):
     parser = argparse.ArgumentParser()
     parser.add_argument("--image", required=True)
     parser.add_argument("--expected-wine-version", required=True)
+    parser.add_argument("--expected-wine-profile", choices=("release", "debug"), default="release")
+    parser.add_argument("--profile-only", action="store_true")
     args = parser.parse_args(argv)
     try:
-        print(check_image(args.image, args.expected_wine_version))
+        if args.profile_only:
+            image = Image(args.image)
+            build_id = check_wine_profile(image, args.expected_wine_profile)
+            with tempfile.TemporaryDirectory(prefix="oxide-profile-version-") as tmp:
+                version = image.dump(VERSION_STAMP, Path(tmp)).read_text().strip()
+                if version != args.expected_wine_version:
+                    raise Failure(f"Wine version {version!r} does not match {args.expected_wine_version!r}")
+            image.unchanged()
+            print(f"profile: PASS profile={args.expected_wine_profile} build={build_id}")
+        else:
+            print(check_image(args.image, args.expected_wine_version, args.expected_wine_profile))
     except Failure as error:
         print(f"payload: FAIL: {error}", file=sys.stderr)
         return 1

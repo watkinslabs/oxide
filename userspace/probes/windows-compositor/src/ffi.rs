@@ -19,7 +19,7 @@ pub struct Screen { pub root: Window, pub default_colormap: u32, pub white_pixel
 #[repr(C)] pub struct InternAtomReply { pub response_type: u8, pub pad0: u8, pub sequence: u16, pub length: u32, pub atom: Atom }
 #[repr(C)] pub struct GetPropertyReply { pub response_type: u8, pub format: u8, pub sequence: u16, pub length: u32, pub type_: Atom, pub bytes_after: u32, pub value_len: u32, pub pad0: [u8; 12] }
 
-#[repr(C)] pub struct GenericEvent { pub response_type: u8, pub pad0: u8, pub sequence: u16, pub pad: [u8; 28] }
+#[repr(C)] pub struct GenericEvent { pub response_type: u8, pub pad0: u8, pub sequence: u16, pub pad: [u8; 28], pub full_sequence: u32 }
 #[repr(C)] pub struct GetImageCookie { pub sequence: c_uint }
 #[repr(C)] pub struct GetImageReply { pub response_type: u8, pub depth: u8, pub sequence: u16, pub length: u32, pub visual: Visualid, pub pad0: [u8; 20] }
 #[repr(C)] pub struct VoidCookie { pub sequence: c_uint }
@@ -37,11 +37,14 @@ pub const PROP_MODE_REPLACE: u8 = 0; pub const ATOM_NONE: Atom = 0; pub const AT
 pub const ATOM_STRING: Atom = 31; pub const ATOM_WM_ICON_NAME: Atom = 37; pub const ATOM_WM_NAME: Atom = 39;
 pub const WINDOW_CLASS_INPUT_OUTPUT: u16 = 1; pub const IMAGE_FORMAT_Z_PIXMAP: u8 = 2;
 pub const CW_OVERRIDE_REDIRECT: u32 = 1 << 9; pub const CW_EVENT_MASK: u32 = 1 << 11;
+/// Window drawing already carries the GUI owner's clip, including parent-DC control pixels.
+pub const GC_SUBWINDOW_MODE: u32 = 1 << 15; pub const INCLUDE_INFERIORS: u32 = 1; pub const CLIP_BY_CHILDREN:u32=0;
 pub const EVENT_KEY_PRESS: u32 = 1; pub const EVENT_KEY_RELEASE: u32 = 1 << 1; pub const EVENT_BUTTON_PRESS: u32 = 1 << 2; pub const EVENT_BUTTON_RELEASE: u32 = 1 << 3; pub const EVENT_POINTER_MOTION: u32 = 1 << 6; pub const EVENT_EXPOSURE: u32 = 1 << 15; pub const EVENT_STRUCTURE_NOTIFY: u32 = 1 << 17; pub const EVENT_FOCUS_CHANGE: u32 = 1 << 21; pub const EVENT_PROPERTY_CHANGE: u32 = 1 << 22;
 /// Focus-change `detail` and `mode` values. A pointer-boundary focus event is
 /// not a focus change, and a grab's focus event describes the grab, not the
 /// window that owns the keyboard afterwards.
 pub const NOTIFY_POINTER: u8 = 5; pub const NOTIFY_GRAB: u8 = 1; pub const NOTIFY_UNGRAB: u8 = 2;
+pub const BAD_MATCH: u8 = 8; pub const CONFIGURE_REQUEST: u8 = 23;
 pub const CONFIGURE_X: u16 = 1; pub const CONFIGURE_Y: u16 = 2; pub const CONFIGURE_WIDTH: u16 = 4; pub const CONFIGURE_HEIGHT: u16 = 8; pub const CONFIGURE_SIBLING: u16 = 32; pub const CONFIGURE_STACK_MODE: u16 = 64; pub const STACK_ABOVE: u32 = 0; pub const STACK_BELOW: u32 = 1; pub const SUBSTRUCTURE_NOTIFY: u32 = 1 << 19; pub const SUBSTRUCTURE_REDIRECT: u32 = 1 << 20;
 
 #[link(name = ":libxcb.so.1")]
@@ -55,20 +58,22 @@ extern "C" {
     pub fn xcb_setup_roots_iterator(r: *const Setup) -> ScreenIterator;
     pub fn xcb_screen_next(i: *mut ScreenIterator);
     pub fn xcb_generate_id(c: *mut Connection) -> u32;
-    pub fn xcb_create_window(c: *mut Connection, depth: u8, wid: Window, parent: Window, x: i16, y: i16, width: u16, height: u16, border_width: u16, class: u16, visual: Visualid, value_mask: u32, value_list: *const u32) -> u32;
+    pub fn xcb_create_window(c: *mut Connection, depth: u8, wid: Window, parent: Window, x: i16, y: i16, width: u16, height: u16, border_width: u16, class: u16, visual: Visualid, value_mask: u32, value_list: *const u32) -> VoidCookie;
     pub fn xcb_create_gc(c: *mut Connection, cid: Gcontext, drawable: Window, value_mask: u32, value_list: *const u32) -> u32;
+    pub fn xcb_change_gc_checked(c: *mut Connection, gc:Gcontext, value_mask:u32, value_list:*const u32)->VoidCookie;
     pub fn xcb_change_window_attributes(c: *mut Connection, window: Window, value_mask: u32, value_list: *const u32) -> u32;
     pub fn xcb_get_window_attributes(c: *mut Connection, window: Window) -> GetWindowAttributesCookie;
     pub fn xcb_get_window_attributes_reply(c: *mut Connection, cookie: GetWindowAttributesCookie, e: *mut *mut GenericError) -> *mut GetWindowAttributesReply;
     pub fn xcb_change_property(c: *mut Connection, mode: u8, window: Window, property: Atom, type_: Atom, format: u8, data_len: u32, data: *const c_void) -> u32;
     pub fn xcb_map_window(c: *mut Connection, window: Window) -> u32;
+    pub fn xcb_reparent_window_checked(c: *mut Connection, window: Window, parent: Window, x: i16, y: i16) -> VoidCookie;
     pub fn xcb_map_window_checked(c: *mut Connection, window: Window) -> VoidCookie;
     pub fn xcb_unmap_window(c: *mut Connection, window: Window) -> u32;
-    pub fn xcb_configure_window(c: *mut Connection, window: Window, value_mask: u16, value_list: *const u32) -> u32;
+    pub fn xcb_configure_window(c: *mut Connection, window: Window, value_mask: u16, value_list: *const u32) -> VoidCookie;
     pub fn xcb_configure_window_checked(c: *mut Connection, window: Window, value_mask: u16, value_list: *const u32) -> VoidCookie;
     pub fn xcb_send_event(c: *mut Connection, propagate: u8, destination: Window, event_mask: u32, event: *const c_char) -> VoidCookie;
+    pub fn xcb_send_event_checked(c: *mut Connection, propagate: u8, destination: Window, event_mask: u32, event: *const c_char) -> VoidCookie;
     pub fn xcb_destroy_window(c: *mut Connection, window: Window) -> u32;
-    pub fn xcb_put_image(c: *mut Connection, format: u8, drawable: Window, gc: Gcontext, width: u16, height: u16, dst_x: i16, dst_y: i16, left_pad: u8, depth: u8, data_len: u32, data: *const u8) -> u32;
     pub fn xcb_put_image_checked(c: *mut Connection, format: u8, drawable: Window, gc: Gcontext, width: u16, height: u16, dst_x: i16, dst_y: i16, left_pad: u8, depth: u8, data_len: u32, data: *const u8) -> VoidCookie;
     pub fn xcb_request_check(c: *mut Connection, cookie: VoidCookie) -> *mut GenericError;
     pub fn xcb_get_maximum_request_length(c: *mut Connection) -> u32;

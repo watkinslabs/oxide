@@ -41,6 +41,28 @@ def test_clean_log_passes():
     assert "PASS" in audit_mod.render_table(result)
 
 
+def test_scrollbar_failures_preserve_message_and_callback_status():
+    text = ("[12.001] [WINDOWS-SCROLL-PROC-UNHANDLED] hwnd=10001b msg=201\n"
+            "[12.002] [WINDOWS-SCROLL-PAINT-FAIL] hwnd=10001b status=c000000d\n")
+    result = audit_mod.audit(text)
+    assert not result.passed
+    assert [finding.kind for finding in result.findings] == ["scroll-proc-unhandled", "scroll-paint-fail"]
+    assert "msg=201" in result.findings[0].detail
+    assert "status=c000000d" in result.findings[1].detail
+
+
+def test_dialog_creation_and_bridge_refusals_fail_with_original_context():
+    text = ("[116.482] [WINDOWS-WINDOW-CREATE-FAIL] stage=publish hwnd=000000000010001a transport=0000000000000003\n"
+            "[116.488] [WINDOWS-BRIDGE-REFUSED] op=0000000000000002 hwnd=000000000010001a seq=00000000000000aa status=0000000000000001\n")
+    result = audit_mod.audit(text)
+    assert not result.passed
+    assert [finding.kind for finding in result.findings] == ["window-create-fail", "bridge-refused"]
+    assert [finding.first_ts for finding in result.findings] == ["116.482", "116.488"]
+    assert "stage=publish" in result.findings[0].detail
+    assert "transport=0000000000000003" in result.findings[0].detail
+    assert "seq=00000000000000aa status=0000000000000001" in result.findings[1].detail
+
+
 def test_raw_unclaimed_marker_fails_and_decodes_ordinal():
     text = _fixture_text("uart-raw-unclaimed.log")
     result = audit_mod.audit(text, _SYNTHETIC_WIN32U_ORDINALS)
@@ -176,19 +198,59 @@ def test_parse_win32u_exports_rejects_a_non_pe_blob():
     assert audit_mod.parse_win32u_exports(b"not a PE image") == {}
 
 
-def test_load_win32u_ordinals_returns_empty_dict_for_missing_roots():
-    assert audit_mod.load_win32u_ordinals(roots=("/no/such/wine/root",)) == {}
+def test_load_win32u_ordinals_returns_empty_dict_for_missing_image():
+    assert audit_mod.load_win32u_ordinals("/no/such/guest.img") == {}
 
 
-def test_load_win32u_ordinals_decodes_the_installed_wine_dll_if_present():
-    """Real round trip against the shipped win32u.dll the surface gate also
-    reads (crates/kernel/syscalls/tests/windows_call_surface/catalog.rs
-    ROOTS); skipped when Wine is not installed on this host."""
-    decoded = audit_mod.load_win32u_ordinals()
-    if not decoded:
-        import pytest
-        pytest.skip("no win32u.dll installed on this host")
-    # Sample ordinals observed in the fixture logs above decode to the same
-    # NtUser* exports the syscall surface gate admits by name.
-    assert decoded.get(0x14dd) == "NtUserQueryInputContext"
-    assert decoded.get(0x1581) == "NtUserSetScrollInfo"
+def test_load_win32u_ordinals_reads_selected_guest_dll(tmp_path):
+    import subprocess
+    import pytest
+    dll = Path(__file__).resolve().parents[2] / "target/artifacts/wine/x86_64-debug/x86_64-windows/win32u.dll"
+    if not dll.is_file():
+        pytest.skip("build the pinned debug Wine artifact first")
+    image = tmp_path / "guest.img"
+    with image.open("wb") as out:
+        out.truncate(8 * 1024 * 1024)
+    subprocess.run(["mkfs.ext4", "-q", "-F", str(image)], check=True, capture_output=True)
+    commands = [f"mkdir {path}" for path in ("/usr", "/usr/local", "/usr/local/lib", "/usr/local/lib/oxide",
+                "/usr/local/lib/oxide/windows-debug", "/usr/local/lib/oxide/windows-debug/x86_64-windows")]
+    commands += ["symlink /usr/local/lib/oxide/windows windows-debug",
+                 f"write {dll} /usr/local/lib/oxide/windows-debug/x86_64-windows/win32u.dll"]
+    script = tmp_path / "debugfs.commands"
+    script.write_text("\n".join(commands) + "\n")
+    subprocess.run(["debugfs", "-w", "-f", str(script), str(image)], check=True, capture_output=True)
+    expected = audit_mod.parse_win32u_exports(dll.read_bytes())
+    assert "NtUserSetScrollInfo" in expected.values()
+    assert audit_mod.load_win32u_ordinals(image) == expected
+    subprocess.run(["debugfs", "-w", "-R", f"rm {audit_mod.WIN32U_IMAGE_PATH}", str(image)], check=True, capture_output=True)
+    assert audit_mod.load_win32u_ordinals(image) == {}
+
+
+def test_text_measurement_and_output_refusals_cannot_pass_caption_acceptance():
+    text = ("[71.502] [WINDOWS-TEXTMEASURE-DROP] dc=000000000001008c kind=0000000000000001 step=snapshot\n"
+            "[71.562] [WINDOWS-TEXTMEASURE-DROP] dc=0000000000010090 kind=0000000000000001 step=snapshot\n"
+            "[72.000] [WINDOWS-TEXTOUT-DROP] dc=0000000000010090 step=coordinates\n"
+            "[72.100] [WINDOWS-TEXTOUT-DROP] dc=0000000000010090 step=coordinates\n")
+    result = audit_mod.audit(text)
+    assert not result.passed
+    assert [f.kind for f in result.findings] == ["text-measure-refused", "text-measure-refused", "text-output-refused"]
+    assert [f.count for f in result.findings] == [1, 1, 2]
+    assert result.findings[0].first_ts == "71.502"
+    assert "dc=000000000001008c" in result.findings[0].detail
+    assert "step=coordinates" in result.findings[2].detail
+    assert audit_mod.audit("[71.502] [WINDOWS-TEXTOUT] dc=1008c count=2\n").passed
+    null_dc = audit_mod.audit("[50.841] [WINDOWS-TEXTMEASURE-DROP] dc=0000000000000000 kind=1 step=snapshot\n")
+    assert not null_dc.passed
+    assert "dc=0000000000000000" in null_dc.findings[0].detail
+
+
+def test_frame_readback_mismatch_is_distinct_from_match_and_unavailable():
+    match = '[1.0] [WINDOWS-FRAME-READBACK] hwnd=0xb1 pixels=20 matched=1\n'
+    unavailable = '[1.1] [WINDOWS-FRAME-READBACK-UNAVAILABLE] hwnd=0xb1 error=X11(8)\n'
+    mismatch = '[1.2] [WINDOWS-FRAME-READBACK-MISMATCH] hwnd=0xb1 mismatches=1 first=Some((7, 9, 1, 2))\n'
+    assert audit_mod.audit(match + unavailable).passed
+    result = audit_mod.audit(match + unavailable + mismatch)
+    assert not result.passed
+    assert len(result.findings) == 1
+    assert result.findings[0].kind == 'frame-readback-mismatch'
+    assert 'first=Some((7, 9, 1, 2))' in result.findings[0].detail

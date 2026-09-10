@@ -160,11 +160,13 @@ impl WindowManager {
     }
     pub(super) fn remove_window(&mut self, id: WindowId) -> Result<WindowRecord, WindowError> {
         let index = self.windows.iter().position(|(window, _)| *window == id).ok_or(WindowError::NoSuchWindow)?;
+        let before = self.paint_obligations(id);
         for (_, queue) in &mut self.queues { queue.cleanup_window(id); }
         self.timers.retain(|timer| timer.hwnd != Some(id));
         self.rects.retain(|(window, _)| *window != id);
         self.texts.retain(|(window, _)| *window != id);
         self.dirty.retain(|(window, _)| *window != id);
+        self.note_paint_change(id, before);
         self.icons.remove(id);
         self.painting.retain(|(window, _)| *window != id);
         self.destroying.retain(|window| *window != id);
@@ -292,33 +294,40 @@ impl WindowManager {
         // retrieval, and it is what translates the ones that are.
         self.post_input_to_window(window, WinMessage { hwnd: Some(window), message, wparam: wparam as u64, lparam: mouse_lparam(self.cursor.0, self.cursor.1) })
     }
+    /// # C: O(N_queued * N_windows² + N_windows³)
     pub fn peek_for_thread(&mut self, tid: u64, filter: MessageFilter, remove: bool) -> Option<WinMessage> {
+        self.peek_for_thread_kind(tid, filter, remove, true, queue_status::QS_ALLINPUT)
+    }
+    /// Posted/quit/paint fallback after hardware processing. # C: O(N_queued * N_windows² + N_windows³)
+    pub fn peek_posted_for_thread(&mut self, tid: u64, filter: MessageFilter, remove: bool) -> Option<WinMessage> {
+        self.peek_for_thread_kind(tid, filter, remove, false, queue_status::QS_ALLINPUT)
+    }
+    /// Class-filtered posted/quit/paint/timer retrieval after hardware processing. # C: O(N_queued * N_windows² + N_windows³)
+    pub fn peek_posted_with_flags(&mut self,tid:u64,filter:MessageFilter,flags:u32)->Option<WinMessage>{
+        self.peek_for_thread_kind(tid,filter,flags&queue_status::PM_REMOVE!=0,false,queue_status::retrieval_classes(flags))
+    }
+    fn peek_for_thread_kind(&mut self, tid: u64, filter: MessageFilter, remove: bool, hardware: bool, classes:u32) -> Option<WinMessage> {
         let now = self.queue_pos_default();
         let queue_index = self.queues.iter().position(|(owner, _)| *owner == tid)?;
         let windows = &self.windows;
         let matches = |message| message_matches_in_windows(windows, filter, message);
         let queue = &mut self.queues[queue_index].1;
-        if let Some(message) = queue.peek_matching(matches, remove).or_else(|| queue.quit_message(filter, remove, now)) {
+        if let Some(message) = queue.peek_matching(matches, remove, hardware, classes&!queue_status::QS_TIMER).or_else(|| if classes&queue_status::QS_POSTMESSAGE!=0{queue.quit_message(filter, remove, now)}else{None}) {
             self.note_retrieved_message(tid, message, timekeeper::monotonic_ns());
             return Some(message);
         }
         // A deferred paint is synthesised by the retrieval, so it carries the
         // tick count of the retrieval rather than a queued stamp.
         let pos = self.queue_pos_default();
-        let message = self.take_pending_paint(tid, filter, remove)?;
+        let message=if classes&queue_status::QS_PAINT!=0{self.take_pending_paint(tid,filter,remove)}else{None};
+        let Some(message)=message else{
+            let windows=&self.windows;
+            let message=self.queues[queue_index].1.peek_matching(|message|message_matches_in_windows(windows,filter,message),remove,hardware,classes&queue_status::QS_TIMER)?;
+            self.note_retrieved_message(tid,message,timekeeper::monotonic_ns());return Some(message);
+        };
         self.note_thread_message_time(tid, msg_time::tick_ms());
         self.note_thread_message_pos(tid, pos);
         Some(message)
-    }
-    /// Replace one queued message with the form a retrieval prepared: the
-    /// nonclient renumbering and the double-click promotion belong to the
-    /// message the application receives, not to a second copy of the queue.
-    /// # C: O(N_queued + N_windows)
-    pub fn replace_for_thread(&mut self, tid: u64, filter: MessageFilter, message: WinMessage) -> bool {
-        let Some(queue_index) = self.queues.iter().position(|(owner, _)| *owner == tid) else { return false; };
-        let windows = &self.windows;
-        let matches = |candidate| message_matches_in_windows(windows, filter, candidate);
-        self.queues[queue_index].1.replace_matching(matches, message)
     }
     /// # C: O(1)
     pub fn window_count(&self) -> usize { self.windows.len() }
@@ -350,25 +359,21 @@ impl WindowManager {
         if let Some((_, queue)) = self.queues.iter_mut().find(|(owner, _)| *owner == tid) { queue.post_quit(code); }
         else { let mut queue = MessageQueue::default(); queue.post_quit(code); self.queues.push((tid, queue)); }
     }
+    /// # C: O(N_queued * N_windows² + N_windows³)
     pub fn take_for_thread(&mut self, tid: u64, filter: MessageFilter) -> QueueResult {
-        let now = self.queue_pos_default();
-        let Some(queue_index) = self.queues.iter().position(|(owner, _)| *owner == tid) else { return QueueResult::Empty; };
-        let windows = &self.windows;
-        let matches = |message| message_matches_in_windows(windows, filter, message);
-        let queue = &mut self.queues[queue_index].1;
-        if let Some(message) = queue.peek_matching(matches, true) {
-            self.note_retrieved_message(tid, message, timekeeper::monotonic_ns());
-            QueueResult::Message(message)
-        }
-        else if let Some(code) = queue.take_quit_matching(matches, now) { QueueResult::Quit(code) }
-        else if let Some(message) = self.take_pending_paint(tid, filter, true) {
-            let pos = self.queue_pos_default();
-            self.note_thread_message_time(tid, msg_time::tick_ms());
-            self.note_thread_message_pos(tid, pos);
-            QueueResult::Message(message)
-        }
-        else { QueueResult::Empty }
+        self.take_for_thread_kind(tid, filter, true)
     }
+    /// Posted/quit/paint fallback after hardware processing. # C: O(N_queued * N_windows² + N_windows³)
+    pub fn take_posted_for_thread(&mut self, tid: u64, filter: MessageFilter) -> QueueResult {
+        self.take_for_thread_kind(tid, filter, false)
+    }
+    fn take_for_thread_kind(&mut self, tid: u64, filter: MessageFilter, hardware: bool) -> QueueResult {
+        match self.peek_for_thread_kind(tid,filter,true,hardware,queue_status::QS_ALLINPUT){
+            Some(message) if message.message==WM_QUIT=>QueueResult::Quit(message.wparam as i32),
+            Some(message)=>QueueResult::Message(message),None=>QueueResult::Empty,
+        }
+    }
+
     pub fn quit_pending(&self, tid: u64) -> bool { self.queues.iter().find(|(owner, _)| *owner == tid).is_some_and(|(_, queue)| queue.quit_pending()) }
     pub fn len(&self) -> usize { self.windows.len() }
 

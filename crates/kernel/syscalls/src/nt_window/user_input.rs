@@ -3,10 +3,11 @@
 //! - `cursor`: cursor position, clip, show-count and the cursor/icon objects.
 //! - `capture`: capture, hot keys and thread input attachment.
 //! - `keyboard`: the active layout of one thread.
-//! - `queue`: queue wake bits, thread-state classes and mouse tracking.
+//! - `queue`: thread-state classes and mouse tracking.
+//! - `queue_status`: merged posted and sent queue status.
 //! - `raw`: raw-input device registration.
 //!
-//! Every decision lives in the window manager; these modules only resolve the
+//! Queue/window owners hold state; these modules only resolve the
 //! calling process and thread.
 
 #[path = "user_input/cursor.rs"]
@@ -21,6 +22,9 @@ pub(crate) use keyboard::*;
 #[path = "user_input/queue.rs"]
 mod queue;
 pub(crate) use queue::*;
+#[path = "user_input/queue_status.rs"]
+mod queue_status;
+pub(crate) use queue_status::*;
 #[path = "user_input/raw.rs"]
 mod raw;
 pub(crate) use raw::*;

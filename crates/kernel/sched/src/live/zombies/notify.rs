@@ -9,8 +9,8 @@ use crate::Task;
 
 /// Build the child-exit `SigInfo` for SIGCHLD or a real-time clone exit
 /// signal. `si_pid`
-/// is the child's VPID (vtgid — the value waitpid/fork return, NOT
-/// the opaque internal tid); `si_uid` is the child's real uid;
+/// is the selected task's TID in the receiver's PID namespace;
+/// `si_uid` is the child's real uid;
 /// `si_status` + `si_code` are decoded from the child's wait4-encoded
 /// `exit_status` per siginfo(7): bit 8 (0x100) set ⇒ killed by signal
 /// (CLD_KILLED / CLD_DUMPED if the core bit 0x80 is set on the signo),
@@ -34,7 +34,7 @@ pub(super) fn child_exit_info(child: &Task, signo: u32, receiver: &Task)
         signo,
         code,
         // Read by the RECEIVER, so numbered in the receiver's namespace.
-        pid:   crate::registry::tgid_nr_seen_by(child, receiver),
+        pid:   crate::registry::tid_nr_seen_by(child, receiver),
         uid:   child.security.creds.ruid.load(Ordering::Acquire),
         value: status as u64,
         sys:   None, fault: None, poll: None
@@ -86,6 +86,17 @@ pub(super) fn accrue_child_rusage(reaper: &Task, r: syscall::rusage::Rusage) {
 /// # C: O(1)
 pub(super) fn exit_notify_decision(task: &Task, parent: Option<&Task>) -> crate::exit::notify::ExitNotify {
     use crate::exit::notify::{exit_notify, ParentSigchld};
+    if task.traced_by.load(Ordering::Acquire) != 0 {
+        let reparented = match (task.parent(), parent) {
+            (Some(real), Some(tracer)) => real.tgid.load(Ordering::Acquire) != tracer.tgid.load(Ordering::Acquire),
+            _ => true,
+        };
+        // A non-leader still shares its group with the retained leader even
+        // when it retired the final live member.
+        let empty = task.pid.is_group_leader() && task.thread_group.live_count() == 0;
+        return crate::exit::notify::traced_exit_notify(empty,
+            crate::clone_exit_signal(task.exit_signal.load(Ordering::Acquire)), reparented);
+    }
     let disposition = match parent {
         Some(p) => {
             let act = p.sigactions_ref().get(crate::live::sigpend::Signum::Sigchld.as_u8() as u32);

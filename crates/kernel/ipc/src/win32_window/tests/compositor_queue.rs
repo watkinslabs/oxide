@@ -37,6 +37,18 @@ fn banded_frame()->(WindowManager,WindowId,WindowId){
     (state,frame,child)
 }
 
+#[test]
+fn refused_resize_preserves_outer_and_client_geometry(){
+    let (mut state,frame,child)=banded_frame();
+    let old=state.rect(frame);let client=state.client_rect_raw(frame);let placement=presented(&state,frame,child);
+    assert_eq!(state.configure_compositor_window(frame,rect(100,200,829,201)),Err(WindowError::InvalidParent));
+    assert_eq!(state.rect(frame),old,"a rejected resize must not commit its outer rectangle");
+    assert_eq!(state.client_rect_raw(frame),client);
+    assert_eq!(presented(&state,frame,child),placement);
+    let any=MessageFilter{hwnd:Some(frame),first:0,last:0};
+    assert!(state.peek_for_thread(7,any,true).is_none());
+}
+
 fn presented(state:&WindowManager,frame:WindowId,child:WindowId)->(i32,i32){
     let origin=nonclient_create::client_origin(state.rect(frame).unwrap(),state.client_rect_raw(frame).unwrap());
     let placed=state.rect(child).unwrap();

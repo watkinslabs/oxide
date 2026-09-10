@@ -8,4 +8,17 @@ mod context;
 #[path = "hardware/live.rs"]
 mod live;
 #[cfg(target_os = "oxide-kernel")]
-pub(crate) use live::{cancel_thread, process_for_current, PendingHardware, Stage};
+pub(crate) use live::{cancel_thread, process_for_current, PendingHardware, Selected, Stage};
+
+#[cfg(all(target_os = "oxide-kernel", feature = "debug-winpump"))]
+#[path = "hardware/trace_on.rs"]
+mod trace;
+#[cfg(all(target_os = "oxide-kernel", not(feature = "debug-winpump")))]
+#[path = "hardware/trace_off.rs"]
+mod trace;
+
+#[cfg(target_os = "oxide-kernel")]
+#[path = "hardware/delivery.rs"]
+mod delivery;
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) use delivery::{deliver_for_current, note_get};

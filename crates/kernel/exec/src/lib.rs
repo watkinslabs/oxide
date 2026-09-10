@@ -7,6 +7,7 @@
 // the entry-point VA the caller drops to user mode at.
 //
 // Module manifest:
+//   `vdso` — complete auxiliary image publication into an address space.
 //   `load`  — PT_LOAD placement and file-backed mapping.
 //   `layout` — how a segment divides between its file and kernel-owned bytes.
 //   `place` — the two Linux placement strategies and the phdr scans they need.
@@ -43,6 +44,7 @@ mod brk;
 pub mod format;
 mod layout;
 mod load;
+pub mod vdso;
 pub mod unixlib;
 pub mod persona;
 pub mod shebang;

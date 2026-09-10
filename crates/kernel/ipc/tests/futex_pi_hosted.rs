@@ -17,6 +17,7 @@ extern crate alloc;
 extern crate self as hal;
 extern crate self as hal_x86_64;
 extern crate self as sched;
+#[path = "futex/park_site.rs"] pub mod park_site;
 
 #[path = "futex_pi/irq_probe.rs"] mod irq_probe;
 pub use irq_probe::TestIrq as X86IrqGate;

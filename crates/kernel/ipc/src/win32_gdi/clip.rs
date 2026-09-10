@@ -38,6 +38,12 @@ impl GdiManager {
         state.paint_clip = Some(region); Ok(())
     }
 
+    /// End a paint restriction without resetting application clipping or owned DC attributes. # C: O(DCs)
+    pub fn clear_paint_clip(&mut self,dc:u32)->Result<(),GdiError>{
+        let state=&mut self.dcs.iter_mut().find(|(id,_)|*id==dc).ok_or(GdiError::NoSuchObject)?.1;
+        state.ensure_active()?;state.paint_clip=None;Ok(())
+    }
+
     /// Retain application geometry independently of current surface bounds. # C: O(DCs + region operations)
     pub fn intersect_clip_rect(&mut self, dc: u32, rect: Rect) -> Result<u32, GdiError> {
         self.combine_app_clip(dc, ordered(rect), RGN_AND)

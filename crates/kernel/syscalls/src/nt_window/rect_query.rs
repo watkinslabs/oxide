@@ -3,7 +3,7 @@
 use super::*;
 #[path = "rect_query/policy.rs"]
 mod policy;
-pub(crate) use policy::{map_rect, query_state, RectKind};
+pub(crate) use policy::{default_proc_state, map_rect, query_state, RectKind};
 
 pub(crate) fn query_current(hwnd: u32, kind: RectKind, requested_dpi: u32)
     -> Option<ipc::win32_window::WindowRect>

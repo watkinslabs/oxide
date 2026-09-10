@@ -9,6 +9,8 @@ mod stream;
 mod transport;
 #[path="../../src/nt_window/geom_trace.rs"]
 mod geom_trace;
+#[path="../../src/nt_window/key_message.rs"]
+mod key_message;
 #[path="../../src/nt_window/bridge.rs"]
 mod bridge;
 pub use queue::{Completion,TransportError};
@@ -28,7 +30,8 @@ fn reset(scenario:Scenario){
 pub(super) fn deliver_gui_event(state:&mut ipc::win32_window::WindowManager,hwnd:u32){
     let rect=syscall::nt_compositor::Rect{x:0,y:0,width:4,height:4};
     let event=Record::new(Opcode::Configure,1,hwnd as u64,rect.encode_window().unwrap().to_vec()).unwrap();
-    assert!(bridge::apply_event(state,&event,|state,id,x,y,buttons,wheel,hwheel|state.post_compositor_pointer(id,x,y,buttons,wheel,hwheel).is_ok()));
+    assert!(bridge::apply_event(state,&mut key_message::SysKeyLatch::default(),&mut Vec::new(),&event,
+        |state,id,x,y,buttons,wheel,hwheel|state.post_compositor_pointer(id,x,y,buttons,wheel,hwheel).is_ok()));
     let filter=MessageFilter{hwnd:WindowId::from_raw(hwnd),first:ipc::win32_window::WM_SIZE,last:ipc::win32_window::WM_SIZE};
     assert!(state.peek_for_thread(41,filter,false).is_some(),"Configure must queue GUI work without dispatching application paint");
 }

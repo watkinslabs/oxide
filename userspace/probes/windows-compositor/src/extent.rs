@@ -11,6 +11,27 @@
 
 use syscall::nt_compositor::MAX_DIMENSION;
 
+/// Smallest drawable dimension accepted by the display protocol.
+const MIN_DRAWABLE: u32 = 1;
+
+/// An empty logical rectangle has one minimal backing drawable; neither
+/// padded axis becomes application geometry. # C: O(1)
+pub(crate) fn backing(logical: (u32, u32)) -> (u32, u32) {
+    if logical.0 == 0 || logical.1 == 0 { (MIN_DRAWABLE, MIN_DRAWABLE) } else { logical }
+}
+
+/// Backing notifications remain synthetic geometry for as long as the
+/// canonical requested rectangle is empty, including repeated moves. # C: O(1)
+pub(crate) fn is_empty_backing(logical: (u32, u32), reported: (i32, i32)) -> bool {
+    (logical.0 == 0 || logical.1 == 0) && reported == (MIN_DRAWABLE as i32, MIN_DRAWABLE as i32)
+}
+
+/// Compare expanded request serials across wrap while a configure is pending.
+/// Events preceding that request cannot overwrite its logical geometry. # C: O(1)
+pub(crate) fn obsolete_configure(received: u32, expected: u32) -> bool {
+    (received.wrapping_sub(expected) as i32) < 0
+}
+
 /// The extent to retain after a configure notification, or `None` when there
 /// is nothing to adopt: an unusable size names no window, and a size already
 /// held is not a change.

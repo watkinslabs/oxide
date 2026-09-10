@@ -56,6 +56,8 @@ pub mod wait_list;
 pub mod rcu_wait;
 pub mod zombies;
 pub mod send;
+// Trace relationship publication and initial attach signal.
+pub mod ptrace_attach;
 pub mod sigpend;
 pub mod freezer;
 pub mod nt_suspend;

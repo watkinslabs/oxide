@@ -22,9 +22,9 @@ impl WindowManager {
         let repaint = resized && width != 0 && height != 0;
         self.check_message_capacity(id, usize::from(moved) + usize::from(resized))?;
         let insets = self.get(id).ok_or(WindowError::NoSuchWindow)?.client_rect.map(|client| nonclient_create::insets(old, client));
+        let client = insets.map(|insets| nonclient_create::inset_client(next, insets).ok_or(WindowError::InvalidParent)).transpose()?;
         self.set_rect(id, next)?;
-        if let Some(insets) = insets {
-            let client = nonclient_create::inset_client(next, insets).ok_or(WindowError::InvalidParent)?;
+        if let Some(client) = client {
             let record = self.windows.iter_mut().find(|(window, _)| *window == id).ok_or(WindowError::NoSuchWindow)?;
             record.1.client_rect = Some(client);
         }
@@ -68,7 +68,7 @@ impl WindowManager {
     /// coordinates; the compositor reports one in the parent's window
     /// coordinates, which is what an X child's position is relative to.
     /// # C: O(N_windows)
-    fn compositor_parent_space(&self, id: WindowId, next: WindowRect) -> Result<WindowRect, WindowError> {
+    pub fn compositor_parent_space(&self, id: WindowId, next: WindowRect) -> Result<WindowRect, WindowError> {
         let Some(parent) = self.get(id).ok_or(WindowError::NoSuchWindow)?.parent else { return Ok(next); };
         let (Some(window), Some(client)) = (self.rect(parent), self.client_rect_raw(parent)) else { return Ok(next); };
         let (dx, dy) = nonclient_create::client_origin(window, client);

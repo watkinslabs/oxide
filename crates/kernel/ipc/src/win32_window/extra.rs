@@ -61,11 +61,11 @@ impl WindowExtra {
 
 /// Metadata and extra storage share the canonical window vector's lifetime.
 #[derive(Debug)]
-pub struct OwnedWindow { pub record: WindowRecord, pub extra: WindowExtra, pub(super) properties: super::WindowProperties, pub(super) scroll: [super::ScrollState; 2] }
+pub struct OwnedWindow { pub record: WindowRecord, pub extra: WindowExtra, pub(super) properties: super::WindowProperties, pub(super) scroll: [super::ScrollState; 2], pub(super) scroll_control: Option<super::ScrollState> }
 impl OwnedWindow {
     /// Prepare the entire entry before the canonical vector publishes it. # C: O(extra_size)
     pub fn new(record: WindowRecord, extra_size: i32, instance: u64) -> Result<Self, LongPtrError> {
-        Ok(Self { record, extra: WindowExtra::new(extra_size, instance)?, properties: super::WindowProperties::new(), scroll: [super::ScrollState::new(); 2] })
+        Ok(Self { record, extra: WindowExtra::new(extra_size, instance)?, properties: super::WindowProperties::new(), scroll: [super::ScrollState::new(); 2], scroll_control: None })
     }
 }
 impl core::ops::Deref for OwnedWindow {

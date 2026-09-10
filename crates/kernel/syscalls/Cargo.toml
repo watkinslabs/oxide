@@ -197,6 +197,10 @@ name = "nt-window-scroll-boundary"
 path = "src/nt_window/scroll/joined_hosted.rs"
 
 [[test]]
+name = "nt-window-caret-publisher"
+path = "tests/nt_window_caret_publisher.rs"
+
+[[test]]
 name = "nt-window-redraw-live"
 path = "src/nt_window/redraw/hosted.rs"
 

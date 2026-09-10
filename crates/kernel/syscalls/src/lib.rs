@@ -200,6 +200,8 @@ mod siocgif_hosted;
 // kernel-only AND its one case carried an aarch64 arch gate on top, so it
 // could never have compiled in any build that runs tests.
 pub(crate) mod vdso_elf;
+#[cfg(test)]
+#[path = "vdso/tests.rs"] mod vdso_mapping_tests;
 mod sigaltstack_abi;
 // User-buffer range coverage, the decision half of `userbuf`'s access checks.
 // Ungated because `userbuf.rs` is kernel-only: the walk that replaced a

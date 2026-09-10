@@ -35,7 +35,7 @@ unsafe extern "C" fn _start_rust() -> ! {
 #[cfg(target_os = "oxide-kernel")]
 #[inline(never)]
 unsafe fn prepare_boot_info() -> &'static boot_info::BootInfo {
-    // SAFETY: single-CPU boot, IRQs masked; install_kernel_gdt populates a kernel-owned GDT (KERNEL_CS=0x28 / KERNEL_DS=0x30) and reloads CS via far return + DS/ES/SS/FS/GS via mov. Replaces the bootloader's GDT before any IDT entry could fire.
+    // SAFETY: single-CPU boot, IRQs masked; install_kernel_gdt populates a kernel-owned GDT (KERNEL_CS=0x10 / KERNEL_DS=0x18) and reloads CS via far return + DS/ES/SS/FS/GS via mov. Replaces the bootloader's GDT before any IDT entry could fire.
     unsafe { hal_x86_64::install_kernel_gdt(); }
     // SAFETY: single-CPU boot, IRQs masked; GDT just installed with TSS descriptor populated at TSS_SEL=0x48 (avail 64-bit TSS, type=9). install_tss issues `ltr 0x48` which marks the descriptor busy and binds CR0.TR to the kernel-wide TSS. RSP0 stays zero until first userspace task; pre-userspace IRQs (Phase 1 path) ignore RSP0 since they take from CPL=0.
     unsafe { hal_x86_64::install_tss(); }
@@ -70,7 +70,7 @@ unsafe fn prepare_boot_info() -> &'static boot_info::BootInfo {
     // APIC, so all legacy IRQs stay masked.
     // SAFETY: boot-only, single-CPU, IRQs masked; writes only the always-present legacy 8259 PIC ports (0x20/0x21/0xA0/0xA1) on the q35 target.
     unsafe { boot_debug::remap_and_mask_pic(); }
-    // SAFETY: single-CPU boot, IRQs masked; GDT in place so STAR's kernel CS=0x28 / SS=0x30 selectors are valid; sets IA32_LSTAR to oxide_syscall_entry, EFER.SCE=1, FMASK clears IF/DF/AC on entry. User-side `syscall` becomes legal but no user task exists pre-userspace_smoke.
+    // SAFETY: single-CPU boot, IRQs masked; GDT in place so STAR's kernel CS=0x10 / SS=0x18 selectors are valid; sets IA32_LSTAR to oxide_syscall_entry, EFER.SCE=1, FMASK clears IF/DF/AC on entry. User-side `syscall` becomes legal but no user task exists pre-userspace_smoke.
     unsafe { hal_x86_64::install_syscall_msrs(); }
     // SAFETY: single-CPU boot; CR0/CR4 writes legal at CPL=0; enables CR0.MP + clears CR0.EM + sets CR4.OSFXSR/OSXMMEXCPT so user-mode SSE/SSE2 instructions execute (musl libc startup uses SSE2 movq/punpcklqdq).
     unsafe { hal_x86_64::enable_cpu_features(true); }

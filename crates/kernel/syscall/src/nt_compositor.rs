@@ -37,6 +37,8 @@ pub enum Opcode {
     Position = 7,
     /// Generation-stamped RGB-XOR caret snapshot.
     Caret = 8,
+    /// u64 native parent (zero desktop); Rect window in new parent coordinates.
+    Reparent = 9,
     /// u32 count; count records of Rect monitor, Rect workarea (each i32 x,y; u32 width,height).
     Monitors = 0x101,
     /// i32 x,y; u32 width,height.
@@ -91,7 +93,7 @@ impl Opcode {
     /// # C: O(1)
     pub fn decode(value: u16) -> Result<Self, Error> {
         Ok(match value { 1 => Self::Create, 2 => Self::Destroy, 3 => Self::Visibility,
-            4 => Self::Title, 5 => Self::Geometry, 6 => Self::Frame, 7 => Self::Position, 8 => Self::Caret, 0x101 => Self::Monitors,
+            4 => Self::Title, 5 => Self::Geometry, 6 => Self::Frame, 7 => Self::Position, 8 => Self::Caret, 9 => Self::Reparent, 0x101 => Self::Monitors,
             0x102 => Self::Configure, 0x103 => Self::Key, 0x104 => Self::Text,
             0x105 => Self::Pointer, 0x106 => Self::Close, 0x107 => Self::Ack, 0x108 => Self::Focus, 0x109 => Self::Damage, _ => return Err(Error::Opcode) })
     }
@@ -117,6 +119,7 @@ impl Header {
         if (self.opcode == Opcode::Monitors) != (self.hwnd == 0) { return Err(Error::Payload); }
         let valid = match self.opcode {
             Opcode::Create => n == 32,
+            Opcode::Reparent => n == 24,
             Opcode::Destroy | Opcode::Close => n == 0,
             Opcode::Visibility | Opcode::Ack | Opcode::Focus => n == 4,
             Opcode::Geometry | Opcode::Configure | Opcode::Key | Opcode::Position | Opcode::Damage => n == 16,
@@ -239,6 +242,7 @@ impl Record {
             // A lost rectangle with no area names no pixels; a window whose
             // own extent may still be zero is a different statement.
             Opcode::Damage => { Rect::decode(&p[..16])?; }
+            Opcode::Reparent => { Rect::decode_window(&p[8..])?; if u64_at(p,0)? > u32::MAX as u64 || u64_at(p,0)? == self.header.hwnd { return Err(Error::Payload); } }
             Opcode::Visibility | Opcode::Focus => { if u32_at(p, 0)? > 1 { return Err(Error::Payload); } }
             Opcode::Position => {
                 let flags = u32_at(p, 8)?;
@@ -291,3 +295,7 @@ mod position_tests;
 #[cfg(test)]
 #[path = "nt_compositor/tests/damage.rs"]
 mod damage_tests;
+
+#[cfg(test)]
+#[path="nt_compositor/tests/reparent.rs"]
+mod reparent_tests;

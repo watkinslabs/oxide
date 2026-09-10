@@ -56,7 +56,7 @@ fn the_topmost_child_covering_the_point_wins_and_the_filters_skip_the_rest() {
 fn a_child_rectangle_is_read_in_its_parents_coordinates() {
     let mut scene = Scene::new();
     let parent = scene.add(None, 0, (100, 100, 300, 300));
-    let child = scene.add(Some(parent), WS_CHILD, (150, 150, 200, 200));
+    let child = scene.add(Some(parent), WS_CHILD, (50, 50, 100, 100));
     assert_eq!(scene.windows.rect_in_parent(child), Some(WindowRect { left: 50, top: 50, right: 100, bottom: 100 }));
     assert_eq!(scene.windows.child_from_point(parent, 60, 60, CWP_ALL), Some(child));
     assert_eq!(scene.windows.child_from_point(parent, 10, 10, CWP_ALL), Some(parent));
@@ -107,4 +107,45 @@ fn a_minimized_window_hides_its_children_from_the_search() {
     assert_eq!(scene.windows.window_from_point(None, 10, 10).0, Some(child));
     scene.windows.set_style_bits(top, WS_MINIMIZE, 0).unwrap();
     assert_eq!(scene.windows.window_from_point(None, 10, 10).0, Some(top));
+}
+
+#[test]
+fn displaced_dialog_candidates_use_each_ancestors_client_origin() {
+    let mut scene = Scene::new();
+    let dialog = scene.add(None, 0, (280, 200, 740, 540));
+    scene.windows.set_client_rect(dialog, WindowRect { left: 284, top: 224, right: 736, bottom: 536 }).unwrap();
+    let panel = scene.add(Some(dialog), WS_CHILD, (20, 30, 300, 230));
+    scene.windows.set_client_rect(panel, WindowRect { left: 23, top: 40, right: 297, bottom: 227 }).unwrap();
+    let button = scene.add(Some(panel), WS_CHILD, (30, 40, 130, 68));
+    assert_eq!(scene.windows.windows_from_point(None, 350, 315), [button, panel, dialog]);
+    assert_eq!(scene.windows.windows_from_point(Some(dialog), 350, 315), [button, panel]);
+    assert_eq!(scene.windows.windows_from_point(None, 437, 315), [panel, dialog]);
+    assert_eq!(scene.windows.windows_from_point(None, 350, 332), [panel, dialog]);
+    assert_eq!(scene.windows.child_from_point(panel, 40, 50, CWP_ALL), Some(button));
+}
+
+#[test]
+fn children_cannot_receive_points_in_the_parents_nonclient_band() {
+    let mut scene = Scene::new();
+    let dialog = scene.add(None, 0, (200, 100, 500, 400));
+    scene.windows.set_client_rect(dialog, WindowRect { left: 204, top: 128, right: 496, bottom: 396 }).unwrap();
+    scene.add(Some(dialog), WS_CHILD, (-20, -40, 100, 100));
+    assert_eq!(scene.windows.windows_from_point(None, 220, 110), [dialog]);
+}
+
+#[test]
+fn window_region_holes_exclude_the_window_and_its_descendants() {
+    let mut scene = Scene::new();
+    let lower = scene.add(None, 0, (200, 100, 400, 300));
+    let upper = scene.add(None, 0, (200, 100, 400, 300));
+    let child = scene.add(Some(upper), WS_CHILD, (0, 0, 200, 200));
+    let region = [WindowRect { left: 0, top: 0, right: 20, bottom: 200 },
+        WindowRect { left: 180, top: 0, right: 200, bottom: 200 }];
+    scene.windows.set_window_region(upper, Some(&region)).unwrap();
+    assert_eq!(scene.windows.windows_from_point(None, 210, 150), [child, upper, lower]);
+    assert_eq!(scene.windows.windows_from_point(None, 300, 150), [lower]);
+    scene.windows.set_window_region(upper, Some(&[])).unwrap();
+    assert_eq!(scene.windows.windows_from_point(None, 210, 150), [lower]);
+    scene.windows.set_window_region(upper, None).unwrap();
+    assert_eq!(scene.windows.windows_from_point(None, 300, 150), [child, upper, lower]);
 }

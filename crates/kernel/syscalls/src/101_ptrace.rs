@@ -145,14 +145,7 @@ fn attach(cur: &sched::Task, target: &Arc<sched::Task>, request: u64, addr: u64,
     let is_kthread = target.clone_mm().is_none();
     let exiting = target.state() == sched::TaskState::Zombie;
     perm::may_attach(cur, target, is_kthread, exiting)?;
-    target.traced_by.store(cur.tid, Ordering::Release);
-    target.security.ptrace_seized.store(seize, Ordering::Release);
-    target.ptrace_options.store(opts, Ordering::Release);
-    if !seize {
-        // ATTACH posts SIGSTOP so the tracee stops at its next signal-delivery
-        // point; SEIZE attaches without any stop (the tracer uses INTERRUPT).
-        sched::live::send_sig_priv_group(target, Signum::Sigstop as u32);
-    }
+    sched::live::ptrace_attach::attach(cur, target, seize, opts);
     Ok(())
 }
 

@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use super::{dbg, dbg_ignore, probe_cargo, probe_cargo_bin};
 mod catalog;
 mod payload;
+pub(crate) use payload::verify_cached_windows;
 
 use catalog::{UNIXLIB_DIR, WINDOWS_DIR};
 
@@ -47,11 +48,12 @@ pub(super) fn inject(root_img: &Path, arch: &str) -> Result<(), u8> {
     let registryd = probe_cargo_bin("x86_64", "windows-registry", "registryd")?;
     verify_elf_dependencies(root_img, &[&launcher, &compositor, &registryd])?;
     let wrapper = write_wrapper()?;
-    let config = write_config()?;
+    let config = write_config(&wine.profile)?;
     let desktop = write_desktop_entry()?;
     let mimeapps = write_mimeapps()?;
     let registry_db = write_registry_seed()?;
-    for dir in ["/usr/share/applications", "/etc/xdg", "/etc/oxide", "/var/lib/oxide", PREFIX_DIR, DOS_ROOT, DOS_DRIVE_C, DOS_C_WINDOWS, "/usr/lib/wine", "/usr/lib64/wine", format!("{IMAGE_ROOT}/dxvk").as_str(), format!("{IMAGE_ROOT}/vkd3d-proton").as_str(), format!("{IMAGE_ROOT}/faudio").as_str()] { mkdir(root_img, dir)?; }
+    let selected_root=format!("{IMAGE_ROOT}-{}",wine.profile);
+    for dir in ["/usr/share/applications", "/etc/xdg", "/etc/oxide", "/var/lib/oxide", PREFIX_DIR, DOS_ROOT, DOS_DRIVE_C, DOS_C_WINDOWS, "/usr/lib/wine", "/usr/lib64/wine", format!("{selected_root}/dxvk").as_str(), format!("{selected_root}/vkd3d-proton").as_str(), format!("{selected_root}/faudio").as_str()] { mkdir(root_img, dir)?; }
     stage_file(root_img, &launcher, "/usr/local/bin/windows-runtime", "launcher", "0100755")?;
     stage_file(root_img, &compositor, "/usr/local/bin/windows-compositor", "GNOME Windows bridge", "0100755")?;
     stage_file(root_img, &registryd, "/usr/local/bin/registryd", "registryd", "0100755")?;
@@ -78,8 +80,8 @@ pub(super) fn inject(root_img: &Path, arch: &str) -> Result<(), u8> {
     // enters the module's own initialisation, which is what loads every other
     // module, so the guest catalog must carry the real image rather than the
     // kernel's export page. `payload::verify` refuses an image without it.
-    payload::verify(root_img, &wine.version)?;
-    eprintln!("xtask rootfs: staged Windows runtime image boundary wine={} PE_DLLS={} UNIXLIBS={} root={}", wine.version, wine.modules, wine.unixlibs, root_img.display());
+    payload::verify(root_img, &wine.version, &wine.profile)?;
+    eprintln!("xtask rootfs: staged Windows runtime image boundary wine={} profile={} build={} PE_DLLS={} UNIXLIBS={} root={}", wine.version, wine.profile, wine.build_id, wine.modules, wine.unixlibs, root_img.display());
     Ok(())
 }
 
@@ -110,13 +112,22 @@ fn verify_elf_dependencies(image: &Path, roots: &[&PathBuf]) -> Result<(), u8> {
 fn write_wrapper() -> Result<PathBuf, u8> { let path = PathBuf::from("target/smoke/windows-notepad-smoke"); fs::create_dir_all(path.parent().unwrap()).map_err(|_| 1u8)?; fs::write(&path, wrapper_script()).map_err(|_| 1u8)?; Ok(path) }
 fn write_desktop_entry() -> Result<PathBuf, u8> { let path = PathBuf::from("target/smoke/oxide-notepad.desktop"); fs::create_dir_all(path.parent().unwrap()).map_err(|_| 1u8)?; fs::write(&path, b"[Desktop Entry]\nType=Application\nName=Oxide Notepad\nComment=Run the staged Windows Notepad through the Oxide NT runtime\nExec=/usr/local/bin/windows-notepad-smoke\nTerminal=false\nCategories=Utility;TextEditor;\nMimeType=application/x-ms-dos-executable;application/x-msdownload;\n").map_err(|_| 1u8)?; Ok(path) }
 fn write_mimeapps() -> Result<PathBuf, u8> { let path = PathBuf::from("target/smoke/mimeapps.list"); fs::create_dir_all(path.parent().unwrap()).map_err(|_| 1u8)?; fs::write(&path, b"[Default Applications]\napplication/x-ms-dos-executable=oxide-notepad.desktop\napplication/x-msdownload=oxide-notepad.desktop\n").map_err(|_| 1u8)?; Ok(path) }
-fn write_config() -> Result<PathBuf, u8> { let path = PathBuf::from("target/smoke/windows-runtime.conf"); fs::create_dir_all(path.parent().unwrap()).map_err(|_| 1u8)?; fs::write(&path, format!("OXIDE_WINDOWS_PREFIX={PREFIX_DIR}\nOXIDE_WINDOWS_RUNTIME={IMAGE_ROOT}\nOXIDE_WINDOWS_DLL_CATALOG={WINDOWS_DIR}\nOXIDE_WINDOWS_UNIXLIB={UNIXLIB_DIR}\nOXIDE_WINDOWS_NLS={NLS_PATH}\nOXIDE_WINDOWS_REGISTRY_SOCKET={REGISTRY_SOCKET}\nOXIDE_WINDOWS_REGISTRY_DATABASE={REGISTRY_DB}\nOXIDE_WINDOWS_DXVK={IMAGE_ROOT}/dxvk\nOXIDE_WINDOWS_VKD3D={IMAGE_ROOT}/vkd3d-proton\nOXIDE_WINDOWS_FAUDIO={IMAGE_ROOT}/faudio\n")).map_err(|_| 1u8)?; Ok(path) }
+fn write_config(profile: &str) -> Result<PathBuf, u8> { let path = PathBuf::from("target/smoke/windows-runtime.conf"); fs::create_dir_all(path.parent().unwrap()).map_err(|_| 1u8)?; fs::write(&path, format!("OXIDE_WINE_PROFILE={profile}\nOXIDE_WINDOWS_PREFIX={PREFIX_DIR}\nOXIDE_WINDOWS_RUNTIME={IMAGE_ROOT}\nOXIDE_WINDOWS_DLL_CATALOG={WINDOWS_DIR}\nOXIDE_WINDOWS_UNIXLIB={UNIXLIB_DIR}\nOXIDE_WINDOWS_NLS={NLS_PATH}\nOXIDE_WINDOWS_REGISTRY_SOCKET={REGISTRY_SOCKET}\nOXIDE_WINDOWS_REGISTRY_DATABASE={REGISTRY_DB}\nOXIDE_WINDOWS_DXVK={IMAGE_ROOT}/dxvk\nOXIDE_WINDOWS_VKD3D={IMAGE_ROOT}/vkd3d-proton\nOXIDE_WINDOWS_FAUDIO={IMAGE_ROOT}/faudio\n")).map_err(|_| 1u8)?; Ok(path) }
 fn write_registry_seed() -> Result<PathBuf, u8> { let path = PathBuf::from("target/smoke/oxide-registry.empty"); fs::create_dir_all(path.parent().unwrap()).map_err(|_| 1u8)?; fs::write(&path, EMPTY_REGISTRY).map_err(|_| 1u8)?; Ok(path) }
 
 fn wrapper_script() -> &'static [u8] {
     br#"#!/bin/sh
 set -eu
 . /etc/oxide/windows-runtime.conf
+case "${OXIDE_WINE_PROFILE:-}" in
+    release|debug) ;;
+    *) printf '[WINDOWS-NOTEPAD] invalid Wine profile\n'; exit 11 ;;
+esac
+if [ "$(cat "$OXIDE_WINDOWS_RUNTIME/wine-profile")" != "$OXIDE_WINE_PROFILE" ]; then
+    printf '[WINDOWS-NOTEPAD] Wine profile mismatch\n'
+    exit 11
+fi
+printf '[WINDOWS-NOTEPAD] wine-profile=%s\n' "$OXIDE_WINE_PROFILE"
 # The configuration supplies image-owned read-only inputs. The per-user prefix,
 # database and socket come from the runtime itself, which owns that policy: a
 # normal user cannot write the root-owned defaults, and duplicating the
@@ -169,8 +180,9 @@ done
 # bridge's own diagnostics -- the whole reason this capture exists -- were
 # absent from every console log. The follower is used rather than a pipeline
 # so the launch's own exit status is preserved.
-oxide_log="$OXIDE_WINDOWS_PREFIX/windows-launch.log"
+oxide_log="$OXIDE_WINDOWS_PREFIX/windows-launch-$OXIDE_WINE_PROFILE-$$.log"
 : > "$oxide_log" 2>/dev/null || oxide_log=/dev/null
+printf '[WINDOWS-NOTEPAD] launcher=%s wine-profile=%s log=%s\n' "$$" "$OXIDE_WINE_PROFILE" "$oxide_log"
 follower=""
 if [ "$oxide_log" != /dev/null ]; then tail -n +1 -f "$oxide_log" >&2 & follower=$!; fi
 status=0
@@ -193,7 +205,7 @@ mod tests {
     use super::*;
     #[test]
     fn configuration_and_wrapper_use_only_image_owned_paths() {
-        let config = String::from_utf8(fs::read(write_config().unwrap()).unwrap()).unwrap(); assert!(config.contains(WINDOWS_DIR)); assert!(!config.contains("/usr/lib64/wine"));
+        let config = String::from_utf8(fs::read(write_config("release").unwrap()).unwrap()).unwrap(); assert!(config.contains(WINDOWS_DIR)); assert!(!config.contains("/usr/lib64/wine"));
         let script = std::str::from_utf8(wrapper_script()).unwrap(); assert!(script.contains(". /etc/oxide/windows-runtime.conf")); assert!(!script.contains("mount -t 9p")); assert!(script.contains("/usr/local/bin/windows-runtime --launch")); assert!(script.contains("[WINDOWS-NOTEPAD] runtime-exit status=")); let _ = fs::remove_file("target/smoke/windows-runtime.conf");
         // A normal user owns none of the root defaults, so the wrapper must
         // take its writable paths from the runtime's own selection.
@@ -213,13 +225,32 @@ mod tests {
         assert!(script.contains("no-session-display"), "a session with no display must say so, not fail obscurely");
         // A desktop launch sends diagnostics to the session where nobody can
         // read them; the failures so far were narrowed only from a console run.
-        assert!(script.contains("windows-launch.log"), "a desktop launch must leave its diagnostics on disk");
+        assert!(script.contains("windows-launch-$OXIDE_WINE_PROFILE-$$.log"), "a desktop launch must leave its diagnostics on disk");
         assert!(!script.contains("mkfifo"), "the fifo capture lost the bridge child's output");
         assert!(!script.contains("eval \"$(/usr/local/bin/windows-runtime"), "path selection status must not be discarded");
         // The application directory the loader searches comes from this image
         // path. Naming the drive root left every runtime module lookup outside
         // the launch-time catalog with nowhere on the image to resolve.
         assert!(script.contains(&format!("'{IMAGE_WINDOWS_PATH}' '{IMAGE_WINDOWS_PATH}'")), "launch must name the system-directory image path");
+    }
+    #[test]
+    fn separate_launchers_preserve_each_others_diagnostic_logs() {
+        let script=std::str::from_utf8(wrapper_script()).unwrap();
+        let start=script.find("oxide_log=").unwrap();
+        let end=start+script[start..].find("follower=\"\"").unwrap();
+        let shell=format!("{}\nprintf '%s' \"$1\" >> \"$oxide_log\"\nprintf '%s\\n' \"$oxide_log\"\n",&script[start..end]);
+        let prefix=std::env::temp_dir().join(format!("oxide-launch-logs-{}",std::process::id()));
+        fs::create_dir_all(&prefix).unwrap();
+        let launch=|text:&str|{
+            let output=std::process::Command::new("sh").arg("-eu").arg("-c").arg(&shell).arg("log-fixture").arg(text)
+                .env("OXIDE_WINDOWS_PREFIX",&prefix).env("OXIDE_WINE_PROFILE","debug").output().unwrap();
+            assert!(output.status.success(),"{:?}",output);
+            PathBuf::from(String::from_utf8(output.stdout).unwrap().lines().last().unwrap())
+        };
+        let first=launch("first");let second=launch("second");
+        assert_ne!(first,second,"a second launcher must not truncate or follow the first launcher's file");
+        assert_eq!(fs::read_to_string(first).unwrap(),"first");assert_eq!(fs::read_to_string(second).unwrap(),"second");
+        fs::remove_dir_all(prefix).unwrap();
     }
     #[test]
     fn registry_seed_is_versioned_and_not_executable() { assert_eq!(EMPTY_REGISTRY, b"OXREG\0\x01\0\0\0\0\0"); }

@@ -63,7 +63,7 @@ mod nt_gdi{
         }
     }
     pub fn delete_paint_dc_current(_:u32)->Result<(),()>{panic!("unexpected paint cleanup")}
-    pub fn destroy_window_dc_for_current(_:u32){panic!("unexpected destruction")}
+    pub fn destroy_window_dc_for_current(hwnd:u32){crate::teardown_fixture::destroy_dc(hwnd)}
     pub fn flush_pending_for_current(idle:bool){
         assert!(nt_window::GUI.unlocked(),"flush hook called with GUI locked");
         EVENTS.lock().unwrap().push(if idle{"idle"}else{"busy"});
@@ -111,7 +111,7 @@ mod nt_gdi{
 }
 mod nt_window{
     use super::*;
-    const STATUS_SUCCESS:u64=0;const STATUS_INVALID_PARAMETER:u64=0xc000000d;const STATUS_INVALID_HANDLE:u64=0xc0000008;
+    const STATUS_SUCCESS:u64=0;pub(super) const STATUS_INVALID_PARAMETER:u64=0xc000000d;const STATUS_INVALID_HANDLE:u64=0xc0000008;
     const STATUS_ACCESS_DENIED:u64=0xc0000022;pub const STATUS_NO_MORE_ENTRIES:u64=0x8000001a;
     const STATUS_QUOTA_EXCEEDED:u64=0xc0000044;pub const STATUS_ALERTED:u64=0x101;
     const STATUS_PENDING:u64=0x103;const STATUS_NOT_SUPPORTED:u64=0xc00000bb;const WM_DESTROY:u64=2;const CALLBACK_DESTROY:u64=1;
@@ -136,7 +136,7 @@ mod nt_window{
     fn valid_window(hwnd:u64)->Option<WindowId>{u32::try_from(hwnd).ok().and_then(WindowId::from_raw)}
     fn message_filter(state:&WindowManager,hwnd:u64,first:u32,last:u32)->Option<MessageFilter>{
         let hwnd=u32::try_from(hwnd).ok().and_then(WindowId::from_raw);state.validate_message_filter(hwnd).ok()?;Some(MessageFilter{hwnd,first,last})}
-    fn copy_message(_:syscall::UserPtr<NtWindowMessage>,_:ipc::win32_window::WinMessage)->Result<(),syscall::Errno>{panic!("unexpected queued message")}
+    fn copy_message(_:syscall::UserPtr<NtWindowMessage>,message:ipc::win32_window::WinMessage)->Result<(),syscall::Errno>{if crate::retrieval_status_fixture::copy(message){Ok(())}else{crate::hardware_view_fixture::copy(message)}}
     fn copy_rect(_:syscall::UserPtr<nt::NtWindowRect>,_:ipc::win32_window::WindowRect)->u64{panic!("unexpected rect")}
     fn read_rect(_:syscall::UserPtr<nt::NtWindowRect>)->Option<ipc::win32_window::WindowRect>{panic!("unexpected rect input")}
     struct CreateStructArgs;impl CreateStructArgs{fn empty(_:u64)->Self{Self}}
@@ -144,8 +144,9 @@ mod nt_window{
     mod create{use super::*;pub(super) fn begin_create_lifecycle_for_current(_:u64,_:CreateStructArgs,_:CreateReturnConvention)->u64{panic!("unexpected create")}}
     mod control_color{pub fn for_current(_:u32,_:u64)->Option<u64>{None}}
     mod erase_background{pub mod kernel{pub fn for_current(_:u32,_:u64,_:u64)->Option<u64>{None}}}
+    mod desktop{pub fn resolve_for_current()->Option<u32>{Some(crate::set_cursor_fixture::desktop())}}
     mod default_paint{pub fn for_current(_:u64)->u64{0}}
-    mod retrieval{pub fn pump(_:super::NtCall,_:bool)->Option<u64>{None}}
+    mod retrieval{pub fn pump(_:super::NtCall,_:bool)->Option<u64>{crate::retrieval_status_fixture::pump()}}
     pub(super) mod paint{
         pub fn begin(_:u64,_:syscall::UserPtr<syscall::nt::NtWindowRect>)->u64{panic!("unexpected paint")}
         pub fn backing_for_current(hwnd:u32)->Option<ipc::win32_gdi::PaintBacking>{
@@ -159,17 +160,27 @@ mod nt_window{
     mod paint_cleanup{pub fn window_for_current(_:u64){}}
     // The pump profile reports to the console, which this fixture has none of.
     mod pump_profile{pub fn note_retrieval(){}}
-    mod send{pub fn cancel_window<T>(_:&T,_:u64){}}
-    mod position{pub fn cancel_position_window<T>(_:&T,_:u64){}}
+    mod send{pub fn cancel_window<T>(_:&T,_:u64){} pub(super) use crate::mouse_activate_fixture::{Continuation,SendOutcome,send_resumable_current};}
+    pub(crate) use crate::position_fixture as position;
+    mod nonclient_frame {
+        pub fn nc_paint_for_current(_:u64)->Option<u64>{panic!("nonclient paint not covered by this fixture")}
+        pub fn nc_calc_size_for_current(_:u64,_:u64)->Option<u64>{panic!("nonclient layout not covered by this fixture")}
+    }
     mod menu_raw{pub mod bar{
         pub fn nc_paint_for_current(_:u64)->Option<u64>{None}
         pub fn nc_calc_size_for_current(_:u64,_:u64)->Option<u64>{None}
         pub fn hit_test_for_current(_:u64,_:i64)->Option<i16>{None}
         pub fn default_proc_for_current(_:u64,_:u32,_:u64,_:i64)->Option<u64>{None}}}
-    mod hardware{
-        #[derive(Clone,Copy,Debug,Eq,PartialEq)]pub enum Stage{Ready,Again,Pending(u64)}
-        pub fn process_for_current(_:super::NtCall,_:bool,_:syscall::nt::NtWindowCall)->Stage{Stage::Ready}}
-    mod bridge{pub fn publish_destroy_current(_:u64)->Result<(),()>{Ok(())}pub fn publish_visibility_current(_:u64)->Result<(),()>{Ok(())}
+    pub(super) mod hardware{
+        mod delivery {
+            use crate::{sched, timekeeper};
+            include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/nt_window/hardware/delivery.rs"));
+        }
+        pub(crate) use delivery::{deliver_for_current, note_get};
+        #[derive(Clone,Copy,Debug,Eq,PartialEq)]pub struct Selected{pub id:u64,pub message:ipc::win32_window::WinMessage}
+        #[derive(Clone,Debug,Eq,PartialEq)]pub enum Stage{Ready,Drained(u64),Next(u64),Again,Pending(u64),Prepared(Box<Selected>)}
+        pub fn process_for_current(_:super::NtCall,_:bool,_:syscall::nt::NtWindowCall)->Stage{crate::hardware_view_fixture::stage()}}
+    mod bridge{pub fn publish_destroy_current(hwnd:u64)->Result<(),()>{crate::teardown_fixture::publish(hwnd)}pub fn publish_visibility_current(_:u64)->Result<(),()>{Ok(())}
         pub fn publish_title_current(_:u64)->Result<(),()>{Ok(())}pub fn publish_geometry_current(_:u64)->Result<(),()>{Ok(())}}
     // Visibility publication for a show goes through the show projection.
     mod show_order{pub fn publish_for_current(_:u64,_:u64,_:bool)->Result<(),()>{Ok(())}}

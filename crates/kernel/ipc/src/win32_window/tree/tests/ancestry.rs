@@ -83,12 +83,23 @@ fn sibling_relationships_run_from_the_top_of_the_z_order_downward() {
     let bottom = tree.add(Some(parent), WS_CHILD);
     let middle = tree.add(Some(parent), WS_CHILD);
     let top = tree.add(Some(parent), WS_CHILD);
-    assert_eq!(tree.windows.window_relative(parent, GW_CHILD), Some(bottom));
+    assert_eq!(tree.windows.window_relative(parent, GW_CHILD), Some(top));
     assert_eq!(tree.windows.window_relative(middle, GW_HWNDNEXT), Some(bottom));
     assert_eq!(tree.windows.window_relative(top, GW_HWNDPREV), None);
     assert_eq!(tree.windows.window_relative(bottom, GW_HWNDNEXT), None);
-    assert_eq!(tree.windows.window_relative(middle, GW_HWNDFIRST), Some(bottom));
-    assert_eq!(tree.windows.window_relative(middle, GW_HWNDLAST), Some(top));
+    assert_eq!(tree.windows.window_relative(middle, GW_HWNDFIRST), Some(top));
+    assert_eq!(tree.windows.window_relative(middle, GW_HWNDLAST), Some(bottom));
+    for (endpoint, step, expected) in [
+        (GW_HWNDFIRST, GW_HWNDNEXT, [top, middle, bottom]),
+        (GW_HWNDLAST, GW_HWNDPREV, [bottom, middle, top]),
+    ] {
+        let mut current = tree.windows.window_relative(middle, endpoint);
+        for sibling in expected {
+            assert_eq!(current, Some(sibling));
+            current = tree.windows.window_relative(sibling, step);
+        }
+        assert_eq!(current, None);
+    }
 }
 
 #[test]

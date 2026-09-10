@@ -282,6 +282,7 @@ fn wait_loop(uaddr: u64, op_full: u32, val: u32, bitset: u32, private: bool, dea
                 return if recheck.is_err() { -(Errno::Efault.as_i32() as i64) }
                        else { -(Errno::Eagain.as_i32() as i64) };
             }
+            sched::park_site::note(core::panic::Location::caller());
             arc.set_sleep_state(sched::WaitState::Interruptible);
             cur.futex_uaddr.store(uaddr, core::sync::atomic::Ordering::Relaxed);
             w.push(Waiter { key, task: arc, bitset });

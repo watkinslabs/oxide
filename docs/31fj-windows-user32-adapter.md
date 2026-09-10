@@ -64,14 +64,10 @@ implement Windows behavior.
 - Raw property ordinals are GetProp 0x1438/two arguments, RemoveProp
   0x151e/two and SetProp 0x157f/three; Set returns BOOL, get/remove HANDLE.
 - Each admitted BeginPaint owns one canonical `PaintSession { damage, dc }` for
-  the HWND. BeginPaint allocates a fresh canonical GdiManager paint DC and binds
-  that exact handle into the WindowManager session; it does not reuse the
-  stable window DC, create a second association table, or accept a
-  caller-selected DC. EndPaint must match the HWND and exact session HDC before
-  deleting that fresh paint DC, so an unrelated or forged HDC cannot be
-  deleted. Window destruction and thread teardown consume any session and
-  delete only its associated paint DC; failed PAINTSTRUCT copyout consumes the
-  session and deletes that same DC.
+  the HWND. Its exact HDC is a canonical clipped lease into the containing
+  presentation backing. EndPaint validates HWND and session HDC before releasing
+  paint clipping and lease resources. Failed preparation/copyout and teardown
+  release the same resources; no temporary pixel snapshot or copy-back.
 - Raw window-long queries share NtUserCallHwndParam methods 9/10 (A/W long)
   and 11/12 (A/W pointer). SetWindowLongPtr takes HWND, signed index,
   pointer-width value and ANSI BOOL. Invalid HWND fails before field access.
@@ -95,10 +91,10 @@ implement Windows behavior.
 ## 2
 
 - BeginPaint admits a valid HWND even when its update region is empty, returns
-  a fresh valid HDC and an empty rcPaint. Copyout occurs after releasing GUI
-  ownership; failed copyout ends the paint reservation and deletes that HDC.
-  Consumed update state is not restored. EndPaint with an empty region deletes
-  its fresh paint DC and succeeds without presenting an empty frame. Raw HDC
+  a valid clipped lease HDC and an empty rcPaint. Copyout occurs after releasing GUI
+  ownership; failed copyout ends the paint reservation and releases that lease.
+  Consumed update state is not restored. EndPaint with an empty region releases
+  its paint lease and succeeds without presenting an empty frame. Raw HDC
   failures return NULL, never an NTSTATUS as a handle.
 - A returned NT failure status is distinct from a host Linux transport error.
 - `PeekMessage` reports an empty queue as an empty result.

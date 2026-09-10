@@ -44,3 +44,14 @@ pub(crate) const fn entry_pointer(table: u64, index: u32) -> Option<u64> {
 #[cfg(test)]
 #[path = "nt_user_callback/tests.rs"]
 mod tests;
+
+/// Callback input either already belongs to the client or must be copied below
+/// its saved stack pointer before the callback is admitted.
+#[derive(Clone, Copy)]
+pub(crate) enum Input<'a> { User { address: u64, length: u32 }, Record(&'a [u8]) }
+
+#[cfg(any(test, target_arch = "x86_64"))]
+#[path = "nt_user_callback/frame.rs"]
+mod frame;
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+pub(crate) use frame::{prepare, Memory};

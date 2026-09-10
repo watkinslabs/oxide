@@ -100,7 +100,7 @@ fn get_text_metrics(dc: u64, pointer: u64, flags: u32) -> u64 {
 }
 
 fn get_text_extent(dc: u64, text: u64, count: i32, max_extent: i32, nfit: u64, dx: u64, extent: u64, flags: u32) -> u64 {
-    if count < 0 { return 0; }
+    if count < 0 { crate::nt_native_gdi::measure_refused(dc, text_abi::MEASURE_EXTENT, b"count"); return 0; }
     let Some(mut request) = measure_request(dc, text_abi::MEASURE_EXTENT) else { return 0; };
     request.text = text;
     request.count = count as u32;
@@ -113,8 +113,8 @@ fn get_text_extent(dc: u64, text: u64, count: i32, max_extent: i32, nfit: u64, d
 }
 
 fn measure_request(dc: u64, kind: u32) -> Option<MeasureRequest> {
-    let state = crate::nt_gdi::text_snapshot_for_current(dc).ok()?;
-    let stock = crate::nt_gdi::text_metrics_for_current(dc).ok()?;
+    let Ok(state) = crate::nt_gdi::text_snapshot_for_current(dc) else { crate::nt_native_gdi::measure_refused(dc, kind, b"snapshot"); return None; };
+    let Ok(stock) = crate::nt_gdi::text_metrics_for_current(dc) else { crate::nt_native_gdi::measure_refused(dc, kind, b"stock-metrics"); return None; };
     let (height, width, weight, italic) = state.font.map(|font| (font.height, font.width, font.weight, font.italic as u32))
         .unwrap_or((stock.height, 0, 0, 0));
     Some(MeasureRequest { version: text_abi::VERSION, size: core::mem::size_of::<MeasureRequest>() as u32,
@@ -142,6 +142,7 @@ pub(crate) fn ext_text_out(dc: u64, x: i32, y: i32, flags: u32, rect: u64, text:
         background_mode: state.attributes.background_mode, alignment: state.attributes.alignment,
         current_x: state.attributes.current_position.0, current_y: state.attributes.current_position.1,
         break_extra: state.break_extra, break_rem: state.break_rem };
+    let Some(request) = request.translated(state.origin) else { text_trace::refused(dc, b"coordinates"); return 0; };
     let status = crate::nt_native_gdi::begin(request);
     text_trace::admitted(dc, input.flags, input.count, x, y, request.advances, status);
     status

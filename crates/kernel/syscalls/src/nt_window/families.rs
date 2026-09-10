@@ -3,6 +3,8 @@
 //!
 //! - `clipboard_api.rs` — window-station clipboard transaction and formats.
 //! - `hook_api.rs`      — hook registry, chain walk and procedure entry.
+//! - `hook_event.rs`    — client accessibility callback record.
+//! - `hook_state.rs`    — registry and suspended accessibility walks.
 //! - `tree_api.rs`      — ancestry, point search, enumeration and reparenting.
 //! - `state_api.rs`     — styles, attributes, foreground and position batches.
 //! - `station_api.rs`   — window stations, desktops and object information.
@@ -14,6 +16,11 @@ mod clipboard_api;
 pub use clipboard_api::*;
 #[path = "families/hook_api.rs"]
 mod hook_api;
+#[path = "families/hook_event.rs"]
+mod hook_event;
+pub(crate) use hook_event::Notification as HookNotification;
+#[path = "families/hook_state.rs"]
+mod hook_state;
 pub(crate) use hook_api::*;
 #[path = "families/tree_api.rs"]
 mod tree_api;

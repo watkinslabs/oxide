@@ -111,6 +111,8 @@ name = "cpufreq"
 version = "0.1.0"
 dependencies = [
  "cpu",
+ "hal-aarch64",
+ "hal-x86_64",
  "kstrtox",
  "sync",
  "timekeeper",
@@ -386,6 +388,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "nt-heap"
+version = "0.1.0"
+
+[[package]]
 name = "p256"
 version = "0.1.0"
 
@@ -456,6 +462,7 @@ dependencies = [
  "landlock",
  "namespace-identity",
  "network-namespace",
+ "nt-heap",
  "pe",
  "selinux",
  "selinux-runtime",

@@ -25,6 +25,7 @@ extern crate alloc;
 extern crate self as hal;
 extern crate self as hal_x86_64;
 extern crate self as sched;
+#[path = "futex/park_site.rs"] pub mod park_site;
 
 #[path = "futex_pi/irq_probe.rs"] mod irq_probe;
 pub use irq_probe::TestIrq as X86IrqGate;
@@ -489,3 +490,5 @@ const FUTEX_ROBUST_LIST32: u32 = 0x400;
 
 #[path = "futex_core_hosted/tests/core.rs"]
 mod core_tests;
+
+#[path = "futex_core_hosted/tests/park_site.rs"] mod park_site_tests;

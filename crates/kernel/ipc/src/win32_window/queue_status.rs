@@ -6,6 +6,9 @@
 
 use super::{MessageQueue, WindowId, WindowManager};
 
+/// Peek retrieval consumes only when this low-word bit is set.
+pub const PM_REMOVE: u32 = 0x0001;
+
 pub const QS_KEY: u32 = 0x0001;
 pub const QS_MOUSEMOVE: u32 = 0x0002;
 pub const QS_MOUSEBUTTON: u32 = 0x0004;
@@ -73,13 +76,40 @@ impl MessageQueue {
         let queued = self.messages.iter().fold(0, |bits, entry| bits | entry.bits);
         queued | if self.quit_pending() { QS_POSTED } else { 0 }
     }
+    /// Clear posted changes only when neither posted entries nor quit remain. # C: O(N_messages)
+    pub(super) fn clear_drained_posted(&mut self) {
+        if !self.quit_pending() && !self.messages.iter().any(|entry| entry.bits & QS_POSTED != 0) { self.changed &= !QS_POSTED; }
+    }
     /// # C: O(1)
     pub(super) fn changed_bits(&self) -> u32 { self.changed }
     /// # C: O(1)
     pub(super) fn clear_changed(&mut self, bits: u32) { self.changed &= !bits; }
 }
 
+/// Upper-word retrieval classes; zero selects every input class. # C: O(1)
+pub const fn retrieval_classes(flags:u32)->u32{if flags>>16==0{QS_ALLINPUT}else{flags>>16}}
+
+/// Classes acknowledged by retrieval, independently of removal or HWND filtering. # C: O(1)
+pub const fn retrieval_clear_bits(flags:u32,first:u32,last:u32)->u32{
+    let classes=retrieval_classes(flags);
+    let mut clear=0;
+    if classes&QS_POSTMESSAGE!=0{
+        clear|=QS_POSTMESSAGE|QS_HOTKEY|QS_TIMER;
+        if first==0&&(last==0||last==u32::MAX){clear|=QS_ALLPOSTMESSAGE;}
+    }
+    if classes&QS_INPUT!=0{clear|=QS_INPUT;}
+    if classes&QS_PAINT!=0{clear|=QS_PAINT;}
+    clear
+}
+
 impl WindowManager {
+    /// Acknowledge arrivals before a retrieval scan, including a scan that finds nothing. # C: O(N_queues)
+    pub fn acknowledge_retrieval(&mut self,tid:u64,flags:u32,filter:super::MessageFilter){
+        if let Some((_,queue))=self.queues.iter_mut().find(|(owner,_)|*owner==tid){
+            queue.clear_changed(retrieval_clear_bits(flags,filter.first,filter.last));
+        }
+    }
+
     /// Wake and changed bits for one thread's queue, clearing the reported
     /// changed bits. Answers zero when the flags name bits outside the query's
     /// admitted set. # C: O(N_queues + N_messages + N_windows)
@@ -88,7 +118,7 @@ impl WindowManager {
         let paint = self.thread_has_pending_paint(tid);
         let Some((_, queue)) = self.queues.iter_mut().find(|(owner, _)| *owner == tid) else { return Some(0); };
         let wake = queue.wake_bits() | if paint { QS_PAINT } else { 0 };
-        let changed = queue.changed_bits() | if paint { QS_PAINT } else { 0 };
+        let changed = queue.changed_bits();
         queue.clear_changed(flags);
         Some(queue_status_result(changed, wake, flags))
     }
@@ -101,8 +131,8 @@ impl WindowManager {
     }
 
     /// # C: O(N_windows)
-    fn thread_has_pending_paint(&self, tid: u64) -> bool {
-        self.dirty_windows().into_iter().any(|id| self.get(id).is_some_and(|record| record.owner_tid == tid))
+    pub(super) fn thread_has_pending_paint(&self, tid: u64) -> bool {
+        self.dirty.iter().any(|(id, damage)| damage.pending() && self.get(*id).is_some_and(|record| record.owner_tid == tid))
     }
 
     /// Windows carrying undrawn damage. # C: O(N_dirty)
@@ -123,3 +153,10 @@ impl WindowManager {
 #[cfg(test)]
 #[path = "tests/queue_status.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/posted_status.rs"]
+mod posted_tests;
+
+#[cfg(test)]
+#[path="tests/retrieval_status.rs"]mod retrieval_tests;

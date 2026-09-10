@@ -1,120 +1,77 @@
-# Handoff — Windows control captions and the bar band
+# Handoff — Notepad dropdown reparent repair in progress
 
-Dialog push buttons render frames with **no caption text**. Static text in the
-same dialog renders. Separately, wide dialog controls repaint as long thin
-horizontal bars, and content lands outside its own surface, worst after a
-window move. Session did NOT crack the caption defect. Everything below is
-measured, with the log kept so nothing needs re-booting to re-check.
+First command: `git status --short`
+Worktree /home/nd/oxide/kernel-B3630, branch B3630-paint-region-collapse.
+Read CLAUDE.md and scratch/B3630-reparent-validation.md before editing.
+Main read-only afa38ce09. User authorized merging PR7680; full Notepad goal remains incomplete.
+User requires defect-free Notepad borders/buttons/Open/Save/About/dropdowns.
+Consult actual Wine11.16 source ../windows_reference/wine-source and Linux ../reference.
+Wine release/debug profiles explicit; do not fork/patch runtime source/catalog.
 
-## Merged this session
+## Current source
 
-| PR | What |
-|---|---|
-| #7678 | Instruments: `[WINDOWS-WINTEXT]`, `[WINDOWS-TEXTMEASURE]`, `[WINDOWS-TEXTMEASURE-DROP]`; hosted test for the fit-bearing extent query |
-| #7679 | Findings from the instrumented boot (doc + whole UART log) |
+- KI0927 claimedce1380c8e. Reparent runtime/tests/spec repair ready for source commit.
+  Actual SetParent only mutated WindowManager; ComboLBox remained native child
+  clipped inside its original combo after canonical move to desktop.
+  New opcode9 carries native-parent HWND64 plus Rect16; zero means desktop.
+  Existing XID/retained surface preserved by checked X reparent, no shadow owner.
+  tree_api publishes after GUI unlock. Real-X-server test and actual hook test
+  pass; deleting X request/publication produces intended RED. Backend101PASS.
+  Snapshot/codec tests, both target checks,3277syscalls and both native buildsPASS.
+  Kernel release/frame/static running session88034; logs /tmp/B3630-reparent-*.
+  Required next: finish tests, both native builds, both kernel builds/features/
+  frame gates; compare static paths versus334x86/277ARM baseline, KI0019.
+  Backend regression covers retained pixels and native/unknown-parent refusals.
+- KI0924 ca07ea578 FIXED: namespace lacked permanent WindowStations parent.
+  Actual bootstrap path test RED ParentMissing then4PASS,104objects/2029schedPASS.
+  Both builds/features/frame PASS, static334/277 unchanged, exceptions7664/6368.
+- KI0925 795fcf64b FIXED: segmented exact menu OCR recovers underlined File.
+  Real screenshot RED before,2testsGREEN,19adjacentPASS, actualguest initial-token
+  and File/Open clicksPASS. Both fix ledger closures currently uncommitted.
+- Source/push remote last verified795fcf64b. ce1380c8e not yet pushed.
+  Push exceptions only SKIP_LINT_RATCHET=1 SKIP_TEST_BUILD_GATE=1 SKIP_STACK_GATE=1
+  per KI0019; hosted/features mandatory. PR body /tmp/B3630-pr-body.md needs update.
 
-Rows: `KI-0859` captions, `KI-0860` bar band, `KI-0861` one-pixel update
-regions, `KI-0862` measurement cleared.
+## Guest evidence
 
-Evidence log: `scratch/archive/B3629-uart-one-pixel-update-regions.log`
-(boot 2026-09-08 18:18; booted ELF verified to contain the instrument strings,
-so zero counts are real absences, not an unbuilt trace).
+- No VM live. Latest4192826 exited0 at1789047577.5589137 without issued shutdown.
+  Runner87874; helper /tmp/B3630-desktop-verification.py prepare|run.
+  target/B3630-desktop-verification-debug/live.json and uart-4192767.log.
+  Single Notepad start54.219tid13c6; screenDCs nowNONZERO.
+  Filename edit height15px, readable *.txt. DiagnosticPE /tmp/B3630-desktop-probe.log
+  exits0; previousnamespace image exited7. Sourceprobe scratch/B3630-dc-probe/.
+  Initialtoken and File/Open pass, dialog decoration checkFAIL: severe stripes,
+  missing title/chrome, black/blank filelist. Full Save/About unverified.
+- Measured arrow click702,545 focuses file-type combo100013; no visible list.
+  Alt+Down positions list100014398,556..713,586; XGetImage fails8, invisible.
+  Down+Enter changes Text files->All files. Selection reaches control;
+  native reparent missing as above. Encoding NOT tested before VM exited.
+- Images /tmp/B3630-desktop-{initial,open,dropdown,dropdown-key,selected}.png.
+  /tmp/B3630-desktop-encoding.png is STALE previous screenshot; NOT evidence.
+  Failed encoding scripts used unavailable QMP after VM exit; no input occurred.
+- Stagedkernel e04ec52945893be256529255aa7b4345c695b2d2f268d30698617832998a6681.
+  ISO69f01dad499311c11dd1b7f0e47f2a6c00a0ee3e1e074e825c1b56c0015bcf82.
+  Wine11.16debug stamp000982e8e976863f0a29925ab7426d09808a3e61c125c18decc4cf77f27af5da.
+  Predates reparent repair. Native trace KI0926 unobserved; rawDC trace works.
 
-## Ruled OUT — do not re-open without new evidence
+## Earlier repairs and open scope
 
-- **`NtUserInternalGetWindowText` / `GetWindowTextW`.** Wine's static control
-  fetches its caption through the *same* call the button uses, and statics
-  render. Proven from the log, not argued.
-- **`DrawTextW` unimplemented or answering without drawing.** The statics'
-  runs come out of it.
-- **The text measurement path.** Full Notepad session: `[WINDOWS-TEXTMEASURE]`
-  0 and `[WINDOWS-TEXTMEASURE-DROP]` 0 — nothing refused, nothing answered a
-  zero-area box. Fit-bearing extent query (`lpnFit != NULL`, the arm only
-  `DrawText` uses) verified end to end by hosted test, positive control both
-  directions.
-- **Collapsed glyph rows / raster stride.** The same frame renders legible
-  multi-row glyphs in the menu bar, the static and the edit control through
-  the same rasterizer. A stride bug is not selective.
-- **Window style.** The default-button rectangle appears on one button and not
-  the other, so `GWL_STYLE` comes back correct.
-
-## What the caption defect must be
-
-Button and static differ in exactly one thing: the button **measures** its
-label (`DT_CALCRECT`) and hands the box to Wine's draw-state helper, which
-returns without drawing when either dimension is zero — no text run at all,
-frame intact. The static is left/top aligned and consumes neither the measured
-width nor the line height, so the same bad answer is invisible there.
-
-Confirmed from the log: both buttons run `WM_PAINT`, and issue **zero** text
-runs and **zero** refusals, with the run trace's budget unspent. So the failure
-is above the kernel's text run, in the label rectangle.
-
-Measurement is cleared (above). That leaves the **client rectangle** the button
-measures into. **This is the untested link and the next thing to check.**
-
-## Strongest open lead: the update region / client rect
-
-Same run, first `[WINDOWS-PAINT-REGION]` per window:
-
-| window | region | verdict |
-|---|---|---|
-| `0x200001` Notepad main | 729 x 528 | correct |
-| `0x200002` edit child | 723 x 522 | correct |
-| `0x200004` Open dialog | **750 x 1** | one row |
-| `0x20000e` | **360 x 9** | nine rows |
-| `0x200010` | **332 x 1** | one row |
-| `0x20001b` | **750 x 1** | one row |
-| `0x20001d` | **300 x 1** | one row |
-
-First paints, not partial damage. Creation geometry is sane —
-`[WINDOWS-PE-WINE-CREATE-ARG]` for child `0x20000b` under parent `0x200004`
-gives `y=0x16c cx=0x70 cy=0x20` — so the **update region** collapsed, not the
-control. `0x20001b`'s region is 750 wide, wider than a control of that family,
-which matches the reported "renders garbage outside the surface".
-
-A wide control repainting one row of its text **is** the bar band. That band is
-a damage-region defect, not a raster defect.
-
-Two files to read first, in this order:
-
-- `crates/kernel/ipc/src/win32_window/paint_damage/owner.rs`
-  - `paint_region()` clips the damage by `client_rect(id)`. Confirm both are in
-    the *same* coordinate space. A client-local region clipped by a screen-space
-    rect yields exactly a sliver.
-  - `paint_region_to_screen()` translates by `record.client_rect` for **every**
-    ancestor including the window itself. If those rects are stored absolute
-    rather than parent-relative, the origins sum and the region lands outside
-    the surface — which is the reported symptom verbatim.
-- `crates/kernel/syscalls/src/nt_window/paint_prepare/live.rs` — where the
-  region reaches `set_paint_region_for_current` and the trace prints its bounds.
-
-Note the earlier About-dialog capture had **correct** full-size control regions
-(130x28 buttons, 428x20 statics) and still lost its captions. So the one-pixel
-regions may be a second defect rather than the caption cause. Do not assume one
-fix closes both; prove it.
-
-## Harness gap that cost this session
-
-`tools/windows-notepad-acceptance.py` types a token and **never opens Help /
-About**, so the button path is never exercised and the new instruments never
-fire on it. Before the next boot, add an About step (the runner already has
-`keys()` / `type_text()` QMP helpers) and hold long enough for the dialog to
-paint. Otherwise a zero marker count means nothing.
-
-## First command for the next session
-
-```
-tools/issues.sh --show KI-0859 && \
-sed -n '1,110p' crates/kernel/ipc/src/win32_window/paint_damage/owner.rs
-```
-
-Then add the About-dialog step to the acceptance runner and boot **once**.
-
-## Box notes
-
-- Pre-push is red on `main` for `lint-ratchet`, `test-build-gate` and
-  `stack-gate` (`KI-0019`); skip only the gate that names itself and say so.
-- Lanes share `/home/nd/oxide/kernel/target`: a concurrent build takes the
-  cargo package lock and a kernel LTO link can sit for tens of minutes. Give
-  every lane its own `CARGO_TARGET_DIR`.
+- KI0922 b1a9c0feb shared containing paint backings;1560IPC/3276syscalls/
+  278boundary testsPASS,3controlsRED; both builds/features/framePASS. KI0887
+  full paint/border/dialog acceptance remains open. scratch/B3630-shared-paint-validation.md.
+- KI0921 18869d93e compositor parent draw versus retained replay;110tests then,
+  4controlsRED; both nativebuilds. scratch/B3630-parent-replay-verification.md.
+- KI0920 598ecf668 mouse parking repaired; pointer stays at clicked target
+  through observation. X RECORD proved immediate parking moved releaseoutside.
+- KI0863 dialog harness lacks actual selection/encoding/popup geometry checks;
+  currently opens file-type dropdown and Esc only. Must complete acceptance.
+- KI0885 full scrollbar pointer tracking/setters/accessibility, KI0904
+  EnableWindow callbacks, KI0398 bitmap caret, KI0917 quit filtering remain.
+- ARM Windows PE execution/callback gaps KI0699/0703/0704 remain; native/kernel
+  ARM builds do not establish ARM Notepad guest acceptance.
+- native ARM .cargo/config.toml uses Fedora sysroot; run builds from userspace/probes.
+  Existing system sysroot provisioned cached packages; KI0421/KI0691 remain.
+- packages branchB3630-wine-profiles6830f27; images553217b; no remotes.
+  Preserve images .dist-old-layout. Main tree untouched.
+- Never fmt/stash/reset/amend/blanket stage. Stage named files; commit hooks
+  require all tracked edits staged. Current root worktree clean outside lane.

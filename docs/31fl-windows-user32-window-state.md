@@ -43,6 +43,10 @@ state.
 - Same-process cross-thread SendMessageW admits immutable HWND/message/WPARAM/LPARAM work against the canonical HWND owner thread. Queued plus active sends share a 64-request bound; no caller-thread execution of the recipient WndProc, application-message injection, or duplicate HWND registry.
 - Sent-message replies retain the entire 64-bit LRESULT with separate pending/completed/cancelled state; zero, all-ones and 0x103 are valid results, not transport sentinels. A reply publishes once, after recipient callback completion; failed admission, revoked destination and callback installation failure return zero without reporting execution.
 - Sent work runs before Get/Peek application filters and participates in message-wait readiness. Synchronous sends wait without a guessed timeout and service incoming sent work; saved continuations distinguish retrieval from nested send/position waits. Callback completion resumes the interrupted operation, never substitutes recipient LRESULT for retrieval status.
+- Native child-surface pointer coordinates map to screen coordinates before queueing. Without capture, the queued HWND is the top-level input scope; the innermost point candidate determines the receiving thread. Retrieval can therefore search sibling controls after HTTRANSPARENT. An exhausted scope may search its immediately following owner only on the receiving thread.
+- Hardware mouse preselection admits possible client, nonclient and double-click numbers; final HWND/descendant and number filters run after hit testing. Excluded events stay raw and queued; retrieval resumes after their canonical identity, including across suspended window procedures.
+- Get/Peek fallback selects posted messages, quit and paint without exposing raw hardware. An exhausted hardware scan carries its canonical queue identity watermark into GetMessage readiness: retained excluded events cannot spin the waiter; newly queued input wakes retrieval. No parallel input queue or HWND registry.
+
 - Send and synchronous position transactions share the same reply primitive and wait loop. Both inboxes participate in pumping/readiness; existing pending-position state retains the interrupted shared reply across callbacks, with no auxiliary waiter registry or pointer-encoded continuation.
 - Internal same-owner positioning optionally retains a caller token/function in the existing pending-position transaction. Its typed result separates completed BOOL, failure and callback installation; immediate results do not invoke the continuation. Final callback completion or window cancellation resumes the original owner-thread caller exactly once after all position callbacks; thread exit drops the continuation without running code on a retiring thread.
 - Internal resumable send reports Completed LRESULT, Failed or Pending separately. Its owned reply retains an optional caller token/function continuation, invoked only on the sender after callback suspension; valid zero/0x103/all-ones results remain successful values. Immediate outcomes return directly to the caller; cancellation resumes a surviving sender with failure and cannot consume another thread's continuation.
@@ -59,9 +63,16 @@ state.
   ranges become (0,0); position clamps to min..max-max(page-1,0).
 - SetScrollInfo returns current position, or previous position for
   SIF_RETURNPREV. No-scroll ranges hide the nonclient scrollbar unless
-  SIF_DISABLENOSCROLL requests disabled arrows. Page-only changes do not force
-  visibility. Redraw flags retain their drawing effect in the canonical owner.
+  SIF_DISABLENOSCROLL requests disabled arrows. Page-only updates can hide
+  a bar when scrolling becomes impossible; they never show or re-enable it.
+  Arrow flags are the sole disabled-state authority. Redraw requests repaint
+  even unchanged values; without redraw, flag changes paint arrows only.
   SB_CTL uses synchronous scrollbar-window messages, not another nonclient bar.
+- Control SBM_GETPOS returns signed canonical position; SBM_GETRANGE copies optional minimum then maximum destinations and succeeds with both absent. SBM_GETSCROLLINFO uses the same validated SCROLLINFO codec and HWND-owned control state; size24 leaves the tracking tail untouched, absent control state fails without output. Queries do not draw or send another control message.
+- Control EnableScrollBar refresh and WM_ENABLE acquire a cached client DC, build the canonical drawing callback record, retain DC plus original result in the existing paint callback queue, and release after callback return. Nested callbacks retain distinct sender-owned tokens. DC/callback failures release resources and report diagnostics; void drawing cannot substitute its result for the original API result. Destruction may revoke cached DCs; terminal cleanup never recreates revoked objects.
+- WM_ENABLE synchronizes control arrow flags and refreshes without independently changing window visibility/style. Keyboard navigation sends synchronous WM_HSCROLL/WM_VSCROLL to the canonical parent with the control HWND in LPARAM; arrows report line movement, PageUp/PageDown page movement, Home/End endpoints. Discard parent LRESULT after completed Send; pending Send retains its continuation. First keydown (previous-state bit clear) hides caret, repeats do not hide again, and keyup shows caret. Unknown keys still follow caret ordering but send no scroll notification.
+- Scrollbar focus gain creates a gray thumb caret, sets its client position, then shows it. Focus loss hides it, invalidates the thumb rectangle without erase, then destroys the queue caret. Geometry uses canonical scrollbar state even when drawing is hidden; these messages return zero independently of individual caret-operation results.
+- Control drawing uses canonical visibility/ancestry eligibility without conflating drawable geometry with clipping; hidden controls and hidden/minimized ancestors suppress drawing. Full/arrow-only/interior-only selection is carried in the user drawing callback record.
 - Raw SetScrollInfo ordinal 0x1581 has four arguments. GetScrollInfo uses
   NtUserCallHwndParam method 7 and a 16-byte bar/pointer descriptor. All input
   usercopy and size/mask validation precede owner mutation; output follows
@@ -126,11 +137,18 @@ state.
   returns 1. The adapter has no HWND input and cannot use an invalid HWND as
   a substitute for current-queue lookup.
 - Uniform null-bitmap carets use the requested positive dimensions; zero width
-  or height selects one border pixel. Their canonical mask is RGB inversion.
+  or height selects one border pixel. Signed dimensions remain in queue geometry;
+  bitmap extent uses their absolute size, and equal signed source/destination
+  extents crop each negative axis at source zero to one drawable pixel. Their
+  canonical mask is RGB inversion.
   Client-to-frame coordinates subtract the window origin from stored client
   origin. A replacement carries old HWND separately so erase targets the old
-  backing surface. Bitmap and gray-pattern carets require their actual masks;
-  no uniform-mask substitution is permitted for those requests.
+  backing surface. Gray-pattern requests (bitmap1) retain their pattern in the
+  canonical queue and every visible transition; local mask pixel (0,0) is zero,
+  alternating RGB inversion horizontally and vertically. Move/blink/show never
+  phase-shift the pattern by client/frame origin. Hidden snapshots carry no
+  mask. Custom bitmap requests require their copied actual masks; no uniform
+  substitution is permitted.
 
 - A missing or non-canonical HWND is rejected before state access.
 - Text input is copied until its required UTF-16 terminator; unterminated
@@ -172,7 +190,7 @@ state.
 - BeginPaint preparation retains its original TID, HWND, bound HDC, PAINTSTRUCT destination and owned nonclient HRGN in the existing paint-callback completion payload, never a second callback registry. Final completion revalidates the canonical HDC/session before usercopy; successful completion transfers HDC lifetime to EndPaint. Failure drops only that admitted session and releases preparation resources, preserving newly pending damage. Queue teardown drains resource payloads before process memory/GDI detachment without resuming retiring user code.
 - Foreign HWND destruction marks in-flight preparation canceled; its fresh HDC/HRGN remain leased until the outstanding Send returns, then cleanup executes without another paint callback or successful milestone. Quiescent preparation payloads drain immediately outside GUI ownership. Partial nonclient coverage uses an owned screen-coordinate HRGN; whole-window sentinel one requires exact coverage proof, not matching bounding boxes.
 - UPDATENOW takes precedence over ERASENOW and sends WM_PAINT; BeginPaint owns its nonclient/erase preparation. ERASENOW does not consume client paint damage. Desktop-wide HWND-zero execution uses the canonical desktop/window hierarchy; no synthetic desktop identity. Flag-zero requests do not fabricate mutation.
-- ERASENOW acquires canonical window backing before allocating/seeding a fresh clipped erase HDC, including before first BeginPaint. The sender owns the preparation; same-process cross-thread Send executes on the HWND owner. Completion compares current geometry before merging exact pixels, preserves later damage and releases owned HDC/HRGNs. Same-process teardown may dispose prepared resources from another TID without resuming the sender. Immediate completion drives the existing scan iteratively, not through recursive callback chaining.
+- ERASENOW acquires an exact clipped lease into the containing presentation backing, including before first BeginPaint. The sender owns the preparation; same-process cross-thread Send executes on the HWND owner. Completion compares current geometry, preserves later damage and releases owned lease/HRGNs; drawing already resides in canonical backing. Same-process teardown may dispose prepared resources from another TID without resuming the sender. Immediate completion drives the existing scan iteratively, not through recursive callback chaining.
 - Active paint HDC clipping and presentation consume exact session coverage; rcPaint and legacy rectangular query APIs expose only its bounding box. New damage during callbacks cannot be erased by committing an old snapshot. Callback state is bounded, token/TID-owned and revalidated after every return per §4.
 - BeginPaint subtracts consumed child coverage from ancestor update regions unless that ancestor clips children, translating through canonical client origins. All fallible region preparation precedes session/ancestor mutation.
 - Tests cover disjoint unions, hole subtraction, empty/intersected/overflowing regions, combined-flag precedence, internal-only paint, validate/erase transitions, child-coordinate clipping, callback re-invalidation, actual clipped raster effects and cancellation resource cleanup. Replacing subtraction or clipping with a bounding box must fail.

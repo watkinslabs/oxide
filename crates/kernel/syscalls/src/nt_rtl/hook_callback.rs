@@ -1,7 +1,6 @@
 //! Enter a Windows hook procedure. A window hook takes the filter code, the
-//! wParam and the lParam; a WinEvent hook takes seven arguments, three of them
-//! on the callback stack. Both return through the continuation a window
-//! procedure uses.
+//! wParam and the lParam, returning through the window-procedure continuation.
+//! WinEvent hooks use the client callback table and its module resolution.
 use super::*;
 
 #[cfg(target_arch = "x86_64")]
@@ -57,15 +56,5 @@ pub(crate) fn begin_hook_callback(code: u64, wparam: u64, lparam: u64, hook_proc
     begin([code, wparam, lparam, 0], &[], hook_proc)
 }
 
-/// Enter a WinEvent hook procedure with its seven arguments. # C: O(1)
-#[cfg(target_arch = "x86_64")]
-pub(crate) fn begin_win_event_callback(handle: u64, event: u64, hwnd: u64, object_id: u64,
-    child_id: u64, thread: u64, time_ms: u64, hook_proc: u64) -> u64 {
-    begin([handle, event, hwnd, object_id], &[child_id, thread, time_ms], hook_proc)
-}
-
 #[cfg(target_arch = "aarch64")]
 pub(crate) fn begin_hook_callback(_: u64, _: u64, _: u64, _: u64) -> u64 { STATUS_NOT_SUPPORTED }
-
-#[cfg(target_arch = "aarch64")]
-pub(crate) fn begin_win_event_callback(_: u64, _: u64, _: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u64 { STATUS_NOT_SUPPORTED }

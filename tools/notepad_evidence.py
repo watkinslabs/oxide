@@ -9,6 +9,7 @@ on screen fails.
 """
 import re
 import subprocess
+import tempfile
 from pathlib import Path
 
 TITLE_WORD = re.compile(r"notepad", re.IGNORECASE)
@@ -90,9 +91,10 @@ def frame_extent(image, centre_x, title_top):
         return None
     left, right, row = best
     # The centre column crosses the title glyphs, so measure the depth down
-    # the frame's own edges, which carry no text.
+    # the outer frame edges. Inset columns cross the edit control's dark
+    # border and would mistake its top for the window bottom.
     bottom = row
-    for column in (left + 2, right - 2):
+    for column in (left, right):
         depth = row
         while depth + 1 < height and chrome(column, depth + 1): depth += 1
         bottom = max(bottom, depth)
@@ -185,4 +187,26 @@ def menu_bar_word(path, rect, word):
             continue
         if best is None or wt < best[1]:
             best = (wl, wt, ww, wh)
-    return best
+    if best is not None:
+        return best
+    # Sparse full-frame OCR can discard the short, underlined menu glyphs.
+    # Segment overlapping rows and enlarge them; require the complete menu
+    # sequence on one OCR line before accepting coordinates from a crop.
+    from PIL import Image
+    captions = ("file", "edit", "format", "view", "help")
+    scale, band, step = 3, 40, 20
+    with Image.open(path) as image, tempfile.TemporaryDirectory(prefix="notepad-menu-") as directory:
+        end = min(rect[3], top + MENU_BAND_DEPTH)
+        for y in range(top, end, step):
+            crop = image.crop((left, y, right, min(y + band, end)))
+            target = Path(directory) / "band.png"
+            crop.resize((crop.width * scale, crop.height * scale)).save(target)
+            rows = list(_tsv_words(target))
+            for key in dict.fromkeys(row[5] for row in rows):
+                line = sorted((row for row in rows if row[5] == key), key=lambda row: row[1])
+                if tuple(row[0].strip(".:").lower() for row in line) != captions:
+                    continue
+                for text, x, dy, width, height, _ in line:
+                    if text.lower() == word.lower():
+                        return left + x // scale, y + dy // scale, (width + scale - 1) // scale, (height + scale - 1) // scale
+    return None

@@ -18,7 +18,7 @@ pub(crate) mod bridge {
     pub fn publish_visibility_current(_:u64)->Result<(),()>{crate::environment::publish()}
     pub fn publish_position_current(_:u64,_:Option<u64>,_:bool)->Result<(),()>{crate::environment::publish()}
 }
-pub(crate) fn resume_position_message_current()->u64{panic!("unexpected retrieval boundary")}
+pub(crate) fn resume_position_message_current()->u64{crate::environment::ENV.with(|e|{let mut e=e.borrow_mut();assert!(e.allow_retrieval_resume,"unexpected retrieval boundary");e.retrieval_resumes+=1;1})}
 pub(crate) fn window_rect_for_current(hwnd:u32)->Option<(ipc::win32_window::WindowRect,bool)>{
     let entries=GUI.lock();let state=&entries[0].state;let id=ipc::win32_window::WindowId::from_raw(hwnd)?;Some((state.rect(id)?,state.get(id)?.visible))
 }

@@ -15,6 +15,7 @@ FROZEN 2026-09-06. Dep:`31fk`,`31fj`,`31n`,`52`,`53`.
 ## 2
 
 - Bound DC attributes are shared state, not a cached duplicate of private TextAttributes. PE direct writes are observed by later kernel drawing operations; private facade DCs retain private attributes only when no client binding exists.
+- MM_TEXT window/viewport origins supply a per-call device translation from the same copied record. Translation does not invalidate metrics, extents or text-attribute mutation. Logical current position remains logical; no mutable mapping cache is introduced.
 - Text snapshot copies and validates the shared record before a render/measure callback. Invalid modes, dimensions, pointer arithmetic or usercopy fail before drawing. Client COLORREF colors convert to canonical XRGB at this boundary.
 - Own/class and NORESETATTRS release do not republish private defaults. Ordinary cached release explicitly reinitializes shared attributes under the existing lifetime gate.
 - Setters update the shared field when bound and private state when unbound; they never update one while consumers read the other. Selected font and pixel ownership remain canonical kernel data.
