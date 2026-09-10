@@ -180,8 +180,9 @@ done
 # bridge's own diagnostics -- the whole reason this capture exists -- were
 # absent from every console log. The follower is used rather than a pipeline
 # so the launch's own exit status is preserved.
-oxide_log="$OXIDE_WINDOWS_PREFIX/windows-launch.log"
+oxide_log="$OXIDE_WINDOWS_PREFIX/windows-launch-$OXIDE_WINE_PROFILE-$$.log"
 : > "$oxide_log" 2>/dev/null || oxide_log=/dev/null
+printf '[WINDOWS-NOTEPAD] launcher=%s wine-profile=%s log=%s\n' "$$" "$OXIDE_WINE_PROFILE" "$oxide_log"
 follower=""
 if [ "$oxide_log" != /dev/null ]; then tail -n +1 -f "$oxide_log" >&2 & follower=$!; fi
 status=0
@@ -224,13 +225,32 @@ mod tests {
         assert!(script.contains("no-session-display"), "a session with no display must say so, not fail obscurely");
         // A desktop launch sends diagnostics to the session where nobody can
         // read them; the failures so far were narrowed only from a console run.
-        assert!(script.contains("windows-launch.log"), "a desktop launch must leave its diagnostics on disk");
+        assert!(script.contains("windows-launch-$OXIDE_WINE_PROFILE-$$.log"), "a desktop launch must leave its diagnostics on disk");
         assert!(!script.contains("mkfifo"), "the fifo capture lost the bridge child's output");
         assert!(!script.contains("eval \"$(/usr/local/bin/windows-runtime"), "path selection status must not be discarded");
         // The application directory the loader searches comes from this image
         // path. Naming the drive root left every runtime module lookup outside
         // the launch-time catalog with nowhere on the image to resolve.
         assert!(script.contains(&format!("'{IMAGE_WINDOWS_PATH}' '{IMAGE_WINDOWS_PATH}'")), "launch must name the system-directory image path");
+    }
+    #[test]
+    fn separate_launchers_preserve_each_others_diagnostic_logs() {
+        let script=std::str::from_utf8(wrapper_script()).unwrap();
+        let start=script.find("oxide_log=").unwrap();
+        let end=start+script[start..].find("follower=\"\"").unwrap();
+        let shell=format!("{}\nprintf '%s' \"$1\" >> \"$oxide_log\"\nprintf '%s\\n' \"$oxide_log\"\n",&script[start..end]);
+        let prefix=std::env::temp_dir().join(format!("oxide-launch-logs-{}",std::process::id()));
+        fs::create_dir_all(&prefix).unwrap();
+        let launch=|text:&str|{
+            let output=std::process::Command::new("sh").arg("-eu").arg("-c").arg(&shell).arg("log-fixture").arg(text)
+                .env("OXIDE_WINDOWS_PREFIX",&prefix).env("OXIDE_WINE_PROFILE","debug").output().unwrap();
+            assert!(output.status.success(),"{:?}",output);
+            PathBuf::from(String::from_utf8(output.stdout).unwrap().lines().last().unwrap())
+        };
+        let first=launch("first");let second=launch("second");
+        assert_ne!(first,second,"a second launcher must not truncate or follow the first launcher's file");
+        assert_eq!(fs::read_to_string(first).unwrap(),"first");assert_eq!(fs::read_to_string(second).unwrap(),"second");
+        fs::remove_dir_all(prefix).unwrap();
     }
     #[test]
     fn registry_seed_is_versioned_and_not_executable() { assert_eq!(EMPTY_REGISTRY, b"OXREG\0\x01\0\0\0\0\0"); }

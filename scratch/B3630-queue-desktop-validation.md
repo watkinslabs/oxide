@@ -49,3 +49,15 @@ One visible-launch wrapper command is present in UART; shared per-prefix
 windows-launch.log is truncated on another wrapper invocation, so its absence
 cannot rule out another wrapper. Distinguish separate task launch from same-
 task re-exec before deciding which layer owns the blank foreground instance.
+
+KI0918 trace129a1d5a9: current task ID and image path appended to existing
+PE-start marker. Both target compile checks PASS after correcting str/bytes;
+release/frame/static and live identity capture pending.
+KI0919 wrapper log selection now includes Wine profile and launcher PID;
+header reports launcher/profile/log path. Executing the actual log-init shell
+fragment for two launches reproduces the old shared-file clobber (RED).
+No launch serialization or singleton restriction introduced.
+
+All four Notepad staging/wrapper tests PASS after per-launch path repair;
+logs /tmp/B3630-launch-logs-{red,green}.log. New image must actually inject
+updated wrapper; reusing an already-staged root would retain old log path.
