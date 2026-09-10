@@ -11,8 +11,8 @@ print((args.wine_source / 'VERSION').read_text().strip())
 args.out.mkdir(parents=True, exist_ok=True)
 source = Path(__file__).with_name('probe.c')
 imports = {'kernel32': ['GetStdHandle', 'WriteFile', 'ExitProcess'],
-           'user32': ['GetDC', 'ReleaseDC', 'GetDesktopWindow'],
-           'gdi32': ['GetTextExtentPointW', 'GetTextMetricsW', 'GetStockObject', 'SelectObject']}
+           'user32': ['GetDC', 'ReleaseDC', 'GetDesktopWindow', 'GetSystemMetrics'],
+           'gdi32': ['GetTextExtentPointW', 'GetTextMetricsW', 'GetStockObject', 'SelectObject', 'CreateCompatibleDC', 'DeleteDC']}
 for arch, machine in [('x86_64', 'i386:x86-64'), ('aarch64', 'arm64')]:
     obj = args.out / f'probe-{arch}.obj'
     subprocess.run(['clang', f'--target={arch}-windows-gnu', '-O2', '-DWIN32_LEAN_AND_MEAN',
