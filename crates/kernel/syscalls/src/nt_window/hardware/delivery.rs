@@ -9,7 +9,7 @@ use syscall::nt::NtWindowCall;
 #[inline(never)]
 pub(crate) fn deliver_for_current(operation: NtWindowCall, id: u64, view: WinMessage) -> Option<u64> {
     let (pointer, remove, get) = match operation {
-        NtWindowCall::Peek { message, remove, .. } => (message, remove != 0, false),
+        NtWindowCall::Peek { message, remove, .. } => (message, remove & ipc::win32_window::queue_status::PM_REMOVE != 0, false),
         NtWindowCall::Get { message, .. } => (message, true, true),
         _ => return Some(STATUS_INVALID_PARAMETER),
     };

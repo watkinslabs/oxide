@@ -58,3 +58,16 @@ fn actual_peek_acknowledges_pending_paint_without_consuming_region(){
         assert!(nt_window::GUI.lock()[0].state.pending_paint_message(41).is_some());
     }
 }
+
+#[test]
+fn nonremoving_flags_retain_posted_message_across_repeated_peeks(){
+    let _serial=SERIAL.lock().unwrap();
+    for flags in [2u32,QS_POSTMESSAGE<<16,(QS_POSTMESSAGE<<16)|2]{
+        setup();let message=post(QS_POSTED);
+        for _ in 0..2{
+            *COPY.lock().unwrap()=Some(message);let mut request=call(nt::NtService::PeekMessage);request.args.a4=flags as u64;
+            assert_eq!(nt_window::production::dispatch(request),Some(0));
+            assert!(COPY.lock().unwrap().is_none());assert_eq!(status(QS_POSTED)>>16,QS_POSTED);
+        }
+    }
+}

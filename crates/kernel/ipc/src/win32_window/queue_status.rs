@@ -6,6 +6,9 @@
 
 use super::{MessageQueue, WindowId, WindowManager};
 
+/// Peek retrieval consumes only when this low-word bit is set.
+pub const PM_REMOVE: u32 = 0x0001;
+
 pub const QS_KEY: u32 = 0x0001;
 pub const QS_MOUSEMOVE: u32 = 0x0002;
 pub const QS_MOUSEBUTTON: u32 = 0x0004;

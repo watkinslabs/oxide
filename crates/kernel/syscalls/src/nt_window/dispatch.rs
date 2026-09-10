@@ -160,7 +160,7 @@ pub(super) fn dispatch_mode(call: NtCall, raw: bool) -> Option<u64> {
                     state.note_queue_access(cur.tid as u64, timekeeper::monotonic_ns());
                     if let Some(found) = state.peek_posted_for_thread(cur.tid as u64, filter, false) {
                         if copy_message(message, found).is_err() { return Some(STATUS_INVALID_PARAMETER); }
-                        if remove != 0 { let _ = state.peek_posted_for_thread(cur.tid as u64, filter, true); }
+                        if remove & ipc::win32_window::queue_status::PM_REMOVE != 0 { let _ = state.peek_posted_for_thread(cur.tid as u64, filter, true); }
                         (Some(STATUS_SUCCESS), None, None)
                     } else { (Some(STATUS_NO_MORE_ENTRIES), None, None) }
                 }

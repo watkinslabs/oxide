@@ -115,7 +115,7 @@ pub(crate) fn process_for_current(call: NtCall, raw: bool, operation: NtWindowCa
 /// # C: O(N_windows + N_classes)
 fn begin(operation: NtWindowCall, after: u64) -> Option<Stage> {
     let (hwnd, first, last, remove) = match operation {
-        NtWindowCall::Peek { hwnd, first, last, remove, .. } => (hwnd, first, last, remove != 0),
+        NtWindowCall::Peek { hwnd, first, last, remove, .. } => (hwnd, first, last, remove & ipc::win32_window::queue_status::PM_REMOVE != 0),
         NtWindowCall::Get { hwnd, first, last, .. } => (hwnd, first, last, true),
         _ => return None,
     };

@@ -91,3 +91,13 @@ fn actual_get_wait_does_not_spin_on_excluded_raw_hardware() {
     assert!(EVENTS.lock().unwrap().contains(&"wait"));
     assert_eq!(nt_window::GUI.lock()[0].state.read_selected_for_thread(41, id, false), Some(raw));
 }
+
+#[test]
+fn nonremoving_flags_preserve_selected_hardware_entry(){
+    let _serial=SERIAL.lock().unwrap();
+    for flags in [2u64,(ipc::win32_window::queue_status::QS_INPUT as u64)<<16]{
+        let (id,raw,view)=fixture();let mut call=request(nt::NtService::PeekMessage,false);call.args.a4=flags;
+        assert_eq!(nt_window::production::dispatch(call),Some(0));assert_eq!(*COPIED.lock().unwrap(),Some(view));
+        assert_eq!(nt_window::GUI.lock()[0].state.read_selected_for_thread(41,id,false),Some(raw));
+    }
+}
