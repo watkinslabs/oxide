@@ -86,3 +86,20 @@ class DesktopCaptureTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+def test_readback_flag_reaches_compositor_in_the_session_user_environment():
+    spec = importlib.util.spec_from_file_location('notepad_readback_acceptance', TOOLS / 'windows-notepad-acceptance.py')
+    acceptance = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(acceptance)
+    assert acceptance.desktop_launch_command() == acceptance.DESKTOP_LAUNCH
+    command = acceptance.desktop_launch_command(True)
+    assert b'--setuid "$uid" --setgid "$gid" env OXIDE_COMPOSITOR_READBACK=1 /usr/local/bin/windows-notepad-smoke' in command
+    assert b'--env' in command
+
+    uart = Mock()
+    with patch.object(acceptance, 'wait_marker'), patch.object(acceptance, 'leave_overview'), \
+         patch.object(acceptance, 'screenshot'), patch.object(acceptance, 'wait_for_rendered_desktop'), \
+         patch.dict(acceptance.os.environ, {'OXIDE_NOTEPAD_READBACK': '1'}):
+        acceptance.launch_on_desktop(uart, Mock(), Mock(), 200)
+    uart.sendall.assert_called_once_with(command)

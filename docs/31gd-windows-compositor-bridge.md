@@ -177,3 +177,10 @@ Local Wine win32u window/message behavior, Linux AF_UNIX socket lifetime and
 backpressure, and installed XCB xcb.h/xproto.h APIs provide the implementation
 reference. EWMH desktop properties and X11 WM_PROTOCOLS govern the backend,
 without extending those properties into invented Windows semantics.
+
+## 10
+
+- `OXIDE_COMPOSITOR_READBACK=1` enables diagnostic X-server GetImage after each accepted Frame. Disabled by default; one read round trip and O(damage pixels) comparison per observed frame. Frame acceptance, pixels, coverage and input handling remain unchanged.
+- Compare RGB pixels with retained damage plus current caret overlay; ignore unused alpha bits. Match reports HWND/damage/pixel count; mismatch reports count and first (x,y,expected,actual). Unavailable/unmapped/unsupported-format reads report their error separately and never count as matches.
+- Readback establishes only the X drawable boundary at that frame, not later desktop composition or physical scanout. Occlusion can affect accessible pixels. Mismatches require investigation; unavailable diagnostics do not establish failed application drawing.
+- Hosted real-X-server checks exercise the actual accepted-Frame hook, disabled mode, mapped child drawable coverage, independent server pixel corruption, unheld coverage and unmapped windows. Removing the hook must fail observation counts.

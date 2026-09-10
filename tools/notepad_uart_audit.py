@@ -40,6 +40,8 @@ WIN32U_IMAGE_PATH = "/usr/local/lib/oxide/windows/x86_64-windows/win32u.dll"
 
 # (kind, human label, compiled pattern, detail template using named groups)
 _FINDING_SPECS = [
+    ("frame-readback-mismatch", "X-server pixels differ from retained frame",
+     re.compile(r"\[WINDOWS-FRAME-READBACK-MISMATCH\](?P<rest>[^\r\n]*)")),
     ("text-measure-refused", "text measurement refused",
      re.compile(r"\[WINDOWS-TEXTMEASURE-DROP\](?P<rest>[^\r\n]*)")),
     ("text-output-refused", "text output refused",
@@ -116,7 +118,7 @@ def _detail_for(kind, match, win32u_ordinals):
         return f"reason={match.group('reason')}"
     if kind == "delayload-fail-console":
         return f"{match.group('dll')}.{match.group('api')}"
-    if kind in ("bug", "segfault", "pe-fault", "window-create-fail", "bridge-refused", "text-measure-refused", "text-output-refused"):
+    if kind in ("bug", "segfault", "pe-fault", "window-create-fail", "bridge-refused", "text-measure-refused", "text-output-refused", "frame-readback-mismatch"):
         return match.group("rest").strip()[:200]
     return match.group(0)[:200]
 

@@ -163,3 +163,10 @@ refusals even when a visual check fails. Failed runs retain the live VM and
 print its launcher PID and QMP/UART socket paths for inspection by default.
 `OXIDE_NOTEPAD_KEEP_ON_FAILURE=0` requests automatic termination on failure.
 Successful runs require guest power-off; shutdown timeout is a failure.
+
+`OXIDE_NOTEPAD_READBACK=1` adds the compositor pixel observer to the guest
+session-user launch command; it is independent of kernel and Wine profiles.
+Default0 leaves observation disabled. `OXIDE_COMPOSITOR_READBACK=1` enables
+the same observer for direct runtime/compositor launches. Matched X pixels do
+not prove desktop scanout; unavailable reads stay explicitly unverified.
+Readback mismatches fail the Notepad UART audit. Contract: `31gd§10`.

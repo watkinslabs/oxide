@@ -16,6 +16,7 @@ fn main() {
     // between a real hang and a deadline that does not fit the guest, and only
     // a measurement tells them apart.
     let mut backend = match windows_compositor::Backend::connect(display.as_deref()) { Ok(backend) => backend, Err(_) => { eprintln!("windows-compositor: X11/XWayland display connection or XKB initialization failed after {}ms", elapsed_ms(start)); std::process::exit(1); } };
+    backend.set_frame_readback(env::var("OXIDE_COMPOSITOR_READBACK").is_ok_and(|value| value == "1"));
     eprintln!("windows-compositor: display connected after {}ms", elapsed_ms(start));
     let mut transport = match windows_compositor::StreamTransport::from_fd0() { Ok(transport) => transport, Err(_) => { eprintln!("windows-compositor: inherited transport unavailable"); std::process::exit(1); } };
     // The bridge handshake completes only once the monitor snapshot arrives, so

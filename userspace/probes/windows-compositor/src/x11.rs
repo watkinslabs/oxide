@@ -16,6 +16,8 @@ mod visibility;
 mod decode;
 #[path = "x11/position.rs"]
 mod position;
+#[path = "x11/readback.rs"]
+mod readback;
 #[path = "x11/requests.rs"]
 pub(crate) mod requests;
 pub use decode::decode_event;
@@ -25,7 +27,7 @@ pub enum BackendError { DisplayUnavailable, X11, InvalidCommand, Transport(Trans
 
 struct Window { xid: Xid, parent: Xid, gc: ffi::Gcontext, rect: Rect, width: u32, height: u32, requested_visible: bool, configure_sequence: Option<u32>, surface: Option<crate::retained::Retained>, caret: crate::caret::Surface }
 
-pub struct Backend { conn: *mut ffi::Connection, keymap: *mut ffi::XkbKeymap, state: *mut ffi::XkbState, context: *mut ffi::XkbContext, max_request_bytes: usize, root: Xid, visual: ffi::Visualid, depth: u8, screen: Rect, atoms: Atoms, windows: BTreeMap<u32, Window>, xid_to_hwnd: BTreeMap<Xid, u32>, down_keys: BTreeMap<u8, bool>, extra_buttons: u32, pending: VecDeque<BridgeEvent> }
+pub struct Backend { readback: readback::State, conn: *mut ffi::Connection, keymap: *mut ffi::XkbKeymap, state: *mut ffi::XkbState, context: *mut ffi::XkbContext, max_request_bytes: usize, root: Xid, visual: ffi::Visualid, depth: u8, screen: Rect, atoms: Atoms, windows: BTreeMap<u32, Window>, xid_to_hwnd: BTreeMap<Xid, u32>, down_keys: BTreeMap<u8, bool>, extra_buttons: u32, pending: VecDeque<BridgeEvent> }
 
 #[derive(Clone, Copy)] struct Atoms { wm_protocols: ffi::Atom, wm_delete: ffi::Atom, wm_transient_for: ffi::Atom, net_wm_name: ffi::Atom, utf8_string: ffi::Atom, net_workarea: ffi::Atom, net_current_desktop: ffi::Atom, net_active_window: ffi::Atom, net_wm_state: ffi::Atom, net_wm_state_above: ffi::Atom }
 
@@ -107,7 +109,7 @@ impl Backend {
         if state.is_null() { unsafe { ffi::xkb_keymap_unref(keymap); ffi::xkb_context_unref(context); ffi::xcb_disconnect(conn); } return Err(BackendError::X11); }
         Self::stage(started, "keymap-ready");
         let max_request_bytes = (unsafe { ffi::xcb_get_maximum_request_length(conn) } as usize).saturating_mul(4).min(64 * 1024);
-        Ok(Self { conn, keymap, state, context, max_request_bytes, root, visual: screen.root_visual, depth: screen.root_depth, screen: screen_rect, atoms, windows: BTreeMap::new(), xid_to_hwnd: BTreeMap::new(), down_keys: BTreeMap::new(), extra_buttons: 0, pending: VecDeque::new() })
+        Ok(Self { readback: readback::State::default(), conn, keymap, state, context, max_request_bytes, root, visual: screen.root_visual, depth: screen.root_depth, screen: screen_rect, atoms, windows: BTreeMap::new(), xid_to_hwnd: BTreeMap::new(), down_keys: BTreeMap::new(), extra_buttons: 0, pending: VecDeque::new() })
     }
 
     /// `_NET_CURRENT_DESKTOP` and `_NET_WORKAREA` are published by a window
@@ -309,7 +311,9 @@ impl Backend {
         self.repaint(hwnd, frame.damage).inspect_err(|error| {
             eprintln!("windows-compositor: frame-refused hwnd={hwnd:#x} step=repaint frame={}x{} damage={:?} held={} error={error:?}", frame.width, frame.height, frame.damage,
                 self.windows.get(&hwnd).and_then(|w| w.surface.as_ref()).is_some_and(|s| s.holds(frame.damage)));
-        })
+        })?;
+        self.observe_frame(hwnd, frame.damage);
+        Ok(())
     }
 
     fn repaint(&self, hwnd: u32, damage: Rect) -> Result<(), BackendError> {

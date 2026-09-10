@@ -242,3 +242,15 @@ def test_text_measurement_and_output_refusals_cannot_pass_caption_acceptance():
     null_dc = audit_mod.audit("[50.841] [WINDOWS-TEXTMEASURE-DROP] dc=0000000000000000 kind=1 step=snapshot\n")
     assert not null_dc.passed
     assert "dc=0000000000000000" in null_dc.findings[0].detail
+
+
+def test_frame_readback_mismatch_is_distinct_from_match_and_unavailable():
+    match = '[1.0] [WINDOWS-FRAME-READBACK] hwnd=0xb1 pixels=20 matched=1\n'
+    unavailable = '[1.1] [WINDOWS-FRAME-READBACK-UNAVAILABLE] hwnd=0xb1 error=X11(8)\n'
+    mismatch = '[1.2] [WINDOWS-FRAME-READBACK-MISMATCH] hwnd=0xb1 mismatches=1 first=Some((7, 9, 1, 2))\n'
+    assert audit_mod.audit(match + unavailable).passed
+    result = audit_mod.audit(match + unavailable + mismatch)
+    assert not result.passed
+    assert len(result.findings) == 1
+    assert result.findings[0].kind == 'frame-readback-mismatch'
+    assert 'first=Some((7, 9, 1, 2))' in result.findings[0].detail

@@ -32,9 +32,9 @@ Consult local pinned primary sources first; Wine11.16 release/debug explicit.
   8 pen boundary,1532 IPC tests PASS. Text and pen translation removals RED.
   ELFs target/B3630-caption-final-{x86_64,aarch64}.elf; full evidence
   scratch/B3630-caption-origin-validation.md. No new VM after failed run.
-- Compositor refusal diagnostics identify stage/dimensions/damage/coverage;
-  103 compositor tests PASS. Stripe mechanism not proved. Preserve correct
-  IncludeInferiors: parent-DC controls already share parent backing.
+- Compositor refusal diagnostics plus opt-in X pixel readback;107 tests PASS.
+  Enable harness OXIDE_NOTEPAD_READBACK=1. Both release builds PASS; evidence
+  scratch/B3630-readback-validation.md. Stripe mechanism remains unproved.
 
 - KI0903 runtime13f9a59e9: control-owned arrow state and EnableWindow state
   helper preserve visibility. Closed after source37f740be7 validation.
