@@ -36,6 +36,8 @@ Consult local pinned primary sources first; Wine11.16 release/debug explicit.
   Enable harness OXIDE_NOTEPAD_READBACK=1. Both release builds PASS; evidence
   scratch/B3630-readback-validation.md. Stripe mechanism remains unproved.
 
+- Control GETPOS/GETRANGE/GETSCROLLINFO wired;30 boundary tests PASS.
+  scratch/B3630-control-query-validation.md; full KI0885 remains open.
 - KI0903 runtime13f9a59e9: control-owned arrow state and EnableWindow state
   helper preserve visibility. Closed after source37f740be7 validation.
 - KI0885 sizegrip input4ad3d553a: cursor preserves previous handle; click

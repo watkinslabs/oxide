@@ -27,6 +27,9 @@ pub(crate) fn for_current(hwnd: u64, message: u32, wparam: u64, lparam: u64) -> 
         WM_PAINT => Some(super::control_paint::for_current(hwnd, wparam)),
         WM_ERASEBKGND => Some(1),
         WM_GETDLGCODE => Some(DLGC_WANTARROWS),
+        SBM_GETPOS => Some(super::control_query::position(hwnd)),
+        SBM_GETRANGE => Some(super::control_query::range(hwnd, wparam, lparam)),
+        SBM_GETSCROLLINFO => Some(super::live::get_scroll_info_for_current(hwnd, ipc::win32_window::SB_CTL, lparam)),
         WM_SETCURSOR if style & SBS_SIZEGRIP == 0 => None,
         WM_SETCURSOR => Some(super::control_input::sizegrip_cursor(ex_style)),
         WM_LBUTTONDOWN | WM_LBUTTONDBLCLK if style & SBS_SIZEGRIP != 0 =>

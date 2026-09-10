@@ -52,3 +52,7 @@ pub(crate) mod control_proc;
 #[cfg(target_os = "oxide-kernel")]
 #[path = "scroll/control_input.rs"]
 pub(crate) mod control_input;
+
+#[cfg(target_os = "oxide-kernel")]
+#[path = "scroll/control_query.rs"]
+pub(crate) mod control_query;

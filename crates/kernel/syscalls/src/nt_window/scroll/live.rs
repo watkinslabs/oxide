@@ -53,7 +53,7 @@ fn copy_info(address: u64, info: ScrollInfo, size: usize) -> bool {
 /// the lock has been released.
 pub(crate) fn get_scroll_info_for_current(hwnd: u64, bar: i32, info_address: u64) -> u64 {
     let Ok((mut requested, size)) = snapshot_info(info_address) else { return 0; };
-    if !matches!(bar, win32_window::SB_HORZ | win32_window::SB_VERT) { return 0; }
+    if !win32_window::valid_bar(bar) { return 0; }
     let Some(group) = current_group() else { return 0; };
     let Some(window) = window_id(hwnd) else { return 0; };
     let filled = {

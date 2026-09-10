@@ -68,6 +68,7 @@ state.
   Arrow flags are the sole disabled-state authority. Redraw requests repaint
   even unchanged values; without redraw, flag changes paint arrows only.
   SB_CTL uses synchronous scrollbar-window messages, not another nonclient bar.
+- Control SBM_GETPOS returns signed canonical position; SBM_GETRANGE copies optional minimum then maximum destinations and succeeds with both absent. SBM_GETSCROLLINFO uses the same validated SCROLLINFO codec and HWND-owned control state; size24 leaves the tracking tail untouched, absent control state fails without output. Queries do not draw or send another control message.
 - Raw SetScrollInfo ordinal 0x1581 has four arguments. GetScrollInfo uses
   NtUserCallHwndParam method 7 and a 16-byte bar/pointer descriptor. All input
   usercopy and size/mask validation precede owner mutation; output follows

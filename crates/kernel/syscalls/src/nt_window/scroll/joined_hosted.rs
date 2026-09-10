@@ -150,6 +150,7 @@ pub mod nt_window {
     pub(crate) mod scroll {
         #[path = "proc_abi.rs"] pub(crate) mod proc_abi;
         #[path = "control_input.rs"] pub(crate) mod control_input;
+        #[path = "control_query.rs"] pub(crate) mod control_query;
         #[path = "control_proc.rs"] pub(crate) mod control_proc;
         pub(crate) mod control_paint {
             pub(crate) fn for_current(_:u64,_:u64)->u64 { panic!("control paint outside input fixture") }
@@ -334,3 +335,4 @@ fn unchanged_redraw_and_arrow_only_refresh_reach_the_real_action_sink() {
 #[path="tests/bar_visibility.rs"] mod bar_visibility;
 
 #[path="tests/sizegrip.rs"] mod sizegrip;
+#[path="tests/control_query.rs"] mod control_query;

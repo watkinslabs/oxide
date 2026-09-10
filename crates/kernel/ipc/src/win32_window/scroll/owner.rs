@@ -57,6 +57,7 @@ impl WindowManager {
     }
 
     pub fn get_owned_scroll_info(&self, window: WindowId, bar: i32, info: &mut ScrollInfo) -> Result<bool, ScrollError> {
+        if bar == SB_CTL { return self.scroll_control_state(window)?.fill(info); }
         let Some((_, owned)) = self.windows.iter().find(|(candidate, _)| *candidate == window) else {
             return Err(ScrollError::InvalidWindow);
         };
