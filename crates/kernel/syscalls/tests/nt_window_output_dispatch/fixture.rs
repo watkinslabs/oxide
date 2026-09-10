@@ -159,7 +159,7 @@ mod nt_window{
     mod paint_cleanup{pub fn window_for_current(_:u64){}}
     // The pump profile reports to the console, which this fixture has none of.
     mod pump_profile{pub fn note_retrieval(){}}
-    mod send{pub fn cancel_window<T>(_:&T,_:u64){}}
+    mod send{pub fn cancel_window<T>(_:&T,_:u64){} pub(super) use crate::mouse_activate_fixture::{Continuation,SendOutcome,send_resumable_current};}
     pub(crate) use crate::position_fixture as position;
     mod nonclient_frame {
         pub fn nc_paint_for_current(_:u64)->Option<u64>{panic!("nonclient paint not covered by this fixture")}

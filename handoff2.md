@@ -25,6 +25,17 @@ Consult local pinned primary sources first; Wine11.16 release/debug explicit.
 
 ## Current work
 
+- KI0890 default activation repair under validation: parent Send continuation,
+  nonzero parent result preserved; caption left-down MA_NOACTIVATE, others
+  MA_ACTIVATE. IPC owns pointer policy.128 actual-dispatch tests and1529 IPC
+  library tests pass. Evidence scratch/B3630-mouse-activation-validation.md.
+- KI0462 cursor parent-first follow-up claimed with activation repair.
+  Next: use source-verified parent-first excluding resize border/desktop;
+  native default returns1 only for accepted parent, otherwise0 after applying
+  cursor. Current raw helper wrongly returns install/class result directly.
+  No extra pending registry: existing Send continuation owns completion.
+
+
 - Pushed/remote-verified c11e7ea62: display stacking runtimea7d181ac3,
   KI-0897 closed. Backend sibling insertion means preceding HWND: BELOW,
   not ABOVE. Decorated top-level BadMatch forwards original ConfigureRequest

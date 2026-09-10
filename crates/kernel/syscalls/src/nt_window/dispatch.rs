@@ -1,4 +1,5 @@
 use super::*;
+#[path="mouse_activate.rs"] mod mouse_activate;
 
 const WM_NCPAINT: u32 = 0x0085;
 const WM_NCCALCSIZE: u32 = 0x0083;
@@ -15,6 +16,7 @@ pub(super) fn dispatch_mode(call: NtCall, raw: bool) -> Option<u64> {
     let cur = sched::live::current()?;
     if !cur.is_nt_personality() { return Some(STATUS_INVALID_PARAMETER); }
     if let NtWindowCall::DefaultProc { hwnd, message, wparam, lparam } = operation {
+        if message == ipc::win32_window::hardware::WM_MOUSEACTIVATE { return Some(mouse_activate::for_current(hwnd, wparam, lparam)); }
         if let Some(result) = control_color::for_current(message, wparam) { return Some(result); }
         if let Some(result) = erase_background::kernel::for_current(message, hwnd, wparam) { return Some(result); }
         if message == ipc::win32_window::WM_PAINT { return Some(default_paint::for_current(hwnd)); }

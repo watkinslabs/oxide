@@ -170,3 +170,11 @@ pub fn possible_filter(message: u32, filter: MessageFilter) -> bool {
     is_button_down(message) && (admits(message + WM_LBUTTONDBLCLK - WM_LBUTTONDOWN)
         || admits(nonclient + WM_LBUTTONDBLCLK - WM_LBUTTONDOWN))
 }
+
+/// Default activation after a parent declines: caption left-down belongs to
+/// nonclient handling; other clicks activate. # C: O(1)
+pub const fn default_mouse_activation(lparam:u64)->u64 {
+    if (lparam >> 16) as u16 as u32 == WM_LBUTTONDOWN && lparam as u16 == HTCAPTION {
+        MA_NOACTIVATE
+    } else { MA_ACTIVATE }
+}
