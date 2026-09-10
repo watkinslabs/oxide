@@ -40,6 +40,10 @@ WIN32U_IMAGE_PATH = "/usr/local/lib/oxide/windows/x86_64-windows/win32u.dll"
 
 # (kind, human label, compiled pattern, detail template using named groups)
 _FINDING_SPECS = [
+    ("text-measure-refused", "text measurement refused",
+     re.compile(r"\[WINDOWS-TEXTMEASURE-DROP\](?P<rest>[^\r\n]*)")),
+    ("text-output-refused", "text output refused",
+     re.compile(r"\[WINDOWS-TEXTOUT-DROP\](?P<rest>[^\r\n]*)")),
     ("scroll-proc-unhandled", "scrollbar procedure message unhandled",
      re.compile(r"\[WINDOWS-SCROLL-PROC-UNHANDLED\](?P<rest>[^\r\n]*)")),
     ("scroll-paint-fail", "scrollbar drawing callback failed",
@@ -112,7 +116,7 @@ def _detail_for(kind, match, win32u_ordinals):
         return f"reason={match.group('reason')}"
     if kind == "delayload-fail-console":
         return f"{match.group('dll')}.{match.group('api')}"
-    if kind in ("bug", "segfault", "pe-fault", "window-create-fail", "bridge-refused"):
+    if kind in ("bug", "segfault", "pe-fault", "window-create-fail", "bridge-refused", "text-measure-refused", "text-output-refused"):
         return match.group("rest").strip()[:200]
     return match.group(0)[:200]
 

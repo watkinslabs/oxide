@@ -224,3 +224,21 @@ def test_load_win32u_ordinals_reads_selected_guest_dll(tmp_path):
     assert audit_mod.load_win32u_ordinals(image) == expected
     subprocess.run(["debugfs", "-w", "-R", f"rm {audit_mod.WIN32U_IMAGE_PATH}", str(image)], check=True, capture_output=True)
     assert audit_mod.load_win32u_ordinals(image) == {}
+
+
+def test_text_measurement_and_output_refusals_cannot_pass_caption_acceptance():
+    text = ("[71.502] [WINDOWS-TEXTMEASURE-DROP] dc=000000000001008c kind=0000000000000001 step=snapshot\n"
+            "[71.562] [WINDOWS-TEXTMEASURE-DROP] dc=0000000000010090 kind=0000000000000001 step=snapshot\n"
+            "[72.000] [WINDOWS-TEXTOUT-DROP] dc=0000000000010090 step=coordinates\n"
+            "[72.100] [WINDOWS-TEXTOUT-DROP] dc=0000000000010090 step=coordinates\n")
+    result = audit_mod.audit(text)
+    assert not result.passed
+    assert [f.kind for f in result.findings] == ["text-measure-refused", "text-measure-refused", "text-output-refused"]
+    assert [f.count for f in result.findings] == [1, 1, 2]
+    assert result.findings[0].first_ts == "71.502"
+    assert "dc=000000000001008c" in result.findings[0].detail
+    assert "step=coordinates" in result.findings[2].detail
+    assert audit_mod.audit("[71.502] [WINDOWS-TEXTOUT] dc=1008c count=2\n").passed
+    null_dc = audit_mod.audit("[50.841] [WINDOWS-TEXTMEASURE-DROP] dc=0000000000000000 kind=1 step=snapshot\n")
+    assert not null_dc.passed
+    assert "dc=0000000000000000" in null_dc.findings[0].detail

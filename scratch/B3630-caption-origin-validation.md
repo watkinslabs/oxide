@@ -42,3 +42,11 @@ polyline/polygon and independent viewport/lease origins with visible holes.
 Logs /tmp/B3630-caption-underline-{red,green}.log and caption-ipc-green.log.
 Full visual acceptance remains open.
 Horizontal stripes and Frame refusals remain unexplained. No additional VM.
+
+KI0862 audit: TEXTMEASURE-DROP/TEXTOUT-DROP now fail acceptance with DC,
+step, timestamp and repeat count. Prior parser returns PASS on the caption
+failure fixture (RED);52 Notepad Python tests pass after wiring. Re-audited
+retained latest UART:12 measurement refusals (11 on nonzero DCs) plus two
+Frame refusals. The zero-DC failure is retained separately, not suppressed.
+Artifacts /tmp/B3630-caption-audit-{red,green}.log and latest run directory
+ audit-caption-recheck.md. Caption cause/visual acceptance stay KI0859.
