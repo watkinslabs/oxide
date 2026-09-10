@@ -227,6 +227,10 @@ fn commit_x86(cur: &sched::Task, path: &[u8], blob: &[u8], exec_vp: Option<&vfs:
     klog::write_hex_u64(stack.as_u64());
     klog::write_raw(b"-");
     klog::write_hex_u64(stack_top);
+    klog::write_raw(b" tid=");
+    klog::write_hex_u64(cur.tid as u64);
+    klog::write_raw(b" image=");
+    klog::write_raw(path.as_bytes());
     klog::write_raw(b"\n");
     *frame = hal_x86_64::PtRegs { rip: initial_entry, rsp: initial_stack, rcx: initial_argument, rflags: 0x202,
         cs: hal_x86_64::USER_CS_SELECTOR, ss: hal_x86_64::USER_SS_SELECTOR,

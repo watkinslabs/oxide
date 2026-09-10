@@ -38,3 +38,14 @@ Current narrowed investigation: correlate complete compositor output with
 scanout pixels and window placement. Atomic KMS currently presents a full
 surface through kms_ext::atomic_primary, so missing partial-damage widening
 is not established as the cause. No new graphics runtime repair made here.
+
+Further trace review: PE starts59.015s and65.819s, separate loader/module
+initialization and main-window creation HWND100001 at59.718s versus200001
+at66.358s. The screenshot contains two application windows; classifying all
+overlap as stale scanout pixels was premature. Cause of the second startup
+is not established. Existing startup trace now adds current task ID and image
+path (KI0918), preserving entry-prefix compatibility. No additional registry.
+One visible-launch wrapper command is present in UART; shared per-prefix
+windows-launch.log is truncated on another wrapper invocation, so its absence
+cannot rule out another wrapper. Distinguish separate task launch from same-
+task re-exec before deciding which layer owns the blank foreground instance.
