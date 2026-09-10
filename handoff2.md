@@ -2,7 +2,7 @@
 
 First command: `git status --short`
 Worktree /home/nd/oxide/kernel-B3630; branch B3630-paint-region-collapse.
-Read CLAUDE.md. Main read-only afa38ce09. Draft PR7680.
+Read CLAUDE.md and scratch/B3630-desktop-bootstrap-validation.md. Main afa38ce09; draft PR7680.
 Goal: defect-free Notepad buttons/borders/Open/Save/menus/About; not complete.
 User requests visible boot when ready, inspection VM left running.
 Old VM3672245 exited status0 at1789043295; no quit/reboot issued; cause unknown.
@@ -11,8 +11,8 @@ Helper /tmp/B3630-identity-verification.py run; session82991; live.json in
 KI0922: child/GetDC/BeginPaint/erase/nonclient paths now share containing backing.
 Hosted1560IPC+3276syscalls+278boundary tests PASS;3 source controls RED.
 b1a9c0feb release/features/frame PASS both; static334/277+exception unchanged.
-5341a7a34 diagnostics pushed. Image preparing: /tmp/B3630-measure-verification.py prepare.
-Prepare session41722; /tmp/B3630-measure-prepare.log; new build B3630-measure-verification-debug.
+KI0924 namespace repair: real bootstrap path lacked WindowStations parent;4+104 tests PASS.
+Live QEMU4127880/runner25062 uses old namespace; UART target/B3630-measure-verification-debug/uart-4127818.log.
 KI0920: rapid click+pointer parking makes desktop deliver release outside
 Notepad; menu correctly exits before paint. Held click/release stays open.
 Evdev order correct; X RECORD shows release1004,748 after press168,156.
