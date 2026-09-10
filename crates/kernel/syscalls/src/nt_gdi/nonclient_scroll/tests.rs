@@ -85,3 +85,20 @@ fn clipping_and_hidden_are_not_presentable_repaint_proofs() {
     assert_eq!(render(&mut gdi, 7, SB_VERT, scroll(), NonclientScrollContext { style: 0, ..context() }), Ok((dc, ScrollDrawOutcome::Hidden)));
     assert!(gdi.pixels(dc).unwrap().iter().all(|pixel| *pixel == 0));
 }
+
+#[test]
+fn child_nonclient_scroll_draws_through_lease_into_containing_surface(){
+    use ipc::win32_gdi::{DcLeaseRequest,LeaseOwner};
+    let mut gdi=GdiManager::new();let backing=gdi.acquire_window_dc(7,80,200).unwrap();
+    gdi.fill_rect(backing,Rect{left:0,top:0,right:80,bottom:200},0x123456).unwrap();
+    let visible=ipc::win32_window::PaintRegion::from_rect(WindowRect{left:0,top:0,right:40,bottom:100}).unwrap();
+    let dc=gdi.acquire_dc_lease(DcLeaseRequest{hwnd:8,backing_hwnd:7,backing,origin:(10,10),screen_origin:(10,10),
+        width:40,height:100,visible,flags:0,owner:LeaseOwner::Cached,clip_handle:0}).unwrap();
+    assert_eq!(gdi.dc_presentation_owner(dc),Some((7,backing)));
+    let(_,outcome)=render_dc_parts(&mut gdi,dc,SB_VERT,scroll(),context(),true).unwrap();
+    assert!(matches!(outcome,ScrollDrawOutcome::Painted(_)));
+    let pixels=gdi.pixels(backing).unwrap();
+    assert_eq!(pixels[13*80+33],context().colors.light);
+    assert_eq!(pixels[13*80+32],0x123456);
+    assert_eq!(pixels[0],0x123456);
+}

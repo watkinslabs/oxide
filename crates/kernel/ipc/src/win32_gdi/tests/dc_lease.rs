@@ -206,3 +206,21 @@ fn two_alias_bitblt_snapshots_source_before_overlap_and_ignores_source_clip() {
     g.raster_bitblt(dst,1,0,source,0,0,3,1).unwrap();
     assert_eq!(&g.dc_backing_surface(dst).unwrap().2[3*9+2..3*9+6],&[1,1,2,3]);
 }
+
+#[test]
+fn ending_paint_coverage_preserves_owned_dc_attributes_and_restores_visible_drawing(){
+    for owner in [LeaseOwner::Window(7),LeaseOwner::Class(9)]{
+        let mut g=GdiManager::new();let backing=g.acquire_window_dc(7,9,10).unwrap();
+        let mut r=request(backing);r.owner=owner;r.flags=0;
+        let dc=g.acquire_dc_lease(r).unwrap();
+        g.set_text_attribute(dc,crate::win32_gdi::TextAttribute::Foreground,0x123456).unwrap();
+        let attributes=g.text_state(dc).unwrap();
+        g.set_paint_clip(dc,Rect{left:0,top:0,right:1,bottom:1}).unwrap();
+        g.fill_rect(dc,Rect{left:0,top:0,right:4,bottom:4},0xabcdef).unwrap();
+        assert_eq!(g.dc_backing_surface(dc).unwrap().2[3*9+3],0);
+        g.clear_paint_clip(dc).unwrap();g.release_dc_lease(dc).unwrap();
+        assert_eq!(g.text_state(dc).unwrap(),attributes);
+        g.fill_rect(dc,Rect{left:1,top:0,right:2,bottom:1},0x445566).unwrap();
+        assert_eq!(g.dc_backing_surface(dc).unwrap().2[3*9+3],0x445566);
+    }
+}

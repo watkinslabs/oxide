@@ -68,7 +68,9 @@ pub(crate) fn get_dc_ex_for_current(hwnd: u32, region: u32, flags: u32) -> u64 {
 }
 
 /// Release the HDC lease, preserving backing identity and pixel storage. # C: O(processes + objects)
-pub(crate) fn release_dc_lease_for_current(dc: u32) -> bool {
+pub(crate) fn release_dc_lease_for_current(dc: u32) -> bool { release_current(dc,false) }
+
+fn release_current(dc:u32,paint:bool)->bool{
     let Ok(_gate) = lifecycle::ClientGate::acquire_current() else { return false; };
     let Some(current) = sched::live::current().filter(|current| current.is_nt_personality()) else { return false; };
     let group = Arc::downgrade(&current.thread_group);
@@ -76,6 +78,7 @@ pub(crate) fn release_dc_lease_for_current(dc: u32) -> bool {
         let mut entries = GDI.lock();
         let Some(entry) = entries.iter_mut().find(|entry| entry.group.ptr_eq(&group)) else { return false; };
         let before = entry.state.live_handles();
+        if paint&&entry.state.clear_paint_clip(dc).is_err(){return false;}
         let Ok(reset) = entry.state.dc_lease_resets_on_release(dc) else { return false; };
         let Ok(state) = entry.state.release_dc_lease_state(dc) else { return false; };
         let removed: Vec<_> = before.into_iter().filter(|id| !entry.state.contains_object(*id)).collect();
@@ -103,4 +106,18 @@ pub(crate) fn lease_window_for_current(dc: u32) -> Option<u32> {
     let cur = sched::live::current().filter(|task| task.is_nt_personality())?;
     let entries = GDI.lock();
     entries.iter().find(|entry| entry.group.ptr_eq(&Arc::downgrade(&cur.thread_group)))?.state.lease_window(dc)
+}
+
+/// Release paint coverage through the actual DC owner; memory DCs retain deletion semantics.
+/// # C: O(processes + DCs); # Sleeps: client publication outside GDI
+pub(crate) fn delete_paint_dc_current(dc:u32)->Result<(),u64>{
+    let current=sched::live::current().ok_or(STATUS_INVALID_HANDLE)?;
+    let leased={
+        let mut entries=GDI.lock();
+        let entry=entries.iter_mut().find(|e|e.group.ptr_eq(&Arc::downgrade(&current.thread_group))).ok_or(STATUS_INVALID_HANDLE)?;
+        let leased=entry.state.lease_window(dc).is_some();
+        leased
+    };
+    if leased{return release_current(dc,true).then_some(()).ok_or(STATUS_INVALID_HANDLE);}
+    lifecycle::delete_object_for_current(dc).map_err(|_|STATUS_INVALID_HANDLE)
 }

@@ -16,3 +16,12 @@ pub fn delete_region_for_current(r:u64)->Result<(),u64>{delete_paint_dc_current(
 pub fn retain_erase_for_current(hwnd:u32,dc:u32,r:&PaintRegion,l:PaintBacking)->Result<(),u64>{
     if layout(hwnd)?!=l{return Err(0);}GDI.lock().unwrap().as_mut().unwrap().retain_paint_region(hwnd,dc,r,l).map(|_|()).map_err(|_|0)
 }
+
+pub fn get_dc_ex_for_current(hwnd:u32,region:u32,flags:u32)->u64{
+    let c={let entries=GUI.lock();entries[0].state.dc_lease_context(WindowId::from_raw(hwnd).unwrap(),flags).unwrap()};
+    let mut slot=GDI.lock().unwrap();let gdi=slot.as_mut().unwrap();
+    let backing=gdi.acquire_window_dc(c.backing_hwnd,c.backing_width,c.backing_height).unwrap();
+    gdi.acquire_dc_lease(ipc::win32_gdi::DcLeaseRequest{hwnd,backing_hwnd:c.backing_hwnd,backing,origin:c.origin,
+        screen_origin:c.screen_origin,width:c.logical_width,height:c.logical_height,visible:c.visible,
+        flags:c.flags,owner:c.owner,clip_handle:region}).map(u64::from).unwrap_or(0)
+}

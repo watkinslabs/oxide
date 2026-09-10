@@ -17,10 +17,10 @@ fn client_context_reports_backing_origin_dimensions_and_exact_region() {
     manager.windows.iter_mut().find(|(id, _)| *id == parent).unwrap().1.record.client_rect = Some(rect(10, 20, 100, 120));
     manager.windows.iter_mut().find(|(id, _)| *id == child).unwrap().1.record.client_rect = Some(rect(7, 9, 43, 33));
     let context = manager.dc_lease_context(child, 0).unwrap();
-    assert_eq!(context.backing_hwnd, child.raw());
+    assert_eq!(context.backing_hwnd, parent.raw());
     assert_eq!(context.screen_origin, (17, 29));
     assert_eq!((context.logical_width, context.logical_height), (36, 24));
-    assert_eq!(context.origin, (2, 3));
+    assert_eq!(context.origin, (7, 9));
     assert_eq!(context.visible, PaintRegion::from_rect(rect(0, 0, 36, 24)).unwrap());
 }
 

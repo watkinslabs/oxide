@@ -34,10 +34,10 @@ fn trace_end(hwnd: u64, hdc: u64, submitted: bool, present: u64, status: u64) {
 }
 
 /// Bind the live owners to the paint-open order. # C: O(owner work)
-struct Open<F, G> { hwnd: u64, hwnd32: u32, native: F, gdi: G, size: Option<(u64, u64)> }
+struct Open<F> { hwnd: u64, hwnd32: u32, native: F }
 
-impl<F, G> crate::nt_wine_paint_open::PaintOpen for Open<F, G>
-where F: Fn(NtService, SyscallArgs) -> u64, G: Fn(NtService, SyscallArgs) -> u64 {
+impl<F> crate::nt_wine_paint_open::PaintOpen for Open<F>
+where F: Fn(NtService, SyscallArgs) -> u64 {
     fn reserve(&mut self) -> bool {
         let reserved = crate::nt_window::paint::reserve_for_current(self.hwnd).is_ok();
         if !reserved { trace_open_failure(self.hwnd, b"reserve"); }
@@ -47,22 +47,10 @@ where F: Fn(NtService, SyscallArgs) -> u64, G: Fn(NtService, SyscallArgs) -> u64
         let _ = (self.native)(NtService::EndWindowPaint, SyscallArgs { a0: self.hwnd, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 });
     }
     fn backing(&mut self) -> bool {
-        let Some((window, _)) = crate::nt_window::window_rect_for_current(self.hwnd32) else { trace_open_failure(self.hwnd, b"window"); return false; };
-        let width = window.right.checked_sub(window.left).filter(|value| *value > 0);
-        let height = window.bottom.checked_sub(window.top).filter(|value| *value > 0);
-        let (Some(width), Some(height)) = (width, height) else { trace_open_failure(self.hwnd, b"extent"); return false; };
-        let backing = crate::nt_gdi::acquire_window_dc_for_current(self.hwnd32, width, height);
-        self.size = Some((width as u64, height as u64));
-        let acquired = backing != 0 && backing != STATUS_INVALID_PARAMETER;
-        if !acquired { trace_open_failure(self.hwnd, b"backing"); }
-        acquired
+        crate::nt_window::dc_lease_context_for_current(self.hwnd32,ipc::win32_gdi::DCX_USESTYLE).is_some()
     }
     fn create_dc(&mut self) -> u64 {
-        let Some((width, height)) = self.size else { return 0; };
-        let hdc = (self.gdi)(NtService::CreateCompatibleDc, SyscallArgs { a0: width, a1: height, a2: 0, a3: 0, a4: 0, a5: 0 });
-        let hdc = if hdc == STATUS_INVALID_PARAMETER { 0 } else { hdc };
-        if hdc == 0 { trace_open_failure(self.hwnd, b"dc"); }
-        hdc
+        crate::nt_gdi::get_dc_ex_for_current(self.hwnd32,0,ipc::win32_gdi::DCX_USESTYLE)
     }
     fn seed(&mut self, dc: u64) -> bool {
         let seeded = u32::try_from(dc).ok().is_some_and(|dc| crate::nt_gdi::seed_paint_for_current(self.hwnd32, dc).is_ok());
@@ -75,18 +63,18 @@ where F: Fn(NtService, SyscallArgs) -> u64, G: Fn(NtService, SyscallArgs) -> u64
         bound
     }
     fn delete_dc(&mut self, dc: u64) {
-        let _ = (self.gdi)(NtService::DeleteGdiObject, SyscallArgs { a0: dc, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 });
+        let _ = crate::nt_gdi::delete_paint_dc_current(dc as u32);
     }
 }
 
-/// Reserve the window, create and bind a fresh paint HDC. Owns the HDC and the
+/// Reserve window damage and bind a clipped DC lease. Owns the HDC and the
 /// paint session on every failure path; the caller prepares the session.
 /// # C: O(owner work)
-pub(crate) fn open_paint_dc<F, G>(hwnd: u64, native: F, gdi: G) -> Option<u64>
+pub(crate) fn open_paint_dc<F, G>(hwnd: u64, native: F, _gdi: G) -> Option<u64>
 where F: Fn(NtService, SyscallArgs) -> u64, G: Fn(NtService, SyscallArgs) -> u64 {
     let _ = crate::nt_window::caret::paint::begin_for_current(hwnd);
     let hwnd32 = u32::try_from(hwnd).ok().filter(|hwnd| *hwnd != 0)?;
-    crate::nt_wine_paint_open::open(&mut Open { hwnd, hwnd32, native, gdi, size: None })
+    crate::nt_wine_paint_open::open(&mut Open { hwnd, hwnd32, native })
 }
 
 pub(super) fn end_paint<F, G>(args: &[u64; 17], _native: F, gdi: G) -> u64
@@ -114,7 +102,7 @@ where G: Fn(NtService, SyscallArgs) -> u64 {
         }
     } else { STATUS_INVALID_PARAMETER };
     let result = if crate::nt_window::paintlease::end_for_current(hwnd, dc).is_ok() { STATUS_SUCCESS } else { STATUS_INVALID_PARAMETER };
-    if result == STATUS_SUCCESS { let _ = gdi(NtService::DeleteGdiObject, SyscallArgs { a0: hdc, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 }); }
+    if result == STATUS_SUCCESS { let _ = crate::nt_gdi::delete_paint_dc_current(dc); }
     let accepted = if present == STATUS_PENDING_OUTPUT { STATUS_SUCCESS } else { present };
     let status = win_bool(if result == STATUS_SUCCESS { accepted } else { result });
     trace_end(args[0], hdc, submitted, present, status);

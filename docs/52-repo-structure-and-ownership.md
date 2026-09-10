@@ -35,8 +35,9 @@ drift between `kernel/src`, ad-hoc `crates/*`, and one-off folders.
    owns HDC admission/presentation sequencing, consuming canonical paint bounds.
    Syscalls `nt_manifest` includes personality declarations in the root namespace;
    `hosted_contracts` groups ordinary hosted adapter policy modules.
-   GDI `backing` owns paint seeding/retention; `nt_gdi/paint_frame` serializes
-   that retained surface. Queue-owned caret deadlines feed message waits;
+   `win32_window/dc_lease` resolves containing presentation geometry; GDI leases
+   draw directly into that backing. `backing` validates lease completion and
+   explicit memory-DC storage copies; `nt_gdi/output` owns acknowledged publication. Queue-owned caret deadlines feed message waits;
    scroll continuations consume the existing position and Send owners.
    `nt_window/user_input/queue_status` combines canonical posted/sent status;
    `message_queue/wait_live` uses `ready` for initial and parked mask admission.

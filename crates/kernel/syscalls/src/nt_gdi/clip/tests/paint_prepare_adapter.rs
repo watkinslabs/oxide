@@ -27,7 +27,7 @@ impl policy::Owner for Current{
     }
     fn abort(&mut self,p:policy::Prepared){let mut state=STATE.lock().unwrap();let Some(window)=WindowId::from_raw(p.hwnd)else{return;};
         if state.windows.end_paint_session(window,p.dc).is_ok(){state.ended+=1;}}
-    fn delete(&mut self,handle:u32){let mut state=STATE.lock().unwrap();if state.gdi.delete_object(handle).is_ok(){state.deletes+=1;}}
+    fn delete(&mut self,handle:u32){let _=nt_gdi::delete_paint_dc_current(handle);}
 }
 pub(crate) fn prepare_for_current(hwnd:u32,dc:u32,ps:u64)->u64{
     let prepared=policy::Prepared{hwnd,dc,destination:ps,nc_region:0,tid:9,kernel:false};

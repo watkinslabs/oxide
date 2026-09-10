@@ -71,7 +71,7 @@ pub(crate) use nonclient_scroll::repaint_nonclient_scroll_for_current;
 pub(crate) use lifecycle::select_font_for_current as select_font_raw;
 pub(crate) use system_brush::{set_system_color, system_color_brush_for_current, system_color_pen_for_current, system_color_value};
 pub(crate) use menu_face::menu_face_for_current;
-pub(crate) use lifecycle::delete_object_for_current as delete_paint_dc_current;
+pub(crate) use dc_lease::delete_paint_dc_current;
 pub(crate) use lifecycle::create_dc_for_current as create_paint_dc_for_current;
 #[allow(unused_imports)] // KI-0708: set_paint_clip_for_current unwired
 pub(crate) use clip::{scroll_surface_for_current, exclude_clip_region_for_current, intersect_clip_rect_for_current, get_app_clip_box_for_current, app_clip_box_snapshot_for_current, set_paint_clip_for_current, set_paint_region_for_current};
@@ -229,16 +229,6 @@ fn present_surface(state: &ipc::win32_gdi::GdiManager, dc: u32, x: i32, y: i32) 
         drm::node::DamageRect::full(width as u32, height as u32)) { STATUS_SUCCESS } else { STATUS_INVALID_PARAMETER }
 }
 
-
-/// Drawing output is handed over, not transacted with the desktop; see the
-/// output transport's own submission.
-fn submit_frame(frame: Result<syscall::nt_compositor::Record, u64>) -> u64 {
-    let frame = match frame { Ok(frame) => frame, Err(status) => return status };
-    match crate::nt_compositor::submit_current(frame.header.opcode, frame.header.hwnd, frame.payload) {
-        Ok(_) => STATUS_SUCCESS,
-        Err(_) => STATUS_INVALID_PARAMETER,
-    }
-}
 
 fn create_font(pointer: syscall::UserPtr<NtGdiFont>) -> u64 {
     let mut bytes = [0u8; core::mem::size_of::<NtGdiFont>()];

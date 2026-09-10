@@ -26,6 +26,7 @@ impl State {
         let window = windows.create(9, None, 0x1234).unwrap();
         windows.set_rect(window, WindowRect { left: 0, top: 0, right: 4, bottom: 4 }).unwrap();
         windows.set_visible(window, true).unwrap();
+        windows.set_window_styles(window,0x10000000,0).unwrap();
         if region.right > region.left && region.bottom > region.top { windows.invalidate(window, Some(region)).unwrap(); }
         Self { gdi: GdiManager::new(), region: Some(region), ps: [0; 80], setter_calls: 0,
             presents: 0, ended: 0, deletes: 0, retains: 0, reject_clip: false, reject_copy: false, milestones: 0, windows, window, seed_layout: None, seed_calls: 0 }
@@ -42,6 +43,9 @@ mod nt_window {
     use super::*;
     pub(crate) use crate::paint_prepare_adapter as paint_prepare;
     pub mod caret { pub mod paint { pub(crate) use crate::paint_prepare_adapter::caret::{begin_for_current, end_for_current}; } }
+    pub fn dc_lease_context_for_current(hwnd:u32,flags:u32)->Option<ipc::win32_window::DcLeaseContext>{
+        let state=STATE.lock().unwrap();state.windows.dc_lease_context(WindowId::from_raw(hwnd)?,flags).ok()
+    }
     pub fn window_rect_for_current(hwnd: u32) -> Option<(WindowRect, ())> {
         (hwnd as u64 == HWND).then_some((region(0, 0, 4, 4), ()))
     }
@@ -84,6 +88,19 @@ mod nt_window {
 pub(crate) mod paint_prepare_adapter;
 mod nt_gdi {
     use super::*;
+    pub fn get_dc_ex_for_current(hwnd:u32,region:u32,flags:u32)->u64{
+        let Some(c)=nt_window::dc_lease_context_for_current(hwnd,flags)else{return 0;};
+        let mut state=STATE.lock().unwrap();
+        let backing=state.gdi.acquire_window_dc(c.backing_hwnd,c.backing_width,c.backing_height).unwrap();
+        state.gdi.acquire_dc_lease(ipc::win32_gdi::DcLeaseRequest{hwnd,backing_hwnd:c.backing_hwnd,backing,
+            origin:c.origin,screen_origin:c.screen_origin,width:c.logical_width,height:c.logical_height,
+            visible:c.visible,flags:c.flags,owner:c.owner,clip_handle:region}).map(u64::from).unwrap_or(0)
+    }
+    pub fn delete_paint_dc_current(dc:u32)->Result<(),u64>{
+        let mut state=STATE.lock().unwrap();
+        state.gdi.clear_paint_clip(dc).map_err(|_|STATUS_INVALID_PARAMETER)?;
+        state.gdi.release_dc_lease(dc).map_err(|_|STATUS_INVALID_PARAMETER)?;state.deletes+=1;Ok(())
+    }
     pub fn set_paint_region_for_current(dc: u64, region: ipc::win32_window::PaintRegion) -> Result<(), u64> {
         let mut state = STATE.lock().unwrap(); state.setter_calls += 1;
         if state.reject_clip { return Err(STATUS_INVALID_PARAMETER); }
@@ -183,13 +200,16 @@ fn production_begin_end_paint_hooks_constrain_pixels_and_cleanup() {
             state.gdi.fill_rect(dc as u32, Rect { left: 0, top: 0, right: 4, bottom: 4 }, 0xffffff).unwrap();
             let mut expected = [0; 16];
             if admitted.right != 0 { expected[6] = 0xffffff; expected[10] = 0xffffff; }
-            assert_eq!(state.gdi.pixels(dc as u32).unwrap(), expected);
+            assert_eq!(state.gdi.dc_backing_surface(dc as u32).unwrap().2, expected);
+            let backing=state.gdi.window_dc(HWND as u32).unwrap();
+            assert_eq!(state.gdi.pixels(backing).unwrap(),expected,"BeginPaint must write canonical pixels before EndPaint");
         }
         assert_eq!(production::end_paint(&args, native, gdi), 1);
         let state = STATE.lock().unwrap();
         assert_eq!(state.presents, usize::from(admitted.right != 0));
         assert_eq!((state.ended, state.deletes), (0, 1));
-        assert!(!state.gdi.contains_object(dc as u32));
+        assert!(state.gdi.contains_object(dc as u32));
+        assert!(state.gdi.validate_dc(dc as u32).is_err());
     }
     for reject_copy in [false, true] {
         let mut state = State::new(region(1, 1, 3, 3));
@@ -263,7 +283,8 @@ fn retained_output_finishes_paint_without_claiming_presentation_or_callback() {
         // Output flush owns the presentation milestone; EndPaint only retains and closes.
         assert_eq!(state.milestones, 0);
         assert_eq!(state.deletes, 1);
-        assert!(!state.gdi.contains_object(dc as u32));
+        assert!(state.gdi.contains_object(dc as u32));
+        assert!(state.gdi.validate_dc(dc as u32).is_err());
         assert!(state.windows.paint_session(state.window).is_err());
     }
 }

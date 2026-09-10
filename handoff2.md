@@ -1,17 +1,17 @@
-# Handoff — input/display fixes plus checked frame ACKs; visual acceptance open
+# Handoff — shared containing paint backing; desktop acceptance still open
 
 First command: `git status --short`
 Worktree /home/nd/oxide/kernel-B3630; branch B3630-paint-region-collapse.
 Read CLAUDE.md. Main read-only afa38ce09. Draft PR7680.
 Goal: defect-free Notepad buttons/borders/Open/Save/menus/About; not complete.
 User requests visible boot when ready, inspection VM left running.
-Live VM3672245 remains; new compositor18869d93e installed via SSH; Open still broken.
+Old VM3672245 exited status0 at1789043295; no quit/reboot issued; cause unknown.
 Helper /tmp/B3630-identity-verification.py run; session82991; live.json in
  target/B3630-identity-verification-debug; UART uart-3672188.log.
-Initial PE startup50.694s tid13c7; later explicit relaunch after TERM951.
-Old PE951 terminated after broken No button; only test token. New wrapper1401,
-PE1418, compositor1421; OXIDE_COMPOSITOR_TRACE=1. Token/File popup visible.
-KI0918 trace129a1d5a9 live verified; both builds/features/frame PASS;
+KI0922: child/GetDC/BeginPaint/erase/nonclient paths now share containing backing.
+Hosted1560IPC+3276syscalls+278boundary tests PASS;3 source controls RED.
+Release/frame/stack gates running: /tmp/B3630-shared-paint-build-stack.log.
+See scratch/B3630-shared-paint-validation.md; new kernel not booted yet.
 static335/278 unchanged. KI0919 profile/PID wrapper log confirmed installed.
 KI0920: rapid click+pointer parking makes desktop deliver release outside
 Notepad; menu correctly exits before paint. Held click/release stays open.

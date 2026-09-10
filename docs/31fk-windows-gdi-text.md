@@ -48,13 +48,13 @@ owner. The adapter does not maintain a second GDI object table.
   of surface size. IntersectClipRect normalizes endpoints and intersects the
   retained clip; first successful clip installation returns SIMPLEREGION even
   when empty, while subsequent empty intersections return NULLREGION.
-- Each DC separately retains optional paint clip geometry. Fresh BeginPaint
-  DCs receive the admitted update rectangle before paint callbacks/return;
+- Each DC separately retains optional paint clip geometry. BeginPaint
+  leases receive the admitted update rectangle before paint callbacks/return;
   this never overwrites application clip or changes its intersection history.
   Reversed paint bounds fail without mutation; zero-area paint bounds are empty.
   Effective drawing/query clip is surface intersected with application and
-  paint clips. DC deletion releases paint geometry; resize preserves both
-  retained clips. No paint-DC reuse or stable GetDC lease reset is implied.
+  paint clips. Paint completion releases paint geometry; memory-DC resize preserves both
+  retained clips. Cached and own/class lease lifetimes follow §7.
 - Paint clips retain the admitted canonical disjoint rectangle region, not its
   bounding box. None means no paint restriction; an empty region clips all
   drawing. Raster membership intersects the exact region with surface and
@@ -95,36 +95,17 @@ owner. The adapter does not maintain a second GDI object table.
 - Raw `BeginPaint` validates the canonical HWND before allocating or binding a
   paint DC; zero/unknown HWND returns NULL and never selects a default surface.
   A NULL `PAINTSTRUCT` still runs native paint preparation and releases its
-  temporary paint resources before returning NULL. Failed preparation cleans
+  paint lease resources before returning NULL. Failed preparation cleans
   every acquired canonical resource in reverse ownership order.
 - Raw paint reserves canonical damage without preliminary PAINTSTRUCT copyout;
   nonclient/background callbacks finish before terminal output validation/copy.
-  NULL output still completes callbacks, then releases the temporary HDC and
+  NULL output still completes callbacks, then releases the paint lease and
   active session without writing user memory or publishing a BeginPaint milestone.
-  Callback drawing survives that release in canonical backing; empty coverage
+  Callback drawing already resides in canonical backing; empty coverage
   produces no frame. Retention/transport runs outside GUI ownership.
-- Paint retention merges only admitted client damage from the temporary paint
-  DC into the existing canonical window DC, translating by the canonical
-  window-relative client origin. The caller supplies copied outer dimensions
-  and client bounds; no GDI-side geometry registry is introduced. Source paint
-  pixels remain client-origin even when their allocated surface is window-sized.
-- Before paint admission/drawing, the temporary DC receives retained client
-  pixels translated from the canonical window-relative client origin to (0,0).
-  Seeding copies only the client extent, preserves all DC attributes and pixels
-  outside that extent, and ignores storage-copy source/destination drawing clips.
-  Missing, aliased or dimensionally inconsistent DCs fail before mutation;
-  seeding neither allocates nor resizes. This preserves underlying pixels for
-  transparent drawing and application-clipped portions of admitted damage.
-- Retention preserves destination pixels outside damage and all destination DC
-  attributes. Storage merging ignores destination application/paint clipping;
-  drawing into the paint DC already consumed those clips. Validation and any
-  checked resize allocation precede mutation. Missing backing fails without
-  creating an unpublished DC. Presentation snapshots the retained window DC
-  after merging and submits only after dropping GUI/GDI locks.
-- Exact paint retention validates every admitted region rectangle against
-  client/source bounds before resizing or writing. It performs one checked
-  resize and copies only disjoint coverage, never the enclosing box. Invalid
-  later rectangles cannot leave earlier rectangles merged or backing resized.
+- BeginPaint writes through a canonical DC lease using client-relative logical coordinates, exact visible/application/paint clipping, and the containing presentation backing. Nonclient callbacks use window-origin leases into that same backing. No seed copy or EndPaint copy-back can overwrite concurrent drawing from another DC.
+- EndPaint validates the admitted HWND/HDC and current logical geometry; output remains on the canonical backing, whose existing generation/reservation owner publishes it. Empty coverage creates no frame. NULL PAINTSTRUCT and failed preparation release clipping and lease resources while preserving completed callback drawing.
+- Explicit native memory-DC uploads retain storage-copy semantics: seed reads translated current backing pixels, and retention validates all admitted disjoint rectangles before copying into an existing destination. Copies preserve destination pixels outside admitted coverage and destination attributes. Source/destination drawing clips do not constrain storage copies. Missing, aliased or dimensionally invalid memory surfaces fail before mutation; no unpublished backing is allocated.
 - Dynamic fonts retain all 92 LOGFONTW bytes in their canonical object record;
   logical measurement attributes derive from that record. Stock descriptions
   serialize through the same query contract, without a parallel font registry.
@@ -188,6 +169,8 @@ above.
 
 ## 7
 
+- Ordinary child DCs resolve the containing top-level presentation backing through canonical parentage. PARENTCLIP changes visibility, not surface ownership. All logical origins translate into that backing; nested child and parent drawing observe the same current pixels.
+- BeginPaint and auxiliary erase acquire canonical DC leases with exact paint coverage. They draw directly into the containing backing, without a pixel snapshot or copy-back at EndPaint. Completion validates requesting HWND/HDC, releases paint clipping and lease resources, and leaves rendered output with the existing backing owner. Native explicit memory-DC uploads retain their independent storage-copy contract.
 - GetDCEx returns a canonical lease HDC or NULL, never an NTSTATUS-shaped
   handle. Lease records occupy the existing DC owner and reference the existing
   window backing without allocating a second pixel surface. Client leases map
@@ -221,7 +204,7 @@ above.
   overflow rejects admission before owner mutation. Original HRGN identity is
   retained for ownership/release, never replaced by a translated shadow handle.
   Backing HWND and backing HDC must match the existing canonical association,
-  independently of the requesting child HWND used by parent-clipped leases.
+  independently of the requesting child HWND used by all child leases.
 - Raster paths resolve lease origin, exact visible region and backing storage
   through the same GDI owner. Application/paint clips remain per-HDC and cannot
   alter backing-wide attributes. Lease publication/reset and region projection

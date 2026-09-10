@@ -3,7 +3,6 @@ use alloc::sync::Arc;
 use ipc::win32_window::{PaintRegion, WindowId};
 use ipc::win32_gdi::{PaintBacking, Rect};
 use crate::nt_window::{GUI, paint_callbacks};
-const STATUS_INVALID_PARAMETER: u64 = 0xc000_000d;
 
 /// Prepare auxiliary painting without reserving/consuming a BeginPaint session.
 /// # C: O(windows + regions + client pixels); # Sleeps: yes, outside GUI/GDI
@@ -29,15 +28,7 @@ pub(crate) fn begin_for_current(hwnd: u32, redraw_token: u64) -> u64 {
     let result = (|| {
         if !nc.is_empty() { prepared.nc_region = crate::nt_gdi::create_region_for_current(nc).ok()?; }
         if !clipped.is_empty() && damage.erase {
-            let width = client.right.checked_sub(client.left)?; let height = client.bottom.checked_sub(client.top)?;
-            let backing = crate::nt_gdi::acquire_window_dc_for_current(hwnd, layout.width, layout.height);
-            if backing == 0 || backing == STATUS_INVALID_PARAMETER { return None; }
-            let seeded = (|| {
-                prepared.dc = crate::nt_gdi::create_paint_dc_for_current(width, height).ok()?;
-                crate::nt_gdi::seed_paint_for_current(hwnd, prepared.dc).ok()
-            })();
-            let released = crate::nt_gdi::release_window_dc_for_current(hwnd, backing as u32);
-            if seeded.is_none() || released != 0 { return None; }
+            prepared.dc=u32::try_from(crate::nt_gdi::get_dc_ex_for_current(hwnd,0,ipc::win32_gdi::DCX_USESTYLE)).ok().filter(|dc|*dc!=0)?;
             prepared.client_region = crate::nt_gdi::create_region_for_current(clipped.try_copy().ok()?).ok()?;
             crate::nt_gdi::set_paint_region_for_current(prepared.dc as u64, clipped.try_copy().ok()?).ok()?;
         }

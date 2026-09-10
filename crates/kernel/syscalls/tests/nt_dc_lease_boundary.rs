@@ -126,3 +126,40 @@ fn raw_getdcex_parent_clip_consumes_screen_hrgn_and_releases_it_after_cached_lea
     gdi.release_dc_lease(dc).unwrap();
     assert_eq!(gdi.region_snapshot(region), Err(GdiError::NoSuchObject));
 }
+
+#[test]
+fn nested_child_and_parent_dc_drawing_share_current_surface_pixels() {
+    let mut windows=WindowManager::new();
+    let root=windows.create(7,None,0).unwrap();
+    let child=windows.create(7,Some(root),0).unwrap();
+    let nested=windows.create(7,Some(child),0).unwrap();
+    for (id,area) in [(root,rect(10,20,30,40)),(child,rect(2,3,12,13)),(nested,rect(1,1,5,5))]{
+        windows.set_window_styles(id,WS_VISIBLE,0).unwrap();
+        windows.set_rect(id,area).unwrap();windows.show(7,id,true).unwrap();
+    }
+    let mut gdi=GdiManager::new();
+    let mut acquire=|id:WindowId,flags:u32|{
+        let (c,_)=raw_get_dc_ex(&windows,[id.raw()as u64,0,flags as u64]).unwrap();
+        let backing=gdi.acquire_window_dc(c.backing_hwnd,c.backing_width,c.backing_height).unwrap();
+        gdi.acquire_dc_lease(DcLeaseRequest{hwnd:id.raw(),backing_hwnd:c.backing_hwnd,backing,
+            origin:c.origin,screen_origin:c.screen_origin,width:c.logical_width,height:c.logical_height,
+            visible:c.visible,flags:c.flags,owner:c.owner,clip_handle:0}).unwrap()
+    };
+    let root_dc=acquire(root,0);let child_dc=acquire(nested,0);let parent_clip=acquire(nested,DCX_PARENTCLIP);
+    let target=gdi.dc_pixel_target(root_dc,3,4).unwrap().unwrap();
+    assert_eq!(gdi.dc_pixel_target(child_dc,0,0).unwrap(),Some(target),"ordinary child DC must use containing surface");
+    assert_eq!(gdi.dc_pixel_target(parent_clip,0,0).unwrap(),Some(target),"parent clipping changes coverage, not surface identity");
+    for (dc,color) in [(root_dc,0x112233),(child_dc,0xabcdef),(parent_clip,0x445566)]{
+        let (x,y)=if dc==root_dc{(3,4)}else{(0,0)};
+        gdi.write_dc_pixel(dc,x,y,color).unwrap();
+        assert_eq!(gdi.dc_backing_surface(child_dc).unwrap().2[target.1],color);
+    }
+    let layout=ipc::win32_gdi::PaintBacking{width:4,height:4,client:ipc::win32_gdi::Rect{left:0,top:0,right:4,bottom:4}};
+    gdi.seed_paint(nested.raw(),child_dc,layout).unwrap();
+    gdi.write_dc_pixel(root_dc,3,4,0x778899).unwrap();
+    let region=PaintRegion::from_rect(rect(0,0,4,4)).unwrap();
+    assert_eq!(gdi.retain_paint_region(nested.raw(),child_dc,&region,layout).unwrap(),target.0);
+    assert_eq!(gdi.dc_backing_surface(child_dc).unwrap().2[target.1],0x778899,
+        "EndPaint must not copy an older child snapshot over a later DC write");
+
+}
